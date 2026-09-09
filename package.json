@@ -1,0 +1,34 @@
+{
+  "name": "pi-speckit-pdlc",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bun app that uses the Pi SDK to run a PDLC flow backed by Spec Kit skills.",
+  "bin": {
+    "pi-speckit-pdlc": "./src/cli.ts"
+  },
+  "scripts": {
+    "build:web": "tsx src/build-web.ts",
+    "pdlc": "bun run src/cli.ts",
+    "web": "bun run src/server.ts",
+    "dev": "bun --watch src/server.ts",
+    "help": "bun run src/cli.ts --help",
+    "typecheck": "tsc --noEmit",
+    "pdlc:node": "tsx src/cli.ts",
+    "web:node": "tsx src/server.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@the-agency/pi-spec-kit": "^0.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^18.3.24",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.25.9",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}
