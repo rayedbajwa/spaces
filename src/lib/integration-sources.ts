@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { getAppIntegration, getAppIntegrationCredentials, upsertAppIntegration, type AppIntegrationKind } from './app-integrations'
+import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError, upsertAppIntegration, type AppIntegrationKind } from './app-integrations'
 import { getDb } from './db'
 import { atlassianProvider, refreshAccessToken } from './oauth'
 import { getProject, listRepos, type ProjectKnowledgeConfig } from './project-registry'
@@ -115,7 +115,8 @@ async function requireToken(source: KnowledgeSource): Promise<string> {
   if (row?.status !== 'connected') throw new KnowledgeSourceNotConnectedError(source)
   const creds = await getAppIntegrationCredentials(kind)
   const token = creds?.access_token
-  if (typeof token !== 'string' || !token) throw new KnowledgeSourceNotConnectedError(source)
+  // Connected but the token is missing/undecryptable (ENCRYPTION_KEY changed): name the real cause.
+  if (typeof token !== 'string' || !token) throw new IntegrationCredentialsError(kind)
   return token
 }
 

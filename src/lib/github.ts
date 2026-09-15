@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { getAppIntegration, getAppIntegrationCredentials } from './app-integrations'
+import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError } from './app-integrations'
 import { updateRepoClone, type RepoRow } from './project-registry'
 
 const execFileAsync = promisify(execFile)
@@ -55,7 +55,9 @@ export async function getGitHubToken(): Promise<string> {
   if (!integration || integration.status !== 'connected') throw new GitHubNotConnectedError()
   const creds = await getAppIntegrationCredentials('github')
   const token = creds?.access_token
-  if (typeof token !== 'string' || !token) throw new GitHubNotConnectedError()
+  // Marked connected but the token is missing/undecryptable → say so; a plain
+  // "not connected" hides the real cause (a changed ENCRYPTION_KEY).
+  if (typeof token !== 'string' || !token) throw new IntegrationCredentialsError('github')
   return token
 }
 

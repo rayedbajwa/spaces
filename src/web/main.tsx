@@ -440,6 +440,22 @@ function App() {
   const [githubReposNote, setGithubReposNote] = useState('')
   const [onboarding, setOnboarding] = useState<{ projectName: string; snapshot: OnboardingSnapshot } | null>(null)
   const [onboardingHintIndex, setOnboardingHintIndex] = useState(0)
+  // After onboarding: suggested repositories/work areas to review before the first run.
+  type WizardSuggestions = NonNullable<ProjectDetailRecord['suggestionsJson']>
+  const [onboardingReview, setOnboardingReview] = useState<{ projectId: string; suggestions: WizardSuggestions; adding: string[]; resolve: () => void } | null>(null)
+
+  /** Register a suggested repo on the just-created project (clone starts in the background). */
+  async function addSuggestedRepo(projectId: string, fullName: string) {
+    setOnboardingReview((c) => c ? { ...c, adding: [...c.adding, fullName] } : c)
+    try {
+      await postJson(`/api/projects/${projectId}/repos`, { label: fullName.split('/')[1] ?? fullName, kind: 'github', githubRepo: fullName, isPrimary: false })
+      setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, repositories: c.suggestions.repositories.map((r) => r.fullName === fullName ? { ...r, registered: true } : r) } } : c)
+    } catch (error) {
+      setStatusMessage(`Could not add ${fullName}: ${toMessage(error)}`)
+    } finally {
+      setOnboardingReview((c) => c ? { ...c, adding: c.adding.filter((n) => n !== fullName) } : c)
+    }
+  }
   // "Import from Jira / Linear" in the wizard: search state + items to attach after creation.
   const [importSearch, setImportSearch] = useState<{ source: 'jira' | 'linear' | 'confluence' | 'github'; query: string; results: KnowledgeHit[]; loading: boolean; note: string }>({ source: 'linear', query: '', results: [], loading: false, note: '' })
   const [importedItems, setImportedItems] = useState<Array<{ source: 'jira' | 'linear' | 'confluence' | 'github'; id: string; title: string; url?: string }>>([])
@@ -598,7 +614,7 @@ function App() {
     const timer = setInterval(() => setOnboardingHintIndex((i) => i + 1), 2200)
     return () => clearInterval(timer)
   }, [onboarding?.snapshot.status])
-  const [appIntegrations, setAppIntegrations] = useState<Array<{ kind: string; status: string; displayName?: string; updatedAt: string }>>([])
+  const [appIntegrations, setAppIntegrations] = useState<Array<{ kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }>>([])
   const [isIntegrationsModalOpen, setIsIntegrationsModalOpen] = useState(false)
   const connectedIntegrationCount = INTEGRATION_KINDS.reduce(
     (n, kind) => n + (appIntegrations.some((i) => i.kind === kind && i.status === 'connected') ? 1 : 0),
@@ -764,7 +780,7 @@ function App() {
 
   async function loadAppIntegrations() {
     try {
-      setAppIntegrations(await getJson<Array<{ kind: string; status: string; displayName?: string; updatedAt: string }>>('/api/integrations'))
+      setAppIntegrations(await getJson<Array<{ kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }>>('/api/integrations'))
     } catch { setAppIntegrations([]) }
   }
 
@@ -1058,6 +1074,19 @@ function App() {
       // let an agent learn it, and store project memory. Wait for it here (with
       // live progress in the wizard) so the first run starts with real context.
       const snapshot = await waitForOnboarding(project.projectId, project.name, project.onboarding)
+
+      // Suggested repositories / work areas: let the user add repos before the
+      // first run starts, so implementation lands in real checkouts.
+      try {
+        const payload = await getJson<{ suggestions: WizardSuggestions | null }>(`/api/projects/${project.projectId}/suggestions`)
+        const suggestions = payload.suggestions
+        if (suggestions && (suggestions.repositories.some((r) => !r.registered) || suggestions.workAreas.length > 0)) {
+          await new Promise<void>((resolve) => setOnboardingReview({ projectId: project.projectId, suggestions, adding: [], resolve }))
+          setOnboardingReview(null)
+        }
+      } catch {
+        // suggestions are optional
+      }
 
       if (runAidlc && wizard.firstFeature.trim()) {
         if (!snapshot.runnable) {
@@ -2599,8 +2628,8 @@ function App() {
                 const oauthProvider = kind === 'jira' || kind === 'confluence' ? 'atlassian' : kind
                 return (
                   <div key={kind} className="card" style={{ padding: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span className={`mini-badge ${status === 'connected' ? 'completed' : status === 'error' ? 'error' : 'idle'}`} style={{ minWidth: 90, textAlign: 'center' }}>
-                      {status === 'connected' ? '✓ connected' : status}
+                    <span className={`mini-badge ${status === 'connected' && found?.credentialsOk !== false ? 'completed' : status === 'error' || found?.credentialsOk === false ? 'error' : 'idle'}`} style={{ minWidth: 90, textAlign: 'center' }} title={found?.credentialsOk === false ? 'The stored token cannot be decrypted with this server’s ENCRYPTION_KEY (it changed, or was saved by another environment). Reconnect to fix.' : undefined}>
+                      {status === 'connected' ? (found?.credentialsOk === false ? '⚠ reconnect needed' : '✓ connected') : status}
                     </span>
                     <div style={{ flex: 1 }}>
                       <strong style={{ textTransform: 'capitalize' }}>{kind}</strong>
@@ -2610,13 +2639,13 @@ function App() {
                         <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>Uses the shared Atlassian OAuth token.</div>
                       )}
                     </div>
-                    {status === 'connected' ? (
+                    {status === 'connected' && found?.credentialsOk !== false ? (
                       <button type="button" className="ghost-button" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => void disconnectAppIntegration(kind)}>
                         Disconnect
                       </button>
                     ) : (
                       <button type="button" className="primary-button" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => openOAuthPopup(oauthProvider)}>
-                        Connect via OAuth
+                        {found?.credentialsOk === false ? 'Reconnect via OAuth' : 'Connect via OAuth'}
                       </button>
                     )}
                   </div>
@@ -2688,7 +2717,7 @@ function App() {
                 <h2>New project — step {wizard.step} of 4</h2>
                 <p className="panel-subtitle">
                   {wizard.step === 1 && 'Name your project and describe what it does.'}
-                  {wizard.step === 2 && 'Add the repositories (local or GitHub) that make up this project.'}
+                  {wizard.step === 2 && 'Repositories are optional. Specs and memory live in a governing workspace; the plan names the code repositories from your GitHub catalog and they are cloned on demand.'}
                   {wizard.step === 3 && 'Optionally connect external systems now. You can add more later.'}
                   {wizard.step === 4 && 'Review, then optionally kick off the first AIDLC run.'}
                 </p>
@@ -2768,6 +2797,15 @@ function App() {
 
             {wizard.step === 2 && (
               <>
+                <div className="card" style={{ padding: 12, marginBottom: 10 }}>
+                  <strong>How repositories work here</strong>
+                  <p className="panel-subtitle" style={{ margin: '4px 0 0' }}>
+                    Every project gets a <em>governing workspace</em> (a local git repo) that owns the Spec Kit workspace, specs, plans, tasks, reports and memory.
+                    Code repositories are optional now: {githubConnected
+                      ? 'GitHub is connected, so all repositories you can see are indexed with their use cases; onboarding suggests the relevant ones and the plan names the ones each feature touches — they are cloned, learned and set up automatically.'
+                      : 'connect GitHub under Integrations to have your repositories indexed and suggested automatically, or add them here by owner/name or local path.'}
+                  </p>
+                </div>
                 {wizard.repos.map((repo, idx) => (
                   <div key={repo.id} className="card" style={{ padding: 12, marginBottom: 8 }}>
                     <div className="input-grid wizard-inline-grid">
@@ -2889,6 +2927,55 @@ function App() {
                     </li>
                   ))}
                 </ol>
+                {onboardingReview && (
+                  <div className="card" style={{ padding: 12, marginTop: 14 }}>
+                    <strong>Suggested repositories &amp; work areas</strong>
+                    <p className="panel-subtitle" style={{ margin: '4px 0 8px' }}>
+                      Based on {onboardingReview.suggestions.basis === 'plan' ? 'the plan' : 'your description and GitHub catalog'}. Add the repositories the work needs now, or continue and let the plan add them later.
+                    </p>
+                    {onboardingReview.suggestions.repositories.length > 0 && (
+                      <div className="repo-list">
+                        {onboardingReview.suggestions.repositories.map((r) => (
+                          <div key={r.fullName} className="repo-row">
+                            <div className="repo-row-main">
+                              <code>{r.fullName}</code>
+                              <span className="mini-badge idle">{r.confidence}</span>
+                              {r.role && <span className="mini-badge idle">{r.role}</span>}
+                              {r.registered
+                                ? <span className="mini-badge success">on project</span>
+                                : (
+                                  <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={onboardingReview.adding.includes(r.fullName)} onClick={() => void addSuggestedRepo(onboardingReview.projectId, r.fullName)}>
+                                    {onboardingReview.adding.includes(r.fullName) ? 'Adding…' : 'Add & clone'}
+                                  </button>
+                                )}
+                            </div>
+                            <span className="repo-row-source">{r.reason}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {onboardingReview.suggestions.workAreas.length > 0 && (
+                      <>
+                        <strong style={{ fontSize: 12 }}>Work areas</strong>
+                        <ul style={{ margin: '4px 0 8px', paddingLeft: 18 }}>
+                          {onboardingReview.suggestions.workAreas.map((w) => (
+                            <li key={w.name} style={{ fontSize: 12, marginBottom: 4 }}>
+                              <strong>{w.name}</strong> — {w.description}
+                              {w.repositories.length > 0 && <span className="repo-row-source"> · {w.repositories.join(', ')}</span>}
+                              {w.paths.length > 0 && <span className="repo-row-source"> · {w.paths.join(', ')}</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                    {onboardingReview.suggestions.notes && <p className="field-hint">{onboardingReview.suggestions.notes}</p>}
+                    <div className="button-row">
+                      <button className="primary-button" type="button" disabled={onboardingReview.adding.length > 0} onClick={() => onboardingReview.resolve()}>
+                        Continue{wizard.firstFeature.trim() ? ' and start the first run' : ''}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {!onboarding && wizard.step === 4 && (
@@ -2897,7 +2984,12 @@ function App() {
                   <strong>{wizard.name}</strong>
                   {wizard.description && <p style={{ margin: '4px 0' }}>{wizard.description}</p>}
                   <p style={{ margin: '4px 0', fontSize: 13 }}>
-                    {wizard.repos.length} repo{wizard.repos.length === 1 ? '' : 's'}
+                    {(() => {
+                      const filled = wizard.repos.filter((r) => r.label.trim() || r.localPath.trim() || r.githubRepo.trim()).length
+                      return filled === 0
+                        ? 'No code repositories yet — a governing workspace is created for specs and memory; onboarding will suggest repositories and the plan adds the ones each feature needs.'
+                        : `${filled} code repo${filled === 1 ? '' : 's'} + a governing workspace for specs and memory`
+                    })()}
                   </p>
                 </div>
                 <label>

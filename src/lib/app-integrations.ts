@@ -25,9 +25,27 @@ const COLS = `
   updated_at AS "updatedAt"
 `
 
-export async function listAppIntegrations(): Promise<AppIntegrationRow[]> {
+export async function listAppIntegrations(): Promise<Array<AppIntegrationRow & { credentialsOk: boolean }>> {
   const sql = getDb()
-  return await sql<AppIntegrationRow[]>`SELECT ${sql.unsafe(COLS)} FROM app_integrations ORDER BY kind`
+  const rows = await sql<Array<AppIntegrationRow & { credentialsJson: unknown }>>`SELECT ${sql.unsafe(COLS)}, credentials_json AS "credentialsJson" FROM app_integrations ORDER BY kind`
+  // "connected" is only real if the stored token still decrypts with this
+  // process's ENCRYPTION_KEY and carries an access_token; otherwise the UI must
+  // ask for a reconnect instead of every call failing later.
+  return rows.map(({ credentialsJson, ...row }) => {
+    let credentialsOk = row.status !== 'connected'
+    if (row.status === 'connected') {
+      const creds = credentialsJson ? unsealCredentials(credentialsJson) : undefined
+      credentialsOk = typeof creds?.access_token === 'string' && creds.access_token.length > 0
+    }
+    return { ...row, credentialsOk }
+  })
+}
+
+export class IntegrationCredentialsError extends Error {
+  constructor(kind: AppIntegrationKind) {
+    super(`${kind} is marked connected but its stored token cannot be decrypted (ENCRYPTION_KEY changed, or it was saved by a process with a different key). Reconnect ${kind} under Integrations.`)
+    this.name = 'IntegrationCredentialsError'
+  }
 }
 
 export async function getAppIntegration(kind: AppIntegrationKind): Promise<AppIntegrationRow | undefined> {
