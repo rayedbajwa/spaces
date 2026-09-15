@@ -243,7 +243,9 @@ a dedicated worker for every project that has work, each claiming only its own
 project's jobs. A worker is **hot** while running jobs, **warm** while alive but
 idle (it keeps paused runs' engines in memory), and exits after
 `WORKER_IDLE_EXIT_SECONDS` (default 300) of idleness; the supervisor respawns it
-the moment new work appears. `SUPERVISOR_MAX_WORKERS` caps the fleet. Workers
+the moment new work appears. `SUPERVISOR_MAX_WORKERS` (default 4) caps the
+fleet; each worker is a Bun process holding live agent sessions, roughly
+300–500 MB, so size the cap to the host's memory. Workers
 heartbeat into the `workers` table, which drives the worker indicator in the
 project overview and lets the server detect a dead owner when routing answers.
 

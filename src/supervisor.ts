@@ -30,7 +30,10 @@ const supLog = log.child({ mod: 'supervisor' })
  *   bun run src/supervisor.ts
  */
 
-const MAX_WORKERS = Math.max(1, Number(process.env.SUPERVISOR_MAX_WORKERS ?? '8') || 8)
+// Each per-project worker is a Bun process holding live agent sessions (a few
+// hundred MB each); default to 4 so a laptop under memory pressure doesn't get
+// the whole fleet killed. Raise SUPERVISOR_MAX_WORKERS on a bigger host.
+const MAX_WORKERS = Math.max(1, Number(process.env.SUPERVISOR_MAX_WORKERS ?? '4') || 4)
 const IDLE_EXIT_SECONDS = Math.max(30, Number(process.env.WORKER_IDLE_EXIT_SECONDS ?? '300') || 300)
 const POLL_MS = 5_000
 const RESPAWN_BACKOFF_MS = 15_000
