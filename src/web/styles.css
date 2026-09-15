@@ -1000,7 +1000,7 @@ textarea {
 .mini-badge.pending { background: rgba(245, 158, 11, 0.14); color: #f59e0b; border-color: rgba(245, 158, 11, 0.28); }
 
 /* ---- Project onboarding (wizard loading states) ---- */
-.onboarding-panel {
+.wizard-onboarding-panel {
   padding: 18px 16px;
   border-radius: 12px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));

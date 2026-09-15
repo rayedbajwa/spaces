@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import './styles.css'
 
 type RunStatus = 'running' | 'paused' | 'completed' | 'error'
@@ -1256,39 +1257,8 @@ function App() {
     }
   }
 
-  /**
-   * Lane → step-that-would-land-a-card-in-that-lane. Lanes are DERIVED from
-   * artifact state (see collectProjectArtifacts on the server), so dropping a
-   * card onto a lane is a shorthand for "run the step that produces the
-   * artifact for that lane". Lanes without a producing step (backlog) return
-   * null and reject all drops.
-   */
-  function stepForColumn(lane: BoardStatus): string | null {
-    switch (lane) {
-      case 'initialized':  return 'init'
-      case 'specified':    return 'specify'
-      case 'planned':      return 'plan'
-      case 'tasked':       return 'tasks'
-      case 'implementing': return 'implement'
-      case 'done':         return 'verify'
-      case 'backlog':      return null
-      default:             return null
-    }
-  }
-
-  /**
-   * A drop is eligible iff the target column matches the card's own
-   * recommended next action. That's the same signal the "Recommended next
-   * action" banner uses inside the project modal — one source of truth for
-   * "what's the next legal step for this project" prevents the board from
-   * silently letting the user skip stages or trigger things out of order.
-   */
-  function isEligibleDrop(card: BoardCard | null, targetLane: BoardStatus): boolean {
-    if (!card) return false
-    const rec = card.recommendedAction
-    if (!rec) return false
-    return stepForColumn(targetLane) === rec.step
-  }
+  // stepForColumn + isEligibleDrop moved to src/lib/board-drop.ts so they can
+  // be unit-tested without a DOM. Both are pure functions imported at the top.
 
   async function handleBoardDrop(card: BoardCard, targetLane: BoardStatus) {
     setDraggedProjectNamespace('')
@@ -2679,7 +2649,7 @@ function App() {
             )}
 
             {onboarding && (
-              <div className="onboarding-panel" aria-live="polite">
+              <div className="wizard-onboarding-panel" aria-live="polite">
                 <div className="onboarding-heading">
                   <span className={`onboarding-orb ${onboarding.snapshot.status}`} />
                   <div>

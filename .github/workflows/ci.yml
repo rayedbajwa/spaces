@@ -56,7 +56,7 @@ jobs:
         # and the dispatcher concurrency tests get flakier when other processes
         # touch project_jobs on the same DB, so we run smoke tests in a
         # separate step below with the server up.
-        run: bun test tests/crypto-vault.test.ts tests/oauth.test.ts tests/dispatcher.test.ts tests/model-router.test.ts tests/context-compactor.test.ts
+        run: bun test tests/crypto-vault.test.ts tests/oauth.test.ts tests/dispatcher.test.ts tests/model-router.test.ts tests/context-compactor.test.ts tests/board-drop.test.ts
 
       - name: Start web server for smoke tests
         env:
