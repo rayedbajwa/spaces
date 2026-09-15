@@ -48,11 +48,41 @@ jobs:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
         run: bun run db:migrate
 
-      - name: Run tests
+      - name: Run tests (unit + DB integration, no HTTP server)
         env:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
-        run: bun test
+        # Explicitly exclude smoke.test.ts here — it needs a live web server,
+        # and the dispatcher concurrency tests get flakier when other processes
+        # touch project_jobs on the same DB, so we run smoke tests in a
+        # separate step below with the server up.
+        run: bun test tests/crypto-vault.test.ts tests/oauth.test.ts tests/dispatcher.test.ts tests/model-router.test.ts tests/context-compactor.test.ts
+
+      - name: Start web server for smoke tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: |
+          nohup bun run src/server.ts > server.log 2>&1 &
+          echo $! > server.pid
+
+      - name: Wait for web server
+        run: timeout 30 sh -c 'until curl -sf http://localhost:3000/api/board >/dev/null; do sleep 1; done'
+
+      - name: Run smoke tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test tests/smoke.test.ts
+
+      - name: Server log (on failure)
+        if: failure()
+        run: cat server.log || true
+
+      - name: Stop web server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then kill "$(cat server.pid)" 2>/dev/null || true; fi
 
   # ----- docker image build (sanity check, no push) ------------------------
   docker:

@@ -221,6 +221,21 @@ worktree on their own branch and get their own PR; a workstream whose
 branch and its PR targets it — a stacked PR — and workstreams run in
 dependency order.
 
+### Workers: shared or one per project
+
+`bun run src/worker.ts` starts one shared worker that runs jobs from different
+projects concurrently (`WORKER_MAX_CONCURRENT_JOBS`, default 4) while still
+honouring each project's `max_concurrent`.
+
+`bun run src/supervisor.ts` scales instead: it watches the job queue and spawns
+a dedicated worker for every project that has work, each claiming only its own
+project's jobs. A worker is **hot** while running jobs, **warm** while alive but
+idle (it keeps paused runs' engines in memory), and exits after
+`WORKER_IDLE_EXIT_SECONDS` (default 300) of idleness; the supervisor respawns it
+the moment new work appears. `SUPERVISOR_MAX_WORKERS` caps the fleet. Workers
+heartbeat into the `workers` table, which drives the worker indicator in the
+project overview and lets the server detect a dead owner when routing answers.
+
 ### Runs that fail or get interrupted
 
 A worker restart no longer marks in-flight runs as failed: running runs are

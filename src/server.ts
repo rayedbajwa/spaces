@@ -1024,7 +1024,7 @@ async function route(req: Request): Promise<Response> {
     if (!delivery.delivered) {
       // The worker that paused this run is gone. Record the answer and restart the
       // paused stage (or the next one, for an approved review) on any worker.
-      const stages = row.templateJson.steps.map((s) => s.stage as StageName)
+      const stages = (row.templateJson?.steps ?? []).map((s) => s.stage as StageName)
       const currentIdx = row.currentStage ? stages.indexOf(row.currentStage) : -1
       const approved = row.pauseKind === 'review' && /^(approve|approved|lgtm|yes|ok|continue)\b/i.test(answer)
       const nextIdx = approved ? currentIdx + 1 : Math.max(0, currentIdx)
@@ -1062,7 +1062,7 @@ async function route(req: Request): Promise<Response> {
       constitution?: string
       checklistDomain?: string
     }>(req)
-    const stages = row.templateJson.steps.map((s) => s.stage as StageName)
+    const stages = (row.templateJson?.steps ?? []).map((s) => s.stage as StageName)
     let fromStage: StageName | null
     if (body.fromStage === 'start') {
       fromStage = null
@@ -1173,7 +1173,7 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
       return payload?.chunk ?? ''
     })
     .join('')
-  const stages = row.templateJson.steps.map((s) => s.stage as StageName)
+  const stages = (row.templateJson?.steps ?? []).map((s) => s.stage as StageName)
   return {
     runId: row.runId,
     projectNamespace: row.projectNamespace,
@@ -1182,8 +1182,8 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
     feature: row.feature,
     pipeline: row.pipelineName,
     stages,
-    reviewHarness: row.templateJson.steps.some((s) => s.review),
-    humanInLoop: row.templateJson.steps.some((s) => s.humanGate),
+    reviewHarness: (row.templateJson?.steps ?? []).some((s) => s.review),
+    humanInLoop: (row.templateJson?.steps ?? []).some((s) => s.humanGate),
     status: row.status === 'queued' ? 'running' : row.status,
     stage: row.currentStage,
     pauseKind: row.pauseKind,
@@ -1366,7 +1366,7 @@ async function listHistory(): Promise<HistoryResponse> {
     projectLabel: row.projectLabel,
     projectPath: row.projectPath,
     feature: row.feature,
-    stages: row.templateJson.steps.map((s) => s.stage as StageName),
+    stages: (row.templateJson?.steps ?? []).map((s) => s.stage as StageName),
     status: row.status === 'queued' ? 'running' : row.status,
     stage: row.currentStage,
     pauseKind: row.pauseKind,

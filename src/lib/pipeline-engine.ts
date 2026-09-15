@@ -119,6 +119,11 @@ export class PipelineEngine {
     return this.flow.getCurrentStage()
   }
 
+  /** True while the flow is paused at a gate and can accept an answer. */
+  isWaitingForInput(): boolean {
+    return this.flow.isWaitingForInput()
+  }
+
   getSessionFile(): string | undefined {
     return this.flow.getSessionFile()
   }

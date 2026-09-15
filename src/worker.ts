@@ -90,7 +90,7 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   }
 
   // Rerun/resume: start at the requested stage when it exists in this template.
-  const templateStages = run.templateJson.steps.map((s) => s.stage as StageName)
+  const templateStages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
   const startStage = fromStage && templateStages.includes(fromStage) ? fromStage : undefined
 
   await claimRunForWorker(runId, getWorkerId())
@@ -203,7 +203,7 @@ async function handleAnswerJob(runId: string, answer: string): Promise<void> {
     }
     const gate = await resolveOpenGate(runId, answer)
     await queueEvent(runId, 'gate_resolved', { gateId: gate?.gateId, kind: gate?.kind, response: answer, afterRestart: true })
-    const stages = run.templateJson.steps.map((s) => s.stage as StageName)
+    const stages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
     const currentIdx = run.currentStage ? stages.indexOf(run.currentStage) : -1
     const approved = run.pauseKind === 'review' && /^(approve|approved|lgtm|yes|ok|continue)\b/i.test(answer.trim())
     const nextIdx = approved ? currentIdx + 1 : Math.max(0, currentIdx)
@@ -224,8 +224,22 @@ async function handleAnswerJob(runId: string, answer: string): Promise<void> {
     return
   }
 
+  // A second answer (double click, or "Continue" followed by typed text) can
+  // arrive while the engine is already running the previous one. The flow would
+  // throw "not waiting for input" and the run would be marked failed although it
+  // is healthy — so ignore it and say so in the timeline instead.
+  if (!engine.isWaitingForInput()) {
+    workerLog.info('answer ignored: engine is not waiting for input', { runId })
+    await queueEvent(runId, 'answer_ignored', { response: answer, reason: 'The run is already continuing; this answer arrived while the previous one was being processed.' })
+    return
+  }
+
   const gate = await resolveOpenGate(runId, answer)
   await queueEvent(runId, 'gate_resolved', { gateId: gate?.gateId, kind: gate?.kind, response: answer })
+  // Flip the run to running right away so the UI stops offering the answer box
+  // while the stage continues; the pause state is re-established if it pauses again.
+  await updateRunStatus(runId, { status: 'running', currentStage: engine.getCurrentStage() ?? null, pauseKind: null, errorMessage: null })
+  await queueEvent(runId, 'resumed', { stage: engine.getCurrentStage() })
 
   try {
     const result = await engine.answer(answer)

@@ -280,6 +280,11 @@ export class AIDLCFlow {
     return this.log
   }
 
+  /** True while the flow is paused at a clarification/review gate and can accept an answer. */
+  isWaitingForInput(): boolean {
+    return Boolean(this.waitState)
+  }
+
   getCurrentStage(): StageName | undefined {
     return this.stages[this.stageIndex]
   }

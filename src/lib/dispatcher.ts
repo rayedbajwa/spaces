@@ -297,14 +297,62 @@ export async function getJob(jobId: string): Promise<JobRow | undefined> {
   return row
 }
 
-export async function listJobsForProject(projectId: string, limit = 50): Promise<JobRow[]> {
+/**
+ * A job plus the live state of the run it drives. Job status is about queue
+ * mechanics (a job "completes" when the engine pauses for review; a stale job
+ * is "error" even if the run later finished), so the UI shows `displayStatus`,
+ * which follows the run whenever there is one.
+ */
+export interface JobWithRun extends JobRow {
+  runStatus?: 'queued' | 'running' | 'paused' | 'completed' | 'error'
+  runStage?: string
+  runPauseKind?: 'clarification' | 'review'
+  runError?: string
+  runPipeline?: string
+  displayStatus: 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled' | 'claimed'
+}
+
+export async function listJobsForProject(projectId: string, limit = 50): Promise<JobWithRun[]> {
   const sql = getDb()
-  return await sql<JobRow[]>`
-    SELECT ${sql.unsafe(JOB_COLS)} FROM project_jobs
-     WHERE project_id = ${projectId}
-     ORDER BY created_at DESC
+  const rows = await sql<Array<JobRow & { runStatus?: JobWithRun['runStatus']; runStage?: string; runPauseKind?: JobWithRun['runPauseKind']; runError?: string; runPipeline?: string }>>`
+    SELECT ${sql.unsafe(JOB_COLS.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => `j.${l}`).join('\n  '))},
+           r.status        AS "runStatus",
+           r.current_stage AS "runStage",
+           r.pause_kind    AS "runPauseKind",
+           r.error_message AS "runError",
+           r.pipeline_name AS "runPipeline"
+      FROM project_jobs j
+      LEFT JOIN pipeline_runs r ON r.run_id = j.run_id
+     WHERE j.project_id = ${projectId}
+     ORDER BY j.created_at DESC
      LIMIT ${limit}
   `
+  // Only the newest job for a run speaks for that run; jobs superseded by a
+  // rerun keep their own terminal state (rows arrive newest first).
+  const latestJobForRun = new Map<string, string>()
+  for (const row of rows) {
+    if (row.runId && !latestJobForRun.has(row.runId)) latestJobForRun.set(row.runId, row.jobId)
+  }
+  return rows.map((row) => {
+    const speaksForRun = row.runId ? latestJobForRun.get(row.runId) === row.jobId : false
+    return { ...row, displayStatus: deriveDisplayStatus(row.status, speaksForRun ? row.runStatus : undefined) }
+  })
+}
+
+/**
+ * What a job row should read as in the UI.
+ *  - An active job (queued/claimed/running) shows its run's live state.
+ *  - A finished job keeps its own terminal state unless the run it drove ended
+ *    in a state the queue could not know about: the engine pausing for review
+ *    ("completed" job, paused run) or a stale-reaped job whose run still
+ *    finished. A finished job never borrows a *later* job's "running" — that is
+ *    what made re-run projects look like they had several jobs in flight.
+ */
+export function deriveDisplayStatus(jobStatus: JobStatus, runStatus?: JobWithRun['runStatus']): JobWithRun['displayStatus'] {
+  const jobActive = jobStatus === 'queued' || jobStatus === 'claimed' || jobStatus === 'running'
+  if (jobActive) return runStatus ?? jobStatus
+  if (runStatus === 'paused' || runStatus === 'completed' || runStatus === 'error') return runStatus
+  return jobStatus
 }
 
 export async function countInFlightForProject(projectId: string): Promise<number> {

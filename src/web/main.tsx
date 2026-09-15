@@ -424,7 +424,7 @@ function App() {
   const [taskTrackerItems, setTaskTrackerItems] = useState<TaskTrackerItem[]>([])
   const [taskGraph, setTaskGraph] = useState<{ nodes: Array<{ id: string; label: string; phase: string; story?: string; parallel: boolean; status: string }>; edges: Array<{ from: string; to: string }> }>({ nodes: [], edges: [] })
   const [orchestrator, setOrchestrator] = useState<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' } | null>(null)
-  const [projectJobs, setProjectJobs] = useState<Array<{ jobId: string; kind: string; status: string; triggerSource: string; runId?: string; createdAt: string }>>([])
+  const [projectJobs, setProjectJobs] = useState<Array<{ jobId: string; kind: string; status: string; displayStatus: string; runStage?: string; runPauseKind?: string; runError?: string; runPipeline?: string; triggerSource: string; runId?: string; createdAt: string }>>([])
   const [projectAgents, setProjectAgents] = useState<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>([])
   const [inspectedRun, setInspectedRun] = useState<RunSnapshot | null>(null)
   const [projectDetail, setProjectDetail] = useState<ProjectDetailRecord | null>(null)
@@ -445,6 +445,14 @@ function App() {
     effective?: { sources: string[] }
   } | null>(null)
   const [knowledgeScopeBusy, setKnowledgeScopeBusy] = useState(false)
+  // Worker serving the open project (per-project supervisor or the shared worker).
+  const [projectWorker, setProjectWorker] = useState<{ state: 'hot' | 'warm' | 'stale' | 'shared' | 'none'; sharedWorkers: number; worker: { workerId: string; pid?: number; activeJobs: number; pausedRuns: number; lastHeartbeatAt: string } | null } | null>(null)
+
+  async function loadProjectWorker(projectId: string) {
+    try {
+      setProjectWorker(await getJson<NonNullable<typeof projectWorker>>(`/api/projects/${projectId}/worker`))
+    } catch { setProjectWorker(null) }
+  }
   const [knowledgeScopeNote, setKnowledgeScopeNote] = useState('')
 
   async function loadProjectKnowledge(projectId: string) {
@@ -680,6 +688,7 @@ function App() {
         const detail = await getJson<ProjectDetailRecord>(`/api/projects/${proj.projectId}`)
         setProjectDetail(detail)
         void loadProjectKnowledge(detail.projectId)
+        void loadProjectWorker(detail.projectId)
       } else {
         setProjectDetail(null)
       }
@@ -760,7 +769,7 @@ function App() {
 
   async function loadProjectJobs(namespace: string) {
     try {
-      setProjectJobs(await getJson<Array<{ jobId: string; kind: string; status: string; triggerSource: string; runId?: string; createdAt: string }>>(`/api/projects/${namespace}/jobs`))
+      setProjectJobs(await getJson<typeof projectJobs>(`/api/projects/${namespace}/jobs`))
     } catch {
       setProjectJobs([])
     }
@@ -1727,6 +1736,19 @@ function App() {
                 </section>
                 <section className="card panel slim-panel">
                   <h3>Orchestrator</h3>
+                  {projectWorker && (
+                    <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>
+                      Worker:{' '}
+                      <span className={`mini-badge ${projectWorker.state === 'hot' ? 'running' : projectWorker.state === 'warm' || projectWorker.state === 'shared' ? 'completed' : 'idle'}`}>
+                        {projectWorker.state === 'hot' && `● hot — ${projectWorker.worker?.activeJobs ?? 0} job${(projectWorker.worker?.activeJobs ?? 0) === 1 ? '' : 's'} running`}
+                        {projectWorker.state === 'warm' && `○ warm — idle${(projectWorker.worker?.pausedRuns ?? 0) > 0 ? `, holding ${projectWorker.worker?.pausedRuns} paused run(s)` : ''}`}
+                        {projectWorker.state === 'shared' && `shared worker (${projectWorker.sharedWorkers} online)`}
+                        {projectWorker.state === 'stale' && 'stale — heartbeat missed'}
+                        {projectWorker.state === 'none' && 'none — spawns when work is queued'}
+                      </span>
+                      {projectWorker.worker?.pid && <span style={{ marginLeft: 8 }}>pid {projectWorker.worker.pid}</span>}
+                    </p>
+                  )}
                   <p className="panel-subtitle">
                     Project-scoped run queue. One run in-flight per project by default; verify-loop
                     fixes and re-runs are serialized. Autonomous mode auto-approves human gates
@@ -1757,7 +1779,9 @@ function App() {
                         </select>
                       </strong>
                     </div>
+                    {/* Queue mechanics (what max_concurrent limits): count the jobs' own states, not their runs'. */}
                     <div><span>In-flight jobs</span><strong>{projectJobs.filter((j) => j.status === 'running' || j.status === 'claimed').length}</strong></div>
+                    <div><span>Paused runs</span><strong>{projectJobs.filter((j) => j.displayStatus === 'paused').length}</strong></div>
                     <div><span>Queued</span><strong>{projectJobs.filter((j) => j.status === 'queued').length}</strong></div>
                     <div>
                       <span>Warm agents</span>
@@ -1780,8 +1804,14 @@ function App() {
                         title={j.runId ? `Load log for run ${j.runId.slice(0, 8)}…` : 'This job has no run to inspect.'}
                         onClick={() => j.runId && void loadRunLog(j.runId)}
                       >
-                        <span className={`mini-badge ${j.status === 'completed' ? 'completed' : j.status === 'error' ? 'error' : j.status === 'queued' ? 'idle' : 'running'}`}>{j.status}</span>
-                        <strong>{j.kind}</strong>
+                        <span
+                          className={`mini-badge ${j.displayStatus === 'completed' ? 'completed' : j.displayStatus === 'error' ? 'error' : j.displayStatus === 'paused' ? 'paused' : j.displayStatus === 'queued' ? 'idle' : 'running'}`}
+                          title={j.runError ? j.runError : j.status !== j.displayStatus ? `Queue job state: ${j.status}; run state: ${j.displayStatus}` : undefined}
+                        >
+                          {j.displayStatus}{j.displayStatus === 'paused' && j.runPauseKind ? ` · ${j.runPauseKind}` : ''}
+                        </span>
+                        <strong>{j.runPipeline ?? j.kind}</strong>
+                        {j.runStage && <small style={{ marginLeft: 8 }}>stage {j.runStage}</small>}
                         <small style={{ marginLeft: 8 }}>{j.triggerSource}</small>
                         {j.runId && <small style={{ marginLeft: 8, color: '#6b7280' }}>run {j.runId.slice(0, 8)}</small>}
                       </button>
