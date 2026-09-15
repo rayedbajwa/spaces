@@ -5,11 +5,26 @@ export type IntegrationKind = 'github' | 'jira' | 'confluence'
 export type IntegrationStatus = 'not_connected' | 'pending' | 'connected' | 'error'
 export type RepoKind = 'local' | 'github'
 
+/**
+ * Which connected integrations a project's agents may query, and how queries
+ * are narrowed. Empty/undefined fields mean "all connected" / "unscoped".
+ */
+export interface ProjectKnowledgeConfig {
+  /** Subset of connected sources to expose. Omit for all connected. */
+  sources?: Array<'jira' | 'linear' | 'confluence' | 'github'>
+  jira?: { projects?: string[] }
+  linear?: { teams?: string[]; projects?: string[] }
+  confluence?: { spaces?: string[] }
+  /** GitHub repos (owner/name) in scope; defaults to the project's registered repos. */
+  github?: { repos?: string[] }
+}
+
 export interface ProjectRow {
   projectId: string
   name: string
   slug: string
   description?: string
+  knowledgeJson?: ProjectKnowledgeConfig
   createdAt: string
   updatedAt: string
 }
@@ -54,6 +69,7 @@ const PROJECT_COLS = `
   name        AS "name",
   slug        AS "slug",
   description AS "description",
+  knowledge_json AS "knowledgeJson",
   created_at  AS "createdAt",
   updated_at  AS "updatedAt"
 `
@@ -136,6 +152,18 @@ export async function updateProject(projectId: string, patch: { name?: string; d
     UPDATE projects
        SET name        = COALESCE(${patch.name ?? null}, name),
            description = COALESCE(${patch.description ?? null}, description)
+     WHERE project_id = ${projectId}
+     RETURNING ${sql.unsafe(PROJECT_COLS)}
+  `
+  return row
+}
+
+/** Replace a project's knowledge scope (which integrations/repos its agents may query). */
+export async function updateProjectKnowledge(projectId: string, config: ProjectKnowledgeConfig): Promise<ProjectRow | undefined> {
+  const sql = getDb()
+  const [row] = await sql<ProjectRow[]>`
+    UPDATE projects
+       SET knowledge_json = ${sql.json(config as never)}
      WHERE project_id = ${projectId}
      RETURNING ${sql.unsafe(PROJECT_COLS)}
   `

@@ -12,6 +12,16 @@ import {
   type CreateAgentSessionOptions,
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
+import { buildKnowledgeTools } from './integration-sources'
+import { readVerificationStatus } from './pipeline-branch'
+import {
+  commentOnPullRequest,
+  defaultBranch as gitDefaultBranch,
+  ensureWorktree,
+  publishBranchAsPullRequest,
+  pullRequestBody,
+  slugForBranch,
+} from './pull-requests'
 
 const aidlcLog = log.child({ mod: 'aidlc' })
 
@@ -53,6 +63,12 @@ export interface ParallelSubAgentResult {
   estimatedTokens: number
   /** Set when the agent failed (provider error, thrown exception, or no output). */
   error?: string
+  /** Branch the workstream was delivered on (GitHub-hosted repos). */
+  branch?: string
+  /** Pull request opened/updated for this workstream (GitHub-hosted repos). */
+  pullRequestUrl?: string
+  /** Branch this workstream's PR targets; another workstream's branch when stacked. */
+  baseBranch?: string
 }
 
 export interface ParallelSubAgentProgressEvent {
@@ -65,6 +81,9 @@ export interface ParallelSubAgentProgressEvent {
   runtimeMs?: number
   estimatedTokens?: number
   error?: string
+  branch?: string
+  pullRequestUrl?: string
+  baseBranch?: string
   results?: ParallelSubAgentResult[]
 }
 
@@ -91,7 +110,7 @@ export interface FlowOptions {
   /** Pre-built SessionManager to reuse (from the warm agent pool). Bypasses ensureSession's default create/inMemory. */
   sessionManagerFactory?: () => Promise<import('@earendil-works/pi-coding-agent').SessionManager>
   /** Per-stage model override. Returns undefined → use run-level model. */
-  stepModel?: (ctx: { stageIndex: number; stage: StageName }) => { model?: string; thinking?: ThinkingLevel } | undefined
+  stepModel?: (ctx: { stageIndex: number; stage: StageName }) => { model?: string; thinking?: ThinkingLevel } | undefined | Promise<{ model?: string; thinking?: ThinkingLevel } | undefined>
   /**
    * Called after each stage's prompt fully returns, with the raw assistant output.
    * PipelineEngine uses this to build a cross-stage handoff thread that preserves
@@ -110,7 +129,18 @@ export interface FlowOptions {
    * are expected to already exist on disk.
    */
   startStage?: StageName
+  /** Owning project; scopes the knowledge tools (which integrations/repos agents may query). */
+  projectId?: string
+  /**
+   * Set when the target repo is GitHub-hosted: after implement/orchestrate/verify
+   * the flow commits, pushes the feature branch and opens/updates a pull request
+   * against `baseBranch` (default: the repo's default branch).
+   */
+  pullRequests?: { githubRepo: string; baseBranch?: string }
 }
+
+/** Stages after which the feature branch is published as a pull request. */
+export const PULL_REQUEST_STAGES: StageName[] = ['implement', 'orchestrate', 'verify']
 
 export interface StepNavigatorContext {
   currentIndex: number
@@ -292,6 +322,8 @@ export class AIDLCFlow {
       model: modelSelection.model,
       thinkingLevel: modelSelection.thinkingLevel,
       tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+      // Connected integrations (Jira/Linear/Confluence/GitHub) as on-demand knowledge tools.
+      customTools: await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => []),
       sessionManager,
     })
 
@@ -300,7 +332,7 @@ export class AIDLCFlow {
   }
 
   private async maybeSwapSessionForStage(stage: StageName): Promise<void> {
-    const desired = this.options.stepModel?.({ stageIndex: this.stageIndex, stage })
+    const desired = await this.options.stepModel?.({ stageIndex: this.stageIndex, stage })
     if (!desired?.model) {
       await this.ensureSession()
       return
@@ -325,6 +357,9 @@ export class AIDLCFlow {
       if (QUESTION_PATTERN.test(output)) {
         return this.pause('clarification', stage)
       }
+
+      // Remote repos: publish the feature branch as a PR once code stages finish.
+      await this.maybePublishPullRequest(stage, output)
 
       const reviewProgress = await this.handleStageCompletion(stage)
       if (reviewProgress) {
@@ -494,6 +529,59 @@ export class AIDLCFlow {
     }
 
     return output
+  }
+
+  /**
+   * After implement/orchestrate/verify on a GitHub-hosted repo: commit the
+   * agent's changes on the feature branch, push, and open or update the PR.
+   * PR plumbing never fails the stage — problems are printed to the run log.
+   */
+  private async maybePublishPullRequest(stage: StageName, output: string): Promise<void> {
+    const pr = this.options.pullRequests
+    if (!pr || !PULL_REQUEST_STAGES.includes(stage)) return
+
+    const branch = getCurrentGitBranch(this.options.cwd)
+    if (!branch || !isFeatureBranchName(branch)) {
+      this.print(`\n[pr] Skipped: ${branch ? `"${branch}" is not a feature branch` : 'detached HEAD'}; nothing published.\n`)
+      return
+    }
+
+    try {
+      const base = pr.baseBranch ?? await gitDefaultBranch(this.options.cwd, pr.githubRepo)
+      const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
+      const featureDirRel = featureDirAbs ? path.relative(this.options.cwd, featureDirAbs) : undefined
+      const specTitle = featureDirAbs ? await readSpecTitle(featureDirAbs) : undefined
+      const artifacts = featureDirAbs
+        ? (await Promise.all(['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'verification-report.md']
+            .map(async (f) => (await pathExistsAsync(path.join(featureDirAbs, f))) ? `${featureDirRel}/${f}` : undefined)))
+            .filter((f): f is string => Boolean(f))
+        : []
+      const tail = output.trim().split('\n').slice(-25).join('\n').slice(-1500)
+      const ref = await publishBranchAsPullRequest({
+        cwd: this.options.cwd,
+        githubRepo: pr.githubRepo,
+        branch,
+        base,
+        commitMessage: `${stage}: ${specTitle ?? branch}\n\nGenerated by the AIDLC pipeline (${stage} stage).`,
+        title: specTitle ? `${specTitle} (${branch})` : branch,
+        body: pullRequestBody({
+          summary: `Feature \`${branch}\` implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
+          featureDir: featureDirRel,
+          artifacts,
+        }),
+      })
+      if (!ref) {
+        this.print(`\n[pr] Nothing new to publish after ${stage} (branch ${branch} has no commits ahead of ${base}).\n`)
+        return
+      }
+      this.print(`\n[pr] ${ref.created ? 'Opened' : 'Updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base})\n`)
+      if (stage === 'verify') {
+        const status = await readVerificationStatus(this.options.cwd)
+        await commentOnPullRequest(pr.githubRepo, ref.number, `**Verification: ${(status ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`)
+      }
+    } catch (error) {
+      this.print(`\n[pr] Failed to publish pull request: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
   }
 
   private async ensureFeatureBranchForStage(stage: StageName): Promise<void> {
@@ -932,6 +1020,7 @@ export async function runAIDLCAssistantChat(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls'],
+    customTools: await buildKnowledgeTools().catch(() => []),
     sessionManager: SessionManager.inMemory(options.cwd),
   })
 
@@ -1262,6 +1351,15 @@ export async function runAIDLCParallelSubAgents(options: {
    * repo's feature directory.
    */
   repoTargets?: WorkstreamRepoTarget[]
+  /** Owning project; scopes knowledge tools to the project's selected integrations/repos. */
+  projectId?: string
+  /**
+   * Deliver each workstream on its own branch + pull request when its repo is
+   * GitHub-hosted. Workstreams run in isolated git worktrees; a workstream that
+   * depends on another is branched from that workstream's branch and its PR
+   * targets it (stacked PRs). Dependencies are honoured by running in waves.
+   */
+  pullRequests?: { enabled: boolean; baseBranch?: string; draft?: boolean }
   onProgress?: (event: ParallelSubAgentProgressEvent) => void
   registerSession?: (workstream: string, session: AgentSession) => void
   unregisterSession?: (workstream: string) => void
@@ -1290,26 +1388,82 @@ export async function runAIDLCParallelSubAgents(options: {
   })
 
   const selected = workstreams.slice(0, maxAgents)
+  const knowledgeTools = await buildKnowledgeTools({
+    projectId: options.projectId,
+    repos: (options.repoTargets ?? []).map((t) => t.githubRepo).filter((r): r is string => Boolean(r)),
+  }).catch(() => [])
+
+  // ---- Branch / PR plumbing for GitHub-hosted repos ------------------------
+  const prEnabled = options.pullRequests?.enabled === true
+  const featureBranch = getCurrentGitBranch(cwd)
+  const featureSlug = isFeatureBranchName(featureBranch ?? '') ? featureBranch! : `aidlc/${slugForBranch(path.basename(featureDir))}`
+  const branchFor = (index: number, workstream: ParsedWorkstream) => `${featureSlug}/ws-${index + 1}-${slugForBranch(workstream.title).slice(0, 30)}`
+  // Which registered repo a workstream lands in (falls back to the primary checkout's repo).
+  const repoFor = (workstream: ParsedWorkstream): WorkstreamRepoTarget | undefined =>
+    resolveWorkstreamRepo(workstream.repository, options.repoTargets)
+      ?? options.repoTargets?.find((t) => path.resolve(t.localPath) === path.resolve(cwd))
+      ?? options.repoTargets?.find((t) => t.isPrimary)
+  // "Workstream N" references in the Dependencies section → indices into `selected`.
+  const dependenciesOf = (index: number): number[] => {
+    const text = selected[index]?.dependencies ?? ''
+    if (/^\s*(none|n\/a|independent|-)?\s*$/i.test(text)) return []
+    const deps = new Set<number>()
+    for (const match of text.matchAll(/workstream\s+(\d+)/gi)) {
+      const dep = Number(match[1]) - 1
+      if (dep >= 0 && dep < selected.length && dep !== index) deps.add(dep)
+    }
+    return [...deps]
+  }
+  const defaultBaseCache = new Map<string, Promise<string>>()
+  const baseBranchFor = (repo: WorkstreamRepoTarget): Promise<string> => {
+    if (options.pullRequests?.baseBranch) return Promise.resolve(options.pullRequests.baseBranch)
+    if (!defaultBaseCache.has(repo.localPath)) defaultBaseCache.set(repo.localPath, gitDefaultBranch(repo.localPath, repo.githubRepo!))
+    return defaultBaseCache.get(repo.localPath)!
+  }
+  const branchDelivered = new Map<number, { branch: string; repoPath: string }>()
 
   try {
-    const results = await Promise.all(
-      selected.map(async (workstream, index) => {
+    const runWorkstream = async (workstream: ParsedWorkstream, index: number): Promise<ParallelSubAgentResult> => {
         options.onProgress?.({ type: 'workstream_start', featureDir, workstream: workstream.title })
         const startedAt = Date.now()
         // Multi-repo: run inside the workstream's repository when it names one we know.
         const target = resolveWorkstreamRepo(workstream.repository, options.repoTargets)
-        const workstreamCwd = target?.localPath ?? cwd
-        const repoLine = target
+        let workstreamCwd = target?.localPath ?? cwd
+
+        // GitHub-hosted repo → isolated worktree on its own branch. Stacked on the
+        // branch of the last dependency that lives in the same repo, else on base.
+        const prRepo = prEnabled ? repoFor(workstream) : undefined
+        let prPlan: { repo: WorkstreamRepoTarget; branch: string; base: string; stackedOn?: string } | undefined
+        if (prRepo?.githubRepo) {
+          const branch = branchFor(index, workstream)
+          const depInSameRepo = dependenciesOf(index)
+            .map((dep) => branchDelivered.get(dep))
+            .filter((d): d is { branch: string; repoPath: string } => Boolean(d && path.resolve(d.repoPath) === path.resolve(prRepo.localPath)))
+            .pop()
+          const base = depInSameRepo?.branch
+            ?? (isFeatureBranchName(featureBranch ?? '') && path.resolve(prRepo.localPath) === path.resolve(cwd) ? featureBranch! : await baseBranchFor(prRepo))
+          try {
+            workstreamCwd = await ensureWorktree({ repoPath: prRepo.localPath, branch, base })
+            prPlan = { repo: prRepo, branch, base, stackedOn: depInSameRepo?.branch }
+          } catch (error) {
+            options.onProgress?.({ type: 'workstream_update', featureDir, workstream: workstream.title, summary: `Worktree setup failed (${error instanceof Error ? error.message : String(error)}); running in the shared checkout without a PR.` })
+          }
+        }
+        const repoLine = (target
           ? `${target.label}${target.githubRepo ? ` (${target.githubRepo})` : ''} — working directory: ${workstreamCwd}`
           : workstream.repository && !/^primary$/i.test(workstream.repository)
-            ? `${workstream.repository} (not a registered repository — falling back to the primary checkout at ${cwd})`
-            : `primary — working directory: ${cwd}`
+            ? `${workstream.repository} (not a registered repository — falling back to the primary checkout at ${workstreamCwd})`
+            : `primary — working directory: ${workstreamCwd}`)
+          + (prPlan
+            ? `\nBranch: ${prPlan.branch} (isolated git worktree, based on ${prPlan.base}${prPlan.stackedOn ? `, stacked on workstream branch ${prPlan.stackedOn}` : ''}). Do not switch branches or run git commit/push — the pipeline commits your changes and opens the pull request when you finish.`
+            : '')
         const { session } = await createAgentSession({
           cwd: workstreamCwd,
           modelRuntime,
           model: modelSelection.model,
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+          customTools: knowledgeTools,
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 
@@ -1354,6 +1508,7 @@ export async function runAIDLCParallelSubAgents(options: {
           { sharedContextPrompt: options.sharedContextPrompt },
         )
 
+        let outcome: ParallelSubAgentResult | undefined
         try {
           let thrown: string | undefined
           try {
@@ -1390,14 +1545,78 @@ export async function runAIDLCParallelSubAgents(options: {
             estimatedTokens: result.estimatedTokens,
             ...(error ? { error } : {}),
           })
-          return result
+          outcome = result
         } finally {
           unsubscribe()
           options.unregisterSession?.(workstream.title)
           session.dispose()
         }
-      }),
-    )
+
+        // Deliver the workstream as a pull request (GitHub-hosted repos only).
+        if (prPlan && outcome && !outcome.error) {
+          try {
+            const ref = await publishBranchAsPullRequest({
+              cwd: workstreamCwd,
+              githubRepo: prPlan.repo.githubRepo!,
+              branch: prPlan.branch,
+              base: prPlan.base,
+              commitMessage: `${workstream.title}\n\nWorkstream ${index + 1} of feature ${featureSlug}, implemented by an AIDLC sub-agent.`,
+              title: `${featureSlug}: ${workstream.title}`,
+              body: pullRequestBody({
+                summary: `Workstream **${workstream.title}** of feature \`${featureSlug}\`.\n\n${workstream.tasks ? `**Tasks**\n${workstream.tasks}\n\n` : ''}${workstream.qaFocus ? `**QA focus**\n${workstream.qaFocus}\n\n` : ''}<details><summary>Sub-agent summary</summary>\n\n${outcome.log.split('\n').slice(-20).join('\n').slice(-1500)}\n\n</details>`,
+                featureDir: path.relative(cwd, featureDir),
+                artifacts: [path.relative(cwd, outputFile)],
+                stackedOn: prPlan.stackedOn,
+                workstream: workstream.title,
+              }),
+              draft: options.pullRequests?.draft,
+            })
+            branchDelivered.set(index, { branch: prPlan.branch, repoPath: prPlan.repo.localPath })
+            outcome = {
+              ...outcome,
+              branch: prPlan.branch,
+              baseBranch: prPlan.base,
+              ...(ref ? { pullRequestUrl: ref.url } : {}),
+              summary: ref
+                ? `${ref.created ? 'Opened' : 'Updated'} PR ${ref.url} (${prPlan.branch} → ${prPlan.base}${prPlan.stackedOn ? ', stacked' : ''}). ${outcome.summary}`
+                : `No code changes to publish on ${prPlan.branch}. ${outcome.summary}`,
+            }
+            options.onProgress?.({
+              type: 'workstream_complete',
+              featureDir,
+              workstream: workstream.title,
+              outputFile,
+              log: outcome.log,
+              summary: outcome.summary,
+              runtimeMs: outcome.runtimeMs,
+              estimatedTokens: outcome.estimatedTokens,
+              branch: prPlan.branch,
+              baseBranch: prPlan.base,
+              pullRequestUrl: ref?.url,
+            })
+          } catch (error) {
+            const message = `Pull request publish failed: ${error instanceof Error ? error.message : String(error)}`
+            outcome = { ...outcome, branch: prPlan.branch, baseBranch: prPlan.base, summary: `${message}. ${outcome.summary}` }
+            options.onProgress?.({ type: 'workstream_update', featureDir, workstream: workstream.title, outputFile, summary: outcome.summary, branch: prPlan.branch, baseBranch: prPlan.base })
+          }
+        }
+        return outcome!
+    }
+
+    // Dependency-aware scheduling: run every workstream whose dependencies are
+    // done, in parallel; repeat until all ran. A cycle (or self-dependency) falls
+    // back to running the remainder together so nothing is silently skipped.
+    const done = new Map<number, ParallelSubAgentResult>()
+    const pending = new Set(selected.map((_, index) => index))
+    while (pending.size > 0) {
+      let ready = [...pending].filter((index) => dependenciesOf(index).every((dep) => done.has(dep)))
+      if (ready.length === 0) ready = [...pending]
+      await Promise.all(ready.map(async (index) => {
+        pending.delete(index)
+        done.set(index, await runWorkstream(selected[index]!, index))
+      }))
+    }
+    const results = selected.map((_, index) => done.get(index)!)
 
     const failed = results.filter((result) => result.error)
     if (failed.length > 0) {
@@ -1541,6 +1760,7 @@ function buildOrchestrationPrompt(): string {
 
 Requirements:
 - Resolve the active feature directory and read tasks.md, test-plan.md, parallel-workstreams.md, subagent reports, and current implementation changes.
+- If sub-agent reports mention branches or pull requests, the workstreams were delivered on separate branches (possibly stacked). Inspect them with \`git log\`/\`git diff <base>...<branch>\` and \`git worktree list\`; where safe, merge the workstream branches into the feature branch (respecting the stack order) and note which PRs remain to be merged upstream.
 - Reconcile workstream outputs, identify integration conflicts, and write merge-orchestrator.md in the active feature directory.
 - The report must cover:
   1. Workstreams merged or pending
@@ -1645,6 +1865,26 @@ function parseParallelTasks(tasksMarkdown: string): ParsedWorkstream[] {
 function extractSection(markdown: string, heading: string): string {
   const regex = new RegExp(`###\\s+${heading}\\n([\\s\\S]*?)(?=\\n###\\s+|$)`, 'i')
   return markdown.match(regex)?.[1]?.trim() ?? ''
+}
+
+async function pathExistsAsync(target: string): Promise<boolean> {
+  try {
+    await readFile(target)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** First "# " heading of spec.md, without the "Feature Specification:" prefix Spec Kit adds. */
+async function readSpecTitle(featureDirAbs: string): Promise<string | undefined> {
+  try {
+    const spec = await readFile(path.join(featureDirAbs, 'spec.md'), 'utf8')
+    const heading = spec.split('\n').find((line) => line.startsWith('# '))
+    return heading?.replace(/^#\s+/, '').replace(/^Feature Specification:\s*/i, '').trim() || undefined
+  } catch {
+    return undefined
+  }
 }
 
 function slugify(value: string): string {

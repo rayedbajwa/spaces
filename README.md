@@ -81,7 +81,7 @@ inspectable artifacts each stage produces.
 
 ## Quickstart
 
-Prerequisites: [Bun](https://bun.sh) 1.1+, Docker (for Postgres), an
+Prerequisites: [Bun](https://bun.sh) 1.4+, Docker (for Postgres), an
 Anthropic API key.
 
 ```bash
@@ -166,6 +166,7 @@ For each provider you want to enable:
    - GitHub uses `github`
    - Jira **and** Confluence share the `atlassian` provider
    - Slack uses `slack`
+   - Linear uses `linear`
 3. Paste `CLIENT_ID` + `CLIENT_SECRET` into `.env` (see `.env.example` for the
    exact variable names).
 4. Restart the server.
@@ -174,6 +175,60 @@ For each provider you want to enable:
 
 Tokens are encrypted with `ENCRYPTION_KEY` and stored in the `app_integrations`
 Postgres table. Rotating `ENCRYPTION_KEY` invalidates every stored token.
+
+### GitHub-hosted repositories
+
+Repos can be registered as local paths or as `owner/name` GitHub repos. With
+GitHub connected, the new-project wizard autocompletes from the repos the
+account can see. GitHub repos are cloned into `~/.aidlc/workspaces/<owner>/<name>`
+(override with `AIDLC_WORKSPACE_ROOT`) as the **first** step of project
+onboarding, and every run targets that clone. The token is passed to git as a
+per-command header and never written into the clone.
+
+### Project onboarding
+
+Creating a project runs an onboarding job the wizard waits on: clone remote
+repos → initialize the Spec Kit `.specify/` workspace in the primary repo →
+inventory every repo (stack, layout, scripts) → a read-only agent writes a
+project brief per repo → the result is stored as the project's auto-summary
+memory and fed to every later stage. Multi-repo projects get a repository map
+so plans and workstreams can name the repo they touch.
+
+### Integrations as knowledge
+
+Connected Jira, Confluence, Linear and GitHub are exposed to agents as two
+tools, `integration_search(source, query)` and `integration_get(source, id)`,
+plus a "Knowledge Sources" note in the shared context that tells agents to
+fetch referenced tickets/docs rather than guess. Per project, the **Context**
+tab lets you choose which sources and repos are in scope and narrow them
+(Jira project keys, Linear teams/projects, Confluence spaces, GitHub repos);
+agents only see what you selected. The wizard's **Import from Jira / Linear**
+pulls a ticket into the project as a source snapshot and pre-fills the first
+feature.
+
+[pi-knowledge](https://pi.dev/packages/pi-knowledge) (`pi install npm:pi-knowledge`)
+is complementary: it adds local semantic search over files, PDFs and URLs. The
+tool names here were chosen not to collide with it.
+
+### Pull requests
+
+When the target repo is GitHub-hosted, the `implement`, `orchestrate` and
+`verify` stages commit the feature branch, push it and open or update a pull
+request against the default branch (verify adds a comment with the
+verification status). Parallel workstreams each run in an isolated git
+worktree on their own branch and get their own PR; a workstream whose
+`### Dependencies` names another workstream is branched from that workstream's
+branch and its PR targets it — a stacked PR — and workstreams run in
+dependency order.
+
+### Runs that fail or get interrupted
+
+A worker restart no longer marks in-flight runs as failed: running runs are
+re-queued from the interrupted stage and paused runs stay paused (answering
+restarts the stage on a new worker). Transient provider errors (socket closed,
+5xx, overloaded) retry from the same stage automatically. Any failed or
+finished run can be re-run from the stage it stopped at, or from the start,
+with `POST /api/runs/:id/rerun` or the buttons in the run panel.
 
 ---
 

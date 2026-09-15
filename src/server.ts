@@ -61,9 +61,19 @@ import {
   type RepoKind,
   pickRunnableRepo,
   describeUnrunnableRepos,
+  updateProjectKnowledge as projUpdateKnowledge,
+  type ProjectKnowledgeConfig,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
 import { getOnboardingSnapshot, startProjectOnboarding } from './lib/project-onboarding'
+import {
+  getKnowledgeItem,
+  KnowledgeSourceNotConnectedError,
+  listConnectedKnowledgeSources,
+  saveKnowledgeSnapshot,
+  searchKnowledge,
+  type KnowledgeSource,
+} from './lib/integration-sources'
 import { log } from './lib/logger'
 
 const serverLog = log.child({ mod: 'server' })
@@ -231,6 +241,96 @@ async function route(req: Request): Promise<Response> {
     return sendJson(202, refreshed ?? repo)
   }
 
+  // ---- Integrations as knowledge (Jira / Linear / Confluence / GitHub) ----
+
+  if (method === 'GET' && url.pathname === '/api/knowledge/sources') {
+    return sendJson(200, { sources: await listConnectedKnowledgeSources() })
+  }
+
+  // Per-project knowledge scope: which integrations/repos this project's agents may query.
+  if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}\/knowledge$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const { resolveKnowledgeScope } = await import('./lib/integration-sources')
+    const scope = await resolveKnowledgeScope(projectId)
+    const connected = await listConnectedKnowledgeSources()
+    const repos = (await import('./lib/project-registry').then((m) => m.listRepos(projectId)))
+      .map((r) => r.githubRepo).filter((r): r is string => Boolean(r))
+    return sendJson(200, { config: project.knowledgeJson ?? {}, effective: scope, connected, registeredRepos: repos })
+  }
+
+  if (method === 'PUT' && /^\/api\/projects\/[0-9a-f-]{36}\/knowledge$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const body = await readJson<ProjectKnowledgeConfig>(req)
+    const clean = (list?: unknown): string[] | undefined => Array.isArray(list)
+      ? list.map((v) => String(v).trim()).filter(Boolean)
+      : undefined
+    const allowedSources = ['jira', 'linear', 'confluence', 'github'] as const
+    const config: ProjectKnowledgeConfig = {
+      ...(body.sources ? { sources: body.sources.filter((s) => (allowedSources as readonly string[]).includes(s)) } : {}),
+      ...(body.jira ? { jira: { projects: clean(body.jira.projects) } } : {}),
+      ...(body.linear ? { linear: { teams: clean(body.linear.teams), projects: clean(body.linear.projects) } } : {}),
+      ...(body.confluence ? { confluence: { spaces: clean(body.confluence.spaces) } } : {}),
+      ...(body.github ? { github: { repos: clean(body.github.repos) } } : {}),
+    }
+    const updated = await projUpdateKnowledge(projectId, config)
+    const { resolveKnowledgeScope } = await import('./lib/integration-sources')
+    return sendJson(200, { config: updated?.knowledgeJson ?? config, effective: await resolveKnowledgeScope(projectId) })
+  }
+
+  // Search a connected source. Powers "Import from Jira/Linear" and ad-hoc lookups.
+  if (method === 'GET' && url.pathname === '/api/knowledge/search') {
+    const source = url.searchParams.get('source') as KnowledgeSource | null
+    const query = url.searchParams.get('q')?.trim() ?? ''
+    const limit = Number(url.searchParams.get('limit') ?? '10')
+    const repos = (url.searchParams.get('repos') ?? '').split(',').map((r) => r.trim()).filter(Boolean)
+    if (!source || !['jira', 'linear', 'confluence', 'github'].includes(source)) return sendJson(400, { error: 'source must be jira, linear, confluence or github.' })
+    if (!query) return sendJson(400, { error: 'q is required.' })
+    try {
+      return sendJson(200, { hits: await searchKnowledge({ source, query, limit, repos }) })
+    } catch (error) {
+      if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message, hits: [] })
+      return sendJson(502, { error: error instanceof Error ? error.message : String(error), hits: [] })
+    }
+  }
+
+  if (method === 'GET' && url.pathname === '/api/knowledge/item') {
+    const source = url.searchParams.get('source') as KnowledgeSource | null
+    const id = url.searchParams.get('id')?.trim() ?? ''
+    const repos = (url.searchParams.get('repos') ?? '').split(',').map((r) => r.trim()).filter(Boolean)
+    if (!source || !['jira', 'linear', 'confluence', 'github'].includes(source)) return sendJson(400, { error: 'source must be jira, linear, confluence or github.' })
+    if (!id) return sendJson(400, { error: 'id is required.' })
+    try {
+      return sendJson(200, await getKnowledgeItem({ source, id, repos }))
+    } catch (error) {
+      if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message })
+      return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  // Import a ticket/doc into a project as a source snapshot: it then appears in the
+  // shared context bundle for every stage and agent working on that project.
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/sources\/import$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const body = await readJson<{ source?: KnowledgeSource; id?: string; scope?: string }>(req)
+    if (!body.source || !body.id?.trim()) return sendJson(400, { error: 'source and id are required.' })
+    const repos = (await import('./lib/project-registry').then((m) => m.listRepos(projectId)))
+      .map((r) => r.githubRepo).filter((r): r is string => Boolean(r))
+    try {
+      const doc = await getKnowledgeItem({ source: body.source, id: body.id.trim(), repos })
+      await saveKnowledgeSnapshot(projectId, doc, body.scope)
+      return sendJson(201, doc)
+    } catch (error) {
+      if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message })
+      return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   // Repos visible to the connected GitHub account — powers the wizard autocomplete.
   if (method === 'GET' && url.pathname === '/api/github/repos') {
     try {
@@ -394,11 +494,11 @@ async function route(req: Request): Promise<Response> {
     const body = await readJson<{ maxAgents?: number; model?: string }>(req)
     const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
     const model = await resolveSubagentModel(projectNamespace, body.model)
-    const repoTargets = await subagentRepoTargets(projectNamespace)
+    const { projectId: subagentProjectId, targets: repoTargets } = await subagentRepoTargets(projectNamespace)
     const job = ensureSubagentJob(projectNamespace)
     job.snapshot = createIdleSubagentSnapshot(projectNamespace)
     emitSubagentJob(job)
-    void startSubagentJob(job, projectMeta.path, contextBundle.promptBundle, body.maxAgents, model, repoTargets)
+    void startSubagentJob(job, projectMeta.path, contextBundle.promptBundle, body.maxAgents, model, repoTargets, subagentProjectId)
     return sendJson(202, job.snapshot)
   }
 
@@ -416,8 +516,8 @@ async function route(req: Request): Promise<Response> {
     }
 
     const model = await resolveSubagentModel(projectNamespace, body.model)
-    const repoTargets = await subagentRepoTargets(projectNamespace)
-    void startSubagentJob(job, projectMeta.path, contextBundle.promptBundle, body.maxAgents, model, repoTargets)
+    const { projectId: subagentProjectId, targets: repoTargets } = await subagentRepoTargets(projectNamespace)
+    void startSubagentJob(job, projectMeta.path, contextBundle.promptBundle, body.maxAgents, model, repoTargets, subagentProjectId)
     return sendJson(202, job.snapshot)
   }
 
@@ -476,15 +576,40 @@ async function route(req: Request): Promise<Response> {
     const [, , , slug] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    return sendJson(200, await getOrchestrator(project.projectId))
+    const orch = await getOrchestrator(project.projectId)
+    // Surface speedMode from configJson so the UI can render + edit it directly
+    // without needing to reach into the JSON bag.
+    const rawSpeed = (orch.configJson as Record<string, unknown> | undefined)?.speed_mode
+    const speedMode = rawSpeed === 'fast' || rawSpeed === 'balanced' || rawSpeed === 'quality' ? rawSpeed : 'balanced'
+    return sendJson(200, { ...orch, speedMode })
   }
 
   if (method === 'PATCH' && /^\/api\/projects\/[^/]+\/orchestrator$/.test(url.pathname)) {
     const [, , , slug] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const body = await readJson<{ autonomousMode?: boolean; maxConcurrent?: number; config?: Record<string, unknown> }>(req)
-    return sendJson(200, await upsertOrchestrator({ projectId: project.projectId, ...body }))
+    const body = await readJson<{
+      autonomousMode?: boolean
+      maxConcurrent?: number
+      speedMode?: 'fast' | 'balanced' | 'quality'
+      config?: Record<string, unknown>
+    }>(req)
+    // speedMode is stored inside config_json.speed_mode (shallow-merged in
+    // upsertOrchestrator via `||`), so the worker can read it when building
+    // engine options for a new run.
+    const config = {
+      ...(body.config ?? {}),
+      ...(body.speedMode ? { speed_mode: body.speedMode } : {}),
+    }
+    const updated = await upsertOrchestrator({
+      projectId: project.projectId,
+      autonomousMode: body.autonomousMode,
+      maxConcurrent: body.maxConcurrent,
+      config: Object.keys(config).length > 0 ? config : undefined,
+    })
+    const rawSpeed = (updated.configJson as Record<string, unknown> | undefined)?.speed_mode
+    const speedMode = rawSpeed === 'fast' || rawSpeed === 'balanced' || rawSpeed === 'quality' ? rawSpeed : 'balanced'
+    return sendJson(200, { ...updated, speedMode })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/jobs$/.test(url.pathname)) {
@@ -683,6 +808,8 @@ async function route(req: Request): Promise<Response> {
       options: {
         cwd,
         model,
+        projectId: project.projectId,
+        ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
         projectMemory: contextBundle.project.memory,
         sharedContextPrompt: contextBundle.promptBundle,
         persistSession: true,
@@ -808,7 +935,14 @@ async function route(req: Request): Promise<Response> {
     const inheritedModel = latest?.optionsJson?.model
     const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : 'anthropic/claude-sonnet-4-5')
     const baseOptions = toFlowOptions(body)
-    const options: FlowOptions = { ...baseOptions, cwd, model: resolvedModel }
+    const options: FlowOptions = {
+      ...baseOptions,
+      cwd,
+      model: resolvedModel,
+      projectId: project.projectId,
+      // GitHub-hosted repo → implement/orchestrate/verify publish the feature branch as a PR.
+      ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
+    }
     const templateName = body.pipeline?.trim() || DEFAULT_PIPELINE_NAME
     const { template } = await getTemplate(templateName, projectNamespace)
 
@@ -1581,6 +1715,9 @@ function updateSubagentJob(job: SubAgentJobRecord, event: import('./lib/aidlc').
       existing.outputFile = event.outputFile ?? existing.outputFile
       existing.runtimeMs = event.runtimeMs ?? existing.runtimeMs
       existing.estimatedTokens = event.estimatedTokens ?? existing.estimatedTokens
+      existing.branch = event.branch ?? existing.branch
+      existing.baseBranch = event.baseBranch ?? existing.baseBranch
+      existing.pullRequestUrl = event.pullRequestUrl ?? existing.pullRequestUrl
     } else {
       job.snapshot.workstreams.push({
         workstream: event.workstream,
@@ -1590,6 +1727,9 @@ function updateSubagentJob(job: SubAgentJobRecord, event: import('./lib/aidlc').
         outputFile: event.outputFile,
         runtimeMs: event.runtimeMs,
         estimatedTokens: event.estimatedTokens,
+        branch: event.branch,
+        baseBranch: event.baseBranch,
+        pullRequestUrl: event.pullRequestUrl,
       })
     }
   }
@@ -1668,13 +1808,16 @@ async function resolveSubagentModel(projectNamespace: string, requested?: string
 }
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */
-async function subagentRepoTargets(projectNamespace: string): Promise<import('./lib/aidlc').WorkstreamRepoTarget[]> {
+async function subagentRepoTargets(projectNamespace: string): Promise<{ projectId?: string; targets: import('./lib/aidlc').WorkstreamRepoTarget[] }> {
   const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
-  if (!project) return []
+  if (!project) return { targets: [] }
   const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
-  return repos
-    .filter((r) => Boolean(r.localPath))
-    .map((r) => ({ label: r.label, githubRepo: r.githubRepo, localPath: r.localPath!, isPrimary: r.isPrimary }))
+  return {
+    projectId: project.projectId,
+    targets: repos
+      .filter((r) => Boolean(r.localPath))
+      .map((r) => ({ label: r.label, githubRepo: r.githubRepo, localPath: r.localPath!, isPrimary: r.isPrimary })),
+  }
 }
 
 async function startSubagentJob(
@@ -1684,6 +1827,7 @@ async function startSubagentJob(
   maxAgents?: number,
   model?: string,
   repoTargets?: import('./lib/aidlc').WorkstreamRepoTarget[],
+  projectId?: string,
 ): Promise<void> {
   job.snapshot = {
     projectNamespace: job.snapshot.projectNamespace,
@@ -1702,6 +1846,9 @@ async function startSubagentJob(
       maxAgents,
       model,
       repoTargets,
+      projectId,
+      // GitHub-hosted workstream repos get a branch + PR each (stacked when dependent).
+      pullRequests: { enabled: true },
       registerSession: (workstream, session) => {
         job.activeSessions.set(workstream, session)
       },
@@ -2405,6 +2552,9 @@ interface SubagentWorkstreamStatus {
   outputFile?: string
   runtimeMs?: number
   estimatedTokens?: number
+  branch?: string
+  baseBranch?: string
+  pullRequestUrl?: string
 }
 
 interface SubagentJobSnapshot {

@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDb } from './db'
+import { resolveKnowledgeScope, SOURCE_LABEL, type KnowledgeSource } from './integration-sources'
 
 const srcDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(srcDir, '..', '..')
@@ -51,6 +52,8 @@ export async function buildContextBundle(options: {
   const memory = projectId ? await loadProjectMemory(projectId) : { manualText: '', autoSummary: '', text: '' }
   const featureArtifacts = await loadFeatureArtifacts(projectPath)
   const sourceSnapshots = projectId ? await loadSourceSnapshots(projectId) : []
+  // Only the sources this project has selected (and that are connected).
+  const knowledgeSources = await resolveKnowledgeScope(projectId).then((scope) => scope.sources).catch(() => [] as KnowledgeSource[])
 
   return {
     projectId,
@@ -72,6 +75,7 @@ export async function buildContextBundle(options: {
       projectMemory: memory.text,
       featureArtifacts,
       sourceSnapshots,
+      knowledgeSources,
     }),
   }
 }
@@ -151,6 +155,20 @@ async function loadSourceSnapshots(projectId: string): Promise<SourceSnapshot[]>
   `
 }
 
+/**
+ * Cap the total shared-context bundle at ~8k tokens (~32k chars). Beyond
+ * that, we drop lower-priority sections rather than truncate mid-artifact.
+ * Priority order (highest first):
+ *   1. Header + AIDLC directives   — always keep (tiny)
+ *   2. Project Memory              — user's own tuning
+ *   3. Feature Artifacts           — the actual work-in-progress
+ *   4. Knowledge Sources note      — small, high-signal
+ *   5. Org context (constitution, principles, security, architecture,
+ *      guidelines, review policies, mcp registry) — evergreen, easy to drop
+ *   6. Source Snapshots            — largest, most redundant with artifacts
+ */
+const BUNDLE_MAX_CHARS = 32_000
+
 function buildPromptBundle(options: {
   projectSlug?: string
   projectPath: string
@@ -158,30 +176,88 @@ function buildPromptBundle(options: {
   projectMemory: string
   featureArtifacts: ContextArtifact[]
   sourceSnapshots: SourceSnapshot[]
+  knowledgeSources?: KnowledgeSource[]
 }): string {
-  const sections: string[] = []
+  // Build each section as a labeled block so we can drop the lowest-priority
+  // ones if the total exceeds the token budget.
+  const blocks: Array<{ label: string; priority: number; text: string }> = []
 
-  sections.push(`# Shared Context\nProject: ${options.projectSlug ?? '(unknown)'}\nProject path: ${options.projectPath}`)
+  blocks.push({
+    label: 'header',
+    priority: 100,
+    text: `# Shared Context\nProject: ${options.projectSlug ?? '(unknown)'}\nProject path: ${options.projectPath}`,
+  })
 
-  for (const [name, content] of Object.entries(options.org)) {
-    sections.push(`## Org ${humanizeKey(name)}\n${content.trim()}`)
-  }
-
-  sections.push(`## AIDLC Directives\n- Specifications should include explicit test cases or acceptance scenarios.\n- Implementation planning should account for test-plan generation.\n- Parallel work should be organized into machine-readable workstreams before sub-agent execution.`)
+  blocks.push({
+    label: 'directives',
+    priority: 95,
+    text: `## AIDLC Directives\n- Specifications should include explicit test cases or acceptance scenarios.\n- Implementation planning should account for test-plan generation.\n- Parallel work should be organized into machine-readable workstreams before sub-agent execution.`,
+  })
 
   if (options.projectMemory.trim()) {
-    sections.push(`## Project Memory\n${options.projectMemory.trim()}`)
+    blocks.push({
+      label: 'project-memory',
+      priority: 90,
+      text: `## Project Memory\n${options.projectMemory.trim()}`,
+    })
   }
 
   if (options.featureArtifacts.length > 0) {
-    sections.push(`## Feature Artifacts\n${options.featureArtifacts.map((artifact) => `### ${artifact.label} (${artifact.path})\n${artifact.content.trim()}`).join('\n\n')}`)
+    blocks.push({
+      label: 'feature-artifacts',
+      priority: 80,
+      text: `## Feature Artifacts\n${options.featureArtifacts.map((artifact) => `### ${artifact.label} (${artifact.path})\n${artifact.content.trim()}`).join('\n\n')}`,
+    })
+  }
+
+  if (options.knowledgeSources && options.knowledgeSources.length > 0) {
+    const names = options.knowledgeSources.map((s) => SOURCE_LABEL[s]).join(', ')
+    blocks.push({
+      label: 'knowledge-sources',
+      priority: 70,
+      text: `## Knowledge Sources\nConnected: ${names}. You have the tools \`integration_search(source, query)\` and \`integration_get(source, id)\`.\n- Use them when a ticket key, epic, customer request, design doc or PR is referenced, or when requirements/acceptance criteria are missing from the repo — fetch, don't guess.\n- Be efficient: one targeted search, then read the 1–3 most relevant items in full. Do not crawl.\n- Cite ids (PROJ-123, ENG-45, page id, owner/repo#12) in the artifacts you write so decisions are traceable.`,
+    })
+  }
+
+  for (const [name, content] of Object.entries(options.org)) {
+    blocks.push({
+      label: `org-${name}`,
+      priority: 50,
+      text: `## Org ${humanizeKey(name)}\n${content.trim()}`,
+    })
   }
 
   if (options.sourceSnapshots.length > 0) {
-    sections.push(`## Source Snapshots\n${options.sourceSnapshots.map((snapshot) => `### ${snapshot.source}: ${snapshot.title}\nType: ${snapshot.entityType}\nFetched: ${snapshot.fetchedAt}\n${snapshot.content.trim()}`).join('\n\n')}`)
+    blocks.push({
+      label: 'source-snapshots',
+      priority: 30,
+      text: `## Source Snapshots\nImported tickets/docs this work is based on. Treat them as requirements input; re-fetch with integration_get if you need the latest state.\n${options.sourceSnapshots.map((snapshot) => `### ${snapshot.source}: ${snapshot.title}${snapshot.url ? ` (${snapshot.url})` : ''}\nType: ${snapshot.entityType} · Id: ${snapshot.entityId}\nFetched: ${snapshot.fetchedAt}\n${snapshot.content.trim()}`).join('\n\n')}`,
+    })
   }
 
-  return sections.join('\n\n---\n\n')
+  // Assemble in priority order, dropping (with a footnote) whichever
+  // low-priority blocks push us past the budget.
+  blocks.sort((a, b) => b.priority - a.priority)
+  const kept: typeof blocks = []
+  const dropped: string[] = []
+  let running = 0
+  for (const block of blocks) {
+    const projected = running + block.text.length + 8
+    if (projected <= BUNDLE_MAX_CHARS || block.priority >= 90) {
+      kept.push(block)
+      running = projected
+    } else {
+      dropped.push(block.label)
+    }
+  }
+  if (dropped.length > 0) {
+    kept.push({
+      label: 'truncation-note',
+      priority: 0,
+      text: `## Context truncation\nThe following sections were omitted to stay under the ${BUNDLE_MAX_CHARS}-char shared-context budget: ${dropped.join(', ')}. Fetch them explicitly with the read tool if you need them.`,
+    })
+  }
+  return kept.map((b) => b.text).join('\n\n---\n\n')
 }
 
 async function pushArtifact(target: ContextArtifact[], label: string, filePath: string): Promise<void> {

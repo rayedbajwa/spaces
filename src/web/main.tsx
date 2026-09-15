@@ -176,6 +176,9 @@ type SubagentWorkstreamStatus = {
   outputFile?: string
   runtimeMs?: number
   estimatedTokens?: number
+  branch?: string
+  baseBranch?: string
+  pullRequestUrl?: string
 }
 
 type SubagentJobSnapshot = {
@@ -236,6 +239,19 @@ type ProjectDetailRecord = {
   repos: ProjectRepoRecord[]
   integrations: Array<{ integrationId: string; kind: string; status: string; displayName?: string }>
 }
+
+type KnowledgeHit = {
+  source: 'jira' | 'linear' | 'confluence' | 'github'
+  id: string
+  title: string
+  url?: string
+  snippet?: string
+  type?: string
+  status?: string
+  updatedAt?: string
+}
+
+const KNOWLEDGE_SOURCE_LABEL: Record<KnowledgeHit['source'], string> = { jira: 'Jira', linear: 'Linear', confluence: 'Confluence', github: 'GitHub' }
 
 type GitHubRepoOption = {
   fullName: string
@@ -406,7 +422,7 @@ function App() {
   const [clarification, setClarification] = useState('')
   const [taskTrackerItems, setTaskTrackerItems] = useState<TaskTrackerItem[]>([])
   const [taskGraph, setTaskGraph] = useState<{ nodes: Array<{ id: string; label: string; phase: string; story?: string; parallel: boolean; status: string }>; edges: Array<{ from: string; to: string }> }>({ nodes: [], edges: [] })
-  const [orchestrator, setOrchestrator] = useState<{ autonomousMode: boolean; maxConcurrent: number } | null>(null)
+  const [orchestrator, setOrchestrator] = useState<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' } | null>(null)
   const [projectJobs, setProjectJobs] = useState<Array<{ jobId: string; kind: string; status: string; triggerSource: string; runId?: string; createdAt: string }>>([])
   const [projectAgents, setProjectAgents] = useState<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>([])
   const [inspectedRun, setInspectedRun] = useState<RunSnapshot | null>(null)
@@ -415,6 +431,97 @@ function App() {
   const [githubReposNote, setGithubReposNote] = useState('')
   const [onboarding, setOnboarding] = useState<{ projectName: string; snapshot: OnboardingSnapshot } | null>(null)
   const [onboardingHintIndex, setOnboardingHintIndex] = useState(0)
+  // "Import from Jira / Linear" in the wizard: search state + items to attach after creation.
+  const [importSearch, setImportSearch] = useState<{ source: 'jira' | 'linear' | 'confluence' | 'github'; query: string; results: KnowledgeHit[]; loading: boolean; note: string }>({ source: 'linear', query: '', results: [], loading: false, note: '' })
+  const [importedItems, setImportedItems] = useState<Array<{ source: 'jira' | 'linear' | 'confluence' | 'github'; id: string; title: string; url?: string }>>([])
+  const [knowledgeSources, setKnowledgeSources] = useState<string[]>([])
+
+  // Per-project knowledge scope (Context tab): which integrations/repos this project's agents may query.
+  const [knowledgeScope, setKnowledgeScope] = useState<{
+    config: { sources?: KnowledgeHit['source'][]; jira?: { projects?: string[] }; linear?: { teams?: string[]; projects?: string[] }; confluence?: { spaces?: string[] }; github?: { repos?: string[] } }
+    connected: KnowledgeHit['source'][]
+    registeredRepos: string[]
+    effective?: { sources: string[] }
+  } | null>(null)
+  const [knowledgeScopeBusy, setKnowledgeScopeBusy] = useState(false)
+  const [knowledgeScopeNote, setKnowledgeScopeNote] = useState('')
+
+  async function loadProjectKnowledge(projectId: string) {
+    try {
+      setKnowledgeScope(await getJson<NonNullable<typeof knowledgeScope>>(`/api/projects/${projectId}/knowledge`))
+    } catch { setKnowledgeScope(null) }
+  }
+
+  async function saveProjectKnowledge() {
+    if (!projectDetail || !knowledgeScope) return
+    setKnowledgeScopeBusy(true)
+    try {
+      const response = await fetch(`/api/projects/${projectDetail.projectId}/knowledge`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(knowledgeScope.config),
+      })
+      const payload = await response.json() as { config: NonNullable<typeof knowledgeScope>['config']; effective: { sources: string[] }; error?: string }
+      if (payload.error) throw new Error(payload.error)
+      setKnowledgeScope((c) => c ? { ...c, config: payload.config, effective: payload.effective } : c)
+      setKnowledgeScopeNote(`Saved. Agents on this project can now query: ${payload.effective.sources.length ? payload.effective.sources.map((s) => KNOWLEDGE_SOURCE_LABEL[s as KnowledgeHit['source']]).join(', ') : 'nothing (no sources selected)'}.`)
+      if (selectedProjectNamespace) void loadProjectContext(selectedProjectNamespace)
+    } catch (error) {
+      setKnowledgeScopeNote(`Could not save: ${toMessage(error)}`)
+    } finally {
+      setKnowledgeScopeBusy(false)
+    }
+  }
+
+  function setScopeList(path: 'jira.projects' | 'linear.teams' | 'linear.projects' | 'confluence.spaces' | 'github.repos', raw: string) {
+    const list = raw.split(',').map((v) => v.trim()).filter(Boolean)
+    setKnowledgeScope((c) => {
+      if (!c) return c
+      const [group, key] = path.split('.') as ['jira' | 'linear' | 'confluence' | 'github', string]
+      return { ...c, config: { ...c.config, [group]: { ...(c.config[group] ?? {}), [key]: list } } }
+    })
+  }
+
+  async function loadKnowledgeSources() {
+    try {
+      const payload = await getJson<{ sources: string[] }>('/api/knowledge/sources')
+      setKnowledgeSources(payload.sources)
+    } catch { setKnowledgeSources([]) }
+  }
+
+  async function runImportSearch() {
+    const query = importSearch.query.trim()
+    if (!query) return
+    setImportSearch((c) => ({ ...c, loading: true, note: '' }))
+    try {
+      const response = await fetch(`/api/knowledge/search?source=${importSearch.source}&q=${encodeURIComponent(query)}&limit=10`)
+      const payload = await response.json() as { hits: KnowledgeHit[]; error?: string }
+      setImportSearch((c) => ({ ...c, loading: false, results: payload.hits ?? [], note: payload.error ?? (payload.hits?.length ? '' : 'No matches.') }))
+    } catch (error) {
+      setImportSearch((c) => ({ ...c, loading: false, results: [], note: toMessage(error) }))
+    }
+  }
+
+  /** Pull one ticket/doc into the wizard: fills name/description/first feature and queues it as a project source. */
+  async function useImportedItem(hit: KnowledgeHit) {
+    setImportSearch((c) => ({ ...c, loading: true }))
+    try {
+      const response = await fetch(`/api/knowledge/item?source=${hit.source}&id=${encodeURIComponent(hit.id)}`)
+      const doc = await response.json() as { title: string; content: string; url?: string; error?: string }
+      if (doc.error) throw new Error(doc.error)
+      const body = doc.content.replace(/^# .*\n/, '').trim()
+      setWizard((c) => ({
+        ...c,
+        name: c.name.trim() || doc.title,
+        description: c.description.trim() || body.slice(0, 1500),
+        firstFeature: c.firstFeature.trim() || `${hit.id}: ${doc.title}\n\n${body.slice(0, 2500)}`,
+      }))
+      setImportedItems((c) => c.some((i) => i.source === hit.source && i.id === hit.id) ? c : [...c, { source: hit.source, id: hit.id, title: doc.title, url: doc.url }])
+      setImportSearch((c) => ({ ...c, loading: false, note: `Imported ${hit.id}. It will be attached to the project as a knowledge source.` }))
+    } catch (error) {
+      setImportSearch((c) => ({ ...c, loading: false, note: `Import failed: ${toMessage(error)}` }))
+    }
+  }
 
   // Rotate the active onboarding step's sub-messages while it runs.
   useEffect(() => {
@@ -560,7 +667,7 @@ function App() {
 
   async function loadOrchestrator(namespace: string) {
     try {
-      setOrchestrator(await getJson<{ autonomousMode: boolean; maxConcurrent: number }>(`/api/projects/${namespace}/orchestrator`))
+      setOrchestrator(await getJson<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' }>(`/api/projects/${namespace}/orchestrator`))
     } catch {
       setOrchestrator(null)
     }
@@ -571,6 +678,7 @@ function App() {
       if (proj) {
         const detail = await getJson<ProjectDetailRecord>(`/api/projects/${proj.projectId}`)
         setProjectDetail(detail)
+        void loadProjectKnowledge(detail.projectId)
       } else {
         setProjectDetail(null)
       }
@@ -682,6 +790,21 @@ function App() {
       setOrchestrator(updated)
     } catch (error) {
       setStatusMessage(`Failed to toggle autonomous mode: ${toMessage(error)}`)
+    }
+  }
+
+  async function setSpeedMode(mode: 'fast' | 'balanced' | 'quality') {
+    if (!selectedProjectNamespace || !orchestrator) return
+    try {
+      const updated = await fetch(`/api/projects/${selectedProjectNamespace}/orchestrator`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ speedMode: mode }),
+      }).then((r) => r.json())
+      setOrchestrator(updated)
+      setStatusMessage(`Speed mode set to ${mode}. Next run will use ${mode === 'fast' ? 'Haiku across most stages' : mode === 'quality' ? 'Sonnet+extended-thinking (Opus for merges)' : 'per-stage defaults'}.`)
+    } catch (error) {
+      setStatusMessage(`Failed to set speed mode: ${toMessage(error)}`)
     }
   }
 
@@ -838,6 +961,15 @@ function App() {
       const project = await postJson<{ projectId: string; slug: string; name: string; repos: Array<{ repoId: string; isPrimary: boolean; kind: string }>; onboarding?: OnboardingSnapshot }>('/api/projects', { ...createBody, model: wizard.model || undefined })
       setStatusMessage(`Created project "${project.name}".`)
 
+      // Attach imported tickets/docs as project knowledge before onboarding reads them.
+      for (const item of importedItems) {
+        try {
+          await postJson(`/api/projects/${project.projectId}/sources/import`, { source: item.source, id: item.id })
+        } catch (error) {
+          setStatusMessage(`Project created; attaching ${item.id} failed: ${toMessage(error)}`)
+        }
+      }
+
       // Onboarding runs server-side: clone remote repos first, inventory the code,
       // let an agent learn it, and store project memory. Wait for it here (with
       // live progress in the wizard) so the first run starts with real context.
@@ -875,6 +1007,8 @@ function App() {
 
       setIsWizardOpen(false)
       setOnboarding(null)
+      setImportedItems([])
+      setImportSearch((c) => ({ ...c, query: '', results: [], note: '' }))
       setWizard(defaultWizard)
       await refreshBoard()
     } catch (error) {
@@ -1319,7 +1453,7 @@ function App() {
           <p className="hero-copy">Track projects at a glance. Open a card to inspect artifacts, QA, context, AI chat, and feedback workflows.</p>
         </div>
         <div className="hero-actions">
-          <button className="primary-button" onClick={() => { setWizard(defaultWizard); setIsWizardOpen(true) }} type="button">New project</button>
+          <button className="primary-button" onClick={() => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }} type="button">New project</button>
           <button
             className={`integrations-chip ${allIntegrationsConnected ? 'all' : connectedIntegrationCount > 0 ? 'partial' : 'none'}`}
             onClick={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }}
@@ -1600,6 +1734,21 @@ function App() {
                       </strong>
                     </div>
                     <div><span>Max concurrent</span><strong>{orchestrator?.maxConcurrent ?? '—'}</strong></div>
+                    <div>
+                      <span>Speed mode</span>
+                      <strong>
+                        <select
+                          value={orchestrator?.speedMode ?? 'balanced'}
+                          onChange={(e) => void setSpeedMode(e.target.value as 'fast' | 'balanced' | 'quality')}
+                          style={{ width: 'auto', marginTop: 0, padding: '4px 8px', fontSize: 12 }}
+                          title="Fast = Haiku across most stages (cheap, quick). Balanced = per-stage defaults. Quality = Sonnet + extended thinking (Opus for merges)."
+                        >
+                          <option value="fast">Fast</option>
+                          <option value="balanced">Balanced</option>
+                          <option value="quality">Quality</option>
+                        </select>
+                      </strong>
+                    </div>
                     <div><span>In-flight jobs</span><strong>{projectJobs.filter((j) => j.status === 'running' || j.status === 'claimed').length}</strong></div>
                     <div><span>Queued</span><strong>{projectJobs.filter((j) => j.status === 'queued').length}</strong></div>
                     <div>
@@ -1811,6 +1960,12 @@ function App() {
                     <details key={`${item.workstream}-${item.outputFile ?? ''}`} className="qa-artifact" open={item.status === 'running' || item.status === 'error'}>
                       <summary>{item.workstream} • {item.status}</summary>
                       <p className="panel-subtitle">runtime: {formatDuration(item.runtimeMs)} • tokens: {item.estimatedTokens ?? 0}</p>
+                      {(item.branch || item.pullRequestUrl) && (
+                        <p className="panel-subtitle">
+                          {item.branch && <>branch <code>{item.branch}</code>{item.baseBranch ? <> → <code>{item.baseBranch}</code></> : null}</>}
+                          {item.pullRequestUrl && <> • <a href={item.pullRequestUrl} target="_blank" rel="noreferrer">Pull request</a></>}
+                        </p>
+                      )}
                       <pre className="context-preview small-preview">{item.log || item.summary || 'Waiting for updates...'}</pre>
                     </details>
                   ))}
@@ -1874,6 +2029,87 @@ function App() {
 
             {activeProjectTab === 'context' && (
               <section className="card panel slim-panel">
+                <h3>Knowledge base</h3>
+                <p className="panel-subtitle">
+                  Pick which connected integrations and repositories this project's agents may query. Narrow each source so searches stay relevant and cheap; leave a scope blank for "everything in that source".
+                </p>
+                {!knowledgeScope && <p className="empty-state">Loading knowledge scope…</p>}
+                {knowledgeScope && knowledgeScope.connected.length === 0 && (
+                  <p className="empty-state">No knowledge integrations are connected. Connect Jira, Linear, Confluence or GitHub under Integrations.</p>
+                )}
+                {knowledgeScope && knowledgeScope.connected.length > 0 && (
+                  <div className="repo-list">
+                    {knowledgeScope.connected.map((source) => {
+                      const selected = !knowledgeScope.config.sources || knowledgeScope.config.sources.includes(source)
+                      const toggle = () => setKnowledgeScope((c) => {
+                        if (!c) return c
+                        const current = c.config.sources ?? c.connected
+                        const next = current.includes(source) ? current.filter((s) => s !== source) : [...current, source]
+                        return { ...c, config: { ...c.config, sources: next } }
+                      })
+                      return (
+                        <div key={source} className="repo-row">
+                          <label className="toggle" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <input type="checkbox" checked={selected} onChange={toggle} />
+                            <strong>{KNOWLEDGE_SOURCE_LABEL[source]}</strong>
+                          </label>
+                          {selected && source === 'jira' && (
+                            <label className="field-hint">Jira project keys (comma-separated)
+                              <input value={(knowledgeScope.config.jira?.projects ?? []).join(', ')} onChange={(event) => setScopeList('jira.projects', event.target.value)} placeholder="PROJ, PLAT" />
+                            </label>
+                          )}
+                          {selected && source === 'linear' && (
+                            <>
+                              <label className="field-hint">Linear team keys (comma-separated)
+                                <input value={(knowledgeScope.config.linear?.teams ?? []).join(', ')} onChange={(event) => setScopeList('linear.teams', event.target.value)} placeholder="ENG, DES" />
+                              </label>
+                              <label className="field-hint">Linear project names (comma-separated)
+                                <input value={(knowledgeScope.config.linear?.projects ?? []).join(', ')} onChange={(event) => setScopeList('linear.projects', event.target.value)} placeholder="Checkout revamp" />
+                              </label>
+                            </>
+                          )}
+                          {selected && source === 'confluence' && (
+                            <label className="field-hint">Confluence space keys (comma-separated)
+                              <input value={(knowledgeScope.config.confluence?.spaces ?? []).join(', ')} onChange={(event) => setScopeList('confluence.spaces', event.target.value)} placeholder="DOCS, ARCH" />
+                            </label>
+                          )}
+                          {selected && source === 'github' && (
+                            <div className="field-hint">
+                              Repositories in scope
+                              <div className="repo-list" style={{ marginTop: 4 }}>
+                                {knowledgeScope.registeredRepos.length === 0 && <span>No GitHub repos registered on this project; add owner/name below.</span>}
+                                {knowledgeScope.registeredRepos.map((repo) => {
+                                  const chosen = knowledgeScope.config.github?.repos?.length ? knowledgeScope.config.github.repos.includes(repo) : true
+                                  return (
+                                    <label key={repo} className="toggle" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                      <input type="checkbox" checked={chosen} onChange={() => {
+                                        const current = knowledgeScope.config.github?.repos?.length ? knowledgeScope.config.github.repos : knowledgeScope.registeredRepos
+                                        const next = current.includes(repo) ? current.filter((r) => r !== repo) : [...current, repo]
+                                        setScopeList('github.repos', next.join(','))
+                                      }} />
+                                      {repo}
+                                    </label>
+                                  )
+                                })}
+                              </div>
+                              <input style={{ marginTop: 4 }} value={(knowledgeScope.config.github?.repos ?? []).filter((r) => !knowledgeScope.registeredRepos.includes(r)).join(', ')} onChange={(event) => {
+                                const extra = event.target.value.split(',').map((v) => v.trim()).filter(Boolean)
+                                const kept = (knowledgeScope.config.github?.repos ?? knowledgeScope.registeredRepos).filter((r) => knowledgeScope.registeredRepos.includes(r))
+                                setScopeList('github.repos', [...kept, ...extra].join(','))
+                              }} placeholder="Extra repos: owner/name, owner/other" />
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    <div className="button-row">
+                      <button className="primary-button" type="button" disabled={knowledgeScopeBusy} onClick={() => void saveProjectKnowledge()}>Save knowledge scope</button>
+                      {knowledgeScope.effective && <span className="field-hint">Effective sources: {knowledgeScope.effective.sources.length ? knowledgeScope.effective.sources.map((s) => KNOWLEDGE_SOURCE_LABEL[s as KnowledgeHit['source']]).join(', ') : 'none'}</span>}
+                    </div>
+                    {knowledgeScopeNote && <p className="field-hint">{knowledgeScopeNote}</p>}
+                  </div>
+                )}
+                <h3>Shared context bundle</h3>
                 <div className="context-stats">
                   <span className="mini-badge idle">Org docs: {sharedContext ? Object.keys(sharedContext.org).length : 0}</span>
                   <span className="mini-badge idle">Artifacts: {sharedContext?.featureArtifacts.length ?? 0}</span>
@@ -2184,6 +2420,52 @@ function App() {
                   Description
                   <textarea value={wizard.description} onChange={(event) => setWizard((c) => ({ ...c, description: event.target.value }))} placeholder="What the product is, who it serves, and what constraints AI should respect." />
                 </label>
+                <div className="card" style={{ padding: 12, marginTop: 8 }}>
+                  <strong>Import from Jira / Linear</strong>
+                  <p className="panel-subtitle" style={{ margin: '4px 0 8px' }}>
+                    Start from an existing ticket, epic or doc. It fills in the name, description and first feature, and is attached to the project so agents can cite it.
+                    {knowledgeSources.length === 0 && ' Connect Jira, Linear, Confluence or GitHub under Integrations to enable this.'}
+                  </p>
+                  <div className="button-row" style={{ alignItems: 'stretch' }}>
+                    <select value={importSearch.source} onChange={(event) => setImportSearch((c) => ({ ...c, source: event.target.value as KnowledgeHit['source'], results: [] }))} disabled={knowledgeSources.length === 0}>
+                      {(['linear', 'jira', 'confluence', 'github'] as const).map((source) => (
+                        <option key={source} value={source} disabled={!knowledgeSources.includes(source)}>
+                          {KNOWLEDGE_SOURCE_LABEL[source]}{knowledgeSources.includes(source) ? '' : ' (not connected)'}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      style={{ flex: 1 }}
+                      value={importSearch.query}
+                      onChange={(event) => setImportSearch((c) => ({ ...c, query: event.target.value }))}
+                      onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void runImportSearch() } }}
+                      placeholder={importSearch.source === 'jira' ? 'PROJ-123 or search text (JQL works too)' : importSearch.source === 'linear' ? 'ENG-123 or search text' : importSearch.source === 'confluence' ? 'Page title or CQL' : 'Issue/PR search'}
+                      disabled={knowledgeSources.length === 0}
+                    />
+                    <button className="secondary-button" type="button" disabled={importSearch.loading || !importSearch.query.trim() || knowledgeSources.length === 0} onClick={() => void runImportSearch()}>
+                      {importSearch.loading ? 'Searching…' : 'Search'}
+                    </button>
+                  </div>
+                  {importSearch.note && <p className="field-hint">{importSearch.note}</p>}
+                  {importSearch.results.length > 0 && (
+                    <div className="repo-list" style={{ marginTop: 8 }}>
+                      {importSearch.results.map((hit) => (
+                        <div key={`${hit.source}-${hit.id}`} className="repo-row">
+                          <div className="repo-row-main">
+                            <strong>{hit.id}</strong>
+                            <span>{hit.title}</span>
+                            {hit.status && <span className="mini-badge idle">{hit.status}</span>}
+                            <button className="ghost-button" type="button" style={{ marginLeft: 'auto' }} disabled={importSearch.loading} onClick={() => void useImportedItem(hit)}>Use</button>
+                          </div>
+                          {hit.snippet && <span className="repo-row-source">{hit.snippet}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {importedItems.length > 0 && (
+                    <p className="field-hint">Attached: {importedItems.map((item) => `${KNOWLEDGE_SOURCE_LABEL[item.source]} ${item.id}`).join(', ')}</p>
+                  )}
+                </div>
               </>
             )}
 

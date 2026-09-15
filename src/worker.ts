@@ -12,10 +12,12 @@ import {
   enqueueJob,
   failJob,
   getJob,
+  getOrchestrator,
   markJobRunning,
   reapOrphanedRuns,
   retryRunAndEnqueue,
 } from './lib/dispatcher'
+import type { SpeedMode } from './lib/model-router'
 import {
   appendEvent,
   claimRunForWorker,
@@ -93,6 +95,18 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   await claimRunForWorker(runId, getWorkerId())
   await updateRunStatus(runId, { status: 'running', currentStage: startStage ?? templateStages[0], errorMessage: null })
 
+  // Read speed mode from the project's orchestrator config (persisted in
+  // project_orchestrators.config_json.speed_mode). Falls through to 'balanced'
+  // if not set. Feeds the model router.
+  let speedMode: SpeedMode | undefined
+  if (run.projectId) {
+    const orch = await getOrchestrator(run.projectId)
+    const raw = (orch?.configJson as Record<string, unknown> | undefined)?.speed_mode
+    if (raw === 'fast' || raw === 'balanced' || raw === 'quality') {
+      speedMode = raw
+    }
+  }
+
   // Warm agent pool: reuse this project's primary session across runs so
   // the agent keeps context. Falls back to a fresh session if none warmed.
   let releaseAgent: ((sessionFile?: string | null) => Promise<void>) | undefined
@@ -100,6 +114,7 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   const options = {
     ...run.optionsJson,
     ...(startStage ? { startStage } : {}),
+    ...(speedMode ? { speedMode } : {}),
     ...(run.projectId
       ? {
           sessionManagerFactory: async () => {
@@ -139,10 +154,17 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
       onStageHandoff: async (h) => {
         const sql = getDb()
         await sql`
-          INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail)
-          VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail})
+          INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
+          VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
         `
-        void queueEvent(runId, 'handoff_captured', { stepId: h.stepId, stage: h.stage, model: h.model, tailBytes: h.tail.length })
+        void queueEvent(runId, 'handoff_captured', {
+          stepId: h.stepId,
+          stage: h.stage,
+          model: h.model,
+          tailBytes: h.tail.length,
+          summaryBytes: h.summary?.length ?? 0,
+          compacted: !!h.summary,
+        })
       },
     })
   } catch (error) {

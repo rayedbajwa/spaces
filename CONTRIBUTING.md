@@ -8,7 +8,7 @@ pull requests.
 
 Prerequisites:
 
-- [Bun](https://bun.sh) 1.1+ (`curl -fsSL https://bun.sh/install | bash`)
+- [Bun](https://bun.sh) 1.4+ (`curl -fsSL https://bun.sh/install | bash`)
 - Docker + Docker Compose (for Postgres)
 - An Anthropic (or OpenAI) API key
 

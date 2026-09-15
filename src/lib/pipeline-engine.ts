@@ -13,15 +13,26 @@ import {
 import type { PipelineStep, PipelineTemplate } from './pipeline-template'
 import { evaluateBranchExpression, readVerificationStatus } from './pipeline-branch'
 import { loadPersona } from './persona-loader'
+import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
+import { compactHandoff } from './context-compactor'
+import { log } from './logger'
 
-export interface PipelineEngineOptions extends FlowOptions {}
+export interface PipelineEngineOptions extends FlowOptions {
+  /**
+   * Speed vs. quality mode. Passed to the model router — 'fast' picks Haiku
+   * across most stages, 'quality' picks Sonnet+high-thinking (Opus for merges),
+   * 'balanced' (default) uses the shipped defaults in data/org/model-routing.yml.
+   * Pipeline step `model:` fields always override this.
+   */
+  speedMode?: SpeedMode
+}
 
 export interface PipelineEngineSinks {
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
   onParallelProgress?: (stepId: string, event: ParallelSubAgentProgressEvent) => void
   onBranch?: (from: string, to: string, reason: string) => void
-  onStageHandoff?: (handoff: { stepIndex: number; stepId: string; stage: string; model?: string; tail: string }) => Promise<void> | void
+  onStageHandoff?: (handoff: { stepIndex: number; stepId: string; stage: string; model?: string; tail: string; summary?: string; summaryHash?: string }) => Promise<void> | void
 }
 
 export interface PipelineEngineDryRunPlan {
@@ -45,10 +56,12 @@ export class PipelineEngine {
   private readonly stepsByStage: Map<StageName, PipelineStep>
   private readonly stepsById: Map<string, PipelineStep>
   private readonly visitCount: Map<string, number> = new Map()
-  // Cross-model memory: tail of each completed stage's output. Injected as
+  // Cross-model memory: compacted output of each completed stage. Injected as
   // preamble into subsequent stages so the next model can see prior decisions
   // even when the Pi session was replaced due to a model swap.
-  private readonly stageHandoffs: Array<{ stepId: string; stage: string; model?: string; tail: string }> = []
+  // `text` is either a Haiku-generated summary (when tail was large enough to
+  // be worth compacting) or the raw tail (below-threshold or compactor error).
+  private readonly stageHandoffs: Array<{ stepId: string; stage: string; model?: string; text: string; compacted: boolean }> = []
   private readonly sinks: PipelineEngineSinks
   private readonly options: PipelineEngineOptions
 
@@ -208,14 +221,36 @@ export class PipelineEngine {
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
       if (!step) return
       const trimmed = output.trim()
-      const tail = trimmed.length > 2000 ? '…' + trimmed.slice(-2000) : trimmed
-      if (!tail) return
-      this.stageHandoffs.push({ stepId: step.id, stage, model, tail })
+      if (!trimmed) return
+
+      // First-pass truncation cap: never send more than ~12k chars to the
+      // compactor, matches the raw tail we'd have used pre-compaction. Above
+      // that we lose the head of the message anyway; keep the tail (which is
+      // usually where the conclusion + artifacts land).
+      const raw = trimmed.length > 12_000 ? '…' + trimmed.slice(-12_000) : trimmed
+
+      // Compact the tail into a preamble-ready summary. Safe-fails to the raw
+      // tail on any error, so the pipeline never breaks because compaction did.
+      const compaction = await compactHandoff({ stage: String(stage), stepId: step.id, model, tail: raw })
+      const text = compaction.text
+
+      this.stageHandoffs.push({ stepId: step.id, stage, model, text, compacted: compaction.compacted })
       while (this.stageHandoffs.length > 6) this.stageHandoffs.shift()
-      // Best-effort persist so a UI/observer can inspect the thread across restarts.
+
+      // Best-effort persist so a UI/observer can inspect the thread across
+      // restarts. We persist the RAW tail (for inspection) plus the compacted
+      // summary (for cross-run cache reuse).
       if (this.sinks.onStageHandoff) {
         try {
-          await this.sinks.onStageHandoff({ stepIndex: stageIndex, stepId: step.id, stage, model, tail })
+          await this.sinks.onStageHandoff({
+            stepIndex: stageIndex,
+            stepId: step.id,
+            stage,
+            model,
+            tail: raw,
+            summary: compaction.compacted ? text : undefined,
+            summaryHash: compaction.hash,
+          })
         } catch {
           // never fail the run because of a handoff persistence hiccup
         }
@@ -227,20 +262,36 @@ export class PipelineEngine {
     if (this.stageHandoffs.length === 0) return ''
     const entries = this.stageHandoffs.map((h, i) => {
       const modelHint = h.model ? ` · model: ${h.model}` : ''
-      return `### Prior stage ${i + 1}: ${h.stepId} (${h.stage})${modelHint}\n\n${h.tail}`
+      const modeHint = h.compacted ? ' · summarized' : ''
+      return `### Prior stage ${i + 1}: ${h.stepId} (${h.stage})${modelHint}${modeHint}\n\n${h.text}`
     })
-    return `# Cross-stage memory\n\nThese are summaries of what prior stages produced in this run. The Pi session may have been reset when the model changed, but this thread carries context across boundaries.\n\n${entries.join('\n\n---\n\n')}`
+    return `# Cross-stage memory\n\nCompact summaries of what prior stages produced in this run. The Pi session may have been reset when the model changed, but this thread carries context across boundaries.\n\n${entries.join('\n\n---\n\n')}`
   }
 
   private buildStepModelResolver(): FlowOptions['stepModel'] {
-    return ({ stageIndex, stage }) => {
+    const engineLog = log.child({ mod: 'pipeline-engine', pipeline: this.template.name })
+    return async ({ stageIndex, stage }) => {
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
-      if (!step) return undefined
-      if (!step.model && !step.thinking) return undefined
-      return {
-        model: step.model,
-        thinking: step.thinking as never,
-      }
+      const config = await loadRoutingConfig()
+      const attempt = step ? this.visitCount.get(step.id) ?? 0 : 0
+      const decision = routeModel({
+        stage: String(stage),
+        role: step?.role,
+        mode: this.options.speedMode,
+        attempt: Math.max(0, attempt - 1), // first visit = attempt 0
+        explicitModel: step?.model,
+        explicitThinking: step?.thinking as never,
+        // promptSize would require pre-rendering the prompt; wired in the
+        // beforeStagePrompt hook instead where the actual bytes are known.
+      }, config)
+      engineLog.debug('model chosen', {
+        stage,
+        stepId: step?.id,
+        model: decision.model,
+        thinking: decision.thinking,
+        reason: decision.reason,
+      })
+      return { model: decision.model, thinking: decision.thinking as never }
     }
   }
 

@@ -81,18 +81,25 @@ CREATE INDEX IF NOT EXISTS pipeline_runs_project_id_idx ON pipeline_runs (projec
 -- Cross-stage handoff thread (Phase 6 memory). Each row is one prior stage's
 -- output tail, injected into subsequent stages' preambles so context survives
 -- Pi session resets when per-stage models swap.
+-- summary/summary_hash are populated by the token compactor
+-- (src/lib/context-compactor.ts) — a Haiku-generated summary of the tail,
+-- keyed by SHA-1 of the raw tail so repeated content across runs reuses it.
 CREATE TABLE IF NOT EXISTS run_thread_entries (
-  entry_id    BIGSERIAL PRIMARY KEY,
-  run_id      UUID NOT NULL REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
-  step_index  INT  NOT NULL,
-  step_id     TEXT NOT NULL,
-  stage       TEXT NOT NULL,
-  model       TEXT,
-  tail        TEXT NOT NULL,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+  entry_id     BIGSERIAL PRIMARY KEY,
+  run_id       UUID NOT NULL REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+  step_index   INT  NOT NULL,
+  step_id      TEXT NOT NULL,
+  stage        TEXT NOT NULL,
+  model        TEXT,
+  tail         TEXT NOT NULL,
+  summary      TEXT,
+  summary_hash TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS run_thread_entries_run_idx
   ON run_thread_entries (run_id, entry_id);
+CREATE INDEX IF NOT EXISTS run_thread_entries_summary_hash_idx
+  ON run_thread_entries (summary_hash) WHERE summary_hash IS NOT NULL;
 
 -- Per-project long-term memory (replaces data/projects/<ns>/memory.json).
 CREATE TABLE IF NOT EXISTS project_memory (
@@ -251,6 +258,11 @@ ALTER TABLE project_repos ADD COLUMN IF NOT EXISTS clone_error  TEXT;
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
   CHECK (kind IN ('github','jira','confluence','slack','linear'));
+
+-- Per-project knowledge scope: which connected integrations agents may query for
+-- this project and how queries are narrowed (Jira project keys, Linear teams,
+-- Confluence spaces, GitHub repos). '{}' = every connected source, unscoped.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS knowledge_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 CREATE INDEX IF NOT EXISTS pipeline_runs_project_idx ON pipeline_runs (project_namespace, created_at DESC);
 CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx  ON pipeline_runs (status);
 

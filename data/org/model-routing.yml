@@ -1,0 +1,42 @@
+# Model routing configuration for Spaces agents.
+#
+# Empty file / missing file = use built-in defaults from src/lib/model-router.ts.
+# Override any section below to change behavior for your workspace. Sections
+# not overridden fall back to the built-in default.
+#
+# Model keys: haiku | sonnet | opus  (they resolve to the current
+# claude-*-4-x model IDs — update src/lib/model-router.ts MODELS if the
+# canonical IDs change).
+
+# Base per-stage-family defaults. Used when speed mode is 'balanced'.
+defaults:
+  plan:        { model: sonnet, thinking: medium }   # specify, plan, checklist, constitution, clarify
+  implement:   { model: sonnet, thinking: medium }   # implement, tasks, testplan, parallelize, verify
+  review:      { model: haiku }                       # review, gate
+  orchestrate: { model: sonnet, thinking: medium }   # orchestrate, merge
+  chat:        { model: haiku }                       # chat, assistant
+  other:       { model: sonnet }
+
+# Speed mode overrides. Only include the families that should differ from
+# `defaults`. Anything omitted falls through to defaults.
+modes:
+  fast:
+    # Cheap-and-fast for everything except merges (which are risky to botch).
+    plan:      { model: haiku }
+    implement: { model: haiku }
+    review:    { model: haiku }
+    chat:      { model: haiku }
+
+  balanced: {}   # Use `defaults` unchanged.
+
+  quality:
+    # Maximum capability. Extended thinking on all planning + merges.
+    plan:        { model: sonnet, thinking: high }
+    implement:   { model: sonnet, thinking: high }
+    orchestrate: { model: opus,   thinking: high }
+    review:      { model: sonnet }
+
+# Prompt-size ceiling in chars for haiku. If the router picks haiku but the
+# prompt is larger than this, it auto-upgrades to sonnet to avoid Haiku
+# silently truncating the context.
+haikuMaxPromptChars: 50000
