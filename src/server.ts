@@ -34,6 +34,7 @@ import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, ty
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
+import { checkAnthropicKey } from './lib/provider-check'
 import {
   createRun as dbCreateRun,
   getLatestRunForProject as dbGetLatestRunForProject,
@@ -99,6 +100,9 @@ try {
   )
 }
 await ensureFrontendBuilt()
+// A shell ANTHROPIC_API_KEY overrides .env; a placeholder there makes every agent
+// call 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
+void checkAnthropicKey(serverLog)
 
 const server = Bun.serve({
   port,
