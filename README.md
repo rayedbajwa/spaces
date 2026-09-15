@@ -23,12 +23,23 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
 
 ## Screenshots
 
+### The board
+
+Every Space appears as a card on a kanban board that auto-derives its lane
+(Backlog → Initialized → Specified → Planned → Tasked → Implementing → Done)
+from the artifacts each project has produced. The **Integrations chip** in
+the hero shows connection status for GitHub, Jira, Confluence, and Slack at
+a glance.
+
+![Spaces board with connected integrations and multiple projects in flight](docs/screenshots/board.png)
+
 ### Project detail — pipeline running
 
-Every project opens into a detail modal showing the AI agent output live, plus
-tabs for specs, tests, implementation, QA, chat, context, memory, and
-promotions. The orchestrator panel on the right controls autonomous mode and
-per-project concurrency.
+Open a card and you get the AI agent output live, plus tabs for specs,
+tests, implementation, QA, chat, context, memory, and promotions. The
+orchestrator panel on the right controls autonomous mode, per-project
+concurrency, and the Fast/Balanced/Quality speed mode fed to the model
+router.
 
 ![Project detail with running pipeline](docs/screenshots/project-detail.png)
 
