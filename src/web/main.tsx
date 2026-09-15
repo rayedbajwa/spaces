@@ -39,6 +39,7 @@ type RunSnapshot = {
   resumable?: boolean
   error?: string
   interrupted?: boolean
+  queued?: boolean
   rerunnable?: boolean
   retryCount?: number
   createdAt: string
@@ -1374,7 +1375,14 @@ function App() {
   const runInFlight = currentRun?.status === 'running' || currentRun?.status === 'paused'
   const hasArtifact = (label: string) => (selectedCardFresh?.artifactLinks ?? []).some((a) => a.stepLabel === label)
   function stepEligibility(step: string): { ok: boolean; reason?: string } {
-    if (runInFlight) return { ok: false, reason: `A run is currently ${currentRun?.status}. Wait or resolve it before starting another.` }
+    if (runInFlight) {
+      return {
+        ok: false,
+        reason: currentRun?.queued
+          ? `A ${currentRun.stages?.join(' → ') || 'run'} run is queued and waiting for a worker slot. It starts as soon as the worker is free.`
+          : `A run is currently ${currentRun?.status}. Wait or resolve it before starting another.`,
+      }
+    }
     switch (step) {
       case 'init': return { ok: true }
       case 'specify': return { ok: true }
@@ -2789,7 +2797,7 @@ function AiAgentOutputBar({
         {currentRun && (
           <div className="entry-links">
             <span className={`mini-badge ${currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : currentRun.status === 'error' ? (currentRun.interrupted ? 'paused' : 'error') : 'running'}`}>
-              {currentRun.status === 'running' ? '● running' : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status}
+              {currentRun.status === 'running' ? (currentRun.queued ? '◌ queued' : '● running') : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status}
             </span>
             {(currentRun.retryCount ?? 0) > 0 && <span className="mini-badge idle">attempt {(currentRun.retryCount ?? 0) + 1}</span>}
             {currentRun.stage && <span className="mini-badge idle">stage: {currentRun.stage}</span>}

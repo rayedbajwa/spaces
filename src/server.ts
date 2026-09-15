@@ -31,7 +31,7 @@ import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } f
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, getProvider } from './lib/oauth'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
-import { sendAnswerToOwner } from './lib/worker-registry'
+import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import {
   createRun as dbCreateRun,
   getLatestRunForProject as dbGetLatestRunForProject,
@@ -239,6 +239,27 @@ async function route(req: Request): Promise<Response> {
     void scheduleRepoClone(repo)
     const refreshed = await projGetRepo(repoId)
     return sendJson(202, refreshed ?? repo)
+  }
+
+  // ---- Workers (shared or per-project via src/supervisor.ts) ----
+
+  if (method === 'GET' && url.pathname === '/api/workers') {
+    return sendJson(200, { workers: await listLiveWorkers() })
+  }
+
+  // The worker serving one project: hot (running jobs), warm (alive, idle or
+  // holding paused runs), stale (missed heartbeats) or none (spawns on demand).
+  if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}\/worker$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const workers = await listLiveWorkers()
+    const dedicated = workers.find((w) => w.projectId === projectId && w.state !== 'stale')
+      ?? workers.find((w) => w.projectId === projectId)
+    const shared = workers.filter((w) => !w.projectId && w.state !== 'stale')
+    return sendJson(200, {
+      worker: dedicated ?? null,
+      sharedWorkers: shared.length,
+      state: dedicated ? dedicated.state : shared.length > 0 ? 'shared' : 'none',
+    })
   }
 
   // ---- Integrations as knowledge (Jira / Linear / Confluence / GitHub) ----
@@ -1172,6 +1193,7 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
     sessionFile: row.sessionFile,
     error: row.errorMessage,
     interrupted: isInterruptedRun(row),
+    queued: row.status === 'queued',
     rerunnable: row.status === 'error' || row.status === 'completed' || row.status === 'paused',
     retryCount: row.retryCount,
     createdAt: row.createdAt,
@@ -2337,6 +2359,8 @@ interface RunSnapshot {
   error?: string
   /** True when the error/pause came from a worker restart rather than the pipeline itself. */
   interrupted?: boolean
+  /** True while the run waits for a worker slot (status is reported as 'running' for compatibility). */
+  queued?: boolean
   /** True when POST /api/runs/:id/rerun is allowed for this run. */
   rerunnable?: boolean
   retryCount?: number

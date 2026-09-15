@@ -401,16 +401,41 @@ async function handleProjectJob(jobId: string): Promise<void> {
   }
 }
 
+/**
+ * Jobs from different projects run concurrently on one worker, up to this many
+ * at once. Per-project concurrency is still enforced by claimNextJob (each
+ * project's max_concurrent), so a long pipeline run in one project no longer
+ * blocks a quick verify in another.
+ */
+const MAX_CONCURRENT_JOBS = Math.max(1, Number(process.env.WORKER_MAX_CONCURRENT_JOBS ?? '4') || 4)
+const inFlightJobs = new Set<Promise<void>>()
 let dispatcherRunning = false
+
+/**
+ * Per-project mode (set by src/supervisor.ts): only claim this project's jobs,
+ * and exit once idle for WORKER_IDLE_EXIT_SECONDS so the supervisor can scale
+ * workers down. A worker holding paused runs (live engines) is never idle.
+ */
+const WORKER_PROJECT_ID = process.env.WORKER_PROJECT_ID?.trim() || undefined
+const WORKER_IDLE_EXIT_SECONDS = Math.max(0, Number(process.env.WORKER_IDLE_EXIT_SECONDS ?? '0') || 0)
+let idleSince: number | undefined
+
 async function drainDispatcher(workerId: string): Promise<void> {
   if (dispatcherRunning) return
   dispatcherRunning = true
   try {
-    // Claim jobs one by one until nothing is runnable.
-    while (true) {
-      const job = await claimNextJob(workerId)
+    // Claim runnable jobs until every slot is busy or nothing is runnable.
+    while (inFlightJobs.size < MAX_CONCURRENT_JOBS) {
+      const job = await claimNextJob(workerId, WORKER_PROJECT_ID)
       if (!job) return
-      await handleProjectJob(job.jobId)
+      const task: Promise<void> = handleProjectJob(job.jobId)
+        .catch((err) => workerLog.error('job handler crashed', { jobId: job.jobId }, err instanceof Error ? err : new Error(String(err))))
+        .finally(() => {
+          inFlightJobs.delete(task)
+          // A slot freed up: look for more work right away.
+          void drainDispatcher(workerId)
+        })
+      inFlightJobs.add(task)
     }
   } finally {
     dispatcherRunning = false
@@ -422,11 +447,34 @@ async function main(): Promise<void> {
   workerLog.info('worker starting', { workerId })
 
   // Register + heartbeat so the server can tell whether the worker that owns a
-  // paused run is still alive before routing an answer to it.
-  await heartbeatWorker(workerId)
+  // paused run is still alive before routing an answer to it, and so the
+  // supervisor/UI can see hot vs idle per-project workers.
+  const heartbeatMeta = () => ({
+    projectId: WORKER_PROJECT_ID,
+    pid: process.pid,
+    activeJobs: inFlightJobs.size,
+    pausedRuns: engines.size,
+    supervised: Boolean(process.env.WORKER_SUPERVISED),
+  })
+  await heartbeatWorker(workerId, heartbeatMeta())
+  if (WORKER_PROJECT_ID) workerLog.info('per-project worker', { projectId: WORKER_PROJECT_ID, idleExitSeconds: WORKER_IDLE_EXIT_SECONDS })
   setInterval(() => {
-    void heartbeatWorker(workerId).catch((err) => workerLog.error('heartbeat failed', err))
-  }, 10_000)
+    void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))
+
+    // Idle exit (per-project workers): nothing running and no live engines for
+    // long enough → shut down cleanly; the supervisor respawns when work appears.
+    if (WORKER_IDLE_EXIT_SECONDS > 0) {
+      const idle = inFlightJobs.size === 0 && engines.size === 0
+      if (!idle) {
+        idleSince = undefined
+      } else if (idleSince === undefined) {
+        idleSince = Date.now()
+      } else if (Date.now() - idleSince > WORKER_IDLE_EXIT_SECONDS * 1000) {
+        workerLog.info('idle for too long; exiting so the supervisor can scale down', { idleSeconds: WORKER_IDLE_EXIT_SECONDS })
+        void shutdown('IDLE')
+      }
+    }
+  }, 5_000)
 
   // Wake on any project_jobs INSERT via pg NOTIFY.
   const sql = getDb()

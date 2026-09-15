@@ -43,6 +43,7 @@
     "aidlc": "bun run src/cli.ts",
     "web": "bun run src/server.ts",
     "worker": "bun run src/worker.ts",
+    "supervisor": "bun run src/supervisor.ts",
     "dev": "bun --hot src/server.ts",
     "help": "bun run src/cli.ts --help",
     "typecheck": "tsc --noEmit",

@@ -14,15 +14,26 @@
 -- already exists) lets fresh installs succeed without changing existing
 -- deployments.
 -- ============================================================================
+-- Full pipeline_runs definition. Kept in sync with the (now-idempotent)
+-- CREATE below in the Phase 2 section. Fresh installs materialize the full
+-- schema here; existing databases already have this table and hit the
+-- no-op path.
 CREATE TABLE IF NOT EXISTS pipeline_runs (
   run_id            UUID PRIMARY KEY,
   project_namespace TEXT NOT NULL,
   project_label     TEXT NOT NULL,
   project_path      TEXT NOT NULL,
   pipeline_name     TEXT NOT NULL,
+  feature           TEXT,
   status            TEXT NOT NULL CHECK (status IN ('queued','running','paused','completed','error')),
+  pause_kind        TEXT CHECK (pause_kind IN ('clarification','review')),
+  current_stage     TEXT,
+  session_file      TEXT,
+  error_message     TEXT,
   options_json      JSONB NOT NULL DEFAULT '{}'::jsonb,
   template_json     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  retry_count       INT NOT NULL DEFAULT 0,
+  owning_worker_id  TEXT,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -298,6 +309,13 @@ CREATE TABLE IF NOT EXISTS workers (
   started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Per-project workers (spawned by src/supervisor.ts) record which project they
+-- serve, their OS pid and what they are doing, so the UI can show hot/idle state.
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS project_id     UUID;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS pid            INT;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS active_jobs    INT NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS paused_runs    INT NOT NULL DEFAULT 0;
+ALTER TABLE workers ADD COLUMN IF NOT EXISTS supervised     BOOLEAN NOT NULL DEFAULT false;
 CREATE INDEX IF NOT EXISTS pipeline_runs_project_idx ON pipeline_runs (project_namespace, created_at DESC);
 CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx  ON pipeline_runs (status);
 

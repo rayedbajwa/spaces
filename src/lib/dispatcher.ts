@@ -201,8 +201,14 @@ export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenque
  */
 const ADVISORY_LOCK_NS = 8140
 
-export async function claimNextJob(workerId: string): Promise<JobRow | undefined> {
+/**
+ * Claim the next runnable job. `projectId` restricts the claim to one project —
+ * used by per-project workers spawned by the supervisor; a general worker
+ * passes nothing and serves every project.
+ */
+export async function claimNextJob(workerId: string, projectId?: string): Promise<JobRow | undefined> {
   const sql = getDb()
+  const projectFilter = projectId ?? null
 
   const result = await sql.begin(async (tx) => {
     // Phase 1: pick a candidate job that's currently under the concurrency
@@ -220,6 +226,7 @@ export async function claimNextJob(workerId: string): Promise<JobRow | undefined
            WHERE r.project_id = j.project_id AND r.status IN ('claimed','running')
         ) inflight ON true
        WHERE j.status = 'queued'
+         AND (${projectFilter}::uuid IS NULL OR j.project_id = ${projectFilter}::uuid)
          AND inflight.in_flight < COALESCE(o.max_concurrent, 1)
        ORDER BY j.priority DESC, j.created_at ASC
        FOR UPDATE OF j SKIP LOCKED
