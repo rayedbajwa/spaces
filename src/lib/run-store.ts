@@ -227,6 +227,12 @@ export async function requeueRunFromStage(runId: string, fromStage: StageName | 
   return row?.retryCount ?? 0
 }
 
+/** Forget which worker owns a run (its engine is gone), so answers fall back to re-queueing. */
+export async function clearRunOwner(runId: string): Promise<void> {
+  const sql = getDb()
+  await sql`UPDATE pipeline_runs SET owning_worker_id = NULL WHERE run_id = ${runId}`
+}
+
 export async function claimRunForWorker(runId: string, workerId: string): Promise<void> {
   const sql = getDb()
   await sql`UPDATE pipeline_runs SET owning_worker_id = ${workerId} WHERE run_id = ${runId}`

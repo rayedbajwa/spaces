@@ -21,6 +21,7 @@ import type { SpeedMode } from './lib/model-router'
 import {
   appendEvent,
   claimRunForWorker,
+  clearRunOwner,
   getRun,
   incrementRetryAndRequeue,
   openGate,
@@ -28,7 +29,7 @@ import {
   resolveOpenGate,
   updateRunStatus,
 } from './lib/run-store'
-import { getWorkerId, subscribeAsWorker } from './lib/worker-registry'
+import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
 import type { FlowProgress, StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 

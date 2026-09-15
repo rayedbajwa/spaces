@@ -263,6 +263,15 @@ ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
 -- Confluence spaces, GitHub repos). '{}' = every connected source, unscoped.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS knowledge_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Live workers. Each worker registers on start and heartbeats; the server only
+-- treats an answer as delivered when the owning worker is alive, otherwise it
+-- re-queues the paused run so a new worker restarts the stage.
+CREATE TABLE IF NOT EXISTS workers (
+  worker_id          TEXT PRIMARY KEY,
+  started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS pipeline_runs_project_idx ON pipeline_runs (project_namespace, created_at DESC);
 CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx  ON pipeline_runs (status);
 

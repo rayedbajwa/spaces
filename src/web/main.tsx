@@ -7,7 +7,7 @@ type PauseKind = 'clarification' | 'review'
 type TimelineStatus = 'running' | 'paused' | 'completed' | 'error'
 type TimelineKind = 'run' | 'stage' | 'review' | 'input'
 type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'done'
-type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions'
+type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
 
 type TimelineEntry = {
   id: string
