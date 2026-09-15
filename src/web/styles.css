@@ -807,8 +807,19 @@ textarea {
 }
 
 .board-column-droppable {
-  box-shadow: inset 0 0 0 1px var(--accent);
-  background: rgba(94, 106, 210, 0.05);
+  box-shadow: inset 0 0 0 1px var(--green);
+  background: rgba(76, 183, 130, 0.08);
+  cursor: copy;
+}
+/* Columns that AREN'T the next-eligible step during a drag get a subtle
+   grey-out so the user can visually see which lane will accept the drop. */
+.board-column-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.board-column-disabled .board-stack,
+.board-column-disabled .board-column-header {
+  pointer-events: none;
 }
 
 .board-card-top { align-items: center; }

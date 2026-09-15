@@ -32,6 +32,8 @@ import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, getProvider } from './lib/oauth'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
+import type { AssistantChatTurn } from './lib/aidlc'
 import {
   createRun as dbCreateRun,
   getLatestRunForProject as dbGetLatestRunForProject,
@@ -39,6 +41,7 @@ import {
   listAllRuns as dbListAllRuns,
   listEvents as dbListEvents,
   requeueRunFromStage as dbRequeueRunFromStage,
+  listRunsForProject as dbListRunsForProject,
   appendEvent as dbAppendEvent,
   resolveOpenGate as dbResolveOpenGate,
   updateRunStatus as dbUpdateRunStatus,
@@ -560,35 +563,56 @@ async function route(req: Request): Promise<Response> {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
 
-    const body = await readJson<{ message?: string }>(req)
+    const body = await readJson<{ message?: string; model?: string }>(req)
     if (!body.message?.trim()) {
       return sendJson(400, { error: 'Message is required.' })
     }
 
-    const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
-    // Pin chat to Anthropic. Without an explicit model, Pi's resolver has been
-    // falling back to a default that routes to OpenAI, which the user's
-    // account doesn't have quota for. Chat is quick and cheap so Sonnet is fine.
+    // Full context: the shared bundle WITH the project id (memory, imported
+    // tickets, knowledge scope), a live operations snapshot (runs, timelines,
+    // log tails, jobs, workers, repos, onboarding), the conversation so far,
+    // and action tools so the assistant can act, not just advise.
+    const ops = await buildAssistantOperationsContext(projectNamespace, projectMeta.path)
+    const contextBundle = await buildContextBundle({ projectId: ops.projectId, projectSlug: projectNamespace, projectPath: projectMeta.path })
+    const history = assistantHistory.get(projectNamespace) ?? []
+    const actions: string[] = []
+    const model = await resolveSubagentModel(projectNamespace, body.model)
     try {
       const answer = await runAIDLCAssistantChat({
         cwd: projectMeta.path,
         message: body.message,
         sharedContextPrompt: contextBundle.promptBundle,
-        model: 'anthropic/claude-sonnet-4-5',
+        operationsContext: ops.markdown,
+        history,
+        projectId: ops.projectId,
+        actionTools: buildAssistantActionTools(projectNamespace, ops.projectId, (line) => actions.push(line)),
+        model,
       })
-      // Guard against the agent completing with no output — surface something
-      // the user can react to instead of silently returning "".
       if (!answer) {
         return sendJson(502, {
           error: 'The assistant returned no output. Check server logs and your LLM provider status/quota.',
         })
       }
-      // Assistant history persistence retired in the legacy cleanup; chat is now stateless per-request.
-      return sendJson(200, { answer, history: [] })
+      rememberAssistantTurn(projectNamespace, { role: 'user', content: body.message })
+      rememberAssistantTurn(projectNamespace, { role: 'assistant', content: answer })
+      const entries = (assistantHistory.get(projectNamespace) ?? []).map((turn) => ({ role: turn.role, content: turn.content, kind: 'chat' as const }))
+      return sendJson(200, { answer, history: entries, actions, focusRunId: ops.latestRunId })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return sendJson(502, { error: message })
     }
+  }
+
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/assistant\/history$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    const entries = (assistantHistory.get(projectNamespace) ?? []).map((turn) => ({ role: turn.role, content: turn.content, kind: 'chat' as const }))
+    return sendJson(200, { history: entries })
+  }
+
+  if (method === 'DELETE' && /^\/api\/projects\/[^/]+\/assistant\/history$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    assistantHistory.delete(projectNamespace)
+    return sendJson(200, { history: [] })
   }
 
   // ---- Project orchestrator config + jobs queue ----
@@ -1132,6 +1156,241 @@ async function route(req: Request): Promise<Response> {
   }
 
   return sendJson(404, { error: 'Not found.' })
+}
+
+// ---------------------------------------------------------------------------
+// Project assistant: conversation memory, live operations snapshot, action tools
+// ---------------------------------------------------------------------------
+
+/** Per-project chat memory (in-process; last 40 turns). */
+const assistantHistory = new Map<string, AssistantChatTurn[]>()
+
+function rememberAssistantTurn(projectNamespace: string, turn: AssistantChatTurn): void {
+  const list = assistantHistory.get(projectNamespace) ?? []
+  list.push(turn)
+  assistantHistory.set(projectNamespace, list.slice(-40))
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 8)
+}
+
+/**
+ * Everything the assistant should know about the project right now, as
+ * Markdown: identity + repos + knowledge scope, onboarding, worker, recent runs
+ * (with the in-flight/latest run's timeline, open question and log tail), the
+ * job queue, sub-agent workstreams, task tracker, and artifacts on disk.
+ */
+async function buildAssistantOperationsContext(projectNamespace: string, projectPath: string): Promise<{ markdown: string; projectId?: string; latestRunId?: string }> {
+  const registry = await import('./lib/project-registry')
+  const project = await registry.getProjectBySlug(projectNamespace)
+  const sections: string[] = []
+
+  if (project) {
+    const repos = await registry.listRepos(project.projectId)
+    const onboarding = getOnboardingSnapshot(project.projectId)
+    const { resolveKnowledgeScope } = await import('./lib/integration-sources')
+    const scope = await resolveKnowledgeScope(project.projectId).catch(() => undefined)
+    const workers = await listLiveWorkers().catch(() => [])
+    const worker = workers.find((w) => w.projectId === project.projectId && w.state !== 'stale')
+    sections.push([
+      `### Project`,
+      `- Name: ${project.name} (slug ${project.slug}, id ${project.projectId})`,
+      project.description ? `- Description: ${project.description}` : '',
+      `- Repositories:`,
+      ...repos.map((r) => `  - ${r.label} — ${r.kind === 'github' ? `GitHub ${r.githubRepo} (clone: ${r.cloneStatus ?? 'n/a'}${r.cloneError ? `, error: ${r.cloneError}` : ''})` : 'local'} → ${r.localPath ?? '(no local path)'}${r.isPrimary ? ' [primary]' : ''} (repoId ${r.repoId})`),
+      `- Knowledge sources in scope: ${scope?.sources.length ? scope.sources.join(', ') : 'none connected/selected'}`,
+      `- Onboarding: ${onboarding.status}${onboarding.error ? ` — ${onboarding.error}` : ''}; steps: ${onboarding.steps.map((s) => `${s.id}=${s.status}`).join(', ')}`,
+      `- Worker: ${worker ? `${worker.state} (${worker.workerId}, ${worker.activeJobs} active job(s))` : workers.some((w) => !w.projectId && w.state !== 'stale') ? 'shared worker online' : 'none online (a per-project worker spawns when work is queued)'}`,
+    ].filter(Boolean).join('\n'))
+  }
+
+  const runs = await dbListRunsForProject(projectNamespace, 6).catch(() => [])
+  const focus = runs.find((r) => r.status === 'running' || r.status === 'paused' || r.status === 'queued') ?? runs[0]
+  if (runs.length) {
+    sections.push([
+      `### Recent runs (newest first)`,
+      ...runs.map((r) => `- ${shortId(r.runId)} · ${r.pipelineName} · **${r.status}**${r.currentStage ? ` at ${r.currentStage}` : ''}${r.pauseKind ? ` (waiting for ${r.pauseKind})` : ''}${r.retryCount ? ` · attempt ${r.retryCount + 1}` : ''} · updated ${r.updatedAt}${r.errorMessage ? `\n  error: ${r.errorMessage.slice(0, 300)}` : ''}${r.feature ? `\n  feature: ${r.feature.slice(0, 160)}` : ''}`),
+    ].join('\n'))
+  } else {
+    sections.push('### Recent runs\n- none yet')
+  }
+
+  if (focus) {
+    const events = await dbListEvents(focus.runId).catch(() => [])
+    const timeline = events
+      .filter((e) => e.kind !== 'log')
+      .slice(-14)
+      .map((e) => {
+        const payload = e.payload as Record<string, unknown> | null
+        const detail = payload ? Object.entries(payload).filter(([k]) => !['tailBytes'].includes(k)).map(([k, v]) => `${k}=${typeof v === 'string' ? v.slice(0, 140) : JSON.stringify(v)}`).join(', ') : ''
+        return `- ${e.createdAt} ${e.kind}${detail ? ` — ${detail}` : ''}`
+      })
+    const log = events.filter((e) => e.kind === 'log').map((e) => ((e.payload as { chunk?: string } | null)?.chunk ?? '')).join('')
+    const tail = log.trim().slice(-6000)
+    sections.push([
+      `### Focus run ${shortId(focus.runId)} (${focus.status}${focus.currentStage ? ` at ${focus.currentStage}` : ''}) — full id ${focus.runId}`,
+      `Stages: ${(focus.templateJson?.steps ?? []).map((s) => s.stage).join(' → ') || '(none)'}`,
+      focus.status === 'paused' ? `This run is waiting for ${focus.pauseKind ?? 'input'}; the question/request is at the end of the log tail. The user can answer with the answer box, or you can use answer_run.` : '',
+      `Timeline (last ${timeline.length} events):`,
+      ...timeline,
+      `Log tail (last ${tail.length} chars):`,
+      '```',
+      tail || '(no log yet)',
+      '```',
+    ].filter(Boolean).join('\n'))
+  }
+
+  if (project) {
+    const jobs = await listJobsForProject(project.projectId, 8).catch(() => [])
+    if (jobs.length) {
+      sections.push([
+        `### Job queue (newest first)`,
+        ...jobs.map((j) => `- ${shortId(j.jobId)} · ${j.runPipeline ?? j.kind} · ${j.displayStatus}${j.runStage ? ` at ${j.runStage}` : ''} · queue state ${j.status} · by ${j.triggerSource}${j.claimedBy ? ` · worker ${j.claimedBy}` : ''}${j.runId ? ` · run ${shortId(j.runId)}` : ''}${j.errorMessage ? `\n  ${j.errorMessage.slice(0, 160)}` : ''}`),
+      ].join('\n'))
+    }
+  }
+
+  const subagents = subagentJobs.get(projectNamespace)?.snapshot
+  if (subagents && subagents.status !== 'idle') {
+    sections.push([
+      `### Implementation sub-agents (${subagents.status}${subagents.error ? ` — ${subagents.error}` : ''})`,
+      ...subagents.workstreams.map((w) => `- ${w.workstream}: ${w.status}${w.branch ? ` · branch ${w.branch}` : ''}${w.pullRequestUrl ? ` · PR ${w.pullRequestUrl}` : ''}${w.summary ? ` — ${w.summary.slice(0, 200)}` : ''}`),
+    ].join('\n'))
+  }
+
+  try {
+    const tracker = await buildTaskTrackerRead(projectPath)
+    const items = tracker.items ?? []
+    if (items.length) {
+      const counts = items.reduce<Record<string, number>>((acc, item) => { acc[item.status] = (acc[item.status] ?? 0) + 1; return acc }, {})
+      const blocked = items.filter((i) => i.status === 'blocked').slice(0, 5)
+      sections.push([
+        `### Task tracker (${tracker.featureDir ?? 'active feature'})`,
+        `- ${items.length} tasks: ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ')}`,
+        ...blocked.map((b) => `- blocked: ${b.id} ${b.description.slice(0, 120)}${b.dependencies.length ? ` — depends on ${b.dependencies.join(', ')}` : ''}`),
+      ].join('\n'))
+    }
+  } catch {
+    // no tracker yet
+  }
+
+  try {
+    const artifacts = await collectProjectArtifacts(projectNamespace, projectPath)
+    if (artifacts.links.length) {
+      sections.push(`### Artifacts on disk\n${artifacts.links.map((a) => `- ${a.stepLabel}: ${a.relativePath}`).join('\n')}\nVerification: ${artifacts.verificationStatus}; scope: ${artifacts.scope.requirements} requirements, ${artifacts.scope.tasks} tasks, ${artifacts.scope.workstreams} workstreams.`)
+    }
+  } catch {
+    // ignore
+  }
+
+  sections.push([
+    `### Things the user can do from the UI`,
+    `- Paused run: "Approve and continue" / "Continue" / type an answer (or answer_run).`,
+    `- Failed/interrupted run: "Rerun from <stage>" or "Rerun from start" (or rerun_run).`,
+    `- Steps: Run specify/plan/tasks/testplan/parallelize/implement/orchestrate/verify buttons (or run_step). "Run implementation agents" starts parallel workstreams (or run_implementation_agents).`,
+    `- Repos: Retry clone on the overview (or retry_clone); knowledge scope in the Context tab; integrations via the Integrations chip.`,
+  ].join('\n'))
+
+  return { markdown: sections.join('\n\n'), projectId: project?.projectId, latestRunId: focus?.runId }
+}
+
+/**
+ * State-changing tools for the assistant. Each one calls this server's own
+ * HTTP API so validation and side effects stay in one place.
+ */
+function buildAssistantActionTools(projectNamespace: string, projectId: string | undefined, onAction: (line: string) => void): ToolDefinition[] {
+  const base = `http://127.0.0.1:${port}`
+  const call = async (method: 'POST' | 'GET', path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: unknown }> => {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    let data: unknown = null
+    try { data = await response.json() } catch { /* no body */ }
+    return { ok: response.ok, status: response.status, data }
+  }
+  const result = (text: string, details: unknown = {}) => ({ content: [{ type: 'text' as const, text }], details })
+  const describe = (r: { ok: boolean; status: number; data: unknown }) => {
+    const d = r.data as { error?: string; status?: string; stage?: string; runId?: string } | null
+    if (!r.ok) return `Failed (${r.status}): ${d?.error ?? JSON.stringify(r.data)}`
+    return `OK${d?.runId ? ` — run ${shortId(d.runId)}` : ''}${d?.status ? ` is now ${d.status}` : ''}${d?.stage ? ` at ${d.stage}` : ''}.`
+  }
+  const obj = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required } as unknown as ToolDefinition['parameters'])
+
+  const tools: ToolDefinition[] = [
+    {
+      name: 'rerun_run',
+      label: 'Rerun a run',
+      description: 'Re-run a failed, interrupted or finished run from the stage it stopped at (default), from an explicit stage, or from the start. Use the full run id from the snapshot.',
+      parameters: obj({ runId: { type: 'string' }, fromStage: { type: 'string', description: 'Stage name, or "start". Omit to resume from the stage the run stopped at.' } }, ['runId']),
+      async execute(_id, params) {
+        const p = params as { runId: string; fromStage?: string }
+        onAction(`rerun_run ${shortId(p.runId)}${p.fromStage ? ` from ${p.fromStage}` : ''}`)
+        return result(describe(await call('POST', `/api/runs/${encodeURIComponent(p.runId)}/rerun`, p.fromStage ? { fromStage: p.fromStage } : {})))
+      },
+    },
+    {
+      name: 'answer_run',
+      label: 'Answer or approve a paused run',
+      description: 'Send an answer to a run that is paused for clarification or review. Use "approve" to approve a review gate, "continue" to unblock a false-positive clarification, or the user\'s actual answer text.',
+      parameters: obj({ runId: { type: 'string' }, answer: { type: 'string' } }, ['runId', 'answer']),
+      async execute(_id, params) {
+        const p = params as { runId: string; answer: string }
+        onAction(`answer_run ${shortId(p.runId)}: ${p.answer.slice(0, 60)}`)
+        return result(describe(await call('POST', `/api/runs/${encodeURIComponent(p.runId)}/answer`, { answer: p.answer })))
+      },
+    },
+    {
+      name: 'run_step',
+      label: 'Run a pipeline step',
+      description: 'Start a single stage for this project (init, specify, clarify, plan, tasks, testplan, parallelize, analyze, implement, orchestrate, verify). Fails if a run is already in flight or the stage\'s prerequisites are missing; set force=true to redo a stage whose artifact already exists.',
+      parameters: obj({ step: { type: 'string' }, force: { type: 'boolean' }, feature: { type: 'string', description: 'Feature description; required for specify.' } }, ['step']),
+      async execute(_id, params) {
+        const p = params as { step: string; force?: boolean; feature?: string }
+        onAction(`run_step ${p.step}`)
+        return result(describe(await call('POST', `/api/projects/${projectNamespace}/execute-step`, { step: p.step, force: p.force, feature: p.feature })))
+      },
+    },
+    {
+      name: 'run_implementation_agents',
+      label: 'Run parallel implementation sub-agents',
+      description: 'Start the parallel workstream sub-agents (needs parallel-workstreams.md). Optional maxAgents (default 4).',
+      parameters: obj({ maxAgents: { type: 'integer', minimum: 1, maximum: 8 } }, []),
+      async execute(_id, params) {
+        const p = params as { maxAgents?: number }
+        onAction(`run_implementation_agents (${p.maxAgents ?? 4})`)
+        return result(describe(await call('POST', `/api/projects/${projectNamespace}/subagents/run`, { maxAgents: p.maxAgents ?? 4 })))
+      },
+    },
+  ]
+  if (projectId) {
+    tools.push(
+      {
+        name: 'retry_clone',
+        label: 'Retry cloning a GitHub repo',
+        description: 'Re-run the clone of a GitHub-hosted repo registered on this project (repoId from the snapshot).',
+        parameters: obj({ repoId: { type: 'string' } }, ['repoId']),
+        async execute(_id, params) {
+          const p = params as { repoId: string }
+          onAction(`retry_clone ${shortId(p.repoId)}`)
+          return result(describe(await call('POST', `/api/projects/${projectId}/repos/${encodeURIComponent(p.repoId)}/clone`, {})))
+        },
+      },
+      {
+        name: 'restart_onboarding',
+        label: 'Restart project onboarding',
+        description: 'Re-run onboarding: clone remote repos, initialize Spec Kit, inventory and learn the codebase, refresh project memory.',
+        parameters: obj({}, []),
+        async execute() {
+          onAction('restart_onboarding')
+          return result(describe(await call('POST', `/api/projects/${projectId}/onboarding`, {})))
+        },
+      },
+    )
+  }
+  return tools
 }
 
 /** Worker restarts stamp this wording; the UI shows such runs as interrupted, not failed. */

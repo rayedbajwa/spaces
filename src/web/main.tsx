@@ -547,6 +547,10 @@ function App() {
   const allIntegrationsConnected = connectedIntegrationCount === INTEGRATION_KINDS.length
   const [clarifyForm, setClarifyForm] = useState({ boardItem: '', repoPath: '', runtime: '', storage: '', notification: '', testFramework: '', extra: '' })
   const [draggedProjectNamespace, setDraggedProjectNamespace] = useState('')
+  // Full card of the currently-dragged project so drop targets can inspect
+  // its recommendedAction to decide whether this lane is a legal destination.
+  // Cleared on dragEnd regardless of whether the drop was accepted.
+  const [draggedCard, setDraggedCard] = useState<BoardCard | null>(null)
   const [memoryBusy, setMemoryBusy] = useState(false)
   const [qaBusy, setQaBusy] = useState(false)
   const [promotionBusy, setPromotionBusy] = useState(false)
@@ -865,11 +869,15 @@ function App() {
     }
   }
 
-  async function loadAssistantHistory(_namespace: string) {
-    // Assistant history persistence was retired in the legacy cleanup;
-    // chat is now stateless per-request. Keep the UI hook to avoid a churn
-    // of caller edits, but always return empty.
-    setChatEntries([])
+  async function loadAssistantHistory(namespace: string) {
+    // The server keeps the conversation per project (in memory) so the
+    // assistant has continuity; reload it when the project opens.
+    try {
+      const payload = await getJson<{ history: ChatEntry[] }>(`/api/projects/${namespace}/assistant/history`)
+      setChatEntries(payload.history ?? [])
+    } catch {
+      setChatEntries([])
+    }
   }
 
   async function loadLatestRun(namespace: string) {
@@ -1194,11 +1202,17 @@ function App() {
     setChatInput('')
     setBusy(true)
     try {
-      const response = await postJson<{ answer: string; history: ChatEntry[] }>(`/api/projects/${selectedProjectNamespace}/chat`, { message })
-      // Chat is stateless server-side (response.history is always []). Keep
-      // the client's session transcript by APPENDING the assistant's answer
-      // rather than replacing the whole list with the empty history.
-      setChatEntries((current) => [...current, { role: 'assistant', content: response.answer }])
+      const response = await postJson<{ answer: string; history: ChatEntry[]; actions?: string[]; focusRunId?: string }>(`/api/projects/${selectedProjectNamespace}/chat`, { message })
+      const actionNote = response.actions?.length ? `\n\n_Actions taken: ${response.actions.join('; ')}_` : ''
+      if (response.history?.length) {
+        setChatEntries(response.history.map((entry, index, all) => index === all.length - 1 && entry.role === 'assistant' ? { ...entry, content: `${entry.content}${actionNote}` } : entry))
+      } else {
+        setChatEntries((current) => [...current, { role: 'assistant', content: `${response.answer}${actionNote}` }])
+      }
+      // The assistant may have re-run, approved or started something: refresh what it touched.
+      if (response.actions?.length) {
+        await Promise.all([loadLatestRun(selectedProjectNamespace), loadProjectJobs(selectedProjectNamespace), refreshBoard()])
+      }
     } catch (error) {
       setChatEntries((current) => [...current, { role: 'assistant', content: `Error: ${toMessage(error)}` }])
     } finally {
@@ -1242,15 +1256,67 @@ function App() {
     }
   }
 
-  async function moveProjectStatus(_projectNamespace: string, _status: BoardStatus) {
-    // Board status override was retired in the legacy cleanup; kanban lane is
-    // now derived from the latest run's status. No server round-trip needed.
-    setStatusMessage('Board status is derived from the latest run — drag-and-drop is display-only for now.')
-    setDraggedProjectNamespace('')
+  /**
+   * Lane → step-that-would-land-a-card-in-that-lane. Lanes are DERIVED from
+   * artifact state (see collectProjectArtifacts on the server), so dropping a
+   * card onto a lane is a shorthand for "run the step that produces the
+   * artifact for that lane". Lanes without a producing step (backlog) return
+   * null and reject all drops.
+   */
+  function stepForColumn(lane: BoardStatus): string | null {
+    switch (lane) {
+      case 'initialized':  return 'init'
+      case 'specified':    return 'specify'
+      case 'planned':      return 'plan'
+      case 'tasked':       return 'tasks'
+      case 'implementing': return 'implement'
+      case 'done':         return 'verify'
+      case 'backlog':      return null
+      default:             return null
+    }
   }
 
-  async function executeStep(step: string, preferredTab?: ProjectModalTab) {
-    if (!selectedProjectNamespace) return
+  /**
+   * A drop is eligible iff the target column matches the card's own
+   * recommended next action. That's the same signal the "Recommended next
+   * action" banner uses inside the project modal — one source of truth for
+   * "what's the next legal step for this project" prevents the board from
+   * silently letting the user skip stages or trigger things out of order.
+   */
+  function isEligibleDrop(card: BoardCard | null, targetLane: BoardStatus): boolean {
+    if (!card) return false
+    const rec = card.recommendedAction
+    if (!rec) return false
+    return stepForColumn(targetLane) === rec.step
+  }
+
+  async function handleBoardDrop(card: BoardCard, targetLane: BoardStatus) {
+    setDraggedProjectNamespace('')
+    if (!isEligibleDrop(card, targetLane)) {
+      setStatusMessage(`Can't move ${card.projectLabel} to ${targetLane} — that's not the next eligible step for this project.`)
+      return
+    }
+    const rec = card.recommendedAction!
+    const proceed = window.confirm(`Run "${rec.label}" for ${card.projectLabel}?\n\n${rec.reason}`)
+    if (!proceed) return
+    await executeStep(rec.step, rec.tab, card)
+  }
+
+  /**
+   * Kick off a pipeline step. Normally scoped to the currently-open project
+   * (via selectedProjectNamespace). Pass `targetCard` to run against a
+   * different project without opening its modal first — used by board drag+drop
+   * so a card dropped onto its next-eligible lane triggers the action inline.
+   */
+  async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard) {
+    const namespace = targetCard?.projectNamespace ?? selectedProjectNamespace
+    if (!namespace) return
+    // If we're running for a different project than the one currently open,
+    // switch the modal over so the user sees the log stream + status for the
+    // right project.
+    if (targetCard && targetCard.projectNamespace !== selectedProjectNamespace) {
+      await openProject(targetCard, preferredTab)
+    }
     // Stage-specific required inputs — prompt the user before hitting the API
     // instead of round-tripping a 400. Matches the validation in
     // src/server.ts /api/.../execute-step.
@@ -1279,7 +1345,7 @@ function App() {
     }
     setBusy(true)
     try {
-      const raw = await fetch(`/api/projects/${selectedProjectNamespace}/execute-step`, {
+      const raw = await fetch(`/api/projects/${namespace}/execute-step`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ step, ...extraBody }),
@@ -1305,7 +1371,7 @@ function App() {
       if (result.runId) {
         setCurrentRun({
           runId: result.runId,
-          projectNamespace: selectedProjectNamespace,
+          projectNamespace: namespace,
           projectLabel: '',
           projectPath: '',
           pipeline: `adhoc-${step}`,
@@ -1322,7 +1388,7 @@ function App() {
         } as RunSnapshot)
         connectRunEvents(result.runId)
       }
-      await Promise.all([refreshBoard(), loadProjectQA(selectedProjectNamespace), loadProjectContext(selectedProjectNamespace), loadTaskTracker(selectedProjectNamespace)])
+      await Promise.all([refreshBoard(), loadProjectQA(namespace), loadProjectContext(namespace), loadTaskTracker(namespace)])
       if (preferredTab) setActiveProjectTab(preferredTab)
       if (result.state === 'needs_approval' || result.state === 'needs_clarification') {
         setActiveProjectTab('assistant')
@@ -1508,29 +1574,50 @@ function App() {
 
       <section className="board-panel card panel">
         <div className="board-columns">
-          {board.columns.map((column) => (
+          {board.columns.map((column) => {
+            const dragging = !!draggedCard
+            const eligible = dragging && isEligibleDrop(draggedCard, column.id)
+            const disabled = dragging && !eligible
+            const columnStep = stepForColumn(column.id)
+            return (
             <section
               key={column.id}
-              className={`board-column ${draggedProjectNamespace ? 'board-column-droppable' : ''}`}
-              onDragOver={(event) => event.preventDefault()}
+              className={`board-column ${eligible ? 'board-column-droppable' : ''} ${disabled ? 'board-column-disabled' : ''}`}
+              // Only preventDefault on eligible drop targets — that's the HTML5
+              // drag-and-drop convention for signaling "yes, drop here". On
+              // disabled columns the browser shows the not-allowed cursor.
+              onDragOver={(event) => { if (eligible) event.preventDefault() }}
               onDrop={(event) => {
                 event.preventDefault()
-                if (draggedProjectNamespace) void moveProjectStatus(draggedProjectNamespace, column.id)
+                if (draggedCard && eligible) void handleBoardDrop(draggedCard, column.id)
               }}
+              title={dragging
+                ? (eligible
+                  ? `Drop here to run "${draggedCard!.recommendedAction!.label}" for ${draggedCard!.projectLabel}`
+                  : `${draggedCard!.projectLabel}'s next eligible step is ${draggedCard!.recommendedAction?.label ?? '(none)'} — not this lane`)
+                : undefined}
             >
               <div className="board-column-header">
                 <h3>{column.title}</h3>
                 <span className="column-count">{column.cards.length}</span>
               </div>
+              {columnStep && dragging && !eligible && (
+                <p className="empty-state" style={{ fontSize: 11, opacity: 0.6, margin: 0, padding: '4px 6px 8px' }}>
+                  Not the next step for {draggedCard!.projectLabel}
+                </p>
+              )}
               <div className="board-stack">
-                {column.cards.length === 0 && <p className="empty-state">No projects</p>}
+                {column.cards.length === 0 && !dragging && <p className="empty-state">No projects</p>}
                 {column.cards.map((card) => (
                   <article
                     key={card.projectNamespace}
                     className="board-card board-summary-card"
-                    draggable
-                    onDragStart={() => setDraggedProjectNamespace(card.projectNamespace)}
-                    onDragEnd={() => setDraggedProjectNamespace('')}
+                    // Only draggable if there's actually a next-step action to
+                    // trigger. Projects sitting in 'done' with no follow-up
+                    // step shouldn't be draggable at all — nothing to trigger.
+                    draggable={!!card.recommendedAction}
+                    onDragStart={() => { setDraggedProjectNamespace(card.projectNamespace); setDraggedCard(card) }}
+                    onDragEnd={() => { setDraggedProjectNamespace(''); setDraggedCard(null) }}
                     onClick={() => void openProject(card)}
                   >
                     <div className="board-card-top">
@@ -1576,7 +1663,7 @@ function App() {
                 ))}
               </div>
             </section>
-          ))}
+          )})}
         </div>
       </section>
 

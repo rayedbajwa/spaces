@@ -10,6 +10,7 @@ import {
   SessionManager,
   type AgentSession,
   type CreateAgentSessionOptions,
+  type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
 import { buildKnowledgeTools } from './integration-sources'
@@ -1005,12 +1006,32 @@ function getReviewScope(stage: StageName): string {
   }
 }
 
+export interface AssistantChatTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+/**
+ * The project's AI assistant. It sees the shared context bundle (spec/plan/
+ * tasks, project memory, imported tickets), a live operations snapshot (runs,
+ * timelines, log tails, jobs, workers, repos, onboarding), the recent
+ * conversation, and can read the repo, query connected integrations, and —
+ * through `actionTools` — act for the user (rerun, approve, run a step…).
+ */
 export async function runAIDLCAssistantChat(options: {
   cwd: string
   message: string
   model?: string
   thinking?: ThinkingLevel
   sharedContextPrompt?: string
+  /** Live state of the project: runs, jobs, logs, workers, repos, onboarding. */
+  operationsContext?: string
+  /** Prior turns of this conversation, oldest first. */
+  history?: AssistantChatTurn[]
+  /** Owning project; scopes the knowledge tools. */
+  projectId?: string
+  /** State-changing tools (rerun, answer, run step…) supplied by the server. */
+  actionTools?: ToolDefinition[]
 }): Promise<string> {
   const modelRuntime = await createConfiguredModelRuntime()
   const modelSelection = resolveModelSelection(modelRuntime, {
@@ -1019,13 +1040,15 @@ export async function runAIDLCAssistantChat(options: {
     thinking: options.thinking,
   })
 
+  const knowledgeTools = await buildKnowledgeTools({ projectId: options.projectId }).catch(() => [])
+  const actionNames = (options.actionTools ?? []).map((t) => t.name)
   const { session } = await createAgentSession({
     cwd: resolveCwd(options.cwd),
     modelRuntime,
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls'],
-    customTools: await buildKnowledgeTools().catch(() => []),
+    customTools: [...knowledgeTools, ...(options.actionTools ?? [])],
     sessionManager: SessionManager.inMemory(options.cwd),
   })
 
@@ -1045,15 +1068,27 @@ export async function runAIDLCAssistantChat(options: {
     }
   })
 
+  const history = (options.history ?? []).slice(-12)
+  const transcript = history.length
+    ? `## Conversation so far\n${history.map((turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content.trim()}`).join('\n\n')}\n\n`
+    : ''
+  const prompt = withSharedContext(
+    `You are the AI assistant embedded in this project's delivery workspace. You have full context: the shared context bundle above (spec, plan, tasks, project memory, imported tickets), the live operations snapshot below (runs with timelines and log tails, jobs, workers, repositories, onboarding), read access to the repository${knowledgeTools.length ? ', the integration_search/integration_get tools for connected ticket and doc systems' : ''}${actionNames.length ? `, and action tools that change state: ${actionNames.join(', ')}` : ''}.
+
+How to help:
+- Answer from evidence. Cite run ids (first 8 characters), stage names, artifact paths and ticket keys, and quote the exact log or error line you rely on.
+- When something failed or looks stuck, diagnose from the timeline and log tail, explain the cause in plain words, and give the concrete next step (which button or which action tool).
+- Take an action only when the user clearly asks for it ("rerun it", "approve", "run verify"). Say in one line what you are about to do, do it, then report the tool's result. Never invent ids; use the ones in the snapshot.
+- If evidence is missing, say what is missing and how to get it rather than guessing.
+- Be concise: answer first, then evidence, then next step.
+
+${options.operationsContext ? `## Live operations snapshot\n${options.operationsContext.trim()}\n\n` : ''}${transcript}User: ${options.message}`,
+    { sharedContextPrompt: options.sharedContextPrompt },
+  )
+
   try {
-    await session.prompt(
-      withSharedContext(
-        `Answer the following user question about this project, its artifacts, or its AI-assisted delivery history.\n\nRequirements:\n- Cite the most relevant artifact names or stage names explicitly when possible.\n- When the answer depends on an artifact, include a short quoted excerpt or snippet from that artifact.\n- If evidence is missing, say so clearly.\n\nUser question: ${options.message}`,
-        { sharedContextPrompt: options.sharedContextPrompt },
-      ),
-      { expandPromptTemplates: false },
-    )
-    if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+    await session.prompt(prompt, { expandPromptTemplates: false })
+    if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
     return output.trim()
   } finally {
     unsubscribe()

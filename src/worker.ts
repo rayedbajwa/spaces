@@ -465,6 +465,43 @@ async function drainDispatcher(workerId: string): Promise<void> {
   }
 }
 
+/**
+ * Close jobs claimed by workers that stopped heartbeating and hand their runs
+ * to the queue. Only this worker's own project (per-project mode) or every
+ * project (shared mode) is considered.
+ */
+async function reapDeadWorkerJobs(): Promise<void> {
+  const sql = getDb()
+  try {
+    const dead = await sql<Array<{ jobId: string; runId: string | null; projectId: string; claimedBy: string | null }>>`
+      SELECT j.job_id AS "jobId", j.run_id AS "runId", j.project_id AS "projectId", j.claimed_by AS "claimedBy"
+        FROM project_jobs j
+        LEFT JOIN workers w ON w.worker_id = j.claimed_by
+       WHERE j.status IN ('claimed','running')
+         AND j.started_at < now() - interval '2 minutes'
+         AND (${WORKER_PROJECT_ID ?? null}::uuid IS NULL OR j.project_id = ${WORKER_PROJECT_ID ?? null}::uuid)
+         AND (w.worker_id IS NULL OR w.last_heartbeat_at < now() - interval '90 seconds')
+    `
+    for (const job of dead) {
+      // Never reap our own in-flight jobs (we are obviously alive).
+      if (job.claimedBy === getWorkerId()) continue
+      await failJob(job.jobId, `Worker ${job.claimedBy ?? '(unknown)'} stopped heartbeating; job closed and run handed off.`)
+      if (!job.runId) continue
+      const run = await getRun(job.runId)
+      if (!run || run.status !== 'running') continue
+      const stage = run.currentStage ?? null
+      const note = `Worker ${job.claimedBy ?? '(unknown)'} died during stage ${stage ?? 'start'}; re-queued from that stage.`
+      await requeueRunFromStage(job.runId, stage, note)
+      await appendEvent({ runId: job.runId, kind: 'requeued', payload: { fromStage: stage, reason: note, deadWorker: job.claimedBy } })
+      await enqueueJob({ projectId: job.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId: job.runId, fromStage: stage ?? undefined }, runId: job.runId })
+      workerLog.info('handed off run from dead worker', { runId: job.runId, deadWorker: job.claimedBy, stage })
+    }
+    if (dead.length > 0) workerLog.info('reaped dead-worker jobs', { count: dead.length })
+  } catch (err) {
+    workerLog.error('dead-worker reaper failed', err instanceof Error ? err : new Error(String(err)))
+  }
+}
+
 async function main(): Promise<void> {
   const workerId = getWorkerId()
   workerLog.info('worker starting', { workerId })
@@ -519,23 +556,13 @@ async function main(): Promise<void> {
       if (n > 0) workerLog.info('reaped idle agents', { count: n })
     })
   }, 5 * 60_000)
-  // Reap stale in-flight jobs (worker crashed mid-run). Any job stuck in
-  // claimed/running for > 10 minutes with no ended_at is marked error so the
-  // dispatcher can accept new jobs for the same project.
-  setInterval(() => {
-    const sql = getDb()
-    void sql`
-      UPDATE project_jobs
-         SET status='error', ended_at=now(),
-             error_message=COALESCE(error_message, '') || 'Stale — worker did not complete within 10 min; auto-reaped.'
-       WHERE status IN ('claimed','running')
-         AND started_at IS NOT NULL
-         AND started_at < now() - INTERVAL '10 minutes'
-      RETURNING job_id
-    `.then((rows) => {
-      if (rows.length > 0) workerLog.info('reaped stale jobs', { count: rows.length })
-    }).catch((err) => workerLog.error('stale reaper failed', err))
-  }, 60_000)
+  // Reap jobs whose worker died. Liveness comes from the workers heartbeat
+  // table, NOT from elapsed time: a plan or implement stage legitimately runs
+  // for far longer than any fixed timeout, and the old 10-minute rule marked
+  // healthy jobs as failed, let the dispatcher start a second run for the same
+  // project, and re-queued duplicates. A dead worker's run is handed off: the
+  // job is closed and the run is re-queued from the stage it was in.
+  setInterval(() => { void reapDeadWorkerJobs() }, 60_000)
   // Reap orphaned pipeline_runs — queued runs older than 30s with no matching
   // project_jobs row. Caused by a worker crash between the retry UPDATE and
   // the job INSERT before retryRunAndEnqueue was transactional. This reaper
@@ -556,11 +583,15 @@ async function main(): Promise<void> {
 }
 
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
   workerLog.info('shutdown signal received; disposing engines', { signal })
   for (const [runId, engine] of engines) {
     try {
       const run = await getRun(runId)
-      if (run?.status === 'paused') {
+      // Trust the engine, not the DB row: a run whose answer is being processed
+      // can still read 'paused' in the DB for a moment while the engine is busy.
+      if (run && engine.isWaitingForInput()) {
         // Nothing was executing. Keep the run paused; the next answer restarts
         // the stage on a fresh worker (see handleAnswerJob's no-engine path).
         await updateRunStatus(runId, {
