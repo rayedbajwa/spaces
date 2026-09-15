@@ -1856,7 +1856,7 @@ async function loadStagePrompt(options: {
   }
 
   if (options.stage === 'implement') {
-    return `${basePrompt}\n\nAdditional AIDLC requirement:\n- Before changing code, read ${DEV_SETUP_FILE} (written by the dev-environment setup step) for the exact install/build/test/lint commands and README conventions, and use those commands to run the tests you add or touch. If it is missing or says BLOCKED, first get the project building and its tests running, then continue.`
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- Before changing code, read ${DEV_SETUP_FILE} (written by the dev-environment setup step) for the exact install/build/test/lint commands and README conventions, and use those commands to run the tests you add or touch. If it is missing or says BLOCKED, first get the project building and its tests running, then continue.\n- If the current checkout is the project's governing workspace (specs, memory and reports only — no application code), implement in the repositories named in plan.md "## Repositories", using their local paths from the repository map in the shared context (each has its own ${DEV_SETUP_FILE}). Keep task status and reports in this workspace's feature directory; commit code changes only in the code repositories.`
   }
 
   return basePrompt

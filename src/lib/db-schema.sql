@@ -316,6 +316,22 @@ ALTER TABLE workers ADD COLUMN IF NOT EXISTS pid            INT;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS active_jobs    INT NOT NULL DEFAULT 0;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS paused_runs    INT NOT NULL DEFAULT 0;
 ALTER TABLE workers ADD COLUMN IF NOT EXISTS supervised     BOOLEAN NOT NULL DEFAULT false;
+
+-- Catalog of every repository the connected GitHub account can see, with its
+-- README-derived use case. Synced on connect and periodically; lets the plan
+-- stage name repositories (which are then cloned on demand) without anyone
+-- selecting them up front.
+CREATE TABLE IF NOT EXISTS github_repo_index (
+  full_name       TEXT PRIMARY KEY,
+  description     TEXT,
+  language        TEXT,
+  topics          JSONB NOT NULL DEFAULT '[]'::jsonb,
+  default_branch  TEXT,
+  usecase         TEXT,
+  is_private      BOOLEAN NOT NULL DEFAULT false,
+  updated_at      TIMESTAMPTZ,
+  indexed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS pipeline_runs_project_idx ON pipeline_runs (project_namespace, created_at DESC);
 CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx  ON pipeline_runs (status);
 

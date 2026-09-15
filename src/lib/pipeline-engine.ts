@@ -25,6 +25,12 @@ export interface PipelineEngineOptions extends FlowOptions {
    * Pipeline step `model:` fields always override this.
    */
   speedMode?: SpeedMode
+  /**
+   * Handoffs captured by earlier attempts of this run (from run_thread_entries).
+   * Seeded on a rerun/resume so the stage that restarts still sees what the
+   * previous stages decided instead of starting from a blank thread.
+   */
+  priorHandoffs?: Array<{ stepId: string; stage: string; model?: string; text: string; compacted?: boolean }>
 }
 
 export interface PipelineEngineSinks {
@@ -69,6 +75,11 @@ export class PipelineEngine {
     this.template = template
     this.sinks = sinks
     this.options = options
+    // Rerun/resume: start with the previous attempt's cross-stage memory.
+    for (const h of options.priorHandoffs ?? []) {
+      this.stageHandoffs.push({ stepId: h.stepId, stage: h.stage, model: h.model, text: h.text, compacted: h.compacted ?? false })
+    }
+    while (this.stageHandoffs.length > 6) this.stageHandoffs.shift()
 
     const stages = template.steps.map((step) => step.stage)
     this.reviewStages = new Set(template.steps.filter((s) => s.review).map((s) => s.stage))

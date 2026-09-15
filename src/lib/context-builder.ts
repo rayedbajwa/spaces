@@ -54,6 +54,8 @@ export async function buildContextBundle(options: {
   const sourceSnapshots = projectId ? await loadSourceSnapshots(projectId) : []
   // Only the sources this project has selected (and that are connected).
   const knowledgeSources = await resolveKnowledgeScope(projectId).then((scope) => scope.sources).catch(() => [] as KnowledgeSource[])
+  // Every GitHub repo the account can see, with its use case — so plans can name repos without upfront selection.
+  const repoCatalog = await loadRepoCatalog().catch(() => '')
 
   return {
     projectId,
@@ -76,6 +78,7 @@ export async function buildContextBundle(options: {
       featureArtifacts,
       sourceSnapshots,
       knowledgeSources,
+      repoCatalog,
     }),
   }
 }
@@ -141,6 +144,18 @@ async function loadFeatureArtifacts(projectPath: string): Promise<ContextArtifac
   return artifacts
 }
 
+/** Compact list of synced GitHub repos with their README-derived use case (capped). */
+async function loadRepoCatalog(limit = 60): Promise<string> {
+  const sql = getDb()
+  const rows = await sql<Array<{ fullName: string; description: string | null; language: string | null; topics: string[] | null; usecase: string | null }>>`
+    SELECT full_name AS "fullName", description, language, topics, usecase
+      FROM github_repo_index ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
+  `
+  return rows
+    .map((r) => `- **${r.fullName}**${r.language ? ` (${r.language})` : ''}${r.topics?.length ? ` [${r.topics.slice(0, 4).join(', ')}]` : ''} — ${(r.usecase ?? r.description ?? 'no description').replace(/\s+/g, ' ').slice(0, 160)}`)
+    .join('\n')
+}
+
 async function loadSourceSnapshots(projectId: string): Promise<SourceSnapshot[]> {
   const sql = getDb()
   return await sql<SourceSnapshot[]>`
@@ -184,6 +199,8 @@ function buildPromptBundle(options: {
   featureArtifacts: ContextArtifact[]
   sourceSnapshots: SourceSnapshot[]
   knowledgeSources?: KnowledgeSource[]
+  /** Markdown list of the GitHub repositories the account can see, with use cases. */
+  repoCatalog?: string
 }): string {
   // Build each section as a labeled block so we can drop the lowest-priority
   // ones if the total exceeds the token budget.
@@ -214,6 +231,14 @@ function buildPromptBundle(options: {
       label: 'feature-artifacts',
       priority: 80,
       text: `## Feature Artifacts\n${options.featureArtifacts.map((artifact) => `### ${artifact.label} (${artifact.path})\n${artifact.content.trim()}`).join('\n\n')}`,
+    })
+  }
+
+  if (options.repoCatalog?.trim()) {
+    blocks.push({
+      label: 'repo-catalog',
+      priority: 55,
+      text: `## Repository catalog (GitHub)\nEvery repository the connected account can see, with what it is for. Plans should name the repositories a feature touches from this list (owner/name); unregistered ones are cloned into the project automatically after the plan stage.\n${options.repoCatalog.trim()}`,
     })
   }
 

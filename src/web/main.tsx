@@ -988,13 +988,15 @@ function App() {
       if (!wizard.name.trim()) return 'Project name is required.'
     }
     if (step === 2) {
-      if (wizard.repos.length === 0) return 'Add at least one repository.'
-      for (const r of wizard.repos) {
+      // Repos are optional: the project gets a governing workspace for specs and
+      // memory, and the plan stage names the code repositories, which are then
+      // cloned on demand from the synced GitHub catalog.
+      const filled = wizard.repos.filter((r) => r.label.trim() || r.localPath.trim() || r.githubRepo.trim())
+      for (const r of filled) {
         if (!r.label.trim()) return `Every repo needs a label.`
         if (r.kind === 'local' && !r.localPath.trim()) return `Local repo "${r.label}" needs a path.`
         if (r.kind === 'github' && !r.githubRepo.trim()) return `GitHub repo "${r.label}" needs an owner/name.`
       }
-      if (!wizard.repos.some((r) => r.isPrimary)) return 'Mark one repo as primary.'
     }
     return null
   }
@@ -1020,13 +1022,16 @@ function App() {
       const createBody = {
         name: wizard.name.trim(),
         description: wizard.description.trim() || undefined,
-        repos: wizard.repos.map((r) => ({
-          label: r.label.trim(),
-          kind: r.kind,
-          localPath: r.kind === 'local' ? r.localPath.trim() : undefined,
-          githubRepo: r.kind === 'github' ? r.githubRepo.trim() : undefined,
-          isPrimary: r.isPrimary,
-        })),
+        // Empty drafts are dropped; the server adds the governing workspace as primary.
+        repos: wizard.repos
+          .filter((r) => r.label.trim() || r.localPath.trim() || r.githubRepo.trim())
+          .map((r) => ({
+            label: r.label.trim() || (r.kind === 'github' ? r.githubRepo.trim().split('/')[1] ?? 'repo' : r.localPath.trim().split('/').pop() ?? 'repo'),
+            kind: r.kind,
+            localPath: r.kind === 'local' ? r.localPath.trim() : undefined,
+            githubRepo: r.kind === 'github' ? r.githubRepo.trim() : undefined,
+            isPrimary: false,
+          })),
         // Integrations moved to app level; no per-project slots created.
         integrations: [],
       }

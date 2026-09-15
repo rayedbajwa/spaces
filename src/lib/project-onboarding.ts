@@ -191,7 +191,9 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
 
   // Multi-repo projects: every repo with a local checkout is inventoried and
   // learned, so later stages know where each module lives and how to build/test it.
-  const localRepos = repos.filter((r): r is RepoRow & { localPath: string } => Boolean(r.localPath))
+  // The governing workspace (specs/memory only) is not application code: no
+  // brief, no dev-environment setup for it. Code repos are learned and set up.
+  const localRepos = repos.filter((r): r is RepoRow & { localPath: string } => Boolean(r.localPath) && r.label !== 'governance')
   const repoName = (r: RepoRow) => r.githubRepo ?? r.label
 
   // ---- sync --------------------------------------------------------------
@@ -224,7 +226,9 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
     }
   }))
   const learnErrors = briefs.filter((b) => b.error)
-  if (learnErrors.length === briefs.length) {
+  if (briefs.length === 0) {
+    setStep(snapshot, 'learn', 'done', 'No code repositories yet — the plan stage names them and they are learned when cloned.')
+  } else if (learnErrors.length === briefs.length) {
     setStep(snapshot, 'learn', 'error', learnErrors.map((b) => `${repoName(b.repo)}: ${b.error}`).join('; '))
   } else {
     const words = briefs.reduce((n, b) => n + b.brief.split(/\s+/).length, 0)
@@ -270,7 +274,9 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
     await runNext()
   }
   await Promise.all([runNext(), runNext()])
-  if (setupErrors.length === localRepos.length) {
+  if (localRepos.length === 0) {
+    setStep(snapshot, 'setup', 'done', 'No code repositories yet — each one is set up when it is added.')
+  } else if (setupErrors.length === localRepos.length) {
     setStep(snapshot, 'setup', 'error', setupErrors.join('; '))
   } else {
     setStep(snapshot, 'setup', 'done', [...setupResults, ...setupErrors.map((e) => `failed — ${e}`)].join(' · '))

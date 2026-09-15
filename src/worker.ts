@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
 import process from 'node:process'
+import { access } from 'node:fs/promises'
+import { SessionManager } from '@earendil-works/pi-coding-agent'
 import { PipelineEngine } from './lib/pipeline-engine'
+
+async function fileExists(file: string): Promise<boolean> {
+  try { await access(file); return true } catch { return false }
+}
 import { assertEnvOrExit } from './lib/env'
 import { closeDb, getDb } from './lib/db'
 
@@ -33,6 +39,7 @@ import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } fro
 import type { FlowProgress, StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 import { checkAnthropicKey } from './lib/provider-check'
+import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -113,24 +120,45 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   // the agent keeps context. Falls back to a fresh session if none warmed.
   let releaseAgent: ((sessionFile?: string | null) => Promise<void>) | undefined
   let poolInfo: { wasWarm: boolean; agentId: string } | undefined
+  // Rerun/resume: continue the previous attempt's agent session (its whole
+  // conversation, tool results and files read) and seed the cross-stage handoff
+  // thread from what earlier stages recorded, instead of starting from scratch.
+  const resumeSessionFile = startStage && run.sessionFile && (await fileExists(run.sessionFile)) ? run.sessionFile : undefined
+  const priorHandoffs = startStage
+    ? (await getDb()<Array<{ stepId: string; stage: string; model: string | null; tail: string; summary: string | null }>>`
+        SELECT step_id AS "stepId", stage, model, tail, summary
+          FROM run_thread_entries WHERE run_id = ${runId} ORDER BY entry_id ASC
+      `).slice(-6).map((h) => ({ stepId: h.stepId, stage: h.stage, model: h.model ?? undefined, text: h.summary ?? h.tail, compacted: Boolean(h.summary) }))
+    : []
+  if (startStage) {
+    await queueEvent(runId, 'context_restored', { sessionFile: resumeSessionFile ?? null, priorHandoffStages: priorHandoffs.map((h) => h.stage) })
+  }
+
   const options = {
     ...run.optionsJson,
     ...(startStage ? { startStage } : {}),
     ...(speedMode ? { speedMode } : {}),
-    ...(run.projectId
+    ...(priorHandoffs.length ? { priorHandoffs } : {}),
+    ...(resumeSessionFile
       ? {
-          sessionManagerFactory: async () => {
-            const grip = await acquireWarmSession({
-              projectId: run.projectId!,
-              role: 'primary',
-              cwd: run.projectPath,
-            })
-            releaseAgent = grip.release
-            poolInfo = { wasWarm: grip.wasWarm, agentId: grip.agentId }
-            return grip.manager
-          },
+          // Same session file as the previous attempt → the agent keeps its context.
+          persistSession: true,
+          sessionManagerFactory: async () => SessionManager.open(resumeSessionFile, undefined, run.projectPath),
         }
-      : {}),
+      : run.projectId
+        ? {
+            sessionManagerFactory: async () => {
+              const grip = await acquireWarmSession({
+                projectId: run.projectId!,
+                role: 'primary',
+                cwd: run.projectPath,
+              })
+              releaseAgent = grip.release
+              poolInfo = { wasWarm: grip.wasWarm, agentId: grip.agentId }
+              return grip.manager
+            },
+          }
+        : {}),
   }
 
   await queueEvent(runId, startStage ? 'run_resumed' : 'run_started', {
@@ -159,6 +187,15 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
           INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
           VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
         `
+        // Plan named repositories? Register + clone the missing ones now so the
+        // following stages (tasks, implement) can work in them.
+        if (h.stage === 'plan' && run.projectId) {
+          void reconcilePlanRepositories(run.projectId, run.projectPath)
+            .then(({ added, unknown }) => {
+              if (added.length || unknown.length) void queueEvent(runId, 'plan_repositories', { added, unknown })
+            })
+            .catch((err) => workerLog.warn('plan repository reconciliation failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+        }
         void queueEvent(runId, 'handoff_captured', {
           stepId: h.stepId,
           stage: h.stage,
@@ -268,6 +305,7 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
       prompt: progress.stage,
     })
     await queueEvent(runId, 'paused', { stage: progress.stage, pauseKind: progress.pauseKind })
+    void exportRunProjectState(runId, `stage ${progress.stage ?? '?'} paused`)
     return
   }
 
@@ -280,6 +318,7 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
     errorMessage: null,
   })
   await queueEvent(runId, 'run_completed', { sessionFile: progress.sessionFile })
+  void exportRunProjectState(runId, 'run completed')
   await drainEvents(runId)
   const engine = engines.get(runId)
   await engine?.dispose()
@@ -291,6 +330,17 @@ const TRANSIENT_PROVIDER_ERROR = /socket connection was closed|ECONNRESET|ETIMED
 const MAX_TRANSIENT_RETRIES = 2
 
 let shuttingDown = false
+
+/** Persist memory/knowledge/manifest into the project's governing workspace (and S3 when configured). */
+async function exportRunProjectState(runId: string, reason: string): Promise<void> {
+  try {
+    const run = await getRun(runId)
+    if (!run?.projectId) return
+    await exportProjectState(run.projectId, `${reason} (run ${runId.slice(0, 8)})`)
+  } catch (err) {
+    workerLog.warn('governance export failed', { runId, error: err instanceof Error ? err.message : String(err) })
+  }
+}
 
 async function handleEngineError(runId: string, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message : String(error)

@@ -35,6 +35,7 @@ import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkAnthropicKey } from './lib/provider-check'
+import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import {
   createRun as dbCreateRun,
@@ -107,6 +108,14 @@ await ensureFrontendBuilt()
 // A shell ANTHROPIC_API_KEY overrides .env; a placeholder there makes every agent
 // call 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
 void checkAnthropicKey(serverLog)
+// Keep the GitHub repository catalog fresh (on boot when connected, then every 6h).
+{
+  const syncCatalog = () => syncGitHubRepoCatalog().catch((error) => {
+    if (!(error instanceof GitHubNotConnectedError)) serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) })
+  })
+  void syncCatalog()
+  setInterval(() => { void syncCatalog() }, 6 * 60 * 60_000)
+}
 
 const server = Bun.serve({
   port,
@@ -186,6 +195,11 @@ async function route(req: Request): Promise<Response> {
     // Onboarding runs in the background: clone remote repos FIRST, then inventory
     // the codebase, have an agent learn it, and store the result as project memory.
     // The wizard polls GET /api/projects/:id/onboarding and waits before the first run.
+    // Governing workspace: the project's primary "repo" for specs, memory and
+    // reports, so no code repository has to be selected up front.
+    if (governanceEnabled()) {
+      await ensureGovernanceWorkspace(project).catch((error) => serverLog.warn('governance workspace creation failed', { slug: project.slug, error: error instanceof Error ? error.message : String(error) }))
+    }
     void startProjectOnboarding(project, { model: body.model?.trim() || 'anthropic/claude-sonnet-4-5' })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
@@ -429,6 +443,32 @@ async function route(req: Request): Promise<Response> {
       if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message })
       return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
     }
+  }
+
+  // Synced GitHub repository catalog (name, language, topics, README use case).
+  if (method === 'GET' && url.pathname === '/api/github/catalog') {
+    return sendJson(200, { repositories: await listRepoCatalog(Number(url.searchParams.get('limit') ?? '200')) })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/github/catalog/sync') {
+    try {
+      return sendJson(200, await syncGitHubRepoCatalog())
+    } catch (error) {
+      if (error instanceof GitHubNotConnectedError) return sendJson(409, { error: error.message })
+      return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  // Export the project's durable state (memory, knowledge, manifest) into its
+  // governing workspace and commit (the workspace's git history is the archive).
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/export$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    if (governanceEnabled()) await ensureGovernanceWorkspace(project).catch(() => undefined)
+    const result = await exportProjectState(projectId, 'manual export')
+    if (!result) return sendJson(409, { error: 'Project has no governing workspace.' })
+    return sendJson(200, result)
   }
 
   // Repos visible to the connected GitHub account — powers the wizard autocomplete.
@@ -827,6 +867,11 @@ async function route(req: Request): Promise<Response> {
           status: 'connected',
           credentials: tokens as unknown as Record<string, unknown>,
         })
+      }
+      // GitHub connected → index every visible repository (name, language,
+      // topics, README use case) so plans can name repos without upfront selection.
+      if (provider === 'github') {
+        void syncGitHubRepoCatalog().catch((error) => serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) }))
       }
       return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><script>window.close()</script></body></html>`)
     } catch (error) {

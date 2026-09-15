@@ -196,6 +196,33 @@ account can see. GitHub repos are cloned into `~/.aidlc/workspaces/<owner>/<name
 onboarding, and every run targets that clone. The token is passed to git as a
 per-command header and never written into the clone.
 
+### Governing workspace, repository catalog and long-term storage
+
+Every new project gets a **governing workspace**: a local git repository
+(`~/.aidlc/workspaces/_governance/<slug>`, override with
+`AIDLC_GOVERNANCE_ROOT`, disable with `AIDLC_GOVERNANCE_WORKSPACE=0`) that is
+the project's primary repo. It owns the Spec Kit workspace and every feature's
+specs, plans, tasks and reports, plus exported project memory (`memory/`),
+imported knowledge (`knowledge/`) and a `project.json` manifest. Exports are
+committed after each stage pause/completion, so the workspace's git history on
+local disk is the project's long-term store (push it to a remote of your
+choosing if you want an off-machine copy).
+
+No code repository has to be selected up front. When GitHub is connected, all
+repositories the account can see are indexed into a **repository catalog**
+(name, language, topics, README-derived use case; refreshed on connect and
+every 6 hours) that is part of the shared context. The `plan` stage names the
+repositories a feature touches from that catalog; after the plan completes,
+unregistered ones are added to the project, cloned, learned and set up
+automatically, so implementation runs in real checkouts.
+
+### Reruns keep their context
+
+Re-running or resuming a run from a stage reopens the previous attempt's agent
+session (the same conversation, tool results and files read) and seeds the
+cross-stage handoff thread from what earlier stages recorded, instead of
+starting the worker from scratch.
+
 ### Repositories a feature depends on
 
 The `plan` stage writes a `## Repositories` section in `plan.md` naming every
