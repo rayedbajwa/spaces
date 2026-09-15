@@ -40,6 +40,7 @@ import type { FlowProgress, StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 import { checkAnthropicKey } from './lib/provider-check'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
+import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -191,8 +192,11 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
         // following stages (tasks, implement) can work in them.
         if (h.stage === 'plan' && run.projectId) {
           void reconcilePlanRepositories(run.projectId, run.projectPath)
-            .then(({ added, unknown }) => {
+            .then(async ({ added, unknown }) => {
               if (added.length || unknown.length) void queueEvent(runId, 'plan_repositories', { added, unknown })
+              // Refresh repository/work-area suggestions from the plan itself.
+              const suggestions = await suggestRepositoriesAndWorkAreas(run.projectId!, { basis: 'plan', model: run.optionsJson.model }).catch(() => undefined)
+              if (suggestions) void queueEvent(runId, 'suggestions_updated', { basis: 'plan', repositories: suggestions.repositories.length, workAreas: suggestions.workAreas.length })
             })
             .catch((err) => workerLog.warn('plan repository reconciliation failed', { runId, error: err instanceof Error ? err.message : String(err) }))
         }

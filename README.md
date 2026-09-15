@@ -223,6 +223,16 @@ session (the same conversation, tool results and files read) and seeds the
 cross-stage handoff thread from what earlier stages recorded, instead of
 starting the worker from scratch.
 
+### Suggested repositories and work areas
+
+Onboarding ends by suggesting which repositories the project should span and
+which work areas (services, modules, flows) the work will touch, using the
+project description, the first feature and the synced GitHub catalog. The
+suggestions are refreshed from `plan.md` after each plan stage. The project
+overview shows them with reasons, confidence and role; unregistered repos get
+an **Add & clone** button, work areas list the repos, likely paths and risks,
+and **refresh** regenerates them (`POST /api/projects/:id/suggestions`).
+
 ### Repositories a feature depends on
 
 The `plan` stage writes a `## Repositories` section in `plan.md` naming every

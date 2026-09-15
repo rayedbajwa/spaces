@@ -240,6 +240,13 @@ type ProjectDetailRecord = {
   name: string
   repos: ProjectRepoRecord[]
   integrations: Array<{ integrationId: string; kind: string; status: string; displayName?: string }>
+  suggestionsJson?: {
+    generatedAt: string
+    basis: 'project' | 'plan'
+    repositories: Array<{ fullName: string; reason: string; confidence: string; role: string; registered: boolean }>
+    workAreas: Array<{ name: string; description: string; repositories: string[]; paths: string[]; risks?: string }>
+    notes?: string
+  } | null
 }
 
 type KnowledgeHit = {
@@ -263,7 +270,7 @@ type GitHubRepoOption = {
 }
 
 type OnboardingStep = {
-  id: 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'setup'
+  id: 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'suggest' | 'setup'
   label: string
   hints: string[]
   status: 'pending' | 'active' | 'done' | 'skipped' | 'error'
@@ -1035,7 +1042,7 @@ function App() {
         // Integrations moved to app level; no per-project slots created.
         integrations: [],
       }
-      const project = await postJson<{ projectId: string; slug: string; name: string; repos: Array<{ repoId: string; isPrimary: boolean; kind: string }>; onboarding?: OnboardingSnapshot }>('/api/projects', { ...createBody, model: wizard.model || undefined })
+      const project = await postJson<{ projectId: string; slug: string; name: string; repos: Array<{ repoId: string; isPrimary: boolean; kind: string }>; onboarding?: OnboardingSnapshot }>('/api/projects', { ...createBody, model: wizard.model || undefined, feature: wizard.firstFeature.trim() || undefined })
       setStatusMessage(`Created project "${project.name}".`)
 
       // Attach imported tickets/docs as project knowledge before onboarding reads them.
@@ -1817,6 +1824,50 @@ function App() {
                     <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
                   </div>
                   <h3>Repositories</h3>
+                  {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
+                    <div className="repo-row" style={{ borderColor: 'rgba(94, 106, 210, 0.45)' }}>
+                      <div className="repo-row-main">
+                        <strong>Suggested from the {projectDetail.suggestionsJson.basis === 'plan' ? 'plan' : 'project description and your GitHub catalog'}</strong>
+                        <span className="repo-row-source">{formatTimestamp(projectDetail.suggestionsJson.generatedAt)}</span>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 11 }}
+                          onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/suggestions`, { basis: hasArtifact('Planned') ? 'plan' : 'project' }).then(() => refreshProjectRepos()).catch((error) => setStatusMessage(`Could not refresh suggestions: ${toMessage(error)}`))}
+                        >refresh</button>
+                      </div>
+                      {projectDetail.suggestionsJson.repositories.filter((s) => !s.registered).map((s) => (
+                        <div key={s.fullName} className="repo-row-main">
+                          <code>{s.fullName}</code>
+                          <span className="mini-badge idle">{s.confidence}</span>
+                          {s.role && <span className="mini-badge idle">{s.role}</span>}
+                          <span className="repo-row-source">{s.reason}</span>
+                          <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: s.fullName.split('/')[1] ?? s.fullName, githubRepo: s.fullName })}>
+                            Add &amp; clone
+                          </button>
+                        </div>
+                      ))}
+                      {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).length > 0 && (
+                        <span className="repo-row-source">Already on the project: {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).map((s) => s.fullName).join(', ')}</span>
+                      )}
+                      {projectDetail.suggestionsJson.workAreas.length > 0 && (
+                        <div style={{ marginTop: 6 }}>
+                          <strong style={{ fontSize: 12 }}>Work areas</strong>
+                          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                            {projectDetail.suggestionsJson.workAreas.map((w) => (
+                              <li key={w.name} style={{ fontSize: 12, marginBottom: 4 }}>
+                                <strong>{w.name}</strong> — {w.description}
+                                {w.repositories.length > 0 && <span className="repo-row-source"> · repos: {w.repositories.join(', ')}</span>}
+                                {w.paths.length > 0 && <span className="repo-row-source"> · paths: {w.paths.join(', ')}</span>}
+                                {w.risks && <span className="repo-row-source"> · risk: {w.risks}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {projectDetail.suggestionsJson.notes && <span className="field-hint">{projectDetail.suggestionsJson.notes}</span>}
+                    </div>
+                  )}
                   {planRepos.some((r) => !r.registered) && (
                     <div className="repo-row" style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
                       <strong>The plan depends on repositories not on this project</strong>

@@ -36,6 +36,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkAnthropicKey } from './lib/provider-check'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
+import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import {
   createRun as dbCreateRun,
@@ -183,6 +184,8 @@ async function route(req: Request): Promise<Response> {
       integrations?: Array<{ kind: IntegrationKind; displayName?: string; config?: Record<string, unknown> }>
       /** Model used by the onboarding "learn the codebase" agent. */
       model?: string
+      /** First feature description; feeds repository/work-area suggestions. */
+      feature?: string
     }>(req)
     if (!body.name?.trim()) return sendJson(400, { error: 'name is required' })
     const project = await projCreate({ name: body.name.trim(), description: body.description?.trim() })
@@ -200,7 +203,7 @@ async function route(req: Request): Promise<Response> {
     if (governanceEnabled()) {
       await ensureGovernanceWorkspace(project).catch((error) => serverLog.warn('governance workspace creation failed', { slug: project.slug, error: error instanceof Error ? error.message : String(error) }))
     }
-    void startProjectOnboarding(project, { model: body.model?.trim() || 'anthropic/claude-sonnet-4-5' })
+    void startProjectOnboarding(project, { model: body.model?.trim() || 'anthropic/claude-sonnet-4-5', feature: body.feature?.trim() || undefined })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
   }
@@ -441,6 +444,28 @@ async function route(req: Request): Promise<Response> {
       return sendJson(201, doc)
     } catch (error) {
       if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message })
+      return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  // Repositories and work areas suggested for a project (after onboarding / after plan).
+  if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}\/suggestions$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    return sendJson(200, { suggestions: project.suggestionsJson ?? null })
+  }
+
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/suggestions$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const body = await readJson<{ basis?: 'project' | 'plan'; feature?: string; model?: string }>(req).catch(() => ({} as { basis?: 'project' | 'plan'; feature?: string; model?: string }))
+    try {
+      const suggestions = await suggestRepositoriesAndWorkAreas(projectId, { basis: body.basis ?? 'project', feature: body.feature, model: body.model })
+      if (!suggestions) return sendJson(409, { error: 'Nothing to base suggestions on yet: connect GitHub so the repository catalog syncs, or add a description/plan.' })
+      return sendJson(200, { suggestions })
+    } catch (error) {
       return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
     }
   }

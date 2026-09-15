@@ -300,6 +300,8 @@ ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
 -- Confluence spaces, GitHub repos). '{}' = every connected source, unscoped.
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS knowledge_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- Repositories and work areas suggested for the project (after onboarding, after plan).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS suggestions_json JSONB;
 
 -- Live workers. Each worker registers on start and heartbeats; the server only
 -- treats an answer as delivered when the owning worker is alive, otherwise it

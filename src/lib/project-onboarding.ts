@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { readDevSetupState, resolveSpeckitRoot, runDevSetup, summarizeCodebaseForMemory } from './aidlc'
 import { getDb } from './db'
 import { getProject, getRepo } from './project-registry'
+import { suggestRepositoriesAndWorkAreas } from './suggestions'
 
 const execFileAsync = promisify(execFile)
 import { buildContextBundle, upsertProjectMemory } from './context-builder'
@@ -24,7 +25,7 @@ import { listRepos, pickRunnableRepo, type ProjectRow, type RepoRow } from './pr
  * Progress is kept in memory per project so the UI can poll it.
  */
 
-export type OnboardingStepId = 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'setup'
+export type OnboardingStepId = 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'suggest' | 'setup'
 export type OnboardingStepStatus = 'pending' | 'active' | 'done' | 'skipped' | 'error'
 
 export interface OnboardingStep {
@@ -77,6 +78,11 @@ const STEP_TEMPLATE: Array<Omit<OnboardingStep, 'status'>> = [
     hints: ['Writing the project brief…', 'Warming the context bundle…'],
   },
   {
+    id: 'suggest',
+    label: 'Suggesting repositories & work areas',
+    hints: ['Matching the description against your GitHub catalog…', 'Mapping likely work areas…', 'Noting risks and decisions…'],
+  },
+  {
     id: 'setup',
     label: 'Setting up development environments',
     hints: ['Reading README and manifests…', 'Installing dependencies…', 'Running the build and tests once…', 'Recording working commands…'],
@@ -114,7 +120,7 @@ function setStep(snapshot: OnboardingSnapshot, id: OnboardingStepId, status: Onb
  * Start (or join) onboarding for a project. Safe to call repeatedly: a running
  * job is shared, a finished one is restarted.
  */
-export function startProjectOnboarding(project: ProjectRow, options: { model?: string } = {}): Promise<OnboardingSnapshot> {
+export function startProjectOnboarding(project: ProjectRow, options: { model?: string; feature?: string } = {}): Promise<OnboardingSnapshot> {
   const existing = inFlight.get(project.projectId)
   if (existing) return existing
 
@@ -144,7 +150,7 @@ export function startProjectOnboarding(project: ProjectRow, options: { model?: s
   return job
 }
 
-async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, options: { model?: string }): Promise<OnboardingSnapshot> {
+async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, options: { model?: string; feature?: string }): Promise<OnboardingSnapshot> {
   // ---- clone -------------------------------------------------------------
   let repos = await listRepos(project.projectId)
   const remote = repos.filter((r) => r.kind === 'github' && r.githubRepo)
@@ -159,7 +165,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
     if (failed.length > 0) {
       const detail = failed.map((r) => `${r.githubRepo}: ${r.cloneError ?? 'unknown error'}`).join('; ')
       setStep(snapshot, 'clone', 'error', detail)
-      for (const id of ['init', 'sync', 'learn', 'memory', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
+      for (const id of ['init', 'sync', 'learn', 'memory', 'suggest', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
       snapshot.runnable = Boolean(pickRunnableRepo(repos))
       throw new Error(`Clone failed — ${detail}`)
     }
@@ -168,7 +174,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
 
   const primary = pickRunnableRepo(repos)
   if (!primary?.localPath) {
-    for (const id of ['init', 'sync', 'learn', 'memory', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
+    for (const id of ['init', 'sync', 'learn', 'memory', 'suggest', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
     throw new Error('No repository with a local path to onboard.')
   }
   snapshot.runnable = true
@@ -249,6 +255,22 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
   // Warm the context bundle so the first run's prompt is ready.
   await buildContextBundle({ projectId: project.projectId, projectSlug: project.slug, projectPath: primary.localPath })
   setStep(snapshot, 'memory', 'done', 'Project memory saved; context bundle warmed.')
+
+  // ---- suggest -----------------------------------------------------------
+  // From the description, first feature and the synced GitHub catalog: which
+  // repositories the project should span and which work areas the work hits.
+  setStep(snapshot, 'suggest', 'active')
+  try {
+    const suggestions = await suggestRepositoriesAndWorkAreas(project.projectId, { basis: 'project', feature: options.feature, model: options.model })
+    if (!suggestions) {
+      setStep(snapshot, 'suggest', 'skipped', 'Nothing to base suggestions on yet (connect GitHub so the repository catalog syncs).')
+    } else {
+      const missing = suggestions.repositories.filter((r) => !r.registered)
+      setStep(snapshot, 'suggest', 'done', `${suggestions.repositories.length} repositor${suggestions.repositories.length === 1 ? 'y' : 'ies'} (${missing.length} not on the project yet) and ${suggestions.workAreas.length} work area${suggestions.workAreas.length === 1 ? '' : 's'} suggested — review them in the project overview.`)
+    }
+  } catch (error) {
+    setStep(snapshot, 'suggest', 'error', error instanceof Error ? error.message : String(error))
+  }
 
   // ---- setup -------------------------------------------------------------
   // Every checkout (primary and secondary) is made ready for development now,

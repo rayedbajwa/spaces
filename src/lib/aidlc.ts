@@ -978,7 +978,7 @@ function getStageArgument(stage: StageName, options: FlowOptions): string {
  * the same way. If ANTHROPIC_API_KEY / OPENAI_API_KEY are set (from .env or the
  * shell), they override any stored OAuth token for that provider.
  */
-async function createConfiguredModelRuntime(): Promise<ModelRuntime> {
+export async function createConfiguredModelRuntime(): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create()
   if (process.env.ANTHROPIC_API_KEY) {
     await runtime.setRuntimeApiKey('anthropic', process.env.ANTHROPIC_API_KEY)

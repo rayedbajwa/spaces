@@ -19,12 +19,22 @@ export interface ProjectKnowledgeConfig {
   github?: { repos?: string[] }
 }
 
+/** Repositories and work areas suggested for a project (after onboarding and after the plan stage). */
+export interface ProjectSuggestions {
+  generatedAt: string
+  basis: 'project' | 'plan'
+  repositories: Array<{ fullName: string; reason: string; confidence: 'high' | 'medium' | 'low' | string; role: string; registered: boolean }>
+  workAreas: Array<{ name: string; description: string; repositories: string[]; paths: string[]; risks?: string }>
+  notes?: string
+}
+
 export interface ProjectRow {
   projectId: string
   name: string
   slug: string
   description?: string
   knowledgeJson?: ProjectKnowledgeConfig
+  suggestionsJson?: ProjectSuggestions | null
   createdAt: string
   updatedAt: string
 }
@@ -70,6 +80,7 @@ const PROJECT_COLS = `
   slug        AS "slug",
   description AS "description",
   knowledge_json AS "knowledgeJson",
+  suggestions_json AS "suggestionsJson",
   created_at  AS "createdAt",
   updated_at  AS "updatedAt"
 `
@@ -168,6 +179,12 @@ export async function updateProjectKnowledge(projectId: string, config: ProjectK
      RETURNING ${sql.unsafe(PROJECT_COLS)}
   `
   return row
+}
+
+/** Store the latest repository/work-area suggestions for a project. */
+export async function updateProjectSuggestions(projectId: string, suggestions: ProjectSuggestions): Promise<void> {
+  const sql = getDb()
+  await sql`UPDATE projects SET suggestions_json = ${sql.json(suggestions as never)} WHERE project_id = ${projectId}`
 }
 
 export async function deleteProject(projectId: string): Promise<void> {
