@@ -2219,6 +2219,7 @@ function App() {
                     </div>
                     <div className="button-row">
                       <button className="primary-button" disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
+                      <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
                       <button className="secondary-button" disabled={qaBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectQA(selectedProjectNamespace)} type="button">Refresh QA</button>
                     </div>
                   </div>

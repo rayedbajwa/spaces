@@ -18,11 +18,14 @@ import { readVerificationStatus } from './pipeline-branch'
 import {
   commentOnPullRequest,
   defaultBranch as gitDefaultBranch,
+  ensureIgnored,
   ensureWorktree,
   publishBranchAsPullRequest,
   pullRequestBody,
   slugForBranch,
 } from './pull-requests'
+import { refreshDeliveryStatus } from './delivery'
+import { buildWebTools } from './web-tools'
 
 const aidlcLog = log.child({ mod: 'aidlc' })
 
@@ -43,11 +46,12 @@ export const STAGE_DEFINITIONS = {
   orchestrate: { skill: 'aidlc-orchestrate', argKey: undefined },
   verify: { skill: 'aidlc-verify', argKey: undefined },
   taskstoissues: { skill: 'speckit-taskstoissues', argKey: undefined },
+  deliver: { skill: 'aidlc-deliver', argKey: undefined },
 } as const
 
 export const DEFAULT_STAGES: StageName[] = ['init', 'specify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze']
-export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan', 'implement', 'orchestrate', 'verify']
-export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'verify', 'checklist', 'taskstoissues']
+export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan', 'implement', 'orchestrate', 'verify', 'deliver']
+export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'verify', 'checklist', 'taskstoissues', 'deliver']
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
@@ -329,7 +333,8 @@ export class AIDLCFlow {
       thinkingLevel: modelSelection.thinkingLevel,
       tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
       // Connected integrations (Jira/Linear/Confluence/GitHub) as on-demand knowledge tools.
-      customTools: await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => []),
+      // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
+      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => [])), ...buildWebTools()],
       sessionManager,
     })
 
@@ -505,6 +510,20 @@ export class AIDLCFlow {
   private async runStage(stage: StageName): Promise<string> {
     await this.ensureFeatureBranchForStage(stage)
     await this.maybeSwapSessionForStage(stage)
+    // Code stages need a working dev environment: install, build, tests known to run.
+    await this.ensureDevEnvironment(stage)
+    // Delivery works from facts: refresh PR/review/CI/merge/deploy state from GitHub first.
+    if (stage === 'deliver') {
+      const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
+      if (featureDirAbs) {
+        try {
+          const snapshot = await refreshDeliveryStatus(featureDirAbs)
+          this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
+        } catch (error) {
+          this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
+        }
+      }
+    }
 
     const skillPrompt = await loadStagePrompt({
       speckitRoot: this.speckitRoot,
@@ -542,6 +561,32 @@ export class AIDLCFlow {
    * agent's changes on the feature branch, push, and open or update the PR.
    * PR plumbing never fails the stage — problems are printed to the run log.
    */
+  /**
+   * Before implement/orchestrate/verify: make sure the checkout is ready for
+   * development (dependencies installed, env prepared, build and tests known to
+   * run) by reviewing the README and manifests, and record the working commands
+   * in .aidlc/dev-setup.md. Skipped when a recent READY/PARTIAL record exists.
+   * Runs in the stage's own session so the agent keeps what it learned.
+   */
+  private async ensureDevEnvironment(stage: StageName): Promise<void> {
+    if (!DEV_SETUP_STAGES.includes(stage)) return
+    const state = await readDevSetupState(this.options.cwd)
+    if (!state.needed) {
+      this.print(`\n[setup] Dev environment ${state.status} (${DEV_SETUP_FILE}, ${Math.round(state.ageDays ?? 0)}d old) — skipping setup.\n`)
+      return
+    }
+    await ensureIgnored(this.options.cwd, '.aidlc/').catch(() => undefined)
+    this.print(`\n[setup] Preparing the development environment before ${stage} (${state.exists ? `previous status ${state.status ?? 'unknown'}` : 'no setup record yet'})…\n`)
+    try {
+      await this.streamPrompt(withSharedContext(buildDevSetupPrompt(), { sharedContextPrompt: this.options.sharedContextPrompt }))
+      const after = await readDevSetupState(this.options.cwd)
+      this.print(`\n[setup] Dev Setup Status: ${after.status ?? 'not recorded'} — continuing with ${stage}.\n`)
+    } catch (error) {
+      // Setup problems must not block the stage; the stage prompt tells the agent to read the notes.
+      this.print(`\n[setup] Dev environment setup failed: ${error instanceof Error ? error.message : String(error)} — continuing with ${stage}.\n`)
+    }
+  }
+
   private async maybePublishPullRequest(stage: StageName, output: string): Promise<void> {
     const pr = this.options.pullRequests
     if (!pr || !PULL_REQUEST_STAGES.includes(stage)) return
@@ -1048,7 +1093,7 @@ export async function runAIDLCAssistantChat(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls'],
-    customTools: [...knowledgeTools, ...(options.actionTools ?? [])],
+    customTools: [...knowledgeTools, ...buildWebTools(), ...(options.actionTools ?? [])],
     sessionManager: SessionManager.inMemory(options.cwd),
   })
 
@@ -1078,7 +1123,7 @@ export async function runAIDLCAssistantChat(options: {
 How to help:
 - Answer from evidence. Cite run ids (first 8 characters), stage names, artifact paths and ticket keys, and quote the exact log or error line you rely on.
 - When something failed or looks stuck, diagnose from the timeline and log tail, explain the cause in plain words, and give the concrete next step (which button or which action tool).
-- Take an action only when the user clearly asks for it ("rerun it", "approve", "run verify"). Say in one line what you are about to do, do it, then report the tool's result. Never invent ids; use the ones in the snapshot.
+- Act, don't just advise. When you find a problem you can fix with your tools (run lint/tests/the app via bash, fix a config, rerun or approve a run, open a pull request), propose the exact action in one line and ask "Shall I do it?"; when the user says yes (or already asked for it, e.g. "rerun it", "approve", "run verify", "open the PR"), do it and report the tool's result. Never invent ids; use the ones in the snapshot. Never merge, deploy or delete without an explicit yes for that specific action.
 - If evidence is missing, say what is missing and how to get it rather than guessing.
 - Be concise: answer first, then evidence, then next step.
 
@@ -1119,7 +1164,9 @@ export async function summarizeCodebaseForMemory(options: {
     modelRuntime,
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
-    tools: ['read', 'grep', 'find', 'ls'],
+    // Read-only on the tree, but bash lets it inspect git history/tooling and web tools resolve docs.
+    tools: ['read', 'bash', 'grep', 'find', 'ls'],
+    customTools: buildWebTools(),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1462,6 +1509,27 @@ export async function runAIDLCParallelSubAgents(options: {
   }
   const branchDelivered = new Map<number, { branch: string; repoPath: string }>()
 
+  // Make every checkout the workstreams will touch ready for development first
+  // (deps installed, env prepared, tests known to run). One setup per repo,
+  // skipped when a recent READY/PARTIAL record exists.
+  const setupTargets = new Map<string, string>([[path.resolve(cwd), 'primary']])
+  for (const workstream of selected) {
+    const target = resolveWorkstreamRepo(workstream.repository, options.repoTargets)
+    if (target) setupTargets.set(path.resolve(target.localPath), target.label)
+  }
+  for (const [repoPath, label] of setupTargets) {
+    const state = await readDevSetupState(repoPath)
+    if (!state.needed) continue
+    const title = `Dev setup: ${label}`
+    options.onProgress?.({ type: 'workstream_start', featureDir, workstream: title, summary: `Preparing ${repoPath} for development (reviewing README, installing, building, running tests)…` })
+    try {
+      const result = await runDevSetup({ cwd: repoPath, model: options.model, thinking: options.thinking, sharedContextPrompt: options.sharedContextPrompt, repoLabel: label })
+      options.onProgress?.({ type: 'workstream_complete', featureDir, workstream: title, summary: `Dev Setup Status: ${result.status}. ${result.summary}` })
+    } catch (error) {
+      options.onProgress?.({ type: 'workstream_error', featureDir, workstream: title, error: error instanceof Error ? error.message : String(error), summary: 'Dev setup failed; workstreams will still run and should read the setup notes.' })
+    }
+  }
+
   try {
     const runWorkstream = async (workstream: ParsedWorkstream, index: number): Promise<ParallelSubAgentResult> => {
         options.onProgress?.({ type: 'workstream_start', featureDir, workstream: workstream.title })
@@ -1503,7 +1571,7 @@ export async function runAIDLCParallelSubAgents(options: {
           model: modelSelection.model,
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-          customTools: knowledgeTools,
+          customTools: [...knowledgeTools, ...buildWebTools()],
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 
@@ -1731,6 +1799,10 @@ async function loadStagePrompt(options: {
     return buildVerificationPrompt()
   }
 
+  if (options.stage === 'deliver') {
+    return buildDeliveryPrompt()
+  }
+
   const skillPath = getSkillPath(options.speckitRoot, options.stage)
   const rawSkill = await readFile(skillPath, 'utf8')
 
@@ -1742,8 +1814,16 @@ async function loadStagePrompt(options: {
     return `${basePrompt}\n\nAdditional AIDLC requirement:\n- Include explicit test cases or acceptance test scenarios in the specification so QA can trace requirements early.`
   }
 
+  if (options.stage === 'tasks') {
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- End with a "## Delivery" task group, per repository in dependency order (see plan.md "## Repositories"): open the pull request, get CI green and review approval, merge (after any PR it is stacked on), deploy or confirm the deployment pipeline ran, and run UAT/final acceptance checks from test-plan.md against the deployed environment. Mark tasks that must wait on another repository's merge with the repository name so orchestration respects the order.`
+  }
+
   if (options.stage === 'plan') {
     return `${basePrompt}\n\nAdditional AIDLC requirements:\n- Include test planning as part of the implementation plan and make sure the plan prepares for generation of test-plan.md.\n- Add a section titled exactly "## Repositories" listing every repository this feature changes or depends on, one bullet per repository in the form \`- <name> — <what changes there>\`. Use the names from the project's repository map in the shared context (label or owner/name). If the feature needs a repository that is NOT in the repository map (another service, a shared library, an infra repo), still list it and append \`(not registered)\` so it can be added to the project before implementation. Write \`- primary — <changes>\` when only the primary repository is affected.`
+  }
+
+  if (options.stage === 'implement') {
+    return `${basePrompt}\n\nAdditional AIDLC requirement:\n- Before changing code, read ${DEV_SETUP_FILE} (written by the dev-environment setup step) for the exact install/build/test/lint commands and README conventions, and use those commands to run the tests you add or touch. If it is missing or says BLOCKED, first get the project building and its tests running, then continue.`
   }
 
   return basePrompt
@@ -1795,6 +1875,120 @@ Requirements:
 - End with a concise recommendation for how many concurrent workstreams are safe.`
 }
 
+// ---------------------------------------------------------------------------
+// Development-environment setup (before implement / orchestrate / verify)
+// ---------------------------------------------------------------------------
+
+/** Where a repository's setup notes live (local-only; excluded via .git/info/exclude). */
+export const DEV_SETUP_FILE = '.aidlc/dev-setup.md'
+/** Stages that need a working dev environment before they run. */
+export const DEV_SETUP_STAGES: StageName[] = ['implement', 'orchestrate', 'verify']
+const DEV_SETUP_MAX_AGE_DAYS = 7
+
+export type DevSetupStatus = 'READY' | 'PARTIAL' | 'BLOCKED'
+
+export interface DevSetupState {
+  exists: boolean
+  status?: DevSetupStatus
+  ageDays?: number
+  /** True when setup should (re)run: missing, stale, or previously BLOCKED. */
+  needed: boolean
+}
+
+export async function readDevSetupState(cwd: string): Promise<DevSetupState> {
+  const file = path.join(resolveCwd(cwd), DEV_SETUP_FILE)
+  try {
+    const [content, stats] = await Promise.all([readFile(file, 'utf8'), import('node:fs/promises').then((fs) => fs.stat(file))])
+    const status = /Dev Setup Status:\s*(READY|PARTIAL|BLOCKED)/i.exec(content)?.[1]?.toUpperCase() as DevSetupStatus | undefined
+    const ageDays = (Date.now() - stats.mtimeMs) / 86_400_000
+    return { exists: true, status, ageDays, needed: !status || status === 'BLOCKED' || ageDays > DEV_SETUP_MAX_AGE_DAYS }
+  } catch {
+    return { exists: false, needed: true }
+  }
+}
+
+export function buildDevSetupPrompt(options: { repoLabel?: string } = {}): string {
+  return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests.
+
+Do this:
+1. Review README.md, CONTRIBUTING.md, docs/, the package/build manifests (package.json, go.mod, pyproject.toml, Cargo.toml, Makefile, Dockerfile, docker-compose*), and CI config (.github/workflows) to learn how the project is installed, built, tested and linted.
+2. Install dependencies with the project's own tool (bun/npm/pnpm/yarn, go, uv/pip, cargo, …). Use the lockfile when there is one.
+3. Environment: if a .env.example (or similar) exists and .env does not, copy it and fill only safe local defaults. Never invent or paste real secrets; list required-but-missing variables instead. Note external services the tests need (database, docker) and whether they are available here.
+4. Build once, run the test suite once, and run the linter/typechecker if there is one. Capture exact commands and pass/fail counts. Fix only trivial local setup problems (a missing directory, a wrong Node version note); do NOT change application source code.
+5. Add \`.aidlc/\` to .git/info/exclude if not present (never edit the tracked .gitignore).
+6. Write ${DEV_SETUP_FILE} (create the directory) — under 400 words — starting with the exact line \`Dev Setup Status: READY\`, \`Dev Setup Status: PARTIAL\` (environment works but some tests/services unavailable) or \`Dev Setup Status: BLOCKED\` (cannot install/build). Then sections:
+   ## Commands — install, build, test, lint/typecheck (exact commands that worked)
+   ## Environment — required variables, services, versions
+   ## Test baseline — what ran, pass/fail counts, duration, known failing tests
+   ## Issues and blockers
+   ## Notes for implementers — conventions from the README worth knowing
+7. Finish with a one-paragraph summary in chat including the status line.`
+}
+
+/**
+ * Standalone dev-environment setup for one checkout (used before parallel
+ * sub-agents run in it). Returns the recorded status and the agent's summary.
+ */
+export async function runDevSetup(options: {
+  cwd: string
+  model?: string
+  thinking?: ThinkingLevel
+  sharedContextPrompt?: string
+  repoLabel?: string
+  onLog?: (chunk: string) => void
+}): Promise<{ status: DevSetupStatus | 'UNKNOWN'; summary: string }> {
+  const cwd = resolveCwd(options.cwd)
+  await ensureIgnored(cwd, '.aidlc/').catch(() => undefined)
+  const modelRuntime = await createConfiguredModelRuntime()
+  const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
+  const { session } = await createAgentSession({
+    cwd,
+    modelRuntime,
+    model: modelSelection.model,
+    thinkingLevel: modelSelection.thinkingLevel,
+    tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+    customTools: buildWebTools(),
+    sessionManager: SessionManager.inMemory(cwd),
+  })
+  let output = ''
+  let providerError: string | undefined
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
+      output += event.assistantMessageEvent.delta
+      options.onLog?.(event.assistantMessageEvent.delta)
+    }
+    if (event.type === 'agent_end') {
+      const lastMessage = (event as { messages?: Array<{ stopReason?: string; errorMessage?: string }> }).messages?.slice(-1)[0]
+      if (lastMessage?.stopReason === 'error' && lastMessage.errorMessage) providerError = lastMessage.errorMessage.trim()
+    }
+  })
+  try {
+    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false })
+  } finally {
+    unsubscribe()
+    session.dispose()
+  }
+  if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
+  const state = await readDevSetupState(cwd)
+  return { status: state.status ?? 'UNKNOWN', summary: output.trim().split('\n').slice(-6).join(' ').trim() }
+}
+
+function buildDeliveryPrompt(): string {
+  return `Drive this feature's changes to production: pull requests → review → merge (in dependency order) → deploy → UAT/final testing.
+
+Inputs (read them first):
+- delivery-status.md in the active feature directory — auto-generated just now from GitHub: every PR, its review/CI/merge/deploy state, stack order and suggested next action.
+- tasks.md "## Delivery" tasks, test-plan.md (UAT / acceptance scenarios), verification-report.md, plan.md "## Repositories", ${DEV_SETUP_FILE} (commands, environments, deploy pipeline notes) and project memory.
+
+Act, don't advise. You have git, bash and the GitHub token available through git:
+1. For each PR in stack order that is not merged: fix what blocks it yourself — rebase onto its base and push when there is a conflict, fix failing CI (run the project's lint/test commands locally first), mark drafts ready, respond to review comments with code changes. Open any PR that is still missing (tasks or workstreams delivered without one): commit, push the branch and create the PR with a body linking the spec/plan/tasks.
+2. Ask for approval, then stop and wait, ONLY before irreversible or costly actions: merging a PR, triggering a deployment, deleting or migrating data, or anything outside the repositories in scope. Ask with a heading of the exact form "## Question 1: <what you want to do>" followed by the concrete command/action and its effect, then end your message. When the run resumes with "approve"/"continue", perform the action.
+3. After merges: confirm the deployment (GitHub Deployments/Actions, or the pipeline documented in the README/dev-setup notes) reached its environment. If deployment is manual and you were approved to trigger it, do so.
+4. UAT / final testing: run the acceptance scenarios from test-plan.md against the deployed environment when a URL/environment is known (use its health/smoke endpoints, CLI, or the test suite pointed at that environment); otherwise run the full local suite on the merged base and state clearly that UAT still needs an environment.
+5. Write delivery-report.md in the active feature directory starting with the exact line \`Delivery Status: MERGED\`, \`Delivery Status: PARTIAL\` (some PRs still open/waiting) or \`Delivery Status: BLOCKED\` (needs a human decision or an external fix), then: PR table (repo, PR, state, merged at, deploy), what you fixed/did, UAT results (scenario → pass/fail), what still needs approval or waits on someone (with the exact question), and the next re-check.
+Keep the report concise and factual; every claim about a PR or deployment must come from delivery-status.md or a command you ran.`
+}
+
 function buildOrchestrationPrompt(): string {
   return `Create a merge-and-verification orchestration report for the active feature in the current repository.
 
@@ -1816,7 +2010,7 @@ function buildVerificationPrompt(): string {
 
 Requirements:
 - Resolve the active feature directory and read spec.md, plan.md, tasks.md, test-plan.md, and any implementation artifacts that exist.
-- **Actually run the tests.** Use bash to execute the project's test suite (e.g. \`go test ./...\`, \`npm test\`, \`pytest\`, \`bun test\`, whatever the project uses). Capture pass/fail counts and error output. Do NOT just review code; execute.
+- **Actually run the tests.** Read ${DEV_SETUP_FILE} first for the install/build/test commands that are known to work here and the test baseline; then use bash to execute the project's test suite (e.g. \`go test ./...\`, \`npm test\`, \`pytest\`, \`bun test\`, whatever the project uses). Capture pass/fail counts and error output. Do NOT just review code; execute.
 - Write verification-report.md in the active feature directory.
 - Start the document with an exact status line: \`Verification Status: PASS\`, \`Verification Status: FAIL\`, or \`Verification Status: PARTIAL\`. Use FAIL if any acceptance test fails or is missing; PARTIAL if some acceptance criteria are unverified but nothing is actively failing; PASS only when every acceptance criterion has a passing test.
 - The report must cover:

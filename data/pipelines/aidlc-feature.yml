@@ -94,4 +94,22 @@ steps:
         - when: "verification_status == 'partial'"
           goto: code-generation
         - when: "true"
+          goto: delivery
+  # Drive PRs through review → merge (stack order) → deploy → UAT. Pauses at the
+  # human gate; while anything is still open the loop re-runs deliver after
+  # approval, which refreshes delivery-status.md from GitHub and re-checks.
+  - id: delivery
+    stage: deliver
+    phase: construction
+    role: developer
+    review: true
+    humanGate: true
+    maxIterations: 20
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+    onComplete:
+      branch:
+        - when: "delivery_status == 'merged'"
           goto: end
+        - when: "true"
+          goto: delivery

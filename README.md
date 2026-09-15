@@ -231,6 +231,36 @@ feature.
 is complementary: it adds local semantic search over files, PDFs and URLs. The
 tool names here were chosen not to collide with it.
 
+### Dev-environment setup before code stages
+
+Before `implement`, `orchestrate` and `verify` (and before parallel
+sub-agents run in a checkout), an agent reviews the README, CONTRIBUTING,
+manifests and CI config, installs dependencies, prepares `.env` from its
+example with safe defaults, runs the build, tests and linter once, and records
+the working commands and test baseline in `.aidlc/dev-setup.md` (local-only,
+excluded via `.git/info/exclude`). Later stages read that file for the exact
+commands; the step is skipped while a READY/PARTIAL record under a week old
+exists.
+
+### Delivery: review → merge → deploy → UAT
+
+The `tasks` stage ends with a "## Delivery" group per repository in dependency
+order, and the new `deliver` stage drives it. Before the stage runs, the
+pipeline refreshes `delivery-status.md` from GitHub: every PR the feature
+opened, its review, CI, merge and deployment state, ordered by stack. The
+agent then fixes what blocks a PR itself (rebase, CI, review comments, missing
+PRs), asks for approval with a `## Question` and pauses before merging or
+deploying, confirms deployments, runs the UAT scenarios from `test-plan.md`
+against the deployed environment, and writes `delivery-report.md` with a
+`Delivery Status: MERGED | PARTIAL | BLOCKED` line. Templates can loop
+`deliver` on `delivery_status != 'MERGED'` after the human gate to keep
+polling until everything is merged.
+
+Agents in general are directed to act rather than advise: fix lint, tests,
+dependencies and CI themselves and re-check, asking for approval only before
+irreversible or costly actions. The project assistant follows the same rule
+and can open PRs, rerun or approve runs and run steps once you say yes.
+
 ### Pull requests
 
 When the target repo is GitHub-hosted, the `implement`, `orchestrate` and

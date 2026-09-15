@@ -142,7 +142,8 @@ export async function removeWorktree(repoPath: string, worktreePath: string): Pr
   }
 }
 
-async function ensureIgnored(repoPath: string, pattern: string): Promise<void> {
+/** Add a pattern to the repo's local exclude file (.git/info/exclude), never to the tracked .gitignore. */
+export async function ensureIgnored(repoPath: string, pattern: string): Promise<void> {
   const excludePath = path.join(repoPath, '.git', 'info', 'exclude')
   try {
     const { readFile, appendFile } = await import('node:fs/promises')

@@ -8,8 +8,33 @@ import { join } from 'node:path'
  */
 export interface BranchVariables {
   verification_status?: 'pass' | 'fail' | 'partial'
+  /** From delivery-report.md "Delivery Status: MERGED|PARTIAL|BLOCKED" (lowercased). */
+  delivery_status?: 'merged' | 'partial' | 'blocked'
   last_review_decision?: 'approved' | 'changes_requested'
   iteration?: string  // stringified count for the current step id
+}
+
+/** Read the latest feature's delivery-report.md status line, if the deliver stage has run. */
+export async function readDeliveryStatus(cwd: string): Promise<'merged' | 'partial' | 'blocked' | undefined> {
+  const { readdir, readFile } = await import('node:fs/promises')
+  const specsDir = join(cwd, 'specs')
+  let features: string[]
+  try {
+    features = (await readdir(specsDir)).sort((a, b) => b.localeCompare(a))
+  } catch {
+    return undefined
+  }
+  for (const feature of features) {
+    try {
+      const report = await readFile(join(specsDir, feature, 'delivery-report.md'), 'utf8')
+      const match = /Delivery Status:\s*(MERGED|PARTIAL|BLOCKED)/i.exec(report)
+      if (match) return match[1]!.toLowerCase() as 'merged' | 'partial' | 'blocked'
+    } catch {
+      // try the next feature dir
+    }
+    break // only the latest feature counts
+  }
+  return undefined
 }
 
 /**

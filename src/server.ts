@@ -72,6 +72,7 @@ import {
   type RepoRow,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
+import { currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, publishBranchAsPullRequest, pullRequestBody } from './lib/pull-requests'
 import { getOnboardingSnapshot, refreshRepositoryKnowledge, startProjectOnboarding } from './lib/project-onboarding'
 import {
   getKnowledgeItem,
@@ -1482,6 +1483,39 @@ function buildAssistantActionTools(projectNamespace: string, projectId: string |
   ]
   if (projectId) {
     tools.push(
+      {
+        name: 'open_pull_request',
+        label: 'Commit, push and open a pull request',
+        description: 'For a GitHub-hosted repo on this project: commit any uncommitted changes on the current branch of its checkout, push, and open (or update) the pull request against the default branch. repoId from the snapshot (defaults to the primary repo). Do this only when the user asked for a PR/MR.',
+        parameters: obj({ repoId: { type: 'string' }, title: { type: 'string' }, summary: { type: 'string', description: 'What the change does; becomes the PR body.' } }, []),
+        async execute(_id, params) {
+          const p = params as { repoId?: string; title?: string; summary?: string }
+          onAction(`open_pull_request ${p.repoId ? shortId(p.repoId) : 'primary'}`)
+          try {
+            const registry = await import('./lib/project-registry')
+            const repos = await registry.listRepos(projectId)
+            const repo = p.repoId ? repos.find((r) => r.repoId === p.repoId) : (repos.find((r) => r.isPrimary && r.githubRepo) ?? repos.find((r) => r.githubRepo))
+            if (!repo?.githubRepo || !repo.localPath) return result('Failed: no GitHub-hosted repository with a local checkout on this project.', { error: true })
+            const branch = await gitCurrentBranch(repo.localPath)
+            const base = await gitDefaultBranch(repo.localPath, repo.githubRepo)
+            if (branch === base) return result(`Failed: the checkout is on the default branch (${base}); create or check out a feature branch first.`, { error: true })
+            const ref = await publishBranchAsPullRequest({
+              cwd: repo.localPath,
+              githubRepo: repo.githubRepo,
+              branch,
+              base,
+              commitMessage: p.title ?? `Changes on ${branch}`,
+              title: p.title ?? branch,
+              body: pullRequestBody({ summary: p.summary ?? `Changes on \`${branch}\`, opened via the project assistant.` }),
+            })
+            return ref
+              ? result(`${ref.created ? 'Opened' : 'Updated'} PR #${ref.number}: ${ref.url} (${branch} → ${base}).`, { url: ref.url })
+              : result(`Nothing to publish: ${branch} has no commits ahead of ${base}.`, {})
+          } catch (error) {
+            return result(`Failed: ${error instanceof Error ? error.message : String(error)}`, { error: true })
+          }
+        },
+      },
       {
         name: 'retry_clone',
         label: 'Retry cloning a GitHub repo',

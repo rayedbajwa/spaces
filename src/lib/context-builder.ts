@@ -123,6 +123,12 @@ async function loadFeatureArtifacts(projectPath: string): Promise<ContextArtifac
   await pushArtifact(artifacts, 'Research', join(projectPath, featureDir, 'research.md'))
   await pushArtifact(artifacts, 'Data model', join(projectPath, featureDir, 'data-model.md'))
   await pushArtifact(artifacts, 'Quickstart', join(projectPath, featureDir, 'quickstart.md'))
+  await pushArtifact(artifacts, 'Delivery status', join(projectPath, featureDir, 'delivery-status.md'))
+  await pushArtifact(artifacts, 'Delivery report', join(projectPath, featureDir, 'delivery-report.md'))
+
+  // Dev-environment notes written by the setup step (repo root, local-only).
+  const devSetup = await readTextIfExists(join(projectPath, '.aidlc', 'dev-setup.md'))
+  if (devSetup.trim()) artifacts.push({ label: 'Dev environment (install/build/test commands)', path: '.aidlc/dev-setup.md', content: devSetup })
 
   const contractsDir = join(projectPath, featureDir, 'contracts')
   for (const file of await safeReadDir(contractsDir)) {
@@ -192,7 +198,7 @@ function buildPromptBundle(options: {
   blocks.push({
     label: 'directives',
     priority: 95,
-    text: `## AIDLC Directives\n- Specifications should include explicit test cases or acceptance scenarios.\n- Implementation planning should account for test-plan generation.\n- Parallel work should be organized into machine-readable workstreams before sub-agent execution.`,
+    text: `## AIDLC Directives\n- Specifications should include explicit test cases or acceptance scenarios.\n- Implementation planning should account for test-plan generation.\n- Parallel work should be organized into machine-readable workstreams before sub-agent execution.\n- Act, don't advise: when a problem is within reach — a lint or type error, a failing test you touched, a missing dependency, a red CI job, a conflict to rebase, a missing pull request — fix it, run the commands, and re-check. Never hand a to-do list to "the team" for work you can do here.\n- Ask for approval (a "## Question N: …" heading, then stop) only before irreversible or costly actions: merging a PR, deploying, deleting or migrating data, or touching repositories outside the project's scope.`,
   })
 
   if (options.projectMemory.trim()) {

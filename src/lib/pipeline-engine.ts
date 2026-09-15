@@ -11,7 +11,7 @@ import {
   type StepNavigatorResult,
 } from './aidlc'
 import type { PipelineStep, PipelineTemplate } from './pipeline-template'
-import { evaluateBranchExpression, readVerificationStatus } from './pipeline-branch'
+import { evaluateBranchExpression, readDeliveryStatus, readVerificationStatus } from './pipeline-branch'
 import { loadPersona } from './persona-loader'
 import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
 import { compactHandoff } from './context-compactor'
@@ -356,9 +356,13 @@ export class PipelineEngine {
   }
 
   private async buildBranchVariables(currentStepId: string): Promise<Record<string, string | undefined>> {
-    const verification = await readVerificationStatus(this.options.cwd).catch(() => undefined)
+    const [verification, delivery] = await Promise.all([
+      readVerificationStatus(this.options.cwd).catch(() => undefined),
+      readDeliveryStatus(this.options.cwd).catch(() => undefined),
+    ])
     return {
       verification_status: verification,
+      delivery_status: delivery,
       iteration: String(this.visitCount.get(currentStepId) ?? 0),
     }
   }
