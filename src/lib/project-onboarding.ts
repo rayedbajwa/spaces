@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { appendFile, chmod, cp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { resolveSpeckitRoot, summarizeCodebaseForMemory } from './aidlc'
+import { readDevSetupState, resolveSpeckitRoot, runDevSetup, summarizeCodebaseForMemory } from './aidlc'
 import { getDb } from './db'
 import { getProject, getRepo } from './project-registry'
 
@@ -24,7 +24,7 @@ import { listRepos, pickRunnableRepo, type ProjectRow, type RepoRow } from './pr
  * Progress is kept in memory per project so the UI can poll it.
  */
 
-export type OnboardingStepId = 'clone' | 'init' | 'sync' | 'learn' | 'memory'
+export type OnboardingStepId = 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'setup'
 export type OnboardingStepStatus = 'pending' | 'active' | 'done' | 'skipped' | 'error'
 
 export interface OnboardingStep {
@@ -75,6 +75,11 @@ const STEP_TEMPLATE: Array<Omit<OnboardingStep, 'status'>> = [
     id: 'memory',
     label: 'Building context & memory from the codebase',
     hints: ['Writing the project brief…', 'Warming the context bundle…'],
+  },
+  {
+    id: 'setup',
+    label: 'Setting up development environments',
+    hints: ['Reading README and manifests…', 'Installing dependencies…', 'Running the build and tests once…', 'Recording working commands…'],
   },
 ]
 
@@ -154,7 +159,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
     if (failed.length > 0) {
       const detail = failed.map((r) => `${r.githubRepo}: ${r.cloneError ?? 'unknown error'}`).join('; ')
       setStep(snapshot, 'clone', 'error', detail)
-      for (const id of ['init', 'sync', 'learn', 'memory'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
+      for (const id of ['init', 'sync', 'learn', 'memory', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
       snapshot.runnable = Boolean(pickRunnableRepo(repos))
       throw new Error(`Clone failed — ${detail}`)
     }
@@ -163,7 +168,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
 
   const primary = pickRunnableRepo(repos)
   if (!primary?.localPath) {
-    for (const id of ['init', 'sync', 'learn', 'memory'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
+    for (const id of ['init', 'sync', 'learn', 'memory', 'setup'] as OnboardingStepId[]) setStep(snapshot, id, 'skipped')
     throw new Error('No repository with a local path to onboard.')
   }
   snapshot.runnable = true
@@ -240,6 +245,36 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
   // Warm the context bundle so the first run's prompt is ready.
   await buildContextBundle({ projectId: project.projectId, projectSlug: project.slug, projectPath: primary.localPath })
   setStep(snapshot, 'memory', 'done', 'Project memory saved; context bundle warmed.')
+
+  // ---- setup -------------------------------------------------------------
+  // Every checkout (primary and secondary) is made ready for development now,
+  // so the first code stage does not pay for it and cross-repo tasks can run.
+  setStep(snapshot, 'setup', 'active', localRepos.length > 1 ? `Preparing ${localRepos.length} repositories (2 at a time)…` : undefined)
+  const setupResults: string[] = []
+  const setupErrors: string[] = []
+  const queue = [...localRepos]
+  const runNext = async (): Promise<void> => {
+    const repo = queue.shift()
+    if (!repo) return
+    const state = await readDevSetupState(repo.localPath)
+    if (!state.needed) {
+      setupResults.push(`${repoName(repo)}: ${state.status} (recent)`)
+    } else {
+      try {
+        const result = await runDevSetup({ cwd: repo.localPath, model: options.model, repoLabel: repo.label })
+        setupResults.push(`${repoName(repo)}: ${result.status}`)
+      } catch (error) {
+        setupErrors.push(`${repoName(repo)}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    await runNext()
+  }
+  await Promise.all([runNext(), runNext()])
+  if (setupErrors.length === localRepos.length) {
+    setStep(snapshot, 'setup', 'error', setupErrors.join('; '))
+  } else {
+    setStep(snapshot, 'setup', 'done', [...setupResults, ...setupErrors.map((e) => `failed — ${e}`)].join(' · '))
+  }
 
   snapshot.status = snapshot.steps.some((s) => s.status === 'error') ? 'error' : 'ready'
   if (snapshot.status === 'error') {
@@ -575,6 +610,12 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
     }
     await saveRepoBrief(projectId, repo, inventory.markdown, brief, error)
     await composeProjectMemory(projectId)
+    // A newly available repository is also made ready for development, so
+    // tasks that were waiting on it can build and test there right away.
+    const setupState = await readDevSetupState(repo.localPath)
+    if (setupState.needed) {
+      await runDevSetup({ cwd: repo.localPath, model: options.model ?? 'anthropic/claude-sonnet-4-5', repoLabel: repo.label }).catch(() => undefined)
+    }
   })().finally(() => refreshing.delete(key))
   refreshing.set(key, job)
   return job

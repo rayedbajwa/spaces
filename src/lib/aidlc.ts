@@ -142,6 +142,11 @@ export interface FlowOptions {
    * against `baseBranch` (default: the repo's default branch).
    */
   pullRequests?: { githubRepo: string; baseBranch?: string }
+  /**
+   * Every registered repository with a local checkout (primary and secondary).
+   * Code stages prepare all of them for development, not just the primary cwd.
+   */
+  repoTargets?: WorkstreamRepoTarget[]
 }
 
 /** Stages after which the feature branch is published as a pull request. */
@@ -572,18 +577,45 @@ export class AIDLCFlow {
     if (!DEV_SETUP_STAGES.includes(stage)) return
     const state = await readDevSetupState(this.options.cwd)
     if (!state.needed) {
-      this.print(`\n[setup] Dev environment ${state.status} (${DEV_SETUP_FILE}, ${Math.round(state.ageDays ?? 0)}d old) — skipping setup.\n`)
-      return
+      this.print(`\n[setup] Dev environment ${state.status} (${DEV_SETUP_FILE}, ${Math.round(state.ageDays ?? 0)}d old) — skipping setup for the primary repo.\n`)
+    } else {
+      await ensureIgnored(this.options.cwd, '.aidlc/').catch(() => undefined)
+      this.print(`\n[setup] Preparing the development environment before ${stage} (${state.exists ? `previous status ${state.status ?? 'unknown'}` : 'no setup record yet'})…\n`)
+      try {
+        await this.streamPrompt(withSharedContext(buildDevSetupPrompt(), { sharedContextPrompt: this.options.sharedContextPrompt }))
+        const after = await readDevSetupState(this.options.cwd)
+        this.print(`\n[setup] Dev Setup Status: ${after.status ?? 'not recorded'} — continuing with ${stage}.\n`)
+      } catch (error) {
+        // Setup problems must not block the stage; the stage prompt tells the agent to read the notes.
+        this.print(`\n[setup] Dev environment setup failed: ${error instanceof Error ? error.message : String(error)} — continuing with ${stage}.\n`)
+      }
     }
-    await ensureIgnored(this.options.cwd, '.aidlc/').catch(() => undefined)
-    this.print(`\n[setup] Preparing the development environment before ${stage} (${state.exists ? `previous status ${state.status ?? 'unknown'}` : 'no setup record yet'})…\n`)
-    try {
-      await this.streamPrompt(withSharedContext(buildDevSetupPrompt(), { sharedContextPrompt: this.options.sharedContextPrompt }))
-      const after = await readDevSetupState(this.options.cwd)
-      this.print(`\n[setup] Dev Setup Status: ${after.status ?? 'not recorded'} — continuing with ${stage}.\n`)
-    } catch (error) {
-      // Setup problems must not block the stage; the stage prompt tells the agent to read the notes.
-      this.print(`\n[setup] Dev environment setup failed: ${error instanceof Error ? error.message : String(error)} — continuing with ${stage}.\n`)
+
+    // Secondary repositories: every other registered checkout gets the same
+    // treatment (own session, own .aidlc/dev-setup.md) so cross-repo tasks can
+    // build and test everywhere they touch.
+    const primaryPath = path.resolve(this.options.cwd)
+    const secondaries = (this.options.repoTargets ?? []).filter((t) => path.resolve(t.localPath) !== primaryPath)
+    for (const target of secondaries) {
+      const targetState = await readDevSetupState(target.localPath)
+      if (!targetState.needed) {
+        this.print(`[setup] ${target.label}: dev environment ${targetState.status} — skipping.\n`)
+        continue
+      }
+      this.print(`\n[setup] ${target.label} (${target.localPath}): preparing the development environment…\n`)
+      try {
+        const result = await runDevSetup({
+          cwd: target.localPath,
+          model: this.options.model,
+          thinking: this.options.thinking,
+          sharedContextPrompt: this.options.sharedContextPrompt,
+          repoLabel: target.label,
+          onLog: (chunk) => this.print(chunk),
+        })
+        this.print(`\n[setup] ${target.label}: Dev Setup Status: ${result.status}.\n`)
+      } catch (error) {
+        this.print(`\n[setup] ${target.label}: dev environment setup failed: ${error instanceof Error ? error.message : String(error)} — continuing.\n`)
+      }
     }
   }
 
@@ -1512,10 +1544,11 @@ export async function runAIDLCParallelSubAgents(options: {
   // Make every checkout the workstreams will touch ready for development first
   // (deps installed, env prepared, tests known to run). One setup per repo,
   // skipped when a recent READY/PARTIAL record exists.
+  // Every registered checkout (primary and secondary), not just the ones the
+  // selected workstreams name: cross-repo work must build and test everywhere.
   const setupTargets = new Map<string, string>([[path.resolve(cwd), 'primary']])
-  for (const workstream of selected) {
-    const target = resolveWorkstreamRepo(workstream.repository, options.repoTargets)
-    if (target) setupTargets.set(path.resolve(target.localPath), target.label)
+  for (const target of options.repoTargets ?? []) {
+    setupTargets.set(path.resolve(target.localPath), target.label)
   }
   for (const [repoPath, label] of setupTargets) {
     const state = await readDevSetupState(repoPath)

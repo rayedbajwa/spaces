@@ -946,6 +946,7 @@ async function route(req: Request): Promise<Response> {
         model,
         projectId: project.projectId,
         ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
+        repoTargets: (await subagentRepoTargets(project.slug)).targets,
         projectMemory: contextBundle.project.memory,
         sharedContextPrompt: contextBundle.promptBundle,
         persistSession: true,
@@ -1103,6 +1104,8 @@ async function route(req: Request): Promise<Response> {
       projectId: project.projectId,
       // GitHub-hosted repo → implement/orchestrate/verify publish the feature branch as a PR.
       ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
+      // All checkouts (primary + secondary) so code stages set up every repo for development.
+      repoTargets: (await subagentRepoTargets(projectNamespace)).targets,
     }
     const templateName = body.pipeline?.trim() || DEFAULT_PIPELINE_NAME
     const { template } = await getTemplate(templateName, projectNamespace)

@@ -233,6 +233,8 @@ tool names here were chosen not to collide with it.
 
 ### Dev-environment setup before code stages
 
+Every registered repository — primary and secondary — is set up, first during
+onboarding and again whenever a repo is added or its setup record is stale.
 Before `implement`, `orchestrate` and `verify` (and before parallel
 sub-agents run in a checkout), an agent reviews the README, CONTRIBUTING,
 manifests and CI config, installs dependencies, prepares `.env` from its

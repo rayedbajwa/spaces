@@ -263,7 +263,7 @@ type GitHubRepoOption = {
 }
 
 type OnboardingStep = {
-  id: 'clone' | 'init' | 'sync' | 'learn' | 'memory'
+  id: 'clone' | 'init' | 'sync' | 'learn' | 'memory' | 'setup'
   label: string
   hints: string[]
   status: 'pending' | 'active' | 'done' | 'skipped' | 'error'
