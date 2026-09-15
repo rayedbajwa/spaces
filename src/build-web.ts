@@ -1,8 +1,9 @@
 import { mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import process from 'node:process'
-import { fileURLToPath, pathToFileURL } from 'node:url'
-import { build } from 'esbuild'
+import { fileURLToPath } from 'node:url'
+import { log } from './lib/logger'
+
+const buildLog = log.child({ mod: 'build-web' })
 
 const srcDir = dirname(fileURLToPath(import.meta.url))
 const webDir = join(srcDir, 'web')
@@ -11,26 +12,22 @@ const publicDir = join(srcDir, '..', 'public')
 export async function ensureFrontendBuilt(): Promise<void> {
   await mkdir(publicDir, { recursive: true })
 
-  await build({
-    entryPoints: {
-      app: join(webDir, 'main.tsx'),
-    },
+  const result = await Bun.build({
+    entrypoints: [join(webDir, 'main.tsx')],
     outdir: publicDir,
-    bundle: true,
     format: 'esm',
-    splitting: false,
+    target: 'browser',
     sourcemap: 'inline',
-    target: ['es2022'],
-    platform: 'browser',
-    jsx: 'automatic',
-    logLevel: 'silent',
-    loader: {
-      '.css': 'css',
-    },
+    naming: '[name].[ext]',
   })
+
+  if (!result.success) {
+    const messages = result.logs.map((log) => log.message).join('\n')
+    throw new Error(`Frontend build failed:\n${messages}`)
+  }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (import.meta.main) {
   await ensureFrontendBuilt()
-  console.log(`Built web assets in ${publicDir}`)
+  buildLog.info('built web assets', { publicDir })
 }

@@ -1,0 +1,116 @@
+name: aidlc-enterprise
+version: 1
+description: >
+  Regulated enterprise feature at comprehensive depth. Full audit trail:
+  every major stage has a review gate, human approval, and (where relevant)
+  compliance and security review. Strict change control — any post-approval
+  drift reopens the approval.
+retry:
+  max: 1
+  backoffMs: 5000
+steps:
+  # Per-stage models: opus for high-stakes design/reasoning, sonnet for build/verify, haiku for ceremony.
+  - id: state-init
+    stage: init
+    phase: initialization
+    model: anthropic/claude-haiku-4-5
+    thinking: off
+  - id: intent-capture
+    stage: specify
+    phase: ideation
+    role: product
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: user-stories
+    stage: clarify
+    phase: inception
+    role: product
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: feasibility-and-compliance
+    stage: checklist
+    phase: ideation
+    role: compliance
+    review: true
+    humanGate: true
+    model: anthropic/claude-opus-4-5
+    thinking: high
+  - id: domain-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-opus-4-5
+    thinking: high
+  - id: nfr-design
+    stage: constitution
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-opus-4-5
+    thinking: high
+  - id: units-generation
+    stage: tasks
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: functional-design
+    stage: testplan
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: delivery-planning
+    stage: parallelize
+    phase: construction
+    role: delivery
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+    parallel:
+      source: parallel-workstreams.md
+      maxConcurrency: 4
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: high
+  - id: merge-orchestration
+    stage: orchestrate
+    phase: construction
+    role: delivery
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: high
+    onComplete:
+      branch:
+        - when: "verification_status == 'fail'"
+          goto: code-generation
+        - when: "verification_status == 'partial'"
+          goto: code-generation
+        - when: "true"
+          goto: end

@@ -1,0 +1,36 @@
+name: aidlc-infra
+version: 1
+description: >
+  Infrastructure changes. Skips ideation. Focuses on NFR, infrastructure
+  design, IaC generation, and deployment pipeline. AWS Platform + DevSecOps
+  personas drive the design.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: practices-discovery
+    stage: specify
+    phase: inception
+    role: aws-platform
+  - id: nfr-requirements
+    stage: clarify
+    phase: inception
+    role: devsecops
+    review: true
+    humanGate: true
+  - id: infrastructure-design
+    stage: plan
+    phase: construction
+    role: aws-platform
+    review: true
+    humanGate: true
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: aws-platform
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: pipeline-deploy
+    review: true
+    humanGate: true

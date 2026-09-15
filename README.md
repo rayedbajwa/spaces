@@ -1,126 +1,214 @@
-# pi-speckit-pdlc
+# Spaces
 
-A separate Bun project that uses the Pi SDK to run a Spec Kit-powered PDLC flow.
+**An open-source, agent-driven SDLC orchestrator for software development teams.**
 
-## Included
+Spaces runs an AI-driven Software Development Life Cycle — `specify → plan →
+tasks → implement → verify` — across a fleet of specialized agents, with a web
+UI to inspect every step, human-in-the-loop review gates, and app-wide OAuth
+integrations for GitHub, Jira, Confluence, and Slack.
 
-- Git repository initialized on `main`
-- TypeScript CLI
-- tiny Node/Bun server for the web app and API
-- React frontend
-- live streaming run output in the browser through Server-Sent Events
-- review harness plus human-in-the-loop gates after `specify`, `plan`, `tasks`, and `implement`
+Think of it as a project board where every card is powered by a persistent
+agent that knows the codebase, your team's conventions, and the artifacts of
+every previous stage.
 
-## Project layout
+Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
+(AI-Driven Development Life Cycle) and the
+[Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
-- `src/cli.ts` — terminal entrypoint
-- `src/lib/pdlc.ts` — shared PDLC flow logic
-- `src/server.ts` — API + static server
-- `src/build-web.ts` — bundles the React frontend with esbuild
-- `src/web/index.html` — HTML shell
-- `src/web/main.tsx` — React UI
-- `src/web/styles.css` — frontend styling
+**Tags:** `agentic-workflows` · `aidlc` · `sdlc-automation` · `ai-development` ·
+`llm-orchestration` · `pipeline-orchestrator` · `spec-kit` · `claude` ·
+`developer-tools`
 
-## Install
+---
+
+## Who is this for?
+
+- **Engineering leads** who want AI to run the boilerplate steps of feature
+  delivery — spec, plan, tasks, tests — while keeping human review gates at the
+  points that matter.
+- **Solo developers** and **small teams** who want an agentic workflow that
+  spans multiple projects, remembers prior context per project, and reuses
+  warm agent sessions across runs.
+- **Anyone experimenting with agentic SDLC patterns** who wants a real,
+  runnable reference implementation of the AIDLC framework backed by
+  Postgres, a job queue, and a project-board UI.
+
+Spaces is **not** a code generator you fire and forget. It's a workflow
+runtime that puts explicit review gates between stages and gives you the
+inspectable artifacts each stage produces.
+
+## Highlights
+
+- **AIDLC pipeline templates** — declarative YAML DSL for stage/role/model/branch/retry
+- **Per-project orchestrator + warm agent pool** — sub-agents dispatched per
+  workstream; agent sessions are reused across runs for lower latency
+- **Cross-model handoff memory** — the last few stages' key outputs are
+  injected as a preamble so the next model has context even when you swap
+  Sonnet → Opus → Haiku mid-pipeline
+- **Human-in-the-loop review gates** after `specify`, `plan`, `tasks`,
+  `testplan`, `implement`, `verify`
+- **Live streaming output** in the browser over SSE
+- **Kanban board** with automatic lane derivation from artifact state
+- **App-wide OAuth integrations** — GitHub, Jira, Confluence, Slack. Tokens
+  encrypted at rest (AES-256-GCM)
+- **Per-project long-term memory** and automatic memory summaries
+- **Postgres-backed** job queue with per-project concurrency (SKIP LOCKED),
+  stale-job reaper, and LISTEN/NOTIFY for reactive workers
+
+---
+
+## Quickstart
+
+Prerequisites: [Bun](https://bun.sh) 1.1+, Docker (for Postgres), an
+Anthropic API key.
 
 ```bash
+git clone https://github.com/<you>/spaces.git
+cd spaces
+cp .env.example .env
+# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48) + ANTHROPIC_API_KEY
 bun install
+bun run db:up
+bun run db:migrate
+bun run dev       # web UI on http://localhost:3000
+bun run worker    # in a second terminal
 ```
 
-Node fallback:
+Open [http://localhost:3000](http://localhost:3000), click **New project**,
+walk through the 4-step wizard, and you'll have an AI-managed pipeline
+running.
 
-```bash
-npm install
+---
+
+## Architecture
+
+```
+┌─────────┐     SSE + HTTP     ┌──────────────┐
+│ Browser │ ─────────────────► │  src/server  │  (Bun.serve)
+└─────────┘                    └──────┬───────┘
+                                      │
+                                      ▼
+                              ┌──────────────┐
+                              │   Postgres   │  pipeline_runs, project_jobs,
+                              │              │  app_integrations, artifacts…
+                              └──────┬───────┘
+                                     │  LISTEN/NOTIFY + 5s poll floor
+                                     ▼
+                              ┌──────────────┐
+                              │  src/worker  │  claims jobs via SKIP LOCKED
+                              └──────┬───────┘
+                                     │
+              ┌──────────────────────┼──────────────────────┐
+              ▼                      ▼                      ▼
+     ┌───────────────┐     ┌──────────────────┐    ┌─────────────────┐
+     │  agent-pool   │     │  pipeline-engine │    │   dispatcher    │
+     │ warm sessions │◄───►│  per-stage model │    │ per-project     │
+     │ + reaper      │     │  + handoff memo  │    │ concurrency SQL │
+     └───────┬───────┘     └────────┬─────────┘    └─────────────────┘
+             │                      │
+             └──────────┬───────────┘
+                        ▼
+              @earendil-works/pi-coding-agent (Pi SDK)
+                        │
+                        ▼
+                    LLM provider
+                    (Anthropic / OpenAI)
 ```
 
-The app uses the same auth resolution as `pi`, so make sure your Pi credentials or provider env vars are already configured.
+Key files:
 
-## CLI
+- `src/server.ts` — Bun HTTP server, routes for projects/runs/orchestrator/oauth
+- `src/worker.ts` — dispatcher loop that claims jobs and runs pipelines
+- `src/lib/aidlc.ts` — thin wrapper around Pi SDK's `AIDLCFlow`
+- `src/lib/pipeline-engine.ts` — pipeline template execution (per-stage models, handoff memory)
+- `src/lib/dispatcher.ts` — job queue with per-project concurrency limits
+- `src/lib/agent-pool.ts` — cross-run warm agent pool
+- `src/lib/oauth.ts` — generic OAuth 2.0 flow, provider registry
+- `src/lib/crypto-vault.ts` — AES-256-GCM sealing for stored tokens
+- `data/pipelines/*.yml` — pipeline template DSL
+- `data/personas/*.md` — persona system prompts
+- `data/org/*` — shared org context injected into every run
 
-```bash
-bun run pdlc --feature "Add reusable signing templates"
+---
+
+## Configuring integrations
+
+Each integration is optional. When configured, agents can pull context from
+the connected system (issues, tickets, docs, messages) and integrations show
+as connected dots in the hero.
+
+For each provider you want to enable:
+
+1. Register an OAuth app with the provider.
+2. Set the callback URL to `http://<host>:<port>/api/oauth/<provider>/callback`.
+   - GitHub uses `github`
+   - Jira **and** Confluence share the `atlassian` provider
+   - Slack uses `slack`
+3. Paste `CLIENT_ID` + `CLIENT_SECRET` into `.env` (see `.env.example` for the
+   exact variable names).
+4. Restart the server.
+5. In the web UI, click the **Integrations** chip in the hero and press
+   **Connect** for each provider.
+
+Tokens are encrypted with `ENCRYPTION_KEY` and stored in the `app_integrations`
+Postgres table. Rotating `ENCRYPTION_KEY` invalidates every stored token.
+
+---
+
+## Authoring pipeline templates
+
+Templates in `data/pipelines/*.yml` describe the stages, personas, and gates
+of a pipeline. A minimal example:
+
+```yaml
+name: my-mvp
+description: Fast MVP pipeline
+stages:
+  - id: specify
+    role: architect
+    model: claude-sonnet-4-5
+  - id: plan
+    role: architect
+    model: claude-sonnet-4-5
+    thinking: extended
+  - id: tasks
+    role: developer
+    model: claude-haiku-4-5
+  - id: implement
+    role: developer
+    model: claude-sonnet-4-5
+    branch:
+      onComplete: verify
+  - id: verify
+    role: qa
+    model: claude-sonnet-4-5
+    maxIterations: 3
 ```
 
-With more stages:
+See the shipped templates (`aidlc-mvp.yml`, `aidlc-feature.yml`,
+`aidlc-enterprise.yml`) for full-featured examples with branching, retry, and
+per-stage model selection.
 
-```bash
-bun run pdlc \
-  --feature "Add reusable signing templates" \
-  --with-clarify \
-  --with-implement
-```
+---
 
-Dry run:
+## Deployment note
 
-```bash
-bun run pdlc --feature "Add reusable signing templates" --dry-run
-```
+Spaces is designed for **local, single-user development** by default. There
+is no built-in authentication on the web UI. **Do not expose it to the
+public internet** without putting an authenticating reverse proxy in front
+(Cloudflare Access, Tailscale, Caddy basic-auth, etc.).
 
-Disable review gates or auto-approve reviews:
+See [SECURITY.md](SECURITY.md) for the full list of caveats before deploying.
 
-```bash
-bun run pdlc --feature "Add reusable signing templates" --skip-reviews
-bun run pdlc --feature "Add reusable signing templates" --skip-hitl
-```
+---
 
-Node fallback:
+## Contributing
 
-```bash
-npm run pdlc:node -- --help
-```
+PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions,
+and areas where contributions are especially useful.
 
-## Review harness and human loop
+---
 
-By default, the flow now does this after key stages:
+## License
 
-- run the requested Spec Kit stage
-- run an AI review pass against the generated artifacts
-- pause for human approval after `specify`, `plan`, `tasks`, and `implement`
-- continue only after the reviewer answers `approve`, or apply requested changes and re-run the review gate
-
-This gives you a lightweight approval workflow without leaving the same Pi session.
-
-## Web UI
-
-Start the app:
-
-```bash
-bun run web
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-Node fallback:
-
-```bash
-npm run web:node
-```
-
-The web app supports:
-
-- configuring repo path, feature, constitution, plan context, model, and stages
-- toggling the review harness and human-in-loop approvals
-- running dry runs
-- streaming live PDLC output as the session progresses
-- answering clarification prompts inline when the flow pauses
-- approving or editing review-gate feedback in the browser
-
-## Scripts
-
-- `bun run pdlc`
-- `bun run web`
-- `bun run dev`
-- `npm run build:web`
-- `npm run typecheck`
-- `npm run pdlc:node`
-- `npm run web:node`
-
-## Notes
-
-- Run the flow from inside a git repository, or pass `--cwd` to one.
-- The project reads the shipped Spec Kit skill markdown directly from `@the-agency/pi-spec-kit`.
-- Generated frontend assets are written to `public/` and ignored by git.
+[MIT](LICENSE)

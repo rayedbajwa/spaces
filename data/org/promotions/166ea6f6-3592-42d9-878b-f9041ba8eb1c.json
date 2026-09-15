@@ -1,0 +1,10 @@
+{
+  "id": "166ea6f6-3592-42d9-878b-f9041ba8eb1c",
+  "projectNamespace": "alpha-c28abdbaf3",
+  "title": "Explicit approval states",
+  "content": "Use explicit approval states before execution.",
+  "targetFile": "principles.md",
+  "status": "approved",
+  "createdAt": "2026-09-09T03:59:04.424Z",
+  "decidedAt": "2026-09-09T04:04:18.069Z"
+}

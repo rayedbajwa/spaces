@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-snapshot.json",
+  "type": "object",
+  "required": ["source", "entityType", "entityId", "title", "content", "fetchedAt"],
+  "properties": {
+    "source": { "type": "string" },
+    "scope": { "type": "string" },
+    "entityType": { "type": "string" },
+    "entityId": { "type": "string" },
+    "title": { "type": "string" },
+    "content": { "type": "string" },
+    "url": { "type": "string" },
+    "fetchedAt": { "type": "string" },
+    "metadata": { "type": "object" }
+  }
+}

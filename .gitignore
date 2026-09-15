@@ -1,3 +1,41 @@
-node_modules
-public
+# dependencies
+node_modules/
+
+# build output
+public/
+dist/
+build/
+
+# runtime data (Postgres volume mounted, agent scratch)
+# Keep the templates/personas/org config tracked.
+data/projects/
+data/runs/
+data/logs/
+data/tmp/
+data/*.log
+
+# env + secrets
+.env
+.env.local
+.env.*.local
+
+# lockfile — Bun writes both text and binary; ignore the binary variant
+bun.lockb
+
+# editor + OS
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code local state (entire directory is per-user)
+.claude/
+
+# Scratch/test project the maintainer used while developing.
+# It has its own .git and shouldn't ship with the OSS repo.
+asdf/
+
+# logs / temp
+*.log
+/tmp/

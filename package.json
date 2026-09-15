@@ -1,34 +1,70 @@
 {
-  "name": "pi-speckit-pdlc",
+  "name": "spaces",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Bun app that uses the Pi SDK to run a PDLC flow backed by Spec Kit skills.",
+  "description": "Spaces — an open-source, agent-driven SDLC orchestrator. Runs an AIDLC pipeline (specify → plan → tasks → implement → verify) with per-project sub-agents, warm agent pool, and app-wide integrations for GitHub, Jira, Confluence, and Slack.",
+  "homepage": "https://github.com/rayedbajwa/spaces",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rayedbajwa/spaces.git"
+  },
+  "bugs": {
+    "url": "https://github.com/rayedbajwa/spaces/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "aidlc",
+    "aidlc-workflows",
+    "agentic-workflows",
+    "agentic-ai",
+    "ai-agents",
+    "ai-development",
+    "software-development",
+    "sdlc",
+    "sdlc-automation",
+    "pipeline-orchestrator",
+    "llm-orchestration",
+    "spec-kit",
+    "claude",
+    "anthropic",
+    "pi-sdk",
+    "developer-tools",
+    "kanban",
+    "typescript",
+    "bun",
+    "postgres"
+  ],
   "bin": {
-    "pi-speckit-pdlc": "./src/cli.ts"
+    "spaces": "./src/cli.ts"
   },
   "scripts": {
-    "build:web": "tsx src/build-web.ts",
-    "pdlc": "bun run src/cli.ts",
+    "build:web": "bun run src/build-web.ts",
+    "aidlc": "bun run src/cli.ts",
     "web": "bun run src/server.ts",
-    "dev": "bun --watch src/server.ts",
+    "worker": "bun run src/worker.ts",
+    "dev": "bun --hot src/server.ts",
     "help": "bun run src/cli.ts --help",
     "typecheck": "tsc --noEmit",
-    "pdlc:node": "tsx src/cli.ts",
-    "web:node": "tsx src/server.ts"
+    "db:up": "docker compose up -d postgres && docker compose exec postgres sh -c 'until pg_isready -U aidlc -d aidlc; do sleep 1; done'",
+    "db:down": "docker compose down",
+    "db:migrate": "bun run src/db-migrate.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@the-agency/pi-spec-kit": "^0.2.5",
+    "marked": "^14.1.2",
+    "pg-boss": "^12.31.0",
+    "postgres": "^3.4.9",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
+    "@types/bun": "^1.4.0",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
-    "esbuild": "^0.25.9",
-    "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }
 }

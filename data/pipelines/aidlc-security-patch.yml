@@ -1,0 +1,38 @@
+name: aidlc-security-patch
+version: 1
+description: >
+  CVE / vulnerability response. Incremental scope with STRICT change control
+  and mandatory DevSecOps + Compliance review. Reverse engineer the affected
+  area, capture the security requirement, patch, verify.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: reverse-engineering
+    stage: specify
+    phase: inception
+    role: developer
+  - id: nfr-requirements
+    stage: clarify
+    phase: inception
+    role: devsecops
+    review: true
+    humanGate: true
+  - id: compliance-review
+    stage: checklist
+    phase: inception
+    role: compliance
+    review: true
+    humanGate: true
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+    review: true
+    humanGate: true
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true

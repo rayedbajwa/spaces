@@ -1,0 +1,44 @@
+# VCS
+.git
+.gitignore
+.github
+
+# dependencies / build output (rebuilt inside the image)
+node_modules
+public
+dist
+build
+
+# runtime state
+data/projects
+data/runs
+data/logs
+data/tmp
+
+# env + secrets — NEVER bake into an image
+.env
+.env.local
+.env.*.local
+
+# editor + OS
+.DS_Store
+.idea
+.vscode
+*.swp
+
+# Claude Code local state
+.claude
+
+# docs / meta / test artifacts don't need to be in the image
+README.md
+CONTRIBUTING.md
+SECURITY.md
+LICENSE
+CHANGELOG.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# logs / temp
+*.log
+tmp

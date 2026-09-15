@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ----- typecheck + frontend build + tests --------------------------------
+  build:
+    name: build & test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aidlc
+          POSTGRES_PASSWORD: aidlc
+          POSTGRES_DB: aidlc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U aidlc -d aidlc"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.1
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build frontend
+        run: bun run build:web
+
+      - name: Apply DB schema
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+        run: bun run db:migrate
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test
+
+  # ----- docker image build (sanity check, no push) ------------------------
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: spaces:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

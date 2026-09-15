@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "promotion-proposal.json",
+  "type": "object",
+  "required": ["id", "projectNamespace", "title", "content", "status", "createdAt"],
+  "properties": {
+    "id": { "type": "string" },
+    "projectNamespace": { "type": "string" },
+    "title": { "type": "string" },
+    "content": { "type": "string" },
+    "targetFile": { "type": "string" },
+    "status": { "enum": ["pending", "approved", "rejected"] },
+    "createdAt": { "type": "string" },
+    "decidedAt": { "type": "string" },
+    "decisionNotes": { "type": "string" }
+  }
+}

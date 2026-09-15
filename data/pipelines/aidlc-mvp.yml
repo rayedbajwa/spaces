@@ -1,0 +1,85 @@
+name: aidlc-mvp
+version: 1
+description: >
+  Skip operations, ship the core. Reduced Ideation ceremony (no market-research
+  or team-formation), full Inception, and the build path of Construction.
+  Operation is skipped wholesale — an MVP proves the product, it does not yet
+  carry production weight. Promote to `feature` or `enterprise` when the MVP
+  graduates.
+steps:
+  # Per-stage models: haiku for mechanical/scaffolding, sonnet for reasoning + code.
+  # Falls back to run-level default (anthropic/claude-sonnet-4-5) if a model isn't
+  # resolvable in the caller's Pi auth catalog.
+  - id: state-init
+    stage: init
+    phase: initialization
+    model: anthropic/claude-haiku-4-5
+    thinking: off
+  - id: intent-capture
+    stage: specify
+    phase: ideation
+    role: product
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: requirements-analysis
+    stage: clarify
+    phase: inception
+    role: product
+    review: true
+    humanGate: true
+    model: anthropic/claude-haiku-4-5
+    thinking: low
+  - id: domain-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: high
+  - id: units-generation
+    stage: tasks
+    phase: inception
+    role: architect
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: functional-design
+    stage: testplan
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: delivery-planning
+    stage: parallelize
+    phase: construction
+    role: delivery
+    model: anthropic/claude-haiku-4-5
+    thinking: low
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+    maxIterations: 3
+    model: anthropic/claude-sonnet-4-5
+    thinking: high
+    parallel:
+      source: parallel-workstreams.md
+      maxConcurrency: 4
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+    onComplete:
+      branch:
+        - when: "verification_status == 'fail'"
+          goto: code-generation
+        - when: "verification_status == 'partial'"
+          goto: code-generation
+        - when: "true"
+          goto: end

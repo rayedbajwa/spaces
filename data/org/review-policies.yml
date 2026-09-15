@@ -1,0 +1,23 @@
+reviews:
+  specify:
+    required: true
+    human_in_loop: true
+  plan:
+    required: true
+    human_in_loop: true
+  tasks:
+    required: true
+    human_in_loop: true
+  implement:
+    required: true
+    human_in_loop: true
+
+promotion:
+  require_human_approval: true
+  default_target: principles.md
+
+knowledge_sources:
+  prefer_org_guidance: true
+  allow_project_memory: true
+  allow_feature_artifacts: true
+  allow_source_snapshots: true

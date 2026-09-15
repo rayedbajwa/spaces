@@ -1,0 +1,309 @@
+import {
+  AIDLCFlow,
+  runAIDLCParallelSubAgents,
+  type FlowOptions,
+  type FlowProgress,
+  type ParallelSubAgentProgressEvent,
+  type ParallelSubAgentResult,
+  type StageName,
+  type StepNavigator,
+  type StepNavigatorContext,
+  type StepNavigatorResult,
+} from './aidlc'
+import type { PipelineStep, PipelineTemplate } from './pipeline-template'
+import { evaluateBranchExpression, readVerificationStatus } from './pipeline-branch'
+import { loadPersona } from './persona-loader'
+
+export interface PipelineEngineOptions extends FlowOptions {}
+
+export interface PipelineEngineSinks {
+  stdout?: (chunk: string) => void
+  stderr?: (chunk: string) => void
+  onParallelProgress?: (stepId: string, event: ParallelSubAgentProgressEvent) => void
+  onBranch?: (from: string, to: string, reason: string) => void
+  onStageHandoff?: (handoff: { stepIndex: number; stepId: string; stage: string; model?: string; tail: string }) => Promise<void> | void
+}
+
+export interface PipelineEngineDryRunPlan {
+  template: string
+  stages: StageName[]
+  reviewStages: StageName[]
+  humanGateStages: StageName[]
+  parallelSteps: Array<{ id: string; stage: StageName; maxConcurrency: number }>
+  branches: Array<{ from: string; when: string; goto: string }>
+  models: Array<{ id: string; stage: StageName; role?: string; model?: string; thinking?: string }>
+}
+
+const DEFAULT_MAX_ITERATIONS = 3
+
+export class PipelineEngine {
+  private readonly flow: AIDLCFlow
+  private readonly template: PipelineTemplate
+  private readonly reviewStages: Set<StageName>
+  private readonly humanGateStages: Set<StageName>
+  private readonly parallelStepsByStage: Map<StageName, PipelineStep>
+  private readonly stepsByStage: Map<StageName, PipelineStep>
+  private readonly stepsById: Map<string, PipelineStep>
+  private readonly visitCount: Map<string, number> = new Map()
+  // Cross-model memory: tail of each completed stage's output. Injected as
+  // preamble into subsequent stages so the next model can see prior decisions
+  // even when the Pi session was replaced due to a model swap.
+  private readonly stageHandoffs: Array<{ stepId: string; stage: string; model?: string; tail: string }> = []
+  private readonly sinks: PipelineEngineSinks
+  private readonly options: PipelineEngineOptions
+
+  constructor(template: PipelineTemplate, options: PipelineEngineOptions, sinks: PipelineEngineSinks = {}) {
+    this.template = template
+    this.sinks = sinks
+    this.options = options
+
+    const stages = template.steps.map((step) => step.stage)
+    this.reviewStages = new Set(template.steps.filter((s) => s.review).map((s) => s.stage))
+    this.humanGateStages = new Set(template.steps.filter((s) => s.humanGate).map((s) => s.stage))
+    this.parallelStepsByStage = new Map(
+      template.steps.filter((s) => s.parallel).map((s) => [s.stage, s]),
+    )
+    this.stepsByStage = new Map(template.steps.map((s) => [s.stage, s]))
+    this.stepsById = new Map(template.steps.map((s) => [s.id, s]))
+
+    const flowOptions: FlowOptions = {
+      ...options,
+      reviewHarness: this.reviewStages.size > 0,
+      // Autonomous mode disables human-in-loop entirely — the loop-back branch
+      // and verify-fix re-runs happen without pausing for approval.
+      humanInLoop: !options.autonomousMode && this.humanGateStages.size > 0,
+      reviewStagesOverride: this.reviewStages,
+      humanGateStagesOverride: options.autonomousMode ? new Set<StageName>() : this.humanGateStages,
+      stepNavigator: this.buildNavigator(),
+      beforeStagePrompt: this.buildStagePreambleLoader(),
+      stepModel: this.buildStepModelResolver(),
+      afterStageComplete: this.buildStageCompletionCapture(),
+    }
+
+    this.flow = new AIDLCFlow(flowOptions, stages, {
+      stdout: sinks.stdout,
+      stderr: sinks.stderr,
+    })
+  }
+
+  async start(): Promise<FlowProgress> {
+    return await this.flow.start()
+  }
+
+  async answer(input: string): Promise<FlowProgress> {
+    return await this.flow.answer(input)
+  }
+
+  async dispose(): Promise<void> {
+    await this.flow.dispose()
+  }
+
+  getLog(): string {
+    return this.flow.getLog()
+  }
+
+  getCurrentStage(): StageName | undefined {
+    return this.flow.getCurrentStage()
+  }
+
+  getSessionFile(): string | undefined {
+    return this.flow.getSessionFile()
+  }
+
+  getTemplateName(): string {
+    return this.template.name
+  }
+
+  static describePlan(template: PipelineTemplate): PipelineEngineDryRunPlan {
+    const branches: Array<{ from: string; when: string; goto: string }> = []
+    for (const step of template.steps) {
+      for (const rule of step.onComplete?.branch ?? []) {
+        branches.push({ from: step.id, when: rule.when, goto: rule.goto })
+      }
+    }
+    return {
+      template: template.name,
+      stages: template.steps.map((s) => s.stage),
+      reviewStages: template.steps.filter((s) => s.review).map((s) => s.stage),
+      humanGateStages: template.steps.filter((s) => s.humanGate).map((s) => s.stage),
+      parallelSteps: template.steps
+        .filter((s) => s.parallel)
+        .map((s) => ({ id: s.id, stage: s.stage, maxConcurrency: s.parallel?.maxConcurrency ?? 4 })),
+      branches,
+      models: template.steps.map((s) => ({ id: s.id, stage: s.stage, role: s.role, model: s.model, thinking: s.thinking })),
+    }
+  }
+
+  async runDeclaredParallelSubAgents(): Promise<Array<{ stepId: string; results: ParallelSubAgentResult[] }>> {
+    const outputs: Array<{ stepId: string; results: ParallelSubAgentResult[] }> = []
+    for (const step of this.template.steps) {
+      if (!step.parallel) continue
+      const { results } = await runAIDLCParallelSubAgents({
+        cwd: this.options.cwd,
+        model: this.options.model,
+        thinking: this.options.thinking,
+        sharedContextPrompt: this.options.sharedContextPrompt,
+        maxAgents: step.parallel.maxConcurrency,
+        onProgress: (event) => this.sinks.onParallelProgress?.(step.id, event),
+      })
+      outputs.push({ stepId: step.id, results })
+    }
+    return outputs
+  }
+
+  hasParallelSteps(): boolean {
+    return this.parallelStepsByStage.size > 0
+  }
+
+  private buildStagePreambleLoader(): FlowOptions['beforeStagePrompt'] {
+    return async ({ stageIndex, stage }) => {
+      // Steps map 1:1 to template.steps by index for the linear prefix.
+      // Loop-back extensions past the original array look up the step by stage.
+      const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
+      if (!step) return ''
+
+      const previousVisits = this.visitCount.get(step.id) ?? 0
+      const isRerun = previousVisits > 0
+
+      const parts: string[] = []
+
+      // Cross-stage memory FIRST — it's context the model needs to reason with.
+      const handoffs = this.renderHandoffs()
+      if (handoffs) parts.push(handoffs)
+
+      if (step.role) {
+        const persona = await loadPersona(step.role)
+        if (persona) parts.push(`# Active role: ${step.role}\n\n${persona.trim()}`)
+      }
+
+      if (isRerun && step.stage === 'implement') {
+        parts.push(
+          `# Loop iteration ${previousVisits + 1} — verify-driven re-run\n\n` +
+          `This step is being re-executed because the verify stage flagged remaining work.\n` +
+          `The latest \`verification-report.md\` is available in the shared context bundle above.\n\n` +
+          `**Focus rules for this iteration:**\n` +
+          `- Read the \`## Unsatisfied Test Cases\` section of the verification report FIRST.\n` +
+          `- Fix ONLY the specific failing test cases listed there.\n` +
+          `- Do not rewrite passing code, do not re-plan, do not re-architect.\n` +
+          `- Add production code only when a failing test needs it.\n` +
+          `- Prefer minimal, surgical diffs.\n` +
+          `- After your changes, list which tests should now pass so the next verify pass can check.\n`,
+        )
+      }
+
+      if (isRerun && step.stage === 'verify') {
+        parts.push(
+          `# Loop iteration ${previousVisits + 1} — re-verification\n\n` +
+          `Verification failed previously and code has been changed since. Re-run the test suite in full.\n` +
+          `Preserve the same status-line format so downstream loops keep working.\n`,
+        )
+      }
+
+      return parts.join('\n\n---\n\n')
+    }
+  }
+
+  private buildStageCompletionCapture(): FlowOptions['afterStageComplete'] {
+    return async ({ stageIndex, stage, output, model }) => {
+      const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
+      if (!step) return
+      const trimmed = output.trim()
+      const tail = trimmed.length > 2000 ? '…' + trimmed.slice(-2000) : trimmed
+      if (!tail) return
+      this.stageHandoffs.push({ stepId: step.id, stage, model, tail })
+      while (this.stageHandoffs.length > 6) this.stageHandoffs.shift()
+      // Best-effort persist so a UI/observer can inspect the thread across restarts.
+      if (this.sinks.onStageHandoff) {
+        try {
+          await this.sinks.onStageHandoff({ stepIndex: stageIndex, stepId: step.id, stage, model, tail })
+        } catch {
+          // never fail the run because of a handoff persistence hiccup
+        }
+      }
+    }
+  }
+
+  private renderHandoffs(): string {
+    if (this.stageHandoffs.length === 0) return ''
+    const entries = this.stageHandoffs.map((h, i) => {
+      const modelHint = h.model ? ` · model: ${h.model}` : ''
+      return `### Prior stage ${i + 1}: ${h.stepId} (${h.stage})${modelHint}\n\n${h.tail}`
+    })
+    return `# Cross-stage memory\n\nThese are summaries of what prior stages produced in this run. The Pi session may have been reset when the model changed, but this thread carries context across boundaries.\n\n${entries.join('\n\n---\n\n')}`
+  }
+
+  private buildStepModelResolver(): FlowOptions['stepModel'] {
+    return ({ stageIndex, stage }) => {
+      const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
+      if (!step) return undefined
+      if (!step.model && !step.thinking) return undefined
+      return {
+        model: step.model,
+        thinking: step.thinking as never,
+      }
+    }
+  }
+
+  private buildNavigator(): StepNavigator {
+    return async (ctx: StepNavigatorContext): Promise<StepNavigatorResult> => {
+      // Record visit to this stage's step
+      const step = this.stepsByStage.get(ctx.stage)
+      if (step) {
+        this.visitCount.set(step.id, (this.visitCount.get(step.id) ?? 0) + 1)
+      }
+
+      // No branch rules: linear advance.
+      if (!step?.onComplete?.branch || step.onComplete.branch.length === 0) {
+        return { nextIndex: ctx.currentIndex + 1 }
+      }
+
+      // Evaluate branch rules in order.
+      const variables = await this.buildBranchVariables(step.id)
+      for (const rule of step.onComplete.branch) {
+        let matched = false
+        try {
+          matched = evaluateBranchExpression(rule.when, variables)
+        } catch (error) {
+          throw new Error(`Failed to evaluate branch on step "${step.id}": ${error instanceof Error ? error.message : String(error)}`)
+        }
+        if (!matched) continue
+
+        if (rule.goto === 'end') {
+          this.sinks.onBranch?.(step.id, 'end', rule.when)
+          return { nextIndex: ctx.stages.length } // past the end → terminate
+        }
+
+        const targetStep = this.stepsById.get(rule.goto)
+        if (!targetStep) {
+          throw new Error(`Branch target step "${rule.goto}" not found in template.`)
+        }
+
+        // Cap iterations to prevent infinite loops.
+        const maxIter = targetStep.maxIterations ?? DEFAULT_MAX_ITERATIONS
+        const visits = this.visitCount.get(targetStep.id) ?? 0
+        if (visits >= maxIter) {
+          this.sinks.onBranch?.(step.id, targetStep.id, `${rule.when} (max ${maxIter} iterations reached; terminating)`)
+          return { nextIndex: ctx.stages.length }
+        }
+
+        this.sinks.onBranch?.(step.id, targetStep.id, rule.when)
+        // Append the target stage to the stages array so the flow can revisit it.
+        return {
+          nextIndex: ctx.stages.length,
+          extendStages: [targetStep.stage],
+        }
+      }
+
+      // No rule matched: linear advance (fall-through).
+      return { nextIndex: ctx.currentIndex + 1 }
+    }
+  }
+
+  private async buildBranchVariables(currentStepId: string): Promise<Record<string, string | undefined>> {
+    const verification = await readVerificationStatus(this.options.cwd).catch(() => undefined)
+    return {
+      verification_status: verification,
+      iteration: String(this.visitCount.get(currentStepId) ?? 0),
+    }
+  }
+}

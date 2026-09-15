@@ -1,0 +1,11 @@
+{
+  "id": "d9a9efef-bf77-4876-9872-d36626738e73",
+  "projectNamespace": "alpha-c28abdbaf3",
+  "title": "Explicit approval states",
+  "content": "Use explicit approval states before execution.",
+  "targetFile": "principles.md",
+  "status": "approved",
+  "createdAt": "2026-09-09T03:59:36.226Z",
+  "decidedAt": "2026-09-09T03:59:36.260Z",
+  "decisionNotes": "good org lesson"
+}

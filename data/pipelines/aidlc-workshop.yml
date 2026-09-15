@@ -1,0 +1,46 @@
+name: aidlc-workshop
+version: 1
+description: >
+  Facilitated group session (workshop / lab / training). Teaching-oriented
+  minimal test strategy. Ideation discovery skipped, but every stage has a
+  mandatory human gate so the facilitator can pause the group and discuss.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: intent-capture
+    stage: specify
+    phase: inception
+    role: product
+    review: true
+    humanGate: true
+  - id: user-stories
+    stage: clarify
+    phase: inception
+    role: product
+    review: true
+    humanGate: true
+  - id: domain-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+  - id: units-generation
+    stage: tasks
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+    review: true
+    humanGate: true
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true

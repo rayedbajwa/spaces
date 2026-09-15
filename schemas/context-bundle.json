@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "context-bundle.json",
+  "type": "object",
+  "required": ["projectNamespace", "org", "project", "featureArtifacts", "sourceSnapshots", "promptBundle"],
+  "properties": {
+    "projectNamespace": { "type": "string" },
+    "projectPath": { "type": "string" },
+    "org": { "type": "object" },
+    "project": { "type": "object" },
+    "featureArtifacts": { "type": "array" },
+    "sourceSnapshots": { "type": "array" },
+    "promptBundle": { "type": "string" }
+  }
+}

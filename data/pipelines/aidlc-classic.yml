@@ -1,0 +1,46 @@
+name: aidlc-classic
+version: 1
+description: >
+  V1-style AI-DLC ceremony. Skips Ideation phase, keeps Inception and
+  Construction through build-and-test. One human approval per major stage,
+  advisory reviews. The implicit default when no scope is chosen.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: requirements-analysis
+    stage: specify
+    phase: inception
+    role: product
+    review: true
+    humanGate: true
+  - id: user-stories
+    stage: clarify
+    phase: inception
+    role: product
+  - id: domain-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+  - id: units-generation
+    stage: tasks
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+  - id: functional-design
+    stage: testplan
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+  - id: delivery-planning
+    stage: parallelize
+    phase: construction
+    role: delivery
+  - id: analyze
+    stage: analyze
+    phase: construction
+    role: architect

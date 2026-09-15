@@ -1,0 +1,11 @@
+name: test-minimal
+version: 1
+description: >
+  Minimal 2-stage pipeline (init + specify) with no review gates. Used for
+  end-to-end smoke testing of the PipelineEngine without human-in-loop pauses.
+  Not intended for production use.
+steps:
+  - id: init
+    stage: init
+  - id: specify
+    stage: specify

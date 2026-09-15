@@ -1,0 +1,97 @@
+name: aidlc-feature
+version: 1
+description: >
+  Full AI-DLC lifecycle for new features at practical depth. Includes
+  ideation, full inception, construction, and CI. Change control is relaxed
+  (post-approval drift is announced in one line, run continues).
+steps:
+  # Per-stage models: haiku for mechanical, sonnet for design/impl, opus for deep architect stages.
+  - id: state-init
+    stage: init
+    phase: initialization
+    model: anthropic/claude-haiku-4-5
+    thinking: off
+  - id: intent-capture
+    stage: specify
+    phase: ideation
+    role: product
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: user-stories
+    stage: clarify
+    phase: inception
+    role: product
+    model: anthropic/claude-haiku-4-5
+    thinking: low
+  - id: domain-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-opus-4-5
+    thinking: high
+  - id: contract-design
+    stage: constitution
+    phase: inception
+    role: architect
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: units-generation
+    stage: tasks
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: functional-design
+    stage: testplan
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: delivery-planning
+    stage: parallelize
+    phase: construction
+    role: delivery
+    model: anthropic/claude-haiku-4-5
+    thinking: low
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+    maxIterations: 3
+    model: anthropic/claude-sonnet-4-5
+    thinking: high
+    parallel:
+      source: parallel-workstreams.md
+      maxConcurrency: 4
+  - id: merge-orchestration
+    stage: orchestrate
+    phase: construction
+    role: delivery
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+    onComplete:
+      branch:
+        - when: "verification_status == 'fail'"
+          goto: code-generation
+        - when: "verification_status == 'partial'"
+          goto: code-generation
+        - when: "true"
+          goto: end

@@ -1,0 +1,39 @@
+name: aidlc-verify-loop
+version: 1
+description: >
+  Full AIDLC pipeline that loops back from `verify` to `plan` if verification
+  fails, up to 2 iterations of the plan step. Demonstrates Phase 3 branch
+  conditions and iteration caps.
+steps:
+  - id: init
+    stage: init
+  - id: specify
+    stage: specify
+    review: true
+    humanGate: true
+  - id: plan
+    stage: plan
+    review: true
+    humanGate: true
+    maxIterations: 2
+  - id: tasks
+    stage: tasks
+  - id: testplan
+    stage: testplan
+  - id: implement
+    stage: implement
+    parallel:
+      source: parallel-workstreams.md
+      maxConcurrency: 4
+  - id: verify
+    stage: verify
+    review: true
+    humanGate: true
+    onComplete:
+      branch:
+        - when: "verification_status == 'fail'"
+          goto: plan
+        - when: "verification_status == 'partial'"
+          goto: plan
+        - when: "true"
+          goto: end

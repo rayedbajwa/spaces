@@ -1,0 +1,70 @@
+# NOTE: container and volume names still say "pi-speckit-*" — preserved to
+# keep existing Docker volumes intact after the rename to "spaces". Renaming
+# the volume would orphan pgdata (projects/runs/OAuth tokens lost). Fresh
+# installs can rename both freely.
+#
+# The default `docker compose up` starts Postgres only, matching the local
+# dev workflow (`bun run dev` + `bun run worker` on the host).
+#
+# To run the full stack in containers (app + worker + postgres), use:
+#   docker compose --profile full up --build
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: pi-speckit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aidlc
+      POSTGRES_PASSWORD: aidlc
+      POSTGRES_DB: aidlc
+    ports:
+      - "5432:5432"
+    volumes:
+      - pi-speckit-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aidlc -d aidlc"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    profiles: ["full"]
+    build: .
+    image: spaces:latest
+    container_name: spaces-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://aidlc:aidlc@postgres:5432/aidlc
+      PORT: 3000
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  worker:
+    profiles: ["full"]
+    build: .
+    image: spaces:latest
+    container_name: spaces-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://aidlc:aidlc@postgres:5432/aidlc
+      WORKER_ID: docker-worker-1
+    env_file:
+      - .env
+    command: ["bun", "run", "src/worker.ts"]
+
+volumes:
+  pi-speckit-pgdata:

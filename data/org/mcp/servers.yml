@@ -1,0 +1,9 @@
+servers:
+  - id: github
+    purpose: repos-pulls-issues-files
+    approved: true
+    default_mode: read-only
+  - id: jira
+    purpose: tickets-epics-workflows
+    approved: true
+    default_mode: read-only

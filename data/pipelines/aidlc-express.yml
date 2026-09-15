@@ -1,0 +1,26 @@
+name: aidlc-express
+version: 1
+description: >
+  Lightest AI-DLC run. No design ceremony, no reviewers. Reverse engineer,
+  capture the intent, code, verify. Ships as fast as possible — use only for
+  well-scoped changes with low blast radius.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: reverse-engineering
+    stage: specify
+    phase: inception
+    role: developer
+  - id: requirements-analysis
+    stage: clarify
+    phase: inception
+    role: product
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality

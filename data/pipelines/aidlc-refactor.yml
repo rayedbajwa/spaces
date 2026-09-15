@@ -1,0 +1,34 @@
+name: aidlc-refactor
+version: 1
+description: >
+  Clean up existing code. Incremental — no walking skeleton. Reverse engineer,
+  capture the refactor intent, redesign the affected area, execute, verify
+  behavior is preserved.
+steps:
+  - id: state-init
+    stage: init
+    phase: initialization
+  - id: reverse-engineering
+    stage: specify
+    phase: inception
+    role: developer
+  - id: requirements-analysis
+    stage: clarify
+    phase: inception
+    role: architect
+  - id: functional-design
+    stage: plan
+    phase: inception
+    role: architect
+    review: true
+    humanGate: true
+  - id: code-generation
+    stage: implement
+    phase: construction
+    role: developer
+  - id: build-and-test
+    stage: verify
+    phase: construction
+    role: quality
+    review: true
+    humanGate: true
