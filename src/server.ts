@@ -72,7 +72,7 @@ import {
   type RepoRow,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
-import { getOnboardingSnapshot, startProjectOnboarding } from './lib/project-onboarding'
+import { getOnboardingSnapshot, refreshRepositoryKnowledge, startProjectOnboarding } from './lib/project-onboarding'
 import {
   getKnowledgeItem,
   KnowledgeSourceNotConnectedError,
@@ -235,8 +235,25 @@ async function route(req: Request): Promise<Response> {
     if (body.kind === 'local' && !body.localPath) return sendJson(400, { error: 'localPath required for kind=local' })
     if (body.kind === 'github' && !body.githubRepo) return sendJson(400, { error: 'githubRepo required for kind=github' })
     const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary: body.isPrimary })
-    if (repo.kind === 'github') void scheduleRepoClone(repo)
+    // Once the checkout exists, learn it and recompose project memory so agents
+    // (and tasks blocked on this repo) can use it.
+    if (repo.kind === 'github') {
+      void scheduleRepoClone(repo).then(() => refreshRepositoryKnowledge(projectId, repo.repoId)).catch(() => undefined)
+    } else {
+      void refreshRepositoryKnowledge(projectId, repo.repoId).catch(() => undefined)
+    }
     return sendJson(201, repo)
+  }
+
+  // Re-learn one repository (inventory + brief) and recompose project memory.
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/[0-9a-f-]{36}\/learn$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const repoId = url.pathname.split('/')[5]!
+    const repo = await projGetRepo(repoId)
+    if (!repo) return sendJson(404, { error: 'Repo not found.' })
+    if (!repo.localPath) return sendJson(409, { error: 'Repository has no local checkout yet; clone it first.' })
+    void refreshRepositoryKnowledge(projectId, repoId).catch(() => undefined)
+    return sendJson(202, { ok: true, repoId, status: 'learning' })
   }
 
   // Edit a registered repo (label, path, owner/name, primary). Changing the
@@ -253,7 +270,12 @@ async function route(req: Request): Promise<Response> {
       isPrimary: body.isPrimary,
     })
     if (updated?.kind === 'github' && body.githubRepo?.trim() && body.githubRepo.trim() !== existing.githubRepo) {
-      void scheduleRepoClone(updated)
+      void scheduleRepoClone(updated).then(() => refreshRepositoryKnowledge(updated.projectId, updated.repoId)).catch(() => undefined)
+    } else if (updated && body.localPath?.trim() && body.localPath.trim() !== existing.localPath) {
+      void refreshRepositoryKnowledge(updated.projectId, updated.repoId).catch(() => undefined)
+    } else if (updated) {
+      // Label/primary changes: recompose the repository map without re-learning.
+      void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(updated.projectId)).catch(() => undefined)
     }
     return sendJson(200, updated ?? existing)
   }
@@ -292,7 +314,7 @@ async function route(req: Request): Promise<Response> {
     const repo = await projGetRepo(repoId)
     if (!repo) return sendJson(404, { error: 'Repo not found.' })
     if (repo.kind !== 'github' || !repo.githubRepo) return sendJson(400, { error: 'Only GitHub repos can be cloned.' })
-    void scheduleRepoClone(repo)
+    void scheduleRepoClone(repo).then(() => refreshRepositoryKnowledge(repo.projectId, repo.repoId)).catch(() => undefined)
     const refreshed = await projGetRepo(repoId)
     return sendJson(202, refreshed ?? repo)
   }
@@ -420,8 +442,23 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'DELETE' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/[0-9a-f-]{36}$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
     const repoId = url.pathname.split('/').pop()!
+    const existing = await projGetRepo(repoId)
     await projRemoveRepo(repoId)
+    // Keep agents' picture consistent: drop the repo's brief, recompose memory,
+    // and prune it from the project's knowledge scope.
+    void (async () => {
+      const sql = getDb()
+      await sql`DELETE FROM project_source_snapshots WHERE project_id = ${projectId} AND source = 'codebase' AND entity_id = ${repoId}`
+      const project = await projGet(projectId)
+      if (project?.knowledgeJson?.github?.repos?.length && existing?.githubRepo) {
+        const repos = project.knowledgeJson.github.repos.filter((r) => r !== existing.githubRepo)
+        await projUpdateKnowledge(projectId, { ...project.knowledgeJson, github: { ...project.knowledgeJson.github, repos } })
+      }
+      const { composeProjectMemory } = await import('./lib/project-onboarding')
+      await composeProjectMemory(projectId)
+    })().catch((error) => serverLog.warn('post-remove repo cleanup failed', { repoId, error: error instanceof Error ? error.message : String(error) }))
     return sendJson(204, {})
   }
 
@@ -941,9 +978,34 @@ async function route(req: Request): Promise<Response> {
     const [, , , slug] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const body = await readJson<{ manualText?: string }>(req)
-    const memory = await import('./lib/context-builder').then((m) => m.upsertProjectMemory(project.projectId, { manualText: body.manualText }))
+    // The UI sends `text`; older callers sent `manualText`. Accept both — the
+    // mismatch used to make "Save memory" write nothing.
+    const body = await readJson<{ manualText?: string; text?: string }>(req)
+    const manualText = body.manualText ?? body.text
+    if (typeof manualText !== 'string') return sendJson(400, { error: 'text is required.' })
+    const memory = await import('./lib/context-builder').then((m) => m.upsertProjectMemory(project.projectId, { manualText }))
     return sendJson(200, { projectId: project.projectId, slug, ...memory })
+  }
+
+  // Rebuild the auto-summary from the registered repositories: learn every
+  // checkout that has no brief yet (or all, with force) and recompose memory.
+  if (method === 'POST' && /^\/api\/projects\/[^/]+\/memory\/rebuild$/.test(url.pathname)) {
+    const [, , , slug] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const body = await readJson<{ force?: boolean }>(req).catch(() => ({ force: false }))
+    const repos = (await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))).filter((r) => Boolean(r.localPath))
+    const sql = getDb()
+    const learned = new Set((await sql<Array<{ entityId: string }>>`SELECT entity_id AS "entityId" FROM project_source_snapshots WHERE project_id = ${project.projectId} AND source = 'codebase'`).map((r) => r.entityId))
+    const targets = repos.filter((r) => body.force || !learned.has(r.repoId))
+    void (async () => {
+      for (const repo of targets) await refreshRepositoryKnowledge(project.projectId, repo.repoId)
+      if (targets.length === 0) {
+        const { composeProjectMemory } = await import('./lib/project-onboarding')
+        await composeProjectMemory(project.projectId)
+      }
+    })().catch((error) => serverLog.warn('memory rebuild failed', { slug, error: error instanceof Error ? error.message : String(error) }))
+    return sendJson(202, { learning: targets.map((r) => r.label), repos: repos.length })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/artifact$/.test(url.pathname)) {

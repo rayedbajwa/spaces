@@ -150,6 +150,7 @@ async function loadSourceSnapshots(projectId: string): Promise<SourceSnapshot[]>
       fetched_at  AS "fetchedAt"
     FROM project_source_snapshots
     WHERE project_id = ${projectId}
+      AND source <> 'codebase'  -- repository briefs feed project memory, not this section
     ORDER BY fetched_at DESC
     LIMIT 20
   `

@@ -1853,6 +1853,15 @@ function App() {
                               if (next && next.trim()) void updateProjectRepo(repo, repo.kind === 'github' ? { githubRepo: next.trim() } : { localPath: next.trim() })
                             }}
                           >edit</button>
+                          {repo.localPath && (
+                            <button
+                              className="ghost-button"
+                              type="button"
+                              style={{ padding: '0 6px', fontSize: 11 }}
+                              title="Re-read this repository and refresh project memory/context"
+                              onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/repos/${repo.repoId}/learn`, {}).then(() => setStatusMessage(`Re-learning ${repo.label}; project memory will update shortly.`)).catch((error) => setStatusMessage(`Could not re-learn: ${toMessage(error)}`))}
+                            >relearn</button>
+                          )}
                           {repo.kind === 'github' && repo.cloneStatus && (
                             <span className={`mini-badge ${repo.cloneStatus === 'error' ? 'error' : repo.cloneStatus === 'ready' ? 'success' : 'pending'}`}>
                               {CLONE_STATUS_LABEL[repo.cloneStatus]}
@@ -2350,6 +2359,15 @@ function App() {
                 <div className="button-row">
                   <button className="primary-button" disabled={memoryBusy} onClick={() => void saveProjectMemory()} type="button">Save memory</button>
                   <button className="secondary-button" disabled={memoryBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectMemory(selectedProjectNamespace)} type="button">Reload memory</button>
+                  <button
+                    className="secondary-button"
+                    disabled={memoryBusy || !selectedProjectNamespace}
+                    title="Read every registered repository that has no brief yet and recompose the auto summary (repository map, per-repo briefs, inventories)."
+                    onClick={() => selectedProjectNamespace && void postJson<{ learning: string[]; repos: number }>(`/api/projects/${selectedProjectNamespace}/memory/rebuild`, {})
+                      .then((r) => setMemoryStatus(r.learning.length ? `Learning ${r.learning.join(', ')}… reload in a minute or two.` : `Recomposed memory from ${r.repos} repositor${r.repos === 1 ? 'y' : 'ies'}.`))
+                      .catch((error) => setMemoryStatus(`Rebuild failed: ${toMessage(error)}`))}
+                    type="button"
+                  >Rebuild from code</button>
                 </div>
                 <p className="panel-subtitle">{memoryStatus}</p>
               </section>

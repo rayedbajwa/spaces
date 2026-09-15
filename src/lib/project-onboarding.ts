@@ -3,6 +3,8 @@ import { appendFile, chmod, cp, readdir, readFile, stat, writeFile } from 'node:
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { resolveSpeckitRoot, summarizeCodebaseForMemory } from './aidlc'
+import { getDb } from './db'
+import { getProject, getRepo } from './project-registry'
 
 const execFileAsync = promisify(execFile)
 import { buildContextBundle, upsertProjectMemory } from './context-builder'
@@ -226,31 +228,15 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
   }
 
   // ---- memory ------------------------------------------------------------
+  // Each repository's brief + inventory is stored as its own record, and the
+  // project memory is composed from all of them. Adding a repository later
+  // (e.g. one the plan depends on) learns just that repo and recomposes.
   setStep(snapshot, 'memory', 'active')
-  const repoMap = localRepos.map((r) => `- **${r.label}** — ${r.githubRepo ?? 'local'} → \`${r.localPath}\`${r.isPrimary ? ' (primary: Spec Kit artifacts live here)' : ''}`).join('\n')
-  const autoSummary = [
-    `# ${project.name} — onboarding memory`,
-    `_Generated ${new Date().toISOString()} · ${localRepos.length} repositor${localRepos.length === 1 ? 'y' : 'ies'}_`,
-    '',
-    '## Repository map',
-    repoMap,
-    localRepos.length > 1
-      ? '\nThis project spans multiple repositories. Plans, tasks and workstreams must name the repository they touch; implementation and QA run inside that repository\'s checkout.'
-      : '',
-    '',
-    ...briefs.flatMap(({ repo, brief }) => [
-      localRepos.length > 1 ? `# Repository: ${repoName(repo)}` : '',
-      brief,
-      '',
-    ]),
-    '## Codebase inventory',
-    ...inventories.flatMap(({ repo, inventory }) => [
-      localRepos.length > 1 ? `### ${repoName(repo)}` : '',
-      inventory.markdown,
-      '',
-    ]),
-  ].filter((line) => line !== undefined).join('\n')
-  await upsertProjectMemory(project.projectId, { autoSummary })
+  for (const { repo, inventory } of inventories) {
+    const brief = briefs.find((b) => b.repo.repoId === repo.repoId)
+    await saveRepoBrief(project.projectId, repo, inventory.markdown, brief?.brief ?? '_Codebase brief unavailable._', brief?.error)
+  }
+  await composeProjectMemory(project.projectId)
   // Warm the context bundle so the first run's prompt is ready.
   await buildContextBundle({ projectId: project.projectId, projectSlug: project.slug, projectPath: primary.localPath })
   setStep(snapshot, 'memory', 'done', 'Project memory saved; context bundle warmed.')
@@ -468,6 +454,130 @@ export async function initializeSpecKit(repoPath: string): Promise<SpecKitInitRe
   }
 
   return { repoRoot, alreadyInitialized: false, installedFiles, agentsMdUpdated }
+}
+
+// ---------------------------------------------------------------------------
+// Per-repository knowledge → project memory
+// ---------------------------------------------------------------------------
+
+/** Snapshot source used for codebase briefs (kept out of the "Source Snapshots" prompt section). */
+export const CODEBASE_SNAPSHOT_SOURCE = 'codebase'
+
+interface RepoBriefRow {
+  entityId: string
+  title: string
+  content: string
+  metadata: { label?: string; githubRepo?: string; localPath?: string; isPrimary?: boolean; error?: string; learnedAt?: string } | null
+}
+
+/** Store (replace) one repository's brief + inventory as a codebase snapshot. */
+export async function saveRepoBrief(projectId: string, repo: RepoRow, inventoryMarkdown: string, brief: string, error?: string): Promise<void> {
+  const sql = getDb()
+  const name = repo.githubRepo ?? repo.label
+  const content = `${brief.trim()}\n\n### Inventory\n${inventoryMarkdown.trim()}`
+  await sql.begin(async (tx) => {
+    await tx`DELETE FROM project_source_snapshots WHERE project_id = ${projectId} AND source = ${CODEBASE_SNAPSHOT_SOURCE} AND entity_id = ${repo.repoId}`
+    await tx`
+      INSERT INTO project_source_snapshots (project_id, source, scope, entity_type, entity_id, title, content, url, metadata)
+      VALUES (${projectId}, ${CODEBASE_SNAPSHOT_SOURCE}, ${repo.label}, 'repository-brief', ${repo.repoId}, ${name}, ${content},
+              ${repo.githubRepo ? `https://github.com/${repo.githubRepo}` : null},
+              ${tx.json({ label: repo.label, githubRepo: repo.githubRepo, localPath: repo.localPath, isPrimary: repo.isPrimary, error, learnedAt: new Date().toISOString() } as never)})
+    `
+  })
+}
+
+/**
+ * Rebuild the project's auto-summary memory from the registered repositories
+ * and their stored briefs, then warm the context bundle. Repositories that have
+ * a checkout but no brief yet are listed as "not learned yet" so agents know
+ * the code exists and where, even before the learn step finishes.
+ */
+export async function composeProjectMemory(projectId: string): Promise<string> {
+  const sql = getDb()
+  const project = await getProject(projectId)
+  if (!project) throw new Error('Project not found.')
+  const repos = await listRepos(projectId)
+  const briefs = await sql<RepoBriefRow[]>`
+    SELECT entity_id AS "entityId", title, content, metadata
+      FROM project_source_snapshots
+     WHERE project_id = ${projectId} AND source = ${CODEBASE_SNAPSHOT_SOURCE}
+     ORDER BY fetched_at ASC
+  `
+  const briefByRepo = new Map(briefs.map((b) => [b.entityId, b]))
+  const localRepos = repos.filter((r) => Boolean(r.localPath))
+  const repoName = (r: RepoRow) => r.githubRepo ?? r.label
+
+  const repoMap = repos.map((r) => {
+    const status = !r.localPath
+      ? (r.cloneStatus === 'error' ? `clone failed: ${r.cloneError ?? 'unknown error'}` : r.cloneStatus ? `clone ${r.cloneStatus}` : 'no local checkout')
+      : briefByRepo.has(r.repoId) ? 'learned' : 'available, not learned yet'
+    return `- **${r.label}** — ${r.githubRepo ?? 'local'} → \`${r.localPath ?? '(not cloned)'}\`${r.isPrimary ? ' (primary: Spec Kit artifacts live here)' : ''} · ${status}`
+  }).join('\n')
+
+  const sections: string[] = [
+    `# ${project.name} — project memory`,
+    `_Updated ${new Date().toISOString()} · ${repos.length} repositor${repos.length === 1 ? 'y' : 'ies'}, ${briefs.length} learned_`,
+    '',
+    '## Repository map',
+    repoMap,
+    repos.length > 1
+      ? '\nThis project spans multiple repositories. Plans, tasks and workstreams must name the repository they touch; implementation and QA run inside that repository\'s checkout. Tasks that were blocked on a repository listed above as available can now be implemented in that checkout.'
+      : '',
+  ]
+  for (const repo of localRepos) {
+    const brief = briefByRepo.get(repo.repoId)
+    if (!brief) continue
+    sections.push('', repos.length > 1 ? `# Repository: ${repoName(repo)}` : '', brief.content.trim())
+  }
+  const autoSummary = sections.filter((line) => line !== undefined).join('\n')
+  await upsertProjectMemory(projectId, { autoSummary })
+  const primary = pickRunnableRepo(repos)
+  if (primary?.localPath) {
+    await buildContextBundle({ projectId, projectSlug: project.slug, projectPath: primary.localPath }).catch(() => undefined)
+  }
+  return autoSummary
+}
+
+const refreshing = new Map<string, Promise<void>>()
+
+/**
+ * Learn one repository (inventory + agent brief) and recompose the project
+ * memory. Called after a repo is added, re-cloned or edited, so context and
+ * memory reflect the new checkout and previously blocked tasks can proceed.
+ * Concurrent calls for the same repo share one refresh.
+ */
+export function refreshRepositoryKnowledge(projectId: string, repoId: string, options: { model?: string } = {}): Promise<void> {
+  const key = `${projectId}:${repoId}`
+  const existing = refreshing.get(key)
+  if (existing) return existing
+  const job = (async () => {
+    const project = await getProject(projectId)
+    const repo = await getRepo(repoId)
+    if (!project || !repo) return
+    if (!repo.localPath) {
+      // Not cloned (yet, or failed): still record it in the repository map.
+      await composeProjectMemory(projectId)
+      return
+    }
+    const inventory = await inventoryCodebase(repo.localPath, [repo])
+    let brief = ''
+    let error: string | undefined
+    try {
+      brief = await summarizeCodebaseForMemory({
+        cwd: repo.localPath,
+        model: options.model ?? 'anthropic/claude-sonnet-4-5',
+        inventory: inventory.markdown,
+        projectName: `${project.name} / ${repo.githubRepo ?? repo.label}`,
+      })
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err)
+      brief = `_Codebase brief unavailable: ${error}_`
+    }
+    await saveRepoBrief(projectId, repo, inventory.markdown, brief, error)
+    await composeProjectMemory(projectId)
+  })().finally(() => refreshing.delete(key))
+  refreshing.set(key, job)
+  return job
 }
 
 async function readPackageScripts(pkgPath: string): Promise<string | undefined> {
