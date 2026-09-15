@@ -421,6 +421,13 @@ async function main(): Promise<void> {
   const workerId = getWorkerId()
   workerLog.info('worker starting', { workerId })
 
+  // Register + heartbeat so the server can tell whether the worker that owns a
+  // paused run is still alive before routing an answer to it.
+  await heartbeatWorker(workerId)
+  setInterval(() => {
+    void heartbeatWorker(workerId).catch((err) => workerLog.error('heartbeat failed', err))
+  }, 10_000)
+
   // Wake on any project_jobs INSERT via pg NOTIFY.
   const sql = getDb()
   await sql.listen('project_job', () => {
@@ -492,6 +499,9 @@ async function shutdown(signal: string): Promise<void> {
           errorMessage: `Worker restarted (${signal}) while paused. Answering or approving will restart stage ${run.currentStage ?? '?'} on a new worker.`,
         })
         await queueEvent(runId, 'worker_restarted', { signal, stage: run.currentStage, status: 'paused' })
+        // Nobody will listen on this worker's channel any more: drop ownership so the
+        // server's answer route falls back to re-queueing instead of a lost NOTIFY.
+        await clearRunOwner(runId)
       } else if (run) {
         // Mid-stage: put the run back on the queue at the interrupted stage so the
         // next worker picks it up automatically instead of leaving a dead "error".
@@ -513,6 +523,7 @@ async function shutdown(signal: string): Promise<void> {
   }
   engines.clear()
   activeJobs.clear()
+  await unregisterWorker(getWorkerId()).catch(() => undefined)
   await closeDb()
   process.exit(0)
 }

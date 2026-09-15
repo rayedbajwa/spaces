@@ -1,5 +1,31 @@
 -- AIDLC Pipeline factory schema (Phase 2 + Phase 4A)
--- Idempotent DDL — safe to run multiple times.
+-- Idempotent DDL — safe to run multiple times, and also safe to run on a
+-- fresh database (the fresh-install stub at the top ensures the ALTER
+-- statements later on always find the tables they expect).
+
+-- ============================================================================
+-- Fresh-install stubs
+-- ---------------------------------------------------------------------------
+-- Later sections have ALTER TABLE / FOREIGN KEY REFERENCES that assume
+-- pipeline_runs exists. This block was previously created only in the "Phase 2"
+-- section further down, so on a brand-new database the ALTERs at line ~77
+-- would fail with "relation pipeline_runs does not exist". Creating a minimal
+-- stub here (idempotent — the full CREATE later is a no-op if the table
+-- already exists) lets fresh installs succeed without changing existing
+-- deployments.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  run_id            UUID PRIMARY KEY,
+  project_namespace TEXT NOT NULL,
+  project_label     TEXT NOT NULL,
+  project_path      TEXT NOT NULL,
+  pipeline_name     TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('queued','running','paused','completed','error')),
+  options_json      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  template_json     JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- ============================================================================
 -- Phase 4A: Projects, repos, integrations
