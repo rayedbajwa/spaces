@@ -93,6 +93,46 @@ export async function branchExistsLocally(cwd: string, branch: string): Promise<
   }
 }
 
+// ---------------------------------------------------------------------------
+// Conventional Commits (https://www.conventionalcommits.org) for every PR title
+// and commit the pipeline writes.
+// ---------------------------------------------------------------------------
+
+export type ConventionalType = 'feat' | 'fix' | 'chore' | 'docs' | 'refactor' | 'test' | 'perf' | 'build' | 'ci' | 'style' | 'revert'
+
+const CONVENTIONAL_RE = /^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\([\w./-]+\))?!?: \S/
+
+/** Scope token: lowercase, no spaces, safe for `type(scope):`. */
+export function conventionalScope(value: string | undefined): string | undefined {
+  const scope = (value ?? '').toLowerCase().replace(/[^a-z0-9./-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return scope || undefined
+}
+
+/** Build `type(scope): subject` with a ≤72-char header, lowercase first letter, no trailing period. */
+export function conventional(type: ConventionalType, scope: string | undefined, subject: string): string {
+  const cleanSubject = subject.replace(/\s+/g, ' ').trim().replace(/\.+$/, '')
+  const lowered = cleanSubject ? cleanSubject[0]!.toLowerCase() + cleanSubject.slice(1) : 'update'
+  const prefix = `${type}${conventionalScope(scope) ? `(${conventionalScope(scope)})` : ''}: `
+  const room = Math.max(20, 72 - prefix.length)
+  return `${prefix}${lowered.length > room ? `${lowered.slice(0, room - 1)}…` : lowered}`
+}
+
+/** Keep a header that already follows the convention; otherwise wrap it. */
+export function ensureConventional(header: string, fallbackType: ConventionalType, scope?: string): string {
+  const first = header.split('\n')[0]!.trim()
+  return CONVENTIONAL_RE.test(first) ? first : conventional(fallbackType, scope, first)
+}
+
+/** Conventional Commits type for a pipeline stage's commits/PR updates. */
+export function conventionalTypeForStage(stage: string): ConventionalType {
+  switch (stage) {
+    case 'verify': return 'test'
+    case 'orchestrate': return 'chore'
+    case 'docs': return 'docs'
+    default: return 'feat'
+  }
+}
+
 export function slugForBranch(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'work'
 }
@@ -247,8 +287,16 @@ export async function publishBranchAsPullRequest(options: {
   title: string
   body: string
   draft?: boolean
+  /** Conventional Commits type used when title/commit are not already conventional (default feat). */
+  type?: ConventionalType
+  /** Conventional Commits scope (e.g. feature branch or workstream). */
+  scope?: string
 }): Promise<PullRequestRef | undefined> {
-  await commitAll(options.cwd, options.commitMessage)
+  // Every commit and PR title the pipeline writes follows Conventional Commits.
+  const [commitHeader, ...commitRest] = options.commitMessage.split('\n')
+  const commitMessage = [ensureConventional(commitHeader ?? '', options.type ?? 'feat', options.scope), ...commitRest].join('\n')
+  const title = ensureConventional(options.title, options.type ?? 'feat', options.scope)
+  await commitAll(options.cwd, commitMessage)
   if (!(await hasCommitsAhead(options.cwd, `origin/${options.base}`, options.branch)) && !(await hasCommitsAhead(options.cwd, options.base, options.branch))) {
     return undefined
   }
@@ -257,7 +305,7 @@ export async function publishBranchAsPullRequest(options: {
     githubRepo: options.githubRepo,
     head: options.branch,
     base: options.base,
-    title: options.title,
+    title,
     body: options.body,
     draft: options.draft,
   })

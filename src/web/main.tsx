@@ -2224,6 +2224,7 @@ function App() {
                     </div>
                     <div className="button-row">
                       <button className="primary-button" disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
+                      <button className="secondary-button" disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'qa')} type="button">Run review</button>
                       <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
                       <button className="secondary-button" disabled={qaBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectQA(selectedProjectNamespace)} type="button">Refresh QA</button>
                     </div>

@@ -10,8 +10,31 @@ export interface BranchVariables {
   verification_status?: 'pass' | 'fail' | 'partial'
   /** From delivery-report.md "Delivery Status: MERGED|PARTIAL|BLOCKED" (lowercased). */
   delivery_status?: 'merged' | 'partial' | 'blocked'
+  /** From code-review.md "Code Review Status: APPROVED|CHANGES_REQUESTED" (lowercased). */
+  code_review_status?: 'approved' | 'changes_requested'
   last_review_decision?: 'approved' | 'changes_requested'
   iteration?: string  // stringified count for the current step id
+}
+
+/** Read the latest feature's code-review.md status line, if the review stage has run. */
+export async function readCodeReviewStatus(cwd: string): Promise<'approved' | 'changes_requested' | undefined> {
+  const { readdir, readFile } = await import('node:fs/promises')
+  const specsDir = join(cwd, 'specs')
+  let features: string[]
+  try {
+    features = (await readdir(specsDir)).sort((a, b) => b.localeCompare(a))
+  } catch {
+    return undefined
+  }
+  const latest = features[0]
+  if (!latest) return undefined
+  try {
+    const review = await readFile(join(specsDir, latest, 'code-review.md'), 'utf8')
+    const match = /Code Review Status:\s*(APPROVED|CHANGES_REQUESTED)/i.exec(review)
+    return match ? (match[1]!.toLowerCase() as 'approved' | 'changes_requested') : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** Read the latest feature's delivery-report.md status line, if the deliver stage has run. */

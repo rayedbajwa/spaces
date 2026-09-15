@@ -290,6 +290,19 @@ dependencies and CI themselves and re-check, asking for approval only before
 irreversible or costly actions. The project assistant follows the same rule
 and can open PRs, rerun or approve runs and run steps once you say yes.
 
+### Implementation harness: tasks → PR + CI → code review → QA
+
+In the feature template the code stages form a loop: `implement` executes the
+tasks and opens or updates the PR (Conventional Commits title); the new
+`review` stage refreshes CI state from GitHub, reviews the diff against the
+spec, plan and test plan, runs lint/tests itself, writes `code-review.md`
+(`Code Review Status: APPROVED | CHANGES_REQUESTED`, findings with severity
+and file:line) and posts it as a comment on the PR. `CHANGES_REQUESTED` loops
+back to `implement`, which must address every blocker/major finding before
+continuing; `APPROVED` proceeds to `verify` (QA) and then `deliver`. Every
+commit and PR title the pipeline writes follows Conventional Commits
+(`type(scope): subject`).
+
 ### Pull requests
 
 When the target repo is GitHub-hosted, the `implement`, `orchestrate` and

@@ -73,7 +73,7 @@ import {
   type RepoRow,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
-import { currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, publishBranchAsPullRequest, pullRequestBody } from './lib/pull-requests'
+import { conventional, currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, publishBranchAsPullRequest, pullRequestBody } from './lib/pull-requests'
 import { getOnboardingSnapshot, refreshRepositoryKnowledge, startProjectOnboarding } from './lib/project-onboarding'
 import {
   getKnowledgeItem,
@@ -1552,8 +1552,10 @@ function buildAssistantActionTools(projectNamespace: string, projectId: string |
               githubRepo: repo.githubRepo,
               branch,
               base,
-              commitMessage: p.title ?? `Changes on ${branch}`,
-              title: p.title ?? branch,
+              // Conventional Commits, scoped to the branch; a user-supplied title is normalised too.
+              scope: branch,
+              commitMessage: p.title ?? conventional('feat', branch, p.summary?.split('\n')[0] ?? `changes on ${branch}`),
+              title: p.title ?? conventional('feat', branch, p.summary?.split('\n')[0] ?? `changes on ${branch}`),
               body: pullRequestBody({ summary: p.summary ?? `Changes on \`${branch}\`, opened via the project assistant.` }),
             })
             return ref

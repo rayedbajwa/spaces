@@ -79,6 +79,21 @@ steps:
     humanGate: true
     model: anthropic/claude-sonnet-4-5
     thinking: medium
+  # Implementation harness: task execution (implement, PR opened) → CI checks →
+  # code review posted on the PR → back to implement on CHANGES_REQUESTED → QA.
+  - id: code-review
+    stage: review
+    phase: construction
+    role: quality
+    model: anthropic/claude-sonnet-4-5
+    thinking: medium
+    maxIterations: 4
+    onComplete:
+      branch:
+        - when: "code_review_status == 'changes_requested'"
+          goto: code-generation
+        - when: "true"
+          goto: build-and-test
   - id: build-and-test
     stage: verify
     phase: construction
