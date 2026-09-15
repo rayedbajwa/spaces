@@ -289,8 +289,17 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
 const TRANSIENT_PROVIDER_ERROR = /socket connection was closed|ECONNRESET|ETIMEDOUT|EPIPE|fetch failed|network error|overloaded|rate.?limit|\b(429|500|502|503|504|529)\b|internal server error|temporarily unavailable/i
 const MAX_TRANSIENT_RETRIES = 2
 
+let shuttingDown = false
+
 async function handleEngineError(runId: string, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message : String(error)
+  // During shutdown, engines are disposed under in-flight prompts, which surface
+  // as "Flow session has not been created yet." — shutdown() already re-queued
+  // or paused the run; don't overwrite that with a bogus failure.
+  if (shuttingDown) {
+    workerLog.info('engine error during shutdown ignored (run already handed off)', { runId, message })
+    return
+  }
   const run = await getRun(runId)
   const retry = run?.templateJson.retry
   const attempts = run?.retryCount ?? 0
