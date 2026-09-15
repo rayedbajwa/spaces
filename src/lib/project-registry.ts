@@ -231,6 +231,33 @@ export async function addRepo(input: {
   return row
 }
 
+/** Edit a registered repo: label, local path, GitHub owner/name, or make it primary. */
+export async function updateRepo(repoId: string, patch: {
+  label?: string
+  localPath?: string
+  githubRepo?: string
+  isPrimary?: boolean
+}): Promise<RepoRow | undefined> {
+  const sql = getDb()
+  const current = await getRepo(repoId)
+  if (!current) return undefined
+  await sql.begin(async (tx) => {
+    if (patch.isPrimary) {
+      await tx`UPDATE project_repos SET is_primary = false WHERE project_id = ${current.projectId} AND is_primary`
+    }
+    await tx`
+      UPDATE project_repos
+         SET label       = COALESCE(${patch.label ?? null}, label),
+             local_path  = COALESCE(${patch.localPath ?? null}, local_path),
+             github_repo = COALESCE(${patch.githubRepo ?? null}, github_repo),
+             is_primary  = COALESCE(${patch.isPrimary ?? null}, is_primary),
+             clone_status = CASE WHEN ${patch.githubRepo ?? null}::text IS NOT NULL AND ${patch.githubRepo ?? null} <> github_repo THEN 'pending' ELSE clone_status END
+       WHERE repo_id = ${repoId}
+    `
+  })
+  return getRepo(repoId)
+}
+
 export async function removeRepo(repoId: string): Promise<void> {
   const sql = getDb()
   await sql`DELETE FROM project_repos WHERE repo_id = ${repoId}`

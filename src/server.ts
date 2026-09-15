@@ -35,6 +35,7 @@ import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkAnthropicKey } from './lib/provider-check'
+import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import {
   createRun as dbCreateRun,
   getLatestRunForProject as dbGetLatestRunForProject,
@@ -56,6 +57,7 @@ import {
   getProject as projGet,
   getProjectDetail as projGetDetail,
   getRepo as projGetRepo,
+  updateRepo as projUpdateRepo,
   listProjects as projList,
   removeIntegration as projRemoveIntegration,
   removeRepo as projRemoveRepo,
@@ -67,6 +69,7 @@ import {
   describeUnrunnableRepos,
   updateProjectKnowledge as projUpdateKnowledge,
   type ProjectKnowledgeConfig,
+  type RepoRow,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
 import { getOnboardingSnapshot, startProjectOnboarding } from './lib/project-onboarding'
@@ -234,6 +237,52 @@ async function route(req: Request): Promise<Response> {
     const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary: body.isPrimary })
     if (repo.kind === 'github') void scheduleRepoClone(repo)
     return sendJson(201, repo)
+  }
+
+  // Edit a registered repo (label, path, owner/name, primary). Changing the
+  // GitHub owner/name re-queues a clone.
+  if (method === 'PATCH' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/[0-9a-f-]{36}$/.test(url.pathname)) {
+    const repoId = url.pathname.split('/')[5]!
+    const existing = await projGetRepo(repoId)
+    if (!existing) return sendJson(404, { error: 'Repo not found.' })
+    const body = await readJson<{ label?: string; localPath?: string; githubRepo?: string; isPrimary?: boolean }>(req)
+    const updated = await projUpdateRepo(repoId, {
+      label: body.label?.trim() || undefined,
+      localPath: body.localPath?.trim() || undefined,
+      githubRepo: body.githubRepo?.trim() || undefined,
+      isPrimary: body.isPrimary,
+    })
+    if (updated?.kind === 'github' && body.githubRepo?.trim() && body.githubRepo.trim() !== existing.githubRepo) {
+      void scheduleRepoClone(updated)
+    }
+    return sendJson(200, updated ?? existing)
+  }
+
+  // Repositories the current plan says this feature touches, matched against the
+  // project's registered repos, so missing ones can be added before implementation.
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/plan-repos$/.test(url.pathname)) {
+    const [, , , slug] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const primary = pickRunnableRepo(repos)
+    if (!primary?.localPath) return sendJson(200, { featureDir: null, repositories: [] })
+    const featureDir = await findLatestFeatureDirAbsolute(primary.localPath)
+    if (!featureDir) return sendJson(200, { featureDir: null, repositories: [] })
+    let plan = ''
+    try { plan = await readFile(join(featureDir, 'plan.md'), 'utf8') } catch { return sendJson(200, { featureDir, repositories: [] }) }
+    const norm = (v: string) => v.trim().toLowerCase().replace(/\.git$/, '')
+    const matches = (name: string, repo: RepoRow) =>
+      norm(name) === norm(repo.label)
+      || (repo.githubRepo ? norm(name) === norm(repo.githubRepo) || norm(name) === norm(repo.githubRepo.split('/')[1] ?? '') : false)
+      || (repo.localPath ? norm(name) === norm(basename(repo.localPath)) : false)
+    const repositories = parsePlanRepositories(plan).map((ref) => {
+      const registered = /^primary$/i.test(ref.name)
+        ? repos.find((r) => r.isPrimary) ?? primary
+        : repos.find((r) => matches(ref.name, r))
+      return { ...ref, registered: Boolean(registered), repoId: registered?.repoId, cloneStatus: registered?.cloneStatus }
+    })
+    return sendJson(200, { featureDir: featureDir.replace(`${primary.localPath}/`, ''), repositories })
   }
 
   // (Re)clone a GitHub repo into the local workspace. Idempotent: an in-flight

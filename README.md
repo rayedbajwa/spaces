@@ -196,6 +196,16 @@ account can see. GitHub repos are cloned into `~/.aidlc/workspaces/<owner>/<name
 onboarding, and every run targets that clone. The token is passed to git as a
 per-command header and never written into the clone.
 
+### Repositories a feature depends on
+
+The `plan` stage writes a `## Repositories` section in `plan.md` naming every
+repository the feature changes (using the project's repository map) and
+flags any it needs that is `(not registered)`. The project overview compares
+that list with the registered repos: missing GitHub repos get an **Add &
+clone** button, others an add form, and registered repos can be edited,
+re-cloned or made primary. Workstreams then run in the right checkout via
+their `### Repository` field.
+
 ### Project onboarding
 
 Creating a project runs an onboarding job the wizard waits on: clone remote

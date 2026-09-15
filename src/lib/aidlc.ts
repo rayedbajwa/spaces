@@ -1743,7 +1743,7 @@ async function loadStagePrompt(options: {
   }
 
   if (options.stage === 'plan') {
-    return `${basePrompt}\n\nAdditional AIDLC requirement:\n- Include test planning as part of the implementation plan and make sure the plan prepares for generation of test-plan.md.`
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- Include test planning as part of the implementation plan and make sure the plan prepares for generation of test-plan.md.\n- Add a section titled exactly "## Repositories" listing every repository this feature changes or depends on, one bullet per repository in the form \`- <name> — <what changes there>\`. Use the names from the project's repository map in the shared context (label or owner/name). If the feature needs a repository that is NOT in the repository map (another service, a shared library, an infra repo), still list it and append \`(not registered)\` so it can be added to the project before implementation. Write \`- primary — <changes>\` when only the primary repository is affected.`
   }
 
   return basePrompt
@@ -1830,7 +1830,7 @@ Requirements:
 - Keep the report actionable and suitable for human review AND for a follow-up developer loop to consume.`
 }
 
-async function findLatestFeatureDirAbsolute(cwd: string): Promise<string | null> {
+export async function findLatestFeatureDirAbsolute(cwd: string): Promise<string | null> {
   const specsDir = path.join(cwd, 'specs')
   try {
     const entries = execFileSync('bash', ['-lc', `find ${shellEscape(specsDir)} -maxdepth 1 -mindepth 1 -type d -print | sort -r`], {
@@ -1864,6 +1864,53 @@ async function readWorkstreams(cwd: string, featureDir: string): Promise<ParsedW
   } catch {
     return []
   }
+}
+
+export interface PlanRepositoryRef {
+  /** Name as written in plan.md (label, owner/name, or "primary"). */
+  name: string
+  /** What the plan says changes there. */
+  note: string
+  /** The plan itself flagged this repo as not registered on the project. */
+  flaggedUnregistered: boolean
+  /** Looks like a GitHub owner/name, usable directly for cloning. */
+  githubRepo?: string
+}
+
+/**
+ * Read the "## Repositories" section the plan stage writes, so the project can
+ * be told which repos a feature depends on and add the missing ones.
+ */
+export function parsePlanRepositories(planMarkdown: string): PlanRepositoryRef[] {
+  // Line-based: take everything after the "## Repositories" heading up to the
+  // next "## " heading (a lazy regex with /m stopped at the first line end).
+  const lines = planMarkdown.split('\n')
+  const start = lines.findIndex((line) => /^##\s+Repositories\s*$/i.test(line.trim()))
+  if (start < 0) return []
+  const section: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (/^##\s+/.test(line)) break
+    section.push(line)
+  }
+  const refs: PlanRepositoryRef[] = []
+  for (const rawLine of section) {
+    const line = rawLine.trim()
+    if (!/^[-*]\s+/.test(line)) continue
+    const body = line.replace(/^[-*]\s+/, '')
+    const flaggedUnregistered = /\(not registered\)/i.test(body)
+    const cleaned = body.replace(/\(not registered\)/i, '').trim()
+    const [namePart, ...rest] = cleaned.split(/\s+[—–-]{1,2}\s+|:\s+/)
+    const name = (namePart ?? '').replace(/^`|`$/g, '').replace(/\*\*/g, '').trim()
+    if (!name) continue
+    const githubMatch = /^(?:https?:\/\/github\.com\/)?([\w.-]+\/[\w.-]+?)(?:\.git)?$/.exec(name)
+    refs.push({
+      name,
+      note: rest.join(' ').trim(),
+      flaggedUnregistered,
+      githubRepo: githubMatch && !/^primary$/i.test(name) ? githubMatch[1] : undefined,
+    })
+  }
+  return refs
 }
 
 function parseWorkstreams(markdown: string): ParsedWorkstream[] {

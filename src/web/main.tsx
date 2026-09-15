@@ -449,6 +449,58 @@ function App() {
   // Worker serving the open project (per-project supervisor or the shared worker).
   const [projectWorker, setProjectWorker] = useState<{ state: 'hot' | 'warm' | 'stale' | 'shared' | 'none'; sharedWorkers: number; worker: { workerId: string; pid?: number; activeJobs: number; pausedRuns: number; lastHeartbeatAt: string } | null } | null>(null)
 
+  // Repositories the current plan says the feature touches (from plan.md "## Repositories"),
+  // matched against registered repos so missing ones can be added in one click.
+  type PlanRepo = { name: string; note: string; flaggedUnregistered: boolean; githubRepo?: string; registered: boolean; repoId?: string; cloneStatus?: string }
+  const [planRepos, setPlanRepos] = useState<PlanRepo[]>([])
+  const [repoForm, setRepoForm] = useState<{ open: boolean; kind: 'github' | 'local'; label: string; githubRepo: string; localPath: string; busy: boolean; note: string }>({ open: false, kind: 'github', label: '', githubRepo: '', localPath: '', busy: false, note: '' })
+
+  async function loadPlanRepos(namespace: string) {
+    try {
+      const payload = await getJson<{ repositories: PlanRepo[] }>(`/api/projects/${namespace}/plan-repos`)
+      setPlanRepos(payload.repositories ?? [])
+    } catch { setPlanRepos([]) }
+  }
+
+  async function refreshProjectRepos() {
+    if (!projectDetail) return
+    try {
+      const detail = await getJson<ProjectDetailRecord>(`/api/projects/${projectDetail.projectId}`)
+      setProjectDetail(detail)
+    } catch { /* keep current */ }
+    if (selectedProjectNamespace) await loadPlanRepos(selectedProjectNamespace)
+  }
+
+  /** Register a repo on the open project; GitHub repos start cloning immediately. */
+  async function addProjectRepo(input: { kind: 'github' | 'local'; label: string; githubRepo?: string; localPath?: string }) {
+    if (!projectDetail) return
+    setRepoForm((c) => ({ ...c, busy: true, note: '' }))
+    try {
+      await postJson(`/api/projects/${projectDetail.projectId}/repos`, {
+        label: input.label.trim() || (input.githubRepo?.split('/')[1] ?? input.localPath?.split('/').pop() ?? 'repo'),
+        kind: input.kind,
+        githubRepo: input.kind === 'github' ? input.githubRepo?.trim() : undefined,
+        localPath: input.kind === 'local' ? input.localPath?.trim() : undefined,
+        isPrimary: false,
+      })
+      setRepoForm({ open: false, kind: 'github', label: '', githubRepo: '', localPath: '', busy: false, note: '' })
+      setStatusMessage(`Added repository ${input.githubRepo ?? input.localPath}${input.kind === 'github' ? ' — cloning in the background.' : '.'}`)
+      await refreshProjectRepos()
+    } catch (error) {
+      setRepoForm((c) => ({ ...c, busy: false, note: `Could not add repository: ${toMessage(error)}` }))
+    }
+  }
+
+  async function updateProjectRepo(repo: ProjectRepoRecord, patch: { label?: string; githubRepo?: string; localPath?: string; isPrimary?: boolean }) {
+    if (!projectDetail) return
+    try {
+      await fetch(`/api/projects/${projectDetail.projectId}/repos/${repo.repoId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+      await refreshProjectRepos()
+    } catch (error) {
+      setStatusMessage(`Could not update repository: ${toMessage(error)}`)
+    }
+  }
+
   async function loadProjectWorker(projectId: string) {
     try {
       setProjectWorker(await getJson<NonNullable<typeof projectWorker>>(`/api/projects/${projectId}/worker`))
@@ -694,6 +746,7 @@ function App() {
         setProjectDetail(detail)
         void loadProjectKnowledge(detail.projectId)
         void loadProjectWorker(detail.projectId)
+        void loadPlanRepos(namespace)
       } else {
         setProjectDetail(null)
       }
@@ -1759,6 +1812,27 @@ function App() {
                     <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
                   </div>
                   <h3>Repositories</h3>
+                  {planRepos.some((r) => !r.registered) && (
+                    <div className="repo-row" style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
+                      <strong>The plan depends on repositories not on this project</strong>
+                      <span className="repo-row-source">From plan.md “## Repositories”. Add them so implementation and QA can run in the right checkouts.</span>
+                      {planRepos.filter((r) => !r.registered).map((r) => (
+                        <div key={r.name} className="repo-row-main">
+                          <code>{r.name}</code>
+                          {r.note && <span className="repo-row-source">{r.note}</span>}
+                          {r.githubRepo ? (
+                            <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: r.githubRepo!.split('/')[1] ?? r.name, githubRepo: r.githubRepo })}>
+                              Add &amp; clone
+                            </button>
+                          ) : (
+                            <button className="ghost-button" type="button" style={{ marginLeft: 'auto' }} onClick={() => setRepoForm((c) => ({ ...c, open: true, label: r.name, kind: githubConnected ? 'github' : 'local' }))}>
+                              Add…
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="repo-list">
                     {(projectDetail?.repos ?? []).length === 0 && <p className="empty-state">No repositories registered.</p>}
                     {(projectDetail?.repos ?? []).map((repo) => (
@@ -1766,7 +1840,19 @@ function App() {
                         <div className="repo-row-main">
                           <strong>{repo.label}</strong>
                           <span className="repo-row-source">{repo.kind === 'github' ? repo.githubRepo : repo.localPath}</span>
-                          {repo.isPrimary && <span className="mini-badge">primary</span>}
+                          {repo.isPrimary
+                            ? <span className="mini-badge">primary</span>
+                            : <button className="ghost-button" type="button" style={{ padding: '0 6px', fontSize: 11 }} title="Make this the primary repo (Spec Kit artifacts live there)" onClick={() => void updateProjectRepo(repo, { isPrimary: true })}>make primary</button>}
+                          {planRepos.some((r) => r.registered && r.repoId === repo.repoId) && <span className="mini-badge idle" title="Referenced by the current plan">in plan</span>}
+                          <button
+                            className="ghost-button"
+                            type="button"
+                            style={{ padding: '0 6px', fontSize: 11, marginLeft: 'auto' }}
+                            onClick={() => {
+                              const next = window.prompt(repo.kind === 'github' ? 'GitHub repo (owner/name)' : 'Local path', repo.kind === 'github' ? repo.githubRepo ?? '' : repo.localPath ?? '')
+                              if (next && next.trim()) void updateProjectRepo(repo, repo.kind === 'github' ? { githubRepo: next.trim() } : { localPath: next.trim() })
+                            }}
+                          >edit</button>
                           {repo.kind === 'github' && repo.cloneStatus && (
                             <span className={`mini-badge ${repo.cloneStatus === 'error' ? 'error' : repo.cloneStatus === 'ready' ? 'success' : 'pending'}`}>
                               {CLONE_STATUS_LABEL[repo.cloneStatus]}
@@ -1782,6 +1868,46 @@ function App() {
                         )}
                       </div>
                     ))}
+                    {!repoForm.open ? (
+                      <div className="button-row">
+                        <button className="secondary-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: true, kind: githubConnected ? 'github' : 'local' }))}>+ Add repository</button>
+                      </div>
+                    ) : (
+                      <div className="repo-row">
+                        <div className="repo-row-main">
+                          <select value={repoForm.kind} onChange={(event) => setRepoForm((c) => ({ ...c, kind: event.target.value as 'github' | 'local' }))}>
+                            <option value="github">GitHub (owner/name)</option>
+                            <option value="local">Local path</option>
+                          </select>
+                          <input placeholder="Label" value={repoForm.label} onChange={(event) => setRepoForm((c) => ({ ...c, label: event.target.value }))} />
+                          {repoForm.kind === 'github' ? (
+                            <input
+                              list="github-repo-options"
+                              placeholder="owner/name"
+                              value={repoForm.githubRepo}
+                              onFocus={() => void loadGitHubRepos()}
+                              onChange={(event) => setRepoForm((c) => ({ ...c, githubRepo: event.target.value, label: c.label || event.target.value.split('/')[1] || '' }))}
+                              autoComplete="off"
+                            />
+                          ) : (
+                            <input placeholder="/absolute/path" value={repoForm.localPath} onChange={(event) => setRepoForm((c) => ({ ...c, localPath: event.target.value }))} />
+                          )}
+                        </div>
+                        <div className="button-row">
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={repoForm.busy || (repoForm.kind === 'github' ? !/^[\w.-]+\/[\w.-]+$/.test(repoForm.githubRepo.trim()) : !repoForm.localPath.trim())}
+                            onClick={() => void addProjectRepo({ kind: repoForm.kind, label: repoForm.label, githubRepo: repoForm.githubRepo, localPath: repoForm.localPath })}
+                          >{repoForm.busy ? 'Adding…' : repoForm.kind === 'github' ? 'Add & clone' : 'Add'}</button>
+                          <button className="ghost-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: false, note: '' }))}>Cancel</button>
+                          {repoForm.note && <span className="error-text" style={{ margin: 0 }}>{repoForm.note}</span>}
+                        </div>
+                        <datalist id="github-repo-options">
+                          {(githubRepos ?? []).map((option) => <option key={option.fullName} value={option.fullName}>{option.description?.slice(0, 80) ?? option.fullName}</option>)}
+                        </datalist>
+                      </div>
+                    )}
                   </div>
                   <h3>Recent changes</h3>
                   <div className="diff-group">
