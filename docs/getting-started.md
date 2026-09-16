@@ -47,6 +47,16 @@ make down           # stop everything
     `.env` and makes every agent call fail with 401. Both server and worker
     verify the key at boot and log a clear warning when that happens.
 
+## Sign in and create your team
+
+Open [http://localhost:3000](http://localhost:3000). With no accounts yet, the
+sign-in screen offers **Create the first account**; that account becomes the
+owner of the default team and adopts any existing projects. Afterwards,
+registration is by invitation: open **Team settings** from the user menu,
+invite teammates by email and role, and share the generated link. Teammates can
+also **Continue with GitHub**. See
+[Organization, teams & access](concepts/organization-teams-and-access.md).
+
 ## Connect GitHub
 
 Open **Integrations** in the hero and press **Connect** for GitHub. Once

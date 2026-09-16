@@ -26,6 +26,17 @@ shell variable overrides the file). See `.env.example` for the annotated list.
 | `AIDLC_GOVERNANCE_ROOT` | `<workspace root>/_governance` | Location of governing workspaces |
 | `AIDLC_WORKTREE_ROOT` | `<repo>/.aidlc-worktrees` | Where workstream worktrees are created |
 
+## Authentication and teams
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUTH_DISABLED` | unset | `1` turns sign-in off (single-user local use); every route is open |
+| `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user and invitees can |
+| `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
+
+Sessions are HttpOnly cookies (30 days; `Secure` when served over HTTPS).
+GitHub sign-in reuses the GitHub OAuth app configured below.
+
 ## Integrations (OAuth)
 
 Each provider needs a registered OAuth app with callback

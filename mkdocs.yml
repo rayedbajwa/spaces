@@ -51,6 +51,7 @@ nav:
   - Overview: index.md
   - Getting started: getting-started.md
   - Concepts:
+      - Organization, teams & access: concepts/organization-teams-and-access.md
       - Projects & governing workspace: concepts/projects-and-workspaces.md
       - Pipelines & stages: concepts/pipelines-and-stages.md
       - Agents, workers & context: concepts/agents-and-workers.md

@@ -323,6 +323,97 @@ ALTER TABLE workers ADD COLUMN IF NOT EXISTS supervised     BOOLEAN NOT NULL DEF
 -- README-derived use case. Synced on connect and periodically; lets the plan
 -- stage name repositories (which are then cloned on demand) without anyone
 -- selecting them up front.
+-- ============================================================================
+-- Authentication, teams and invites
+-- Users sign in with email+password (argon2id via Bun.password) or GitHub.
+-- A team owns projects ("spaces"); members have roles; invites are token links.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS users (
+  user_id        UUID PRIMARY KEY,
+  email          TEXT NOT NULL UNIQUE,
+  name           TEXT NOT NULL,
+  password_hash  TEXT,
+  github_login   TEXT UNIQUE,
+  avatar_url     TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at  TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  session_id     UUID PRIMARY KEY,
+  user_id        UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  token_hash     TEXT NOT NULL UNIQUE,
+  active_team_id UUID,
+  user_agent     TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS auth_sessions_user_idx ON auth_sessions (user_id);
+
+CREATE TABLE IF NOT EXISTS teams (
+  team_id     UUID PRIMARY KEY,
+  name        TEXT NOT NULL,
+  slug        TEXT NOT NULL UNIQUE,
+  created_by  UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id    UUID NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+  user_id    UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  role       TEXT NOT NULL CHECK (role IN ('owner','admin','member','viewer')),
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (team_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS team_members_user_idx ON team_members (user_id);
+
+CREATE TABLE IF NOT EXISTS team_invites (
+  invite_id    UUID PRIMARY KEY,
+  team_id      UUID NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+  email        TEXT NOT NULL,
+  role         TEXT NOT NULL CHECK (role IN ('admin','member','viewer')),
+  token_hash   TEXT NOT NULL UNIQUE,
+  invited_by   UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  accepted_at  TIMESTAMPTZ,
+  accepted_by  UUID REFERENCES users(user_id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS team_invites_team_idx ON team_invites (team_id);
+
+-- Projects belong to a team. Legacy projects (NULL) are adopted by the first team.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(team_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
+
+-- Three context layers, following AIDLC "spaces": the ORGANIZATION shares
+-- memory, knowledge and the repository catalog with every team; each TEAM
+-- (a space) keeps its own memory, knowledge defaults and projects; each
+-- PROJECT keeps its own memory, artifacts and imported knowledge.
+CREATE TABLE IF NOT EXISTS org_memory (
+  singleton    BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+  name         TEXT NOT NULL DEFAULT 'Organization',
+  manual_text  TEXT NOT NULL DEFAULT '',
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO org_memory (singleton) VALUES (true) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS team_memory (
+  team_id      UUID PRIMARY KEY REFERENCES teams(team_id) ON DELETE CASCADE,
+  manual_text  TEXT NOT NULL DEFAULT '',
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Team-level default knowledge scope (same shape as projects.knowledge_json);
+-- a project without its own scope inherits it.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS knowledge_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Knowledge snapshots can be shared org-wide (team_id and project_id NULL),
+-- per team (team_id set), or per project (project_id set).
+ALTER TABLE project_source_snapshots ALTER COLUMN project_id DROP NOT NULL;
+ALTER TABLE project_source_snapshots ADD COLUMN IF NOT EXISTS team_id UUID REFERENCES teams(team_id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS project_source_snapshots_team_idx ON project_source_snapshots (team_id, fetched_at DESC);
+
 CREATE TABLE IF NOT EXISTS github_repo_index (
   full_name       TEXT PRIMARY KEY,
   description     TEXT,

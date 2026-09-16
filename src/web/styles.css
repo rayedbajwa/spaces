@@ -999,6 +999,27 @@ textarea {
 .mini-badge.success { background: rgba(76, 183, 130, 0.14); color: var(--green); border-color: rgba(76, 183, 130, 0.28); }
 .mini-badge.pending { background: rgba(245, 158, 11, 0.14); color: #f59e0b; border-color: rgba(245, 158, 11, 0.28); }
 
+/* ---- Authentication, teams ---- */
+.auth-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.auth-card { width: min(440px, 100%); padding: 28px 26px; }
+.auth-card h1 { margin-bottom: 12px; }
+.auth-card form label { margin-bottom: 10px; }
+.auth-invite { padding: 10px 12px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--text); font-size: 13px; }
+.auth-github { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.auth-switch { margin-top: 12px; }
+.link-button { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; font: inherit; }
+.link-button:hover { color: var(--accent-hover); text-decoration: underline; }
+.user-menu { position: relative; display: inline-flex; align-items: center; gap: 8px; }
+.team-switcher { width: auto; margin: 0; padding: 6px 28px 6px 10px; font-size: 13px; }
+.avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
+.avatar-initial { display: inline-flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent-text); font-size: 11px; font-weight: 700; }
+.menu-popover { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 280px; padding: 8px; box-shadow: var(--shadow-lg); }
+.menu-section { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
+.menu-section:last-of-type { border-bottom: 0; }
+.menu-label { font-size: 12px; color: var(--text-muted); word-break: break-all; }
+.menu-item { display: block; width: 100%; text-align: left; padding: 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; }
+.menu-item:hover { background: var(--bg-hover); }
+
 /* ---- Project onboarding (wizard loading states) ---- */
 .wizard-onboarding-panel {
   padding: 18px 16px;

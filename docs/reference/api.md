@@ -3,6 +3,33 @@
 The web UI is a thin client over this JSON API (`http://localhost:3000`). Ids
 in paths are UUIDs unless the route says `:slug`.
 
+## Authentication, teams, organization
+
+All `/api/*` routes except the ones marked public require a session cookie
+(unless `AUTH_DISABLED=1`). Unauthenticated calls return `401`.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/auth/status` | public: `{ authEnabled, needsBootstrap, githubLogin }` |
+| `POST /api/auth/register` | public: `{ email, password, name?, inviteToken? }`; first user bootstraps the default team, otherwise an invite (or `OPEN_REGISTRATION=1`) is required. Sets the session cookie |
+| `POST /api/auth/login` · `POST /api/auth/logout` | public: `{ email, password, inviteToken? }` / clear session |
+| `GET /api/oauth/github/authorize?mode=login[&invite=token]` | public: GitHub sign-in (same OAuth app as the integration) |
+| `GET /api/invites/:token` | public: invite preview (team, role, email) |
+| `POST /api/invites/:token/accept` | Join the team the invite is for (email must match) |
+| `GET /api/me` · `POST /api/me/team` | Current user, teams and active team / switch active team `{ teamId }` |
+| `GET /api/teams` · `POST /api/teams` | My teams / create a team (creator becomes owner) |
+| `GET /api/teams/:id` · `PATCH /api/teams/:id` | Team detail (members, invites, memory) / rename (admin) |
+| `GET/PATCH/DELETE /api/teams/:id/members[/:userId]` | Members; role changes need admin, owner grants need owner; a team keeps ≥ 1 owner |
+| `GET/POST /api/teams/:id/invites` · `DELETE …/invites/:inviteId` | Invites (admin): `{ email, role }` → `{ link }` |
+| `GET/PUT /api/teams/:id/memory` | Team memory (members edit) |
+| `GET/PUT /api/teams/:id/knowledge` | Team default knowledge scope (admin) |
+| `GET/PUT /api/org/memory` | Organization memory shared by all teams (owners/admins edit) |
+
+Authorization: viewers get `403` on any non-GET route (except chat, invites
+and their own session); project routes return `403` when the project belongs
+to a team the caller is not a member of. `GET /api/projects`, `/api/board` and
+`/api/history` are scoped to the active team.
+
 ## Projects
 
 | Method & path | Purpose |

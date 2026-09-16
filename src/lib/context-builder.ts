@@ -3,6 +3,30 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDb } from './db'
 import { resolveKnowledgeScope, SOURCE_LABEL, type KnowledgeSource } from './integration-sources'
+import { getProject } from './project-registry'
+
+/**
+ * Organization and team memory: the two shared layers above a project (AIDLC
+ * "spaces"). The organization layer is visible to every team; the team layer
+ * only to that team's projects.
+ */
+async function loadSharedMemoryLayers(projectId?: string): Promise<{ orgName: string; orgMemory: string; teamName?: string; teamMemory: string }> {
+  const sql = getDb()
+  const [org] = await sql<Array<{ name: string; manualText: string }>>`SELECT name, manual_text AS "manualText" FROM org_memory WHERE singleton`.catch(() => [])
+  let teamName: string | undefined
+  let teamMemory = ''
+  if (projectId) {
+    const project = await getProject(projectId).catch(() => undefined)
+    if (project?.teamId) {
+      const [team] = await sql<Array<{ name: string; manualText: string | null }>>`
+        SELECT t.name, m.manual_text AS "manualText" FROM teams t LEFT JOIN team_memory m ON m.team_id = t.team_id WHERE t.team_id = ${project.teamId}
+      `.catch(() => [])
+      teamName = team?.name
+      teamMemory = team?.manualText ?? ''
+    }
+  }
+  return { orgName: org?.name ?? 'Organization', orgMemory: org?.manualText ?? '', teamName, teamMemory }
+}
 
 const srcDir = dirname(fileURLToPath(import.meta.url))
 const rootDir = join(srcDir, '..', '..')
@@ -56,6 +80,8 @@ export async function buildContextBundle(options: {
   const knowledgeSources = await resolveKnowledgeScope(projectId).then((scope) => scope.sources).catch(() => [] as KnowledgeSource[])
   // Every GitHub repo the account can see, with its use case — so plans can name repos without upfront selection.
   const repoCatalog = await loadRepoCatalog().catch(() => '')
+  // Shared layers above the project: organization (everyone) and team (this space).
+  const shared = await loadSharedMemoryLayers(projectId).catch(() => ({ orgName: 'Organization', orgMemory: '', teamName: undefined, teamMemory: '' }))
 
   return {
     projectId,
@@ -79,6 +105,10 @@ export async function buildContextBundle(options: {
       sourceSnapshots,
       knowledgeSources,
       repoCatalog,
+      orgName: shared.orgName,
+      orgMemory: shared.orgMemory,
+      teamName: shared.teamName,
+      teamMemory: shared.teamMemory,
     }),
   }
 }
@@ -201,6 +231,11 @@ function buildPromptBundle(options: {
   knowledgeSources?: KnowledgeSource[]
   /** Markdown list of the GitHub repositories the account can see, with use cases. */
   repoCatalog?: string
+  /** Shared layers above the project (AIDLC spaces): organization for everyone, team for this space. */
+  orgName?: string
+  orgMemory?: string
+  teamName?: string
+  teamMemory?: string
 }): string {
   // Build each section as a labeled block so we can drop the lowest-priority
   // ones if the total exceeds the token budget.
@@ -217,6 +252,23 @@ function buildPromptBundle(options: {
     priority: 95,
     text: `## AIDLC Directives\n- Specifications should include explicit test cases or acceptance scenarios.\n- Implementation planning should account for test-plan generation.\n- Parallel work should be organized into machine-readable workstreams before sub-agent execution.\n- Act, don't advise: when a problem is within reach — a lint or type error, a failing test you touched, a missing dependency, a red CI job, a conflict to rebase, a missing pull request — fix it, run the commands, and re-check. Never hand a to-do list to "the team" for work you can do here.\n- Ask for approval (a "## Question N: …" heading, then stop) only before irreversible or costly actions: merging a PR, deploying, deleting or migrating data, or touching repositories outside the project's scope.`,
   })
+
+  // Shared layers (AIDLC spaces): organization memory applies to every team;
+  // team memory to every project of this team; project memory to this project.
+  if (options.orgMemory?.trim()) {
+    blocks.push({
+      label: 'org-memory',
+      priority: 93,
+      text: `## ${options.orgName ?? 'Organization'} Memory (shared by all teams)\n${options.orgMemory.trim()}`,
+    })
+  }
+  if (options.teamMemory?.trim()) {
+    blocks.push({
+      label: 'team-memory',
+      priority: 92,
+      text: `## Team Memory${options.teamName ? ` — ${options.teamName}` : ''} (this team's space)\n${options.teamMemory.trim()}`,
+    })
+  }
 
   if (options.projectMemory.trim()) {
     blocks.push({

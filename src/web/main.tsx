@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { AuthRoot, UserMenu } from './auth'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import './styles.css'
 
@@ -1600,6 +1601,7 @@ function App() {
           <p className="hero-copy">Track projects at a glance. Open a card to inspect artifacts, QA, context, AI chat, and feedback workflows.</p>
         </div>
         <div className="hero-actions">
+          <UserMenu />
           <button className="primary-button" onClick={() => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }} type="button">New project</button>
           <button
             className={`integrations-chip ${allIntegrationsConnected ? 'all' : connectedIntegrationCount > 0 ? 'partial' : 'none'}`}
@@ -3518,6 +3520,7 @@ function buildGateReadiness(card: BoardCard, qaOverview: QAOverview | null): Gat
 
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url)
+  if (response.status === 401) window.dispatchEvent(new Event('spaces:unauthenticated'))
   const data = (await response.json()) as T | { error: string }
   if (!response.ok && typeof data === 'object' && data && 'error' in data) {
     throw new Error(data.error)
@@ -3532,6 +3535,7 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
 
+  if (response.status === 401) window.dispatchEvent(new Event('spaces:unauthenticated'))
   const data = (await response.json()) as T | { error: string }
   if (!response.ok && typeof data === 'object' && data && 'error' in data) {
     throw new Error(data.error)
@@ -3554,4 +3558,4 @@ function toMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+createRoot(document.getElementById('root')!).render(<AuthRoot><App /></AuthRoot>)

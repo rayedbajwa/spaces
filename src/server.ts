@@ -37,6 +37,46 @@ import type { AssistantChatTurn } from './lib/aidlc'
 import { checkAnthropicKey } from './lib/provider-check'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
+import {
+  acceptInvite,
+  authDisabled,
+  authenticate,
+  bootstrapFirstUser,
+  clearSessionCookie,
+  countUsers,
+  createInvite,
+  createSession,
+  createTeam,
+  createUser,
+  deleteSession,
+  getInviteByToken,
+  getMembership,
+  getOrgMemory,
+  getTeam,
+  getTeamMemory,
+  getUserByEmail,
+  getUserByGitHubLogin,
+  linkGitHub,
+  listInvites,
+  listMembers,
+  listTeamsForUser,
+  readCookie,
+  removeMember,
+  renameTeam,
+  revokeInvite,
+  roleAtLeast,
+  SESSION_COOKIE,
+  sessionCookie,
+  setActiveTeam,
+  setMemberRole,
+  updateOrgMemory,
+  updateTeamKnowledge,
+  updateTeamMemory,
+  verifyPassword,
+  type AuthContext,
+  type InviteRole,
+  type TeamRole,
+} from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import {
   createRun as dbCreateRun,
@@ -166,14 +206,236 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { ok: true })
   }
 
+  // Client-side routes (sign-in page, invite acceptance) load the SPA shell.
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/'))) {
+    const html = await readFile(join(webDir, 'index.html'), 'utf8')
+    return sendHtml(200, html)
+  }
+
+  // ---- Authentication -------------------------------------------------------
+  // Sessions are HttpOnly cookies; only their hash is stored. AUTH_DISABLED=1
+  // keeps the old open behaviour for single-user local development.
+
+  const isApi = url.pathname.startsWith('/api/')
+  let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
+
+  if (method === 'GET' && url.pathname === '/api/auth/status') {
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(getProvider('github')) })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/auth/register') {
+    const body = await readJson<{ email?: string; password?: string; name?: string; inviteToken?: string }>(req)
+    const email = body.email?.trim()
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(400, { error: 'A valid email is required.' })
+    if (!body.password || body.password.length < 10) return sendJson(400, { error: 'Password must be at least 10 characters.' })
+    if (await getUserByEmail(email)) return sendJson(409, { error: 'An account with this email already exists. Sign in instead.' })
+    const first = (await countUsers()) === 0
+    const invite = body.inviteToken ? await getInviteByToken(body.inviteToken) : undefined
+    // Registration is open only for the very first user or with a valid invite.
+    if (!first && !invite && process.env.OPEN_REGISTRATION !== '1') {
+      return sendJson(403, { error: body.inviteToken ? 'This invite link is invalid, expired or already used.' : 'Registration is by invitation. Ask a team owner or admin for an invite link.' })
+    }
+    // Check the invite before creating anything, so a mismatched email does not leave a stray account.
+    if (invite && invite.email.toLowerCase() !== email.toLowerCase()) {
+      return sendJson(400, { error: `This invite was issued to ${invite.email}; register with that address to accept it.` })
+    }
+    const user = await createUser({ email, name: body.name?.trim() || email.split('@')[0]!, password: body.password })
+    let teamId: string | undefined
+    if (first) teamId = (await bootstrapFirstUser(user)).teamId
+    if (invite) teamId = (await acceptInvite(body.inviteToken!, user)).teamId
+    const { token } = await createSession(user.userId, req, teamId)
+    return new Response(JSON.stringify({ ok: true, user, bootstrapped: first }), { status: 201, headers: { 'content-type': 'application/json', 'set-cookie': sessionCookie(token, req) } })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/auth/login') {
+    const body = await readJson<{ email?: string; password?: string; inviteToken?: string }>(req)
+    if (!body.email || !body.password) return sendJson(400, { error: 'Email and password are required.' })
+    const user = await verifyPassword(body.email, body.password)
+    if (!user) return sendJson(401, { error: 'Invalid email or password.' })
+    let teamId: string | undefined
+    if (body.inviteToken) {
+      try { teamId = (await acceptInvite(body.inviteToken, user)).teamId } catch (error) { return sendJson(400, { error: error instanceof Error ? error.message : String(error) }) }
+    }
+    const { token } = await createSession(user.userId, req, teamId)
+    return new Response(JSON.stringify({ ok: true, user }), { status: 200, headers: { 'content-type': 'application/json', 'set-cookie': sessionCookie(token, req) } })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/auth/logout') {
+    const token = readCookie(req, SESSION_COOKIE)
+    if (token) await deleteSession(token).catch(() => undefined)
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json', 'set-cookie': clearSessionCookie() } })
+  }
+
+  // Invite preview is public (the invitee is not signed in yet); acceptance needs a session.
+  if (method === 'GET' && /^\/api\/invites\/[^/]+$/.test(url.pathname)) {
+    const invite = await getInviteByToken(decodeURIComponent(url.pathname.split('/')[3]!))
+    if (!invite) return sendJson(404, { error: 'This invite link is invalid, expired or already used.' })
+    return sendJson(200, { email: invite.email, role: invite.role, teamName: invite.teamName, teamSlug: invite.teamSlug, expiresAt: invite.expiresAt })
+  }
+
+  if (isApi && !authDisabled() && !auth) {
+    return sendJson(401, { error: 'Sign in required.', code: 'unauthenticated' })
+  }
+
+  if (method === 'GET' && url.pathname === '/api/me') {
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory() })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/me/team' && auth) {
+    const body = await readJson<{ teamId?: string }>(req)
+    const team = auth.teams.find((t) => t.teamId === body.teamId)
+    if (!team) return sendJson(404, { error: 'You are not a member of that team.' })
+    await setActiveTeam(auth.sessionId, team.teamId)
+    return sendJson(200, { activeTeam: team })
+  }
+
+  if (method === 'POST' && /^\/api\/invites\/[^/]+\/accept$/.test(url.pathname) && auth) {
+    try {
+      const team = await acceptInvite(decodeURIComponent(url.pathname.split('/')[3]!), auth.user)
+      await setActiveTeam(auth.sessionId, team.teamId)
+      return sendJson(200, { team, teams: await listTeamsForUser(auth.user.userId) })
+    } catch (error) {
+      return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  // ---- Teams ("spaces"): each owns projects, memory and knowledge defaults ----
+
+  const teamRole = (teamId: string): TeamRole | undefined => auth?.teams.find((t) => t.teamId === teamId)?.role
+
+  if (method === 'GET' && url.pathname === '/api/teams' && auth) {
+    return sendJson(200, { teams: auth.teams, activeTeam: auth.activeTeam ?? null })
+  }
+
+  if (method === 'POST' && url.pathname === '/api/teams' && auth) {
+    const body = await readJson<{ name?: string }>(req)
+    if (!body.name?.trim()) return sendJson(400, { error: 'Team name is required.' })
+    const team = await createTeam({ name: body.name, createdBy: auth.user.userId })
+    await setActiveTeam(auth.sessionId, team.teamId)
+    return sendJson(201, { team, teams: await listTeamsForUser(auth.user.userId) })
+  }
+
+  if (/^\/api\/teams\/[0-9a-f-]{36}(\/|$)/.test(url.pathname) && auth) {
+    const teamId = url.pathname.split('/')[3]!
+    const role = teamRole(teamId)
+    if (!role) return sendJson(403, { error: 'You are not a member of this team.' })
+    const rest = url.pathname.slice(`/api/teams/${teamId}`.length)
+    const requireRole = (needed: TeamRole) => (roleAtLeast(role, needed) ? null : sendJson(403, { error: `This action needs the ${needed} role.` }))
+
+    if (method === 'GET' && rest === '') {
+      const team = await getTeam(teamId)
+      return sendJson(200, { team, role, members: await listMembers(teamId), invites: roleAtLeast(role, 'admin') ? await listInvites(teamId) : [], memory: await getTeamMemory(teamId) })
+    }
+    if (method === 'PATCH' && rest === '') {
+      const denied = requireRole('admin'); if (denied) return denied
+      const body = await readJson<{ name?: string }>(req)
+      if (body.name?.trim()) await renameTeam(teamId, body.name)
+      return sendJson(200, { team: await getTeam(teamId) })
+    }
+    if (method === 'GET' && rest === '/members') return sendJson(200, { members: await listMembers(teamId) })
+    if (method === 'PATCH' && /^\/members\/[0-9a-f-]{36}$/.test(rest)) {
+      const denied = requireRole('admin'); if (denied) return denied
+      const userId = rest.split('/')[2]!
+      const body = await readJson<{ role?: TeamRole }>(req)
+      if (!body.role || !['owner', 'admin', 'member', 'viewer'].includes(body.role)) return sendJson(400, { error: 'role must be owner, admin, member or viewer.' })
+      if (body.role === 'owner' && role !== 'owner') return sendJson(403, { error: 'Only an owner can make someone an owner.' })
+      try { await setMemberRole(teamId, userId, body.role) } catch (error) { return sendJson(409, { error: error instanceof Error ? error.message : String(error) }) }
+      return sendJson(200, { members: await listMembers(teamId) })
+    }
+    if (method === 'DELETE' && /^\/members\/[0-9a-f-]{36}$/.test(rest)) {
+      const userId = rest.split('/')[2]!
+      if (userId !== auth.user.userId) { const denied = requireRole('admin'); if (denied) return denied }
+      try { await removeMember(teamId, userId) } catch (error) { return sendJson(409, { error: error instanceof Error ? error.message : String(error) }) }
+      return sendJson(200, { members: await listMembers(teamId) })
+    }
+    if (method === 'GET' && rest === '/invites') {
+      const denied = requireRole('admin'); if (denied) return denied
+      return sendJson(200, { invites: await listInvites(teamId) })
+    }
+    if (method === 'POST' && rest === '/invites') {
+      const denied = requireRole('admin'); if (denied) return denied
+      const body = await readJson<{ email?: string; role?: InviteRole }>(req)
+      if (!body.email?.trim()) return sendJson(400, { error: 'email is required.' })
+      const inviteRole: InviteRole = body.role && ['admin', 'member', 'viewer'].includes(body.role) ? body.role : 'member'
+      const { invite, token } = await createInvite({ teamId, email: body.email, role: inviteRole, invitedBy: auth.user.userId })
+      // No mail server: the inviter shares this link. It only works for the invited email.
+      return sendJson(201, { invite, link: `${url.origin}/invite/${token}`, invites: await listInvites(teamId) })
+    }
+    if (method === 'DELETE' && /^\/invites\/[0-9a-f-]{36}$/.test(rest)) {
+      const denied = requireRole('admin'); if (denied) return denied
+      await revokeInvite(teamId, rest.split('/')[2]!)
+      return sendJson(200, { invites: await listInvites(teamId) })
+    }
+    if (method === 'GET' && rest === '/memory') return sendJson(200, await getTeamMemory(teamId))
+    if (method === 'PUT' && rest === '/memory') {
+      const denied = requireRole('member'); if (denied) return denied
+      const body = await readJson<{ text?: string; manualText?: string }>(req)
+      await updateTeamMemory(teamId, body.manualText ?? body.text ?? '')
+      return sendJson(200, await getTeamMemory(teamId))
+    }
+    if (method === 'GET' && rest === '/knowledge') return sendJson(200, { config: (await getTeam(teamId))?.knowledgeJson ?? {} })
+    if (method === 'PUT' && rest === '/knowledge') {
+      const denied = requireRole('admin'); if (denied) return denied
+      const body = await readJson<Record<string, unknown>>(req)
+      await updateTeamKnowledge(teamId, body)
+      return sendJson(200, { config: body })
+    }
+    return sendJson(404, { error: 'Not found.' })
+  }
+
+  // ---- Organization: memory shared by every team (owners/admins edit) ----
+
+  if (method === 'GET' && url.pathname === '/api/org/memory') {
+    return sendJson(200, await getOrgMemory())
+  }
+  if (method === 'PUT' && url.pathname === '/api/org/memory') {
+    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can edit organization memory.' })
+    const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
+    await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
+    return sendJson(200, await getOrgMemory())
+  }
+
+  // ---- Authorization: viewers read only; projects belong to teams ----
+
+  if (auth && isApi && method !== 'GET') {
+    const active = auth.activeTeam
+    const readOnlyPath = /^\/api\/(me|auth|invites|projects\/[^/]+\/chat)(\/|$)/.test(url.pathname)
+    if (active && active.role === 'viewer' && !readOnlyPath) {
+      return sendJson(403, { error: 'Viewers cannot change anything. Ask a team admin for the member role.' })
+    }
+  }
+
+  if (auth) {
+    const match = /^\/api\/projects\/([^/]+)(\/|$)/.exec(url.pathname)
+    if (match) {
+      const idOrSlug = decodeURIComponent(match[1]!)
+      const project = /^[0-9a-f-]{36}$/.test(idOrSlug)
+        ? await projGet(idOrSlug)
+        : await import('./lib/project-registry').then((m) => m.getProjectBySlug(idOrSlug))
+      if (project?.teamId && !auth.teams.some((t) => t.teamId === project.teamId)) {
+        return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
+      }
+    }
+  }
+
   if (method === 'GET' && url.pathname === '/api/history') {
-    return sendJson(200, await listHistory())
+    const history = await listHistory()
+    if (!auth?.activeTeam) return sendJson(200, history)
+    // Team scope: only this team's projects and their runs.
+    const slugs = new Set((await projList(auth.activeTeam.teamId)).map((p) => p.slug))
+    return sendJson(200, {
+      ...history,
+      projects: history.projects.filter((p) => slugs.has(p.namespace)),
+      runs: history.runs.filter((r) => slugs.has(r.projectNamespace)),
+    })
   }
 
   // ---- Project registry (Phase 4A) ----
 
   if (method === 'GET' && url.pathname === '/api/projects') {
-    return sendJson(200, await projList())
+    // Scoped to the active team ("space"); unscoped only when auth is disabled.
+    return sendJson(200, await projList(auth?.activeTeam?.teamId))
   }
 
   if (method === 'POST' && url.pathname === '/api/projects') {
@@ -188,7 +450,8 @@ async function route(req: Request): Promise<Response> {
       feature?: string
     }>(req)
     if (!body.name?.trim()) return sendJson(400, { error: 'name is required' })
-    const project = await projCreate({ name: body.name.trim(), description: body.description?.trim() })
+    if (auth && !auth.activeTeam) return sendJson(400, { error: 'Create or join a team before creating a project.' })
+    const project = await projCreate({ name: body.name.trim(), description: body.description?.trim(), teamId: auth?.activeTeam?.teamId ?? null })
     for (const r of body.repos ?? []) {
       await projAddRepo({ projectId: project.projectId, ...r })
     }
@@ -561,7 +824,11 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/board') {
-    return sendJson(200, await buildBoard())
+    const board = await buildBoard()
+    if (!auth?.activeTeam) return sendJson(200, board)
+    // Team scope: cards for this team's projects only.
+    const slugs = new Set((await projList(auth.activeTeam.teamId)).map((p) => p.slug))
+    return sendJson(200, { ...board, columns: board.columns.map((c) => ({ ...c, cards: c.cards.filter((card) => slugs.has(card.projectNamespace)) })) })
   }
 
   if (method === 'GET' && url.pathname === '/api/org/promotions') {
@@ -866,7 +1133,9 @@ async function route(req: Request): Promise<Response> {
     if (!cfg) return sendJson(400, { error: `Provider "${provider}" is not configured. Set ${provider.toUpperCase()}_CLIENT_ID + _CLIENT_SECRET in .env.` })
     const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
     // projectId is legacy: keep it optional in state so old links don't 500.
-    const projectIdOrEmpty = url.searchParams.get('projectId') ?? ''
+    // mode=login (GitHub only) signs a user in instead of storing an app-level token.
+    const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
+    const projectIdOrEmpty = loginMode ? `__login__:${url.searchParams.get('invite') ?? ''}` : (url.searchParams.get('projectId') ?? '')
     const { redirectUrl } = beginAuthorization(cfg, projectIdOrEmpty, callbackUrl)
     return new Response(null, { status: 302, headers: { location: redirectUrl } })
   }
@@ -884,6 +1153,38 @@ async function route(req: Request): Promise<Response> {
     const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
     try {
       const tokens = await exchangeCode(cfg, code, callbackUrl)
+
+      // GitHub sign-in: find or create the user from the GitHub identity and
+      // start a session (the token is used once, never stored as an integration).
+      if (provider === 'github' && pending.projectId.startsWith('__login__')) {
+        const inviteToken = pending.projectId.slice('__login__:'.length) || undefined
+        const ghHeaders = { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'pi-speckit-pdlc' }
+        const ghUser = (await (await fetch('https://api.github.com/user', { headers: ghHeaders })).json()) as { login: string; name?: string | null; email?: string | null; avatar_url?: string }
+        let email = ghUser.email ?? undefined
+        if (!email) {
+          const emails = (await (await fetch('https://api.github.com/user/emails', { headers: ghHeaders })).json().catch(() => [])) as Array<{ email: string; primary: boolean; verified: boolean }>
+          email = emails.find((e) => e.primary && e.verified)?.email ?? emails.find((e) => e.verified)?.email
+        }
+        if (!ghUser.login) return sendJson(502, { error: 'GitHub did not return a user.' })
+        let user = await getUserByGitHubLogin(ghUser.login) ?? (email ? await getUserByEmail(email) : undefined)
+        const first = (await countUsers()) === 0
+        const invite = inviteToken ? await getInviteByToken(inviteToken) : undefined
+        if (!user) {
+          if (!first && !invite && process.env.OPEN_REGISTRATION !== '1') {
+            return sendHtml(403, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>Invitation required</h1><p>No account exists for GitHub user <b>${ghUser.login}</b>. Ask a team owner or admin for an invite link, then sign in from it.</p></body></html>`)
+          }
+          if (!email) return sendHtml(400, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>No verified email</h1><p>Your GitHub account has no verified email we can use. Add one on GitHub and try again.</p></body></html>`)
+          user = await createUser({ email, name: ghUser.name?.trim() || ghUser.login, githubLogin: ghUser.login, avatarUrl: ghUser.avatar_url })
+        } else if (!user.githubLogin) {
+          await linkGitHub(user.userId, ghUser.login, ghUser.avatar_url)
+        }
+        let teamId: string | undefined
+        if (first) teamId = (await bootstrapFirstUser(user)).teamId
+        if (invite) { try { teamId = (await acceptInvite(inviteToken!, user)).teamId } catch { /* shown on the invite page later */ } }
+        const { token: session } = await createSession(user.userId, req, teamId)
+        return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': sessionCookie(session, req) } })
+      }
+
       // Atlassian OAuth grants access to both Jira and Confluence — record both slots.
       const kinds: AppIntegrationKind[] = provider === 'atlassian' ? ['jira', 'confluence'] : [provider as AppIntegrationKind]
       for (const kind of kinds) {

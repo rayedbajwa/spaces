@@ -82,8 +82,11 @@ inspectable artifacts each stage produces.
   `testplan`, `implement`, `verify`
 - **Live streaming output** in the browser over SSE
 - **Kanban board** with automatic lane derivation from artifact state
-- **App-wide OAuth integrations** — GitHub, Jira, Confluence, Slack. Tokens
-  encrypted at rest (AES-256-GCM)
+- **Accounts, teams and invites** — email/password or GitHub sign-in; teams
+  (AIDLC "spaces") own projects, memory and knowledge, with owner/admin/member/
+  viewer roles and invite links; organization memory is shared by every team
+- **App-wide OAuth integrations** — GitHub, Jira, Confluence, Linear, Slack.
+  Tokens encrypted at rest (AES-256-GCM)
 - **Per-project long-term memory** and automatic memory summaries
 - **Postgres-backed** job queue with per-project concurrency (SKIP LOCKED),
   stale-job reaper, and LISTEN/NOTIFY for reactive workers

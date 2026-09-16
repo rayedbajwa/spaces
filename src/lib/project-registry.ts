@@ -35,6 +35,8 @@ export interface ProjectRow {
   description?: string
   knowledgeJson?: ProjectKnowledgeConfig
   suggestionsJson?: ProjectSuggestions | null
+  /** Owning team ("space"); null only for legacy rows before the first user bootstrapped. */
+  teamId?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -81,6 +83,7 @@ const PROJECT_COLS = `
   description AS "description",
   knowledge_json AS "knowledgeJson",
   suggestions_json AS "suggestionsJson",
+  team_id AS "teamId",
   created_at  AS "createdAt",
   updated_at  AS "updatedAt"
 `
@@ -122,13 +125,15 @@ export async function createProject(input: {
   name: string
   description?: string
   slug?: string
+  /** Owning team ("space"). */
+  teamId?: string | null
 }): Promise<ProjectRow> {
   const sql = getDb()
   const projectId = randomUUID()
   const slug = input.slug ?? generateSlug(input.name)
   const [row] = await sql<ProjectRow[]>`
-    INSERT INTO projects (project_id, name, slug, description)
-    VALUES (${projectId}, ${input.name}, ${slug}, ${input.description ?? null})
+    INSERT INTO projects (project_id, name, slug, description, team_id)
+    VALUES (${projectId}, ${input.name}, ${slug}, ${input.description ?? null}, ${input.teamId ?? null})
     RETURNING ${sql.unsafe(PROJECT_COLS)}
   `
   return row
@@ -150,8 +155,14 @@ export async function getProjectBySlug(slug: string): Promise<ProjectRow | undef
   return row
 }
 
-export async function listProjects(): Promise<ProjectRow[]> {
+/** All projects, or only the given team's ("space") when a team id is supplied. */
+export async function listProjects(teamId?: string | null): Promise<ProjectRow[]> {
   const sql = getDb()
+  if (teamId) {
+    return await sql<ProjectRow[]>`
+      SELECT ${sql.unsafe(PROJECT_COLS)} FROM projects WHERE team_id = ${teamId} ORDER BY updated_at DESC
+    `
+  }
   return await sql<ProjectRow[]>`
     SELECT ${sql.unsafe(PROJECT_COLS)} FROM projects ORDER BY updated_at DESC
   `
