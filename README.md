@@ -405,8 +405,11 @@ and the [cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/
 for running the app, supervisor and Postgres with Docker Compose, managed
 containers (ECS/Cloud Run/Container Apps), Kubernetes, or Railway/Fly/Render.
 The shipped image includes git and stores repos, governing workspaces and agent
-sessions under a `/data` volume; `docker compose --profile full up -d --build`
-starts the whole stack.
+sessions under a `/data` volume. For production use an **external, dedicated
+Postgres 16** (managed service or HA cluster) and
+`docker compose -f docker-compose.prod.yml up -d --build`, which runs only the
+app and the supervisor; the Postgres container in `docker-compose.yml` is for
+local development.
 
 ---
 

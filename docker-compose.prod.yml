@@ -1,0 +1,54 @@
+# Production stack: app + supervisor only. Postgres is NOT bundled — point
+# DATABASE_URL (in .env) at an external, dedicated Postgres 16 instance
+# (RDS, Cloud SQL, Azure Database, Neon, Supabase, your own HA cluster).
+#
+#   cp .env.example .env   # set DATABASE_URL=postgres://user:pass@host:5432/spaces?sslmode=require
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Put an authenticating reverse proxy (TLS + auth) in front of port 3000.
+
+services:
+  app:
+    build: .
+    image: spaces:latest
+    container_name: spaces-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"   # bind locally; the proxy publishes it
+    volumes:
+      - spaces-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    stop_grace_period: 30s
+
+  supervisor:
+    build: .
+    image: spaces:latest
+    container_name: spaces-supervisor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SUPERVISOR_MAX_WORKERS: "${SUPERVISOR_MAX_WORKERS:-4}"
+      WORKER_IDLE_EXIT_SECONDS: "${WORKER_IDLE_EXIT_SECONDS:-300}"
+    volumes:
+      - spaces-data:/data
+    command: ["bun", "run", "src/supervisor.ts"]
+    # Give workers time to re-queue running runs / keep paused ones on SIGTERM.
+    stop_grace_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 8g
+
+volumes:
+  # Cloned repositories, governing workspaces and Pi agent sessions.
+  # Back this up (or push governing workspaces to a git remote).
+  spaces-data:

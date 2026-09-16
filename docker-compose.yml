@@ -3,10 +3,15 @@
 # the volume would orphan pgdata (projects/runs/OAuth tokens lost). Fresh
 # installs can rename both freely.
 #
-# The default `docker compose up` starts Postgres only, matching the local
-# dev workflow (`bun run dev` + `bun run worker` on the host).
+# DEVELOPMENT ONLY. The Postgres container here is for local work and demos:
+# it shares the host with the app, has default credentials, no backups and no
+# failover. In production use an external, dedicated Postgres 16 instance and
+# docker-compose.prod.yml (app + supervisor, no bundled database).
 #
-# To run the full stack in containers (app + worker + postgres), use:
+# The default `docker compose up` starts Postgres only, matching the local
+# dev workflow (`bun run dev` + `bun run supervisor` on the host).
+#
+# To run the full dev stack in containers (app + supervisor + postgres), use:
 #   docker compose --profile full up --build
 
 services:

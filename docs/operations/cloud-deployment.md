@@ -42,31 +42,69 @@ docker run … spaces:latest bun run src/supervisor.ts    # per-project workers
 docker run … spaces:latest bun run src/worker.ts        # single shared worker
 ```
 
-## Option A — single VM with Docker Compose
+## Database: an external, dedicated Postgres
 
-The quickest production-ish setup: one VM (4 vCPU / 8 GB is comfortable for
-3–4 concurrent project workers), Docker, and the shipped compose file.
+**In production, run Postgres outside the app stack, on a dedicated instance**
+— a managed service (Amazon RDS / Aurora, Google Cloud SQL, Azure Database for
+PostgreSQL, Neon, Supabase) or your own HA cluster. The Postgres container in
+`docker-compose.yml` exists for local development only: it shares the app
+host's CPU, memory and disk, has no backups, no failover and default
+credentials.
+
+Why it matters here: Postgres is not just storage. It is the **job queue**
+(`SKIP LOCKED` claims, per-project concurrency), the **event stream** behind the
+live log (`LISTEN/NOTIFY`), the **worker heartbeat** registry that decides
+whether an answer can be delivered, and the vault for sealed OAuth tokens.
+Losing it loses run history, memory and integrations; slowing it slows every
+agent step.
+
+Recommendations:
+
+| Topic | Recommendation |
+|---|---|
+| Version | PostgreSQL 16 (what the schema and CI test against) |
+| Size | Start at 2 vCPU / 4–8 GB and 50 GB storage; the schema is small, but event rows grow with every run (thousands of log chunks per stage) |
+| Connections | Each process opens up to 10 connections (`max: 10`). Budget: app 10 + supervisor 10 + 10 per active worker; with `SUPERVISOR_MAX_WORKERS=4` allow ~70, or put PgBouncer in **session** mode in front (transaction mode breaks `LISTEN/NOTIFY` and advisory locks) |
+| TLS | `DATABASE_URL=postgres://user:pass@host:5432/spaces?sslmode=require` |
+| Users | A dedicated database and role owned by Spaces; the app applies DDL at boot, so the role must own the schema (or run `bun run db:migrate` with an owner role and give the app a lesser one) |
+| Backups | Automated daily snapshots plus point-in-time recovery; test a restore once |
+| Retention | Prune `pipeline_events` for runs older than your retention window if the database grows large |
+
+The schema is idempotent DDL; a fresh database is initialised on the first
+boot of the app (or with `DATABASE_URL=… bun run db:migrate`).
+
+## Option A — single VM with Docker Compose + external Postgres
+
+One VM (4 vCPU / 8 GB is comfortable for 3–4 concurrent project workers),
+Docker, the production compose file and a managed Postgres.
 
 ```bash
 git clone https://github.com/rayedbajwa/spaces.git && cd spaces
-cp .env.example .env            # set ENCRYPTION_KEY, ANTHROPIC_API_KEY, OAuth client ids/secrets
-docker compose --profile full up -d --build
-docker compose logs -f app supervisor
+cp .env.example .env
+# set DATABASE_URL to the external instance (…?sslmode=require),
+# ENCRYPTION_KEY, ANTHROPIC_API_KEY and the OAuth client ids/secrets
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml logs -f app supervisor
 ```
 
-This starts Postgres (volume `pi-speckit-pgdata`), the app on port 3000 and the
-supervisor, all sharing the `spaces-data` volume mounted at `/data`. Put Caddy,
+`docker-compose.prod.yml` starts only the **app** (bound to `127.0.0.1:3000`)
+and the **supervisor**, sharing the `spaces-data` volume at `/data`, with stop
+grace periods that let workers re-queue or pause runs on restart. Put Caddy,
 nginx or Cloudflare Tunnel in front for TLS and authentication, and point the
 OAuth apps' callback URLs at `https://<your-host>/api/oauth/<provider>/callback`.
 
-Back up two things: the Postgres volume and `/data` (or push the governing
-workspaces to a git remote of your own).
+(`docker compose --profile full up` in `docker-compose.yml` bundles a Postgres
+container — use that for local development and demos, not production.)
+
+Back up the managed database (snapshots + PITR) and `/data` (or push the
+governing workspaces to a git remote of your own).
 
 ## Option B — managed containers (AWS ECS/Fargate, Google Cloud Run, Azure Container Apps)
 
-- **Database:** a managed Postgres 16 (RDS, Cloud SQL, Azure Database). Set
-  `DATABASE_URL`. The app applies the schema at boot; you can also run
-  `bun run db:migrate` as a one-off task.
+- **Database:** an external, dedicated Postgres 16 as described above (RDS,
+  Cloud SQL, Azure Database). Set `DATABASE_URL` with `sslmode=require`. The
+  app applies the schema at boot; you can also run `bun run db:migrate` as a
+  one-off task.
 - **app service:** the image with the default command, 1 task, 1 vCPU / 2 GB,
   health check `GET /health`, behind a load balancer that terminates TLS and
   enforces authentication (ALB + Cognito/OIDC, IAP, Front Door). SSE needs
@@ -112,7 +150,7 @@ variables from `.env.example` as service secrets.
 
 | Variable | Recommendation |
 |---|---|
-| `DATABASE_URL` | Managed Postgres, TLS (`?sslmode=require`) |
+| `DATABASE_URL` | External, dedicated Postgres 16 (managed service or HA cluster), TLS (`?sslmode=require`); never the bundled dev container |
 | `ENCRYPTION_KEY` | From a secret manager; back it up with the database |
 | `ANTHROPIC_API_KEY` | From a secret manager; verified at boot |
 | `PORT` | `3000` (or what the platform injects) |
