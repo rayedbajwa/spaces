@@ -40,9 +40,7 @@ make docs           # strict MkDocs build
 make down           # stop everything
 ```
 
-`make help` lists all targets. GNU make is required; on macOS accept the Xcode
-licence once (`sudo xcodebuild -license accept`) or `brew install make` and use
-`gmake`.
+`make help` lists all targets.
 
 !!! warning "Shell variables override `.env`"
     A placeholder `ANTHROPIC_API_KEY` exported in your shell silently wins over

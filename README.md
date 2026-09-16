@@ -116,8 +116,7 @@ Open [http://localhost:3000](http://localhost:3000), click **New project**,
 walk through the 4-step wizard, and you'll have an AI-managed pipeline
 running.
 
-Or let the Makefile do it (GNU make; on macOS accept the Xcode licence once
-with `sudo xcodebuild -license accept` or `brew install make`):
+Or let the Makefile do it:
 
 ```bash
 make setup        # .env with a fresh ENCRYPTION_KEY, bun install, Postgres, schema, frontend
