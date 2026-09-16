@@ -26,10 +26,24 @@ async function catalogForPrompt(limit = 120): Promise<CatalogRow[]> {
   `
 }
 
+/**
+ * Models sometimes wrap JSON in fences, add `// comments`, trailing commas or
+ * literal "high|medium|low" placeholders. Clean the common cases before parsing.
+ */
 function extractJson(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1]
-  const candidate = fenced ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)
-  return JSON.parse(candidate)
+  let candidate = (fenced ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)).trim()
+  try {
+    return JSON.parse(candidate)
+  } catch {
+    candidate = candidate
+      .replace(/^\s*\/\/.*$/gm, '')            // line comments
+      .replace(/\/\*[\s\S]*?\*\//g, '')        // block comments
+      .replace(/,\s*([}\]])/g, '$1')           // trailing commas
+      .replace(/"(high|medium|low)\|[^"]*"/g, '"medium"') // "high|medium|low" placeholders
+      .replace(/"([^"]*?)"\s+or\s+"([^"]*?)"/g, '"$1"')   // `"a" or "b"` alternatives
+    return JSON.parse(candidate)
+  }
 }
 
 export async function suggestRepositoriesAndWorkAreas(
@@ -104,15 +118,23 @@ Rules: only list repositories that exist in the catalog or are already registere
       if (last?.stopReason === 'error' && last.errorMessage) providerError = last.errorMessage
     }
   })
+  let parsed: Partial<ProjectSuggestions>
   try {
     await session.prompt(prompt, { expandPromptTemplates: false })
+    if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+    try {
+      parsed = extractJson(output) as Partial<ProjectSuggestions>
+    } catch (parseError) {
+      // One repair round: ask the same session to re-emit strict JSON.
+      output = ''
+      await session.prompt(`Your previous reply was not valid JSON (${parseError instanceof Error ? parseError.message : String(parseError)}). Reply again with ONLY the JSON object in the required shape — no comments, no prose, no alternatives like "a|b", double-quoted keys and strings, no trailing commas.`, { expandPromptTemplates: false })
+      if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+      parsed = extractJson(output) as Partial<ProjectSuggestions>
+    }
   } finally {
     unsubscribe()
     session.dispose()
   }
-  if (providerError) throw new Error(`LLM provider error: ${providerError}`)
-
-  const parsed = extractJson(output) as Partial<ProjectSuggestions>
   const known = new Set([...catalog.map((c) => c.fullName.toLowerCase()), ...registered.map((r) => (r.githubRepo ?? r.label).toLowerCase())])
   const registeredNames = new Set(registered.map((r) => (r.githubRepo ?? r.label).toLowerCase()))
   const suggestions: ProjectSuggestions = {

@@ -90,6 +90,11 @@ inspectable artifacts each stage produces.
 
 ---
 
+## Documentation
+
+Full docs are published at **https://rayedbajwa.github.io/spaces/** (built from
+`docs/` with MkDocs Material by the `Docs` workflow on every push to `main`).
+
 ## Quickstart
 
 Prerequisites: [Bun](https://bun.sh) 1.4+, Docker (for Postgres), an

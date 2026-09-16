@@ -1,0 +1,64 @@
+site_name: Spaces — agent-driven SDLC
+site_description: An open-source, agent-driven SDLC orchestrator built on the AIDLC framework and the Pi Coding Agent SDK.
+site_url: https://rayedbajwa.github.io/spaces/
+repo_url: https://github.com/rayedbajwa/spaces
+repo_name: rayedbajwa/spaces
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Overview: index.md
+  - Getting started: getting-started.md
+  - Concepts:
+      - Projects & governing workspace: concepts/projects-and-workspaces.md
+      - Pipelines & stages: concepts/pipelines-and-stages.md
+      - Agents, workers & context: concepts/agents-and-workers.md
+      - Integrations as knowledge: concepts/integrations-and-knowledge.md
+      - "Delivery: PRs, review, merge, UAT": concepts/delivery.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - HTTP API: reference/api.md
+      - Pipeline templates: reference/templates.md
+  - Operations:
+      - Running & troubleshooting: operations/troubleshooting.md

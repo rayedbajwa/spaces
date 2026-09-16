@@ -1,0 +1,57 @@
+# Delivery: pull requests, review, merge, deploy, UAT
+
+## Pull requests
+
+When the target repository is GitHub-hosted, the `implement`, `orchestrate`,
+`review` and `verify` stages commit the feature branch, push it and open or
+update a pull request against the default branch. `review` posts the code
+review as a PR comment; `verify` adds a comment with the verification status.
+
+Parallel workstreams each run in an isolated git worktree on their own branch
+and get their own PR. A workstream whose `### Dependencies` names another
+workstream is branched from that workstream's branch and its PR targets it — a
+**stacked PR** — and workstreams run in dependency order.
+
+Every commit message and PR title the pipeline writes follows
+**Conventional Commits**: `type(scope): subject`, lowercase subject, no trailing
+period, header ≤ 72 characters. `implement` uses `feat`, `verify` uses `test`,
+`orchestrate` uses `chore`; the scope is the feature branch or workstream.
+
+## Code review loop
+
+The `review` stage refreshes CI and PR state from GitHub, reviews the diff
+against the spec, plan and test plan, runs lint and tests itself, and writes
+`code-review.md`:
+
+```
+Code Review Status: CHANGES_REQUESTED
+## Summary
+## Findings
+- [BLOCKER|MAJOR|MINOR|NIT] path:line — what is wrong — what to do
+## Tests & checks
+## Spec coverage
+```
+
+`CHANGES_REQUESTED` loops back to `implement`, which must address every
+blocker and major finding (and any failing CI) before continuing; `APPROVED`
+proceeds to `verify`.
+
+## Deliver stage
+
+`tasks` ends with a per-repository **## Delivery** group in dependency order.
+Before the `deliver` stage runs, `delivery-status.md` is refreshed from
+GitHub: every PR the feature opened, its review, CI, merge and deployment
+state, ordered by stack, with a suggested next action.
+
+The agent then:
+
+1. fixes what blocks a PR itself — rebase, CI, review comments, missing PRs;
+2. asks for approval and pauses before **merging** or **deploying**;
+3. confirms deployments reached their environment;
+4. runs the UAT scenarios from `test-plan.md` against the deployed environment
+   (or the full suite on the merged base and says UAT still needs an
+   environment);
+5. writes `delivery-report.md` with `Delivery Status: MERGED | PARTIAL | BLOCKED`.
+
+Templates loop `deliver` on `delivery_status != 'merged'` after the human gate,
+so each approval refreshes the status and re-checks until everything is merged.
