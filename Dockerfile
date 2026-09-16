@@ -28,6 +28,17 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
+# Agents clone repositories, create worktrees, commit and push: git is required.
+# ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
+RUN apk add --no-cache git ca-certificates openssh-client
+
+# Durable state lives under /data (mount a volume there): cloned repos and
+# governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).
+ENV HOME=/data/home
+ENV AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces
+RUN mkdir -p /data/home /data/aidlc/workspaces && chown -R bun:bun /data
+VOLUME ["/data"]
+
 # Copy production node_modules + source + built assets
 COPY --from=deps  /app/node_modules ./node_modules
 COPY --from=build /app/public       ./public

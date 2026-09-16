@@ -62,3 +62,4 @@ nav:
       - Pipeline templates: reference/templates.md
   - Operations:
       - Running & troubleshooting: operations/troubleshooting.md
+      - Deploying to the cloud: operations/cloud-deployment.md

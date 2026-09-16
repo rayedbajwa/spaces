@@ -400,7 +400,13 @@ is no built-in authentication on the web UI. **Do not expose it to the
 public internet** without putting an authenticating reverse proxy in front
 (Cloudflare Access, Tailscale, Caddy basic-auth, etc.).
 
-See [SECURITY.md](SECURITY.md) for the full list of caveats before deploying.
+See [SECURITY.md](SECURITY.md) for the full list of caveats before deploying,
+and the [cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/cloud-deployment/)
+for running the app, supervisor and Postgres with Docker Compose, managed
+containers (ECS/Cloud Run/Container Apps), Kubernetes, or Railway/Fly/Render.
+The shipped image includes git and stores repos, governing workspaces and agent
+sessions under a `/data` volume; `docker compose --profile full up -d --build`
+starts the whole stack.
 
 ---
 

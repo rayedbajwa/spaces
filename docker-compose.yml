@@ -28,6 +28,8 @@ services:
       timeout: 3s
       retries: 20
 
+  # Web UI + API. Shares /data (cloned repos, governing workspaces, agent
+  # sessions) with the workers so runs, clones and memory exports line up.
   app:
     profiles: ["full"]
     build: .
@@ -44,14 +46,38 @@ services:
       - .env
     ports:
       - "3000:3000"
+    volumes:
+      - spaces-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health"]
       interval: 10s
       timeout: 3s
       retries: 6
 
-  worker:
+  # One worker per active project, scaled on demand (recommended).
+  supervisor:
     profiles: ["full"]
+    build: .
+    image: spaces:latest
+    container_name: spaces-supervisor
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://aidlc:aidlc@postgres:5432/aidlc
+      SUPERVISOR_MAX_WORKERS: "4"
+      WORKER_IDLE_EXIT_SECONDS: "300"
+    env_file:
+      - .env
+    volumes:
+      - spaces-data:/data
+    command: ["bun", "run", "src/supervisor.ts"]
+
+  # Alternative to the supervisor: a single shared worker.
+  #   docker compose --profile shared-worker up -d worker
+  worker:
+    profiles: ["shared-worker"]
     build: .
     image: spaces:latest
     container_name: spaces-worker
@@ -62,9 +88,14 @@ services:
     environment:
       DATABASE_URL: postgres://aidlc:aidlc@postgres:5432/aidlc
       WORKER_ID: docker-worker-1
+      WORKER_MAX_CONCURRENT_JOBS: "4"
     env_file:
       - .env
+    volumes:
+      - spaces-data:/data
     command: ["bun", "run", "src/worker.ts"]
 
 volumes:
   pi-speckit-pgdata:
+  # Cloned repositories, governing workspaces and Pi agent sessions.
+  spaces-data:
