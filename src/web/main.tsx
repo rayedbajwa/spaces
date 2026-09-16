@@ -1,8 +1,41 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { marked } from 'marked'
 import { AuthRoot, UserMenu } from './auth'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import './styles.css'
+
+/** Human-readable tab names (the tab ids double as URL/state keys). */
+const TAB_LABELS: Record<string, string> = {
+  overview: 'Overview',
+  specs: 'Specs',
+  testplan: 'Test plan',
+  implementation: 'Implementation',
+  qa: 'QA',
+  assistant: 'Assistant',
+  context: 'Context',
+  memory: 'Memory',
+  promotions: 'Lessons',
+  tracker: 'Tracker',
+}
+
+/**
+ * Markdown → HTML for assistant answers. `marked` does not sanitise, so strip
+ * the few things that could execute: script/style/iframe blocks, inline event
+ * handlers and javascript: URLs.
+ */
+function renderMarkdown(text: string): string {
+  const html = marked.parse(text ?? '', { async: false, gfm: true, breaks: true }) as string
+  return html
+    .replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi, '$1="#"')
+}
+
+/** Messages that report a failure get the red toast treatment. */
+function isErrorMessage(message: string): boolean {
+  return /^(could not|cannot|can't|error|failed|.*failed:|wizard failed|clone retry failed|disconnect failed)/i.test(message.trim())
+}
 
 type RunStatus = 'running' | 'paused' | 'completed' | 'error'
 type PauseKind = 'clarification' | 'review'
@@ -414,7 +447,17 @@ function App() {
   const [wizard, setWizard] = useState<WizardState>(defaultWizard)
   const [isWizardOpen, setIsWizardOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [statusMessage, setStatusMessage] = useState('Select a project card or start a new project. AI will guide the rest.')
+  const [statusMessage, setStatusMessage] = useState('')
+  const [boardView, setBoardView] = useState<'board' | 'list'>(() => {
+    try { return window.localStorage.getItem('spaces:boardView') === 'list' ? 'list' : 'board' } catch { return 'board' }
+  })
+  useEffect(() => { try { window.localStorage.setItem('spaces:boardView', boardView) } catch { /* ignore */ } }, [boardView])
+  // Non-error status messages fade out on their own; errors stay until dismissed.
+  useEffect(() => {
+    if (!statusMessage || isErrorMessage(statusMessage)) return
+    const timer = window.setTimeout(() => setStatusMessage(''), 7000)
+    return () => window.clearTimeout(timer)
+  }, [statusMessage])
   const [currentRun, setCurrentRun] = useState<RunSnapshot | null>(null)
   const [projectMemory, setProjectMemory] = useState('')
   const [autoMemorySummary, setAutoMemorySummary] = useState('')
@@ -1592,17 +1635,35 @@ function App() {
     return groups
   }, [])
 
+  // Escape closes the top-most overlay (the stage-input prompt handles its own).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || stageInputPrompt) return
+      if (inspectedRun) setInspectedRun(null)
+      else if (isIntegrationsModalOpen) setIsIntegrationsModalOpen(false)
+      else if (isWizardOpen && !onboarding) setIsWizardOpen(false)
+      else if (isProjectModalOpen) setIsProjectModalOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [stageInputPrompt, inspectedRun, isIntegrationsModalOpen, isWizardOpen, onboarding, isProjectModalOpen])
+
+  const allCards = board.columns.flatMap((column) => column.cards.map((card) => ({ card, column })))
+  const boardHasProjects = allCards.length > 0
+  const attentionCount = allCards.filter(({ card }) => card.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(card.automationState.state)).length
+  const openWizard = () => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }
+
   return (
     <main className="app-shell">
-      <section className="hero card compact-hero">
-        <div>
-          <p className="eyebrow">Agent-driven SDLC</p>
-          <h1>Spaces</h1>
-          <p className="hero-copy">Track projects at a glance. Open a card to inspect artifacts, QA, context, AI chat, and feedback workflows.</p>
+      <header className="topbar">
+        <div className="topbar-brand">
+          <span className="topbar-logo" aria-hidden="true">S</span>
+          <div>
+            <h1>Spaces</h1>
+            <p className="eyebrow">Agent-driven SDLC</p>
+          </div>
         </div>
         <div className="hero-actions">
-          <UserMenu />
-          <button className="primary-button" onClick={() => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }} type="button">New project</button>
           <button
             className={`integrations-chip ${allIntegrationsConnected ? 'all' : connectedIntegrationCount > 0 ? 'partial' : 'none'}`}
             onClick={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }}
@@ -1633,18 +1694,149 @@ function App() {
               )}
             </span>
           </button>
+          <button className="primary-button" onClick={openWizard} type="button">New project</button>
+          <UserMenu />
         </div>
-      </section>
+      </header>
 
-      <p className="status-banner">{statusMessage}</p>
+      {statusMessage && (
+        <div className={`toast ${isErrorMessage(statusMessage) ? 'toast-error' : ''}`} role="status">
+          <span>{statusMessage}</span>
+          <button className="ghost-button toast-close" onClick={() => setStatusMessage('')} type="button" aria-label="Dismiss">×</button>
+        </div>
+      )}
 
+      {!boardHasProjects ? (
+        <section className="card welcome-panel">
+          <div className="welcome-copy">
+            <p className="eyebrow">Nothing here yet</p>
+            <h2>Start your first project in this team</h2>
+            <p className="hero-copy">
+              Describe what you want to build, or import a Jira / Linear ticket. Onboarding clones your repositories, learns them,
+              initialises the Spec Kit workspace and runs the AIDLC pipeline while you watch.
+            </p>
+            <div className="button-row">
+              <button className="primary-button" onClick={openWizard} type="button">New project</button>
+              {!allIntegrationsConnected && (
+                <button className="secondary-button" onClick={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }} type="button">Connect integrations</button>
+              )}
+            </div>
+          </div>
+          <ol className="welcome-steps">
+            <li><strong>Describe</strong><span>Name the project and its first feature. Repositories are optional; the plan names them from your GitHub catalog.</span></li>
+            <li><strong>Onboard</strong><span>Repos are cloned and learned, memory and the governing workspace are built, dev environments set up.</span></li>
+            <li><strong>Run</strong><span>Specify → plan → tasks → implement → review → deliver, with approval gates you control.</span></li>
+          </ol>
+        </section>
+      ) : (
       <section className="board-panel card panel">
+        <div className="board-toolbar">
+          <div className="board-summary">
+            <strong>{allCards.length} {allCards.length === 1 ? 'project' : 'projects'}</strong>
+            {attentionCount > 0 && (
+              <span className="mini-badge paused">{attentionCount} need{attentionCount === 1 ? 's' : ''} attention</span>
+            )}
+            <span className="board-hint">Open a card to inspect it. Drag a card to its next lane to run that step.</span>
+          </div>
+          <div className="segmented" role="tablist" aria-label="View">
+            <button className={boardView === 'board' ? 'active' : ''} onClick={() => setBoardView('board')} type="button" role="tab" aria-selected={boardView === 'board'}>Board</button>
+            <button className={boardView === 'list' ? 'active' : ''} onClick={() => setBoardView('list')} type="button" role="tab" aria-selected={boardView === 'list'}>List</button>
+          </div>
+        </div>
+
+        {boardView === 'list' && (
+          <div className="table-wrap">
+            <table className="project-table">
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Stage</th>
+                  <th>Feature</th>
+                  <th>Status</th>
+                  <th>Verify</th>
+                  <th>Gates</th>
+                  <th>Next action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allCards.map(({ card, column }) => (
+                  <tr key={card.projectNamespace} onClick={() => void openProject(card)}>
+                    <td>
+                      <strong>{card.projectLabel}</strong>
+                      <small>{card.projectNamespace}</small>
+                    </td>
+                    <td><span className="mini-badge idle">{column.title}</span></td>
+                    <td className="cell-feature">{card.feature || <span className="text-subtle">No active feature</span>}</td>
+                    <td>
+                      <span className={`mini-badge ${card.latestRun?.status ?? 'idle'}`}>{card.status}</span>
+                      {card.automationState && card.automationState.state !== 'idle' && card.automationState.state !== 'completed' && (
+                        <button
+                          className={`automation-badge ${card.automationState.state}`}
+                          onClick={(event) => { event.stopPropagation(); void openProject(card, 'assistant') }}
+                          type="button"
+                        >
+                          {card.automationState.state.replace('_', ' ')}
+                        </button>
+                      )}
+                    </td>
+                    <td><span className={`mini-badge ${card.verificationStatus === 'pass' ? 'completed' : card.verificationStatus === 'fail' ? 'error' : 'idle'}`}>{card.verificationStatus}</span></td>
+                    <td>
+                      <div className="compact-gates" style={{ marginTop: 0 }}>
+                        {card.gateReadiness.map((gate) => (
+                          <button
+                            key={`${card.projectNamespace}-${gate.stage}`}
+                            className={`compact-gate ${gate.color}`}
+                            title={`${gate.stage}: ${gate.reason}`}
+                            onClick={(event) => { event.stopPropagation(); void openProject(card, gate.tab as ProjectModalTab) }}
+                            type="button"
+                          >
+                            {gate.stage.slice(0, 2)}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                    <td>
+                      {card.recommendedAction ? (
+                        <button
+                          className="secondary-button small-button"
+                          onClick={(event) => { event.stopPropagation(); void openProject(card, card.recommendedAction!.tab) }}
+                          type="button"
+                          title={card.recommendedAction.reason}
+                        >
+                          {card.recommendedAction.label}
+                        </button>
+                      ) : <span className="text-subtle">—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {boardView === 'board' && (
         <div className="board-columns">
           {board.columns.map((column) => {
             const dragging = !!draggedCard
             const eligible = dragging && isEligibleDrop(draggedCard, column.id)
             const disabled = dragging && !eligible
             const columnStep = stepForColumn(column.id)
+            // Empty lanes collapse to a narrow rail so the populated ones get the
+            // width; a lane re-expands while it is a valid drop target.
+            const collapsed = column.cards.length === 0 && !eligible
+            if (collapsed) {
+              return (
+                <section
+                  key={column.id}
+                  className={`board-column board-column-collapsed ${disabled ? 'board-column-disabled' : ''}`}
+                  title={`${column.title}: no projects`}
+                  onDragOver={(event) => { if (eligible) event.preventDefault() }}
+                >
+                  <span className="collapsed-title">{column.title}</span>
+                  <span className="column-count">0</span>
+                </section>
+              )
+            }
             return (
             <section
               key={column.id}
@@ -1731,13 +1923,15 @@ function App() {
             </section>
           )})}
         </div>
+        )}
       </section>
+      )}
 
       {isProjectModalOpen && selectedCardFresh && (
         <div className="modal-overlay" onClick={() => setIsProjectModalOpen(false)}>
-          <div className="modal-shell" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-shell modal-sticky" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={selectedCardFresh.projectLabel}>
             <div className="modal-header">
-              <div>
+              <div className="modal-title">
                 <h2>{selectedCardFresh.projectLabel}</h2>
                 <p className="panel-subtitle">{selectedCardFresh.feature || selectedCardFresh.projectPath}</p>
               </div>
@@ -1748,9 +1942,30 @@ function App() {
                     {selectedCardFresh.automationState.state.replace('_', ' ')}
                   </button>
                 )}
-                <button className="ghost-button" onClick={() => setIsProjectModalOpen(false)} type="button">Close</button>
+                <button className="ghost-button icon-button" onClick={() => setIsProjectModalOpen(false)} type="button" aria-label="Close" title="Close (Esc)">×</button>
               </div>
             </div>
+
+            <div className="tab-row modal-tabs" role="tablist">
+              {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
+                const needsAttention = tab === 'assistant' && selectedCardFresh.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(selectedCardFresh.automationState.state)
+                return (
+                  <button
+                    key={tab}
+                    className={`tab-button ${activeProjectTab === tab ? 'active' : ''}`}
+                    onClick={() => setActiveProjectTab(tab)}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeProjectTab === tab}
+                  >
+                    {TAB_LABELS[tab] ?? tab}
+                    {needsAttention && <span className="tab-dot" aria-label="needs attention" />}
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="modal-body">
 
             {selectedCardFresh.recommendedAction && (
               <div className="recommended-banner">
@@ -1768,7 +1983,7 @@ function App() {
                     {selectedCardFresh.recommendedAction.label}
                   </button>
                   <button className="secondary-button" onClick={() => setActiveProjectTab(selectedCardFresh.recommendedAction!.tab)} type="button">
-                    Open {selectedCardFresh.recommendedAction.tab}
+                    Open {TAB_LABELS[selectedCardFresh.recommendedAction.tab] ?? selectedCardFresh.recommendedAction.tab}
                   </button>
                 </div>
               </div>
@@ -1809,14 +2024,6 @@ function App() {
               onRerun={(fromStage) => void rerunRun(fromStage)}
               busy={busy}
             />
-
-            <div className="tab-row">
-              {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => (
-                <button key={tab} className={activeProjectTab === tab ? 'primary-button' : 'ghost-button'} onClick={() => setActiveProjectTab(tab)} type="button">
-                  {tab}
-                </button>
-              ))}
-            </div>
 
             <div className="gate-strip">
               {gateReadiness.map((gate) => (
@@ -2539,7 +2746,9 @@ function App() {
                         <div key={`${entry.role}-${index}-${entry.createdAt ?? index}`} className={`chat-entry ${entry.role}`}>
                           <strong>{entry.role === 'user' ? 'You' : 'AI'}</strong>
                           <small>{entry.kind ?? 'chat'}{entry.createdAt ? ` • ${formatTimestamp(entry.createdAt)}` : ''}</small>
-                          <p>{entry.content}</p>
+                          {entry.role === 'user'
+                            ? <p>{entry.content}</p>
+                            : <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(entry.content) }} />}
                           {((entry.relatedStages?.length ?? 0) > 0 || (entry.relatedArtifacts?.length ?? 0) > 0) && (
                             <div className="entry-links">
                               {(entry.relatedStages ?? []).map((stage) => (
@@ -2565,9 +2774,15 @@ function App() {
                     </section>
                   ))}
                 </div>
-                <textarea value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder="Help me understand this project, the QA state, or what feedback to give." />
-                <div className="button-row">
-                  <button className="primary-button" disabled={busy || !chatInput.trim()} onClick={() => void sendChat()} type="button">Send to AI</button>
+                <textarea
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && chatInput.trim() && !busy) { event.preventDefault(); void sendChat() } }}
+                  placeholder="Ask about this project, its runs and logs, or tell the assistant what to do (it can run steps, answer gates, add repos)."
+                />
+                <div className="button-row" style={{ alignItems: 'center' }}>
+                  <button className="primary-button" disabled={busy || !chatInput.trim()} onClick={() => void sendChat()} type="button">{busy ? 'Thinking…' : 'Send'}</button>
+                  <span className="field-hint" style={{ margin: 0 }}>⌘/Ctrl + Enter to send</span>
                 </div>
               </section>
             )}
@@ -2606,6 +2821,7 @@ function App() {
                 </div>
               </section>
             )}
+            </div>
           </div>
         </div>
       )}
@@ -2713,10 +2929,10 @@ function App() {
 
       {isWizardOpen && (
         <div className="modal-overlay" onClick={() => setIsWizardOpen(false)}>
-          <div className="modal-shell wizard-shell" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-shell wizard-shell modal-sticky" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="New project">
             <div className="modal-header">
-              <div>
-                <h2>New project — step {wizard.step} of 4</h2>
+              <div className="modal-title">
+                <h2>New project</h2>
                 <p className="panel-subtitle">
                   {wizard.step === 1 && 'Name your project and describe what it does.'}
                   {wizard.step === 2 && 'Repositories are optional. Specs and memory live in a governing workspace; the plan names the code repositories from your GitHub catalog and they are cloned on demand.'}
@@ -2724,19 +2940,19 @@ function App() {
                   {wizard.step === 4 && 'Review, then optionally kick off the first AIDLC run.'}
                 </p>
               </div>
-              <div className="mode-toggle" role="tablist">
-                {[1, 2, 3, 4].map((s) => (
-                  <button
-                    key={s}
-                    className={wizard.step === s ? 'primary-button' : 'ghost-button'}
-                    onClick={() => goToStep(s as 1 | 2 | 3 | 4)}
-                    type="button"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
+              {!onboarding && <button className="ghost-button icon-button" onClick={() => setIsWizardOpen(false)} type="button" aria-label="Close" title="Close (Esc)">×</button>}
             </div>
+            <ol className="stepper" aria-label="Steps">
+              {([[1, 'Basics'], [2, 'Repositories'], [3, 'Integrations'], [4, 'First feature']] as Array<[1 | 2 | 3 | 4, string]>).map(([s, label]) => (
+                <li key={s} className={wizard.step === s ? 'active' : wizard.step > s ? 'done' : ''}>
+                  <button type="button" onClick={() => goToStep(s)} disabled={busy || !!onboarding}>
+                    <span className="stepper-index">{wizard.step > s ? '✓' : s}</span>
+                    <span>{label}</span>
+                  </button>
+                </li>
+              ))}
+            </ol>
+            <div className="modal-body">
 
             {wizard.step === 1 && (
               <>
@@ -3051,6 +3267,7 @@ function App() {
                 </>
               )}
             </div>
+            </div>
           </div>
         </div>
       )}
@@ -3201,8 +3418,7 @@ function AiAgentOutputBar({
       {expanded && (
         <pre
           ref={logRef}
-          className="context-preview modal-preview"
-          style={{ marginTop: 8, maxHeight: 260, overflow: 'auto', fontSize: 12, background: '#0f172a', color: '#e2e8f0', padding: 12, borderRadius: 6 }}
+          className="context-preview modal-preview run-log"
         >
           {currentRun?.log || (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
         </pre>
@@ -3210,18 +3426,17 @@ function AiAgentOutputBar({
       {/* Paused-run answer UI — moved here from the Assistant tab so users don't have
           to navigate to answer. Shows when currentRun is paused and resumable. */}
       {canAnswer && currentRun?.status === 'paused' && onSendAnswer && (
-        <div style={{ marginTop: 10, padding: 12, background: '#fef3c7', borderRadius: 6, borderLeft: '3px solid #f59e0b' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-            <strong style={{ color: '#92400e' }}>
-              {currentRun.pauseKind === 'review' ? '⏸ Waiting for review approval' : '⏸ Waiting for clarification'}
-            </strong>
-            <span style={{ fontSize: 12, color: '#78350f' }}>stage: {currentRun.stage ?? '(unknown)'}</span>
+        <div className="notice notice-warning">
+          <div className="notice-title">
+            <strong>{currentRun.pauseKind === 'review' ? 'Waiting for your review' : 'The agent has a question'}</strong>
+            <span className="mini-badge paused">stage: {currentRun.stage ?? 'unknown'}</span>
           </div>
           <textarea
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
-            placeholder={currentRun.pauseKind === 'review' ? 'Optional feedback, or click Approve to continue…' : 'Answer the agent, or click Continue to unblock (if nothing was actually asked)…'}
-            style={{ width: '100%', minHeight: 60, padding: 8, borderRadius: 4, border: '1px solid #d97706', fontFamily: 'inherit', fontSize: 13 }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && answerDraft.trim()) { e.preventDefault(); onSendAnswer(answerDraft); setAnswerDraft('') } }}
+            placeholder={currentRun.pauseKind === 'review' ? 'Optional feedback, or approve to continue…' : 'Answer the agent, or press Continue if nothing was actually asked…'}
+            style={{ minHeight: 60 }}
           />
           <div className="button-row" style={{ marginTop: 8 }}>
             {currentRun.pauseKind === 'review' && (
@@ -3250,14 +3465,14 @@ function AiAgentOutputBar({
       )}
       {/* Failed or interrupted run: explain what happened and offer a rerun. */}
       {currentRun && currentRun.status === 'error' && onRerun && (
-        <div style={{ marginTop: 10, padding: 12, borderRadius: 6, background: currentRun.interrupted ? '#fff7ed' : '#fef2f2', borderLeft: `3px solid ${currentRun.interrupted ? '#f97316' : '#ef4444'}` }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            <strong style={{ color: currentRun.interrupted ? '#9a3412' : '#991b1b' }}>
-              {currentRun.interrupted ? '⏹ Run interrupted' : '✖ Run failed'}
+        <div className={`notice ${currentRun.interrupted ? 'notice-warning' : 'notice-error'}`}>
+          <div className="notice-title">
+            <strong>
+              {currentRun.interrupted ? 'Run interrupted' : 'Run failed'}
               {currentRun.stage ? ` at stage ${currentRun.stage}` : ''}
             </strong>
           </div>
-          <p style={{ margin: '0 0 8px', fontSize: 13, color: currentRun.interrupted ? '#7c2d12' : '#7f1d1d', whiteSpace: 'pre-wrap' }}>
+          <p className="notice-body">
             {currentRun.interrupted
               ? 'The worker process restarted while this run was in progress. Nothing else went wrong; earlier stages’ artifacts are intact.'
               : (currentRun.error ?? 'No error detail recorded.')}

@@ -207,13 +207,13 @@ export function UserMenu() {
         {me.teams.map((t) => <option key={t.teamId} value={t.teamId}>{t.name} · {t.role}</option>)}
         {me.teams.length === 0 && <option value="">No team yet</option>}
       </select>
-      <button type="button" className="integrations-chip" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open}>
+      <button type="button" className="avatar-button" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} title={`${me.user.name} · ${me.user.email}`}>
         {me.user.avatarUrl ? <img className="avatar" src={me.user.avatarUrl} alt="" /> : <span className="avatar avatar-initial">{me.user.name.slice(0, 1).toUpperCase()}</span>}
-        <span className="integrations-chip-label">{me.user.name}</span>
       </button>
       {open && (
         <div className="menu-popover card" role="menu">
           <div className="menu-section">
+            <strong className="menu-name">{me.user.name}</strong>
             <span className="menu-label">{me.user.email}</span>
             {active && <span className="menu-label">Team: {active.name} ({active.role})</span>}
           </div>
