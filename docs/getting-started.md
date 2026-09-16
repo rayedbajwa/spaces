@@ -25,6 +25,25 @@ bun run supervisor       # in a second terminal: one worker per active project
 runs jobs from different projects concurrently while honouring each project's
 concurrency limit.
 
+### With the Makefile
+
+```bash
+make setup          # .env (fresh ENCRYPTION_KEY), bun install, Postgres, schema, frontend build
+make up             # Postgres + web server + supervisor in the background; logs in .run/
+make status         # processes, live workers, queue depth
+make logs           # tail server + supervisor logs
+make restart        # restart server + supervisor (runs are re-queued or stay paused)
+make e2e            # bring the stack up and run the e2e suite for every pipeline template
+make e2e-one T=aidlc-feature
+make e2e-canary     # the smallest template only
+make docs           # strict MkDocs build
+make down           # stop everything
+```
+
+`make help` lists all targets. GNU make is required; on macOS accept the Xcode
+licence once (`sudo xcodebuild -license accept`) or `brew install make` and use
+`gmake`.
+
 !!! warning "Shell variables override `.env`"
     A placeholder `ANTHROPIC_API_KEY` exported in your shell silently wins over
     `.env` and makes every agent call fail with 401. Both server and worker

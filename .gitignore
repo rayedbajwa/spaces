@@ -42,3 +42,8 @@ asdf/
 
 # e2e run reports
 e2e-report.md
+
+# background process logs/pids from the Makefile
+.run/
+# mkdocs build output
+site/

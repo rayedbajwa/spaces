@@ -116,6 +116,18 @@ Open [http://localhost:3000](http://localhost:3000), click **New project**,
 walk through the 4-step wizard, and you'll have an AI-managed pipeline
 running.
 
+Or let the Makefile do it (GNU make; on macOS accept the Xcode licence once
+with `sudo xcodebuild -license accept` or `brew install make`):
+
+```bash
+make setup        # .env with a fresh ENCRYPTION_KEY, bun install, Postgres, schema, frontend
+make up           # web server + supervisor in the background (.run/*.log)
+make status       # processes, live workers, queue depth
+make e2e          # bring the stack up and run the end-to-end suite for every pipeline
+make e2e-one T=aidlc-express
+make down
+```
+
 ---
 
 ## Architecture
