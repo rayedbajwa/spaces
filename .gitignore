@@ -39,3 +39,6 @@ asdf/
 # logs / temp
 *.log
 /tmp/
+
+# e2e run reports
+e2e-report.md
