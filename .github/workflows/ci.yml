@@ -66,12 +66,33 @@ jobs:
           # never actually call the LLM — this dummy value just satisfies the
           # assertEnvOrExit guard so the server can boot.
           ANTHROPIC_API_KEY: ci-dummy-not-a-real-key-smoke-tests-skip-llm
+          # The smoke tests exercise the API without a session; the auth gate
+          # itself is checked separately below with a second server on :3001.
+          AUTH_DISABLED: "1"
         run: |
           nohup bun run src/server.ts > server.log 2>&1 &
           echo $! > server.pid
 
       - name: Wait for web server
         run: timeout 30 sh -c 'until curl -sf http://localhost:3000/api/board >/dev/null; do sleep 1; done'
+
+      - name: Auth gate smoke check (sign-in enabled)
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+          ANTHROPIC_API_KEY: ci-dummy-not-a-real-key-smoke-tests-skip-llm
+          PORT: "3001"
+        run: |
+          nohup bun run src/server.ts > server-auth.log 2>&1 &
+          AUTH_PID=$!
+          timeout 30 sh -c 'until curl -sf http://localhost:3001/api/auth/status >/dev/null; do sleep 1; done'
+          status=$(curl -s http://localhost:3001/api/auth/status)
+          echo "auth status: $status"
+          echo "$status" | grep -q '"authEnabled":true'
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3001/api/board)
+          echo "unauthenticated /api/board -> $code"
+          test "$code" = "401"
+          kill "$AUTH_PID" 2>/dev/null || true
 
       - name: Run smoke tests
         env:
