@@ -11,6 +11,10 @@
  *   bun run scripts/e2e-pipelines.ts                 # every template
  *   bun run scripts/e2e-pipelines.ts test-minimal aidlc-express
  *   E2E_CONCURRENCY=3 E2E_TIMEOUT_MIN=30 bun run scripts/e2e-pipelines.ts
+ *
+ * Against a deployed instance (sign-in on, no local fixture repos):
+ *   E2E_BASE_URL=https://spaces.example.com E2E_COOKIE='spaces_session=…' \
+ *   E2E_REPO=none E2E_MODEL=auto E2E_KEEP=1 bun run scripts/e2e-pipelines.ts test-minimal
  */
 import { execFile } from 'node:child_process'
 import { mkdir, readdir, writeFile } from 'node:fs/promises'
@@ -23,8 +27,13 @@ const execFileAsync = promisify(execFile)
 const BASE = process.env.E2E_BASE_URL ?? 'http://localhost:3000'
 const CONCURRENCY = Math.max(1, Number(process.env.E2E_CONCURRENCY ?? '3') || 3)
 const TIMEOUT_MS = Math.max(5, Number(process.env.E2E_TIMEOUT_MIN ?? '25') || 25) * 60_000
-const MODEL = process.env.E2E_MODEL ?? 'anthropic/claude-haiku-4-5'
+/** A model spec, or undefined for the organization's automatic routing (E2E_MODEL=auto). */
+const MODEL = (() => { const m = process.env.E2E_MODEL ?? 'anthropic/claude-haiku-4-5'; return m === 'auto' || m === '' ? undefined : m })()
 const KEEP = process.env.E2E_KEEP === '1'
+/** Session cookie for instances with sign-in enabled, e.g. "spaces_session=…". */
+const COOKIE = process.env.E2E_COOKIE
+/** "local" (default): a throwaway fixture repo on this machine; "none": governance workspace only (remote servers). */
+const REPO_MODE = process.env.E2E_REPO ?? 'local'
 const ROOT = path.join(homedir(), '.aidlc', 'e2e')
 const REPORT = process.env.E2E_REPORT ?? path.join(process.cwd(), 'e2e-report.md')
 
@@ -45,7 +54,10 @@ interface Result {
 }
 
 async function api<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${BASE}${url}`, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined })
+  const headers: Record<string, string> = {}
+  if (body) headers['content-type'] = 'application/json'
+  if (COOKIE) headers.cookie = COOKIE
+  const response = await fetch(`${BASE}${url}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
   const text = await response.text()
   let data: unknown = null
   try { data = JSON.parse(text) } catch { /* not json */ }
@@ -116,17 +128,24 @@ No environment variables or external services are required.
   return dir
 }
 
+/** Deleting takes friction: archive first, then confirm with "delete <code>". */
+async function deleteProject(projectId: string): Promise<void> {
+  const detail = await api<{ code?: string | null; slug: string }>('GET', `/api/projects/${projectId}`)
+  await api('POST', `/api/projects/${projectId}/archive`)
+  await api('DELETE', `/api/projects/${projectId}`, { confirm: `delete ${(detail.code ?? detail.slug).toLowerCase()}` })
+}
+
 const FEATURE = 'Add a farewell(name) function next to greet() that returns "Goodbye, <name>!" and rejects empty names, with unit tests and a README example.'
 
 async function runTemplate(template: string): Promise<Result> {
   const started = Date.now()
   const result: Result = { template, status: 'setup-failed', stages: [], stageRecords: [], artifacts: [], answers: 0, durationMs: 0 }
   try {
-    const repoPath = await makeFixtureRepo(template)
+    const repoPath = REPO_MODE === 'none' ? undefined : await makeFixtureRepo(template)
     const project = await api<{ projectId: string; slug: string; name: string }>('POST', '/api/projects', {
       name: `E2E ${template}`,
       description: `End-to-end test project for the ${template} pipeline. Small TypeScript greeting service with bun tests.`,
-      repos: [{ label: 'app', kind: 'local', localPath: repoPath, isPrimary: false }],
+      repos: repoPath ? [{ label: 'app', kind: 'local', localPath: repoPath, isPrimary: false }] : [],
       model: MODEL,
       feature: FEATURE,
     })
@@ -196,7 +215,7 @@ async function runTemplate(template: string): Promise<Result> {
   } finally {
     result.durationMs = Date.now() - started
     if (!KEEP && result.projectId && result.status === 'completed') {
-      await api('DELETE', `/api/projects/${result.projectId}`).catch(() => undefined)
+      await deleteProject(result.projectId).catch((error) => console.error(`cleanup failed for ${result.slug}: ${error instanceof Error ? error.message : String(error)}`))
     }
   }
   return result
@@ -208,7 +227,7 @@ async function main(): Promise<void> {
   const templates = requested.length ? requested.filter((t) => all.includes(t)) : all
   const unknown = requested.filter((t) => !all.includes(t))
   if (unknown.length) console.error(`Unknown templates ignored: ${unknown.join(', ')}`)
-  console.log(`E2E: ${templates.length} template(s), concurrency ${CONCURRENCY}, timeout ${TIMEOUT_MS / 60_000} min each, model ${MODEL}, server ${BASE}`)
+  console.log(`E2E: ${templates.length} template(s), concurrency ${CONCURRENCY}, timeout ${TIMEOUT_MS / 60_000} min each, model ${MODEL ?? 'auto (organization routing)'}, repos ${REPO_MODE}, server ${BASE}${COOKIE ? ' (signed in)' : ''}`)
 
   const queue = [...templates]
   const results: Result[] = []
@@ -227,7 +246,7 @@ async function main(): Promise<void> {
   const lines = [
     `# Pipeline e2e report — ${new Date().toISOString()}`,
     '',
-    `Server: ${BASE} · model: ${MODEL} · timeout: ${TIMEOUT_MS / 60_000} min/template`,
+    `Server: ${BASE} · model: ${MODEL ?? 'auto (organization routing)'} · repos: ${REPO_MODE} · timeout: ${TIMEOUT_MS / 60_000} min/template`,
     '',
     '| Template | Result | Duration | Stages | Gates answered | Onboarding | Artifacts | Error |',
     '|---|---|---|---|---|---|---|---|',

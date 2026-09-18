@@ -643,7 +643,7 @@ async function main(): Promise<void> {
   await applyProviderKeysToEnv().catch(() => undefined)
   await listenProviderKeys().catch(() => undefined)
   void checkProviderKeys(workerLog)
-  setInterval(() => {
+  timers.push(setInterval(() => {
     void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))
 
     // Idle exit (per-project workers): nothing running and no live engines for
@@ -659,7 +659,7 @@ async function main(): Promise<void> {
         void shutdown('IDLE')
       }
     }
-  }, 5_000)
+  }, 5_000))
 
   // Wake on any project_jobs INSERT via pg NOTIFY.
   const sql = getDb()
@@ -687,26 +687,26 @@ async function main(): Promise<void> {
   })
 
   // Polling floor in case a NOTIFY is missed (e.g., reconnect).
-  setInterval(() => { void drainDispatcher(workerId) }, 5000)
+  timers.push(setInterval(() => { void drainDispatcher(workerId).catch((err) => { if (!shuttingDown) workerLog.error('poll failed', err instanceof Error ? err : new Error(String(err))) }) }, 5000))
   // Reap idle warm agents every 5 minutes (default cutoff: 30 min idle).
-  setInterval(() => {
+  timers.push(setInterval(() => {
     void reapIdleAgents().then((n) => {
       if (n > 0) workerLog.info('reaped idle agents', { count: n })
     })
-  }, 5 * 60_000)
+  }, 5 * 60_000))
   // Reap jobs whose worker died. Liveness comes from the workers heartbeat
   // table, NOT from elapsed time: a plan or implement stage legitimately runs
   // for far longer than any fixed timeout, and the old 10-minute rule marked
   // healthy jobs as failed, let the dispatcher start a second run for the same
   // project, and re-queued duplicates. A dead worker's run is handed off: the
   // job is closed and the run is re-queued from the stage it was in.
-  setInterval(() => { void reapDeadWorkerJobs() }, 60_000)
+  timers.push(setInterval(() => { void reapDeadWorkerJobs() }, 60_000))
   // Reap orphaned pipeline_runs — queued runs older than 30s with no matching
   // project_jobs row. Caused by a worker crash between the retry UPDATE and
   // the job INSERT before retryRunAndEnqueue was transactional. This reaper
   // is a safety net: even with the transactional fix, a crashed peer worker
   // or a manual DB manipulation could still leave orphans behind.
-  setInterval(() => {
+  timers.push(setInterval(() => {
     void reapOrphanedRuns()
       .then(({ reenqueued, failed }) => {
         if (reenqueued > 0 || failed > 0) {
@@ -714,15 +714,19 @@ async function main(): Promise<void> {
         }
       })
       .catch((err) => workerLog.error('orphan-run reaper failed', err))
-  }, 30_000)
+  }, 30_000))
   await drainDispatcher(workerId)
 
   workerLog.info('subscribed to project_job queue; waiting for jobs')
 }
 
+/** Periodic timers (heartbeat, polling floor, reapers); cleared first on shutdown so nothing queries a closing pool. */
+const timers: Array<ReturnType<typeof setInterval>> = []
+
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
+  for (const t of timers) clearInterval(t)
   workerLog.info('shutdown signal received; disposing engines', { signal })
   for (const [runId, engine] of engines) {
     try {
