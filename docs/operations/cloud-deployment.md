@@ -173,9 +173,13 @@ service exits and Railway restarts it.
     PUBLIC_URL=https://<your-service>.up.railway.app
     SUPERVISOR_MAX_WORKERS=2
     WORKER_IDLE_EXIT_SECONDS=300
+    RAILWAY_RUN_UID=0
     ```
 
-    `PORT` is injected by Railway and picked up automatically. `PUBLIC_URL`
+    `RAILWAY_RUN_UID=0` is needed because Railway mounts volumes owned by
+    root while the image runs as the non-root `bun` user; without it nothing
+    can be written under `/data`. `PORT` is injected by Railway and picked up
+    automatically. `PUBLIC_URL`
     can be left out: the app honours Railway's `X-Forwarded-Proto` and
     `X-Forwarded-Host` headers, so OAuth callbacks and GitHub App manifests
     already use the public `https://` origin. Set it when you serve Spaces on
