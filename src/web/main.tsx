@@ -3664,47 +3664,68 @@ function AiAgentOutputBar({
 
   return (
     <section ref={dockRef} className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
-      <div className="section-header-row dock-header" onClick={() => setOpenChoice(!expanded)} role="button" aria-expanded={expanded} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(!expanded) } }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <h3 style={{ margin: 0 }}>
-            <span className="dock-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span> AI agent output
-            {needsInput && currentRun?.pauseKind !== 'user' && <span className="mini-badge paused" style={{ marginLeft: 8 }}>needs you</span>}
-          </h3>
-          <p className="panel-subtitle dock-summary" style={{ margin: '4px 0 0' }}>
-            {currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
-          </p>
-          {stages.length > 0 && (
-            <ol className="dock-progress" aria-label="Stage progress">
-              {stages.map((stage, i) => (
-                <li key={`${stage}-${i}`} className={i < stageIndex || currentRun?.status === 'completed' ? 'done' : i === stageIndex ? (currentRun?.status === 'paused' ? 'paused' : currentRun?.status === 'running' ? 'active' : currentRun?.status === 'error' ? 'error' : 'current') : ''} title={stage}>
-                  <span />{stage}
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-        {currentRun && (
-          <div className="entry-links" onClick={(e) => e.stopPropagation()}>
-            {(canPause || canPauseQueued) && onPause && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'}>Pause</button>}
-            {canResume && onResume && <button type="button" className="primary-button dock-button" disabled={busy} onClick={onResume}>Resume</button>}
-            {canCancel && onCancel && <button type="button" className="danger-button dock-button" disabled={busy} onClick={onCancel}>Cancel</button>}
-            <span className={`mini-badge ${currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : currentRun.status === 'error' ? (currentRun.interrupted ? 'paused' : 'error') : 'running'}`}>
-              {currentRun.status === 'running' ? (currentRun.queued ? '◌ queued' : '● running') : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status}
-            </span>
-            {(currentRun.retryCount ?? 0) > 0 && <span className="mini-badge idle">attempt {(currentRun.retryCount ?? 0) + 1}</span>}
-            {currentRun.stage && <span className="mini-badge idle">stage: {currentRun.stage}</span>}
-            {currentRun.pauseKind && <span className="mini-badge paused">{currentRun.pauseKind}</span>}
-            <button
-              type="button"
-              className="ghost-button"
-              style={{ padding: '2px 8px', fontSize: 12 }}
-              onClick={() => setOpenChoice(!expanded)}
-            >
-              {expanded ? 'Collapse' : `Expand${currentRun.log ? ` (${currentRun.log.length.toLocaleString()} chars)` : ''}`}
-            </button>
+      {(() => {
+        const total = stages.length
+        const done = currentRun?.status === 'completed' ? total : Math.max(0, stageIndex)
+        const statusKey = !currentRun ? 'idle' : currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : currentRun.status === 'error' ? (currentRun.interrupted ? 'paused' : 'error') : currentRun.status === 'cancelled' ? 'idle' : 'running'
+        const statusText = !currentRun ? 'no run' : currentRun.status === 'running' ? (currentRun.queued ? 'queued' : 'running') : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status
+        const controls = currentRun && (
+          <span className="dock-controls" onClick={(e) => e.stopPropagation()}>
+            {(canPause || canPauseQueued) && onPause && <button type="button" className="dock-icon" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'} aria-label="Pause">❙❙</button>}
+            {canResume && onResume && <button type="button" className="dock-icon accent" disabled={busy} onClick={onResume} title="Resume from the paused stage" aria-label="Resume">▶</button>}
+            {canCancel && onCancel && <button type="button" className="dock-icon danger" disabled={busy} onClick={onCancel} title="Cancel this run" aria-label="Cancel">✕</button>}
+          </span>
+        )
+        if (!expanded) {
+          return (
+            <div className="dock-mini" onClick={() => setOpenChoice(true)} role="button" aria-expanded={false} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(true) } }} title="Open the agent output">
+              <span className={`dock-dot ${statusKey}`} aria-hidden="true" />
+              <span className="dock-mini-title">Agent</span>
+              <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}{needsInput && currentRun?.pauseKind !== 'user' ? ' · needs you' : ''}</span>
+              {total > 0 && (
+                <span className="dock-mini-progress" title={`${done} of ${total} stages complete`}>
+                  <span className="dock-bar"><span style={{ width: `${Math.round((done / total) * 100)}%` }} /></span>
+                  <span className="dock-mini-count">{done}/{total}</span>
+                </span>
+              )}
+              {controls}
+              <span className="dock-chevron" aria-hidden="true">▴</span>
+            </div>
+          )
+        }
+        return (
+          <div className="section-header-row dock-header" onClick={() => setOpenChoice(false)} role="button" aria-expanded tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(false) } }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <h3 style={{ margin: 0 }}>
+                <span className={`dock-dot ${statusKey}`} aria-hidden="true" /> Agent output
+                <span className={`mini-badge ${statusKey}`}>{statusText}</span>
+                {total > 0 && <span className="mini-badge idle" title="Stages complete">{done}/{total} stages</span>}
+                {currentRun?.stage && <span className="mini-badge idle">{currentRun.stage}</span>}
+                {currentRun?.pauseKind && currentRun.pauseKind !== 'user' && <span className="mini-badge paused">{currentRun.pauseKind}</span>}
+                {needsInput && currentRun?.pauseKind !== 'user' && <span className="mini-badge paused">needs you</span>}
+              </h3>
+              <p className="panel-subtitle dock-summary" style={{ margin: '4px 0 0' }}>
+                {currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
+              </p>
+              {total > 0 && (
+                <ol className="dock-progress" aria-label="Stage progress">
+                  {stages.map((stage, i) => (
+                    <li key={`${stage}-${i}`} className={i < stageIndex || currentRun?.status === 'completed' ? 'done' : i === stageIndex ? (currentRun?.status === 'paused' ? 'paused' : currentRun?.status === 'running' ? 'active' : currentRun?.status === 'error' ? 'error' : 'current') : ''} title={stage}>
+                      <span />{stage}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+            <div className="entry-links" onClick={(e) => e.stopPropagation()}>
+              {(canPause || canPauseQueued) && onPause && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'}>Pause</button>}
+              {canResume && onResume && <button type="button" className="primary-button dock-button" disabled={busy} onClick={onResume}>Resume</button>}
+              {canCancel && onCancel && <button type="button" className="danger-button dock-button" disabled={busy} onClick={onCancel}>Cancel</button>}
+              <button type="button" className="dock-icon" onClick={() => setOpenChoice(false)} title="Collapse" aria-label="Collapse">▾</button>
+            </div>
           </div>
-        )}
-      </div>
+        )
+      })()}
       <div className="dock-body">
       {expanded && (
         <pre
