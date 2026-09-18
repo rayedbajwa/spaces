@@ -2195,3 +2195,5 @@ textarea {
 .project-tabs { width: 100%; box-sizing: border-box; }
 /* Summary (with repositories and recent changes) spans the overview; orchestrator and artifacts share the row below. */
 @media (min-width: 1100px) { .project-overview > section.slim-panel:first-of-type { grid-column: 1 / -1; } }
+/* Lifecycle (pause / archive / delete) always closes the overview. */
+.project-overview > .danger-zone { order: 99; }
