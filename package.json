@@ -44,6 +44,7 @@
     "web": "bun run src/server.ts",
     "worker": "bun run src/worker.ts",
     "supervisor": "bun run src/supervisor.ts",
+    "standalone": "bun run src/standalone.ts",
     "e2e": "bun run scripts/e2e-pipelines.ts",
     "dev": "bun --hot src/server.ts",
     "help": "bun run src/cli.ts --help",

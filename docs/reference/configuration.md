@@ -44,6 +44,7 @@ back to the same-size tier.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | Web UI + API port |
+| `PUBLIC_URL` | unset | Public origin behind a TLS-terminating proxy, for OAuth callbacks, GitHub App manifests and invite links; the forwarded headers are honoured when unset |
 | `WORKER_ID` | random UUID | Worker identity (per process) |
 | `WORKER_MAX_CONCURRENT_JOBS` | `4` | Jobs one worker runs at once across projects |
 | `SUPERVISOR_MAX_WORKERS` | `4` | Cap on per-project workers (each ~300–500 MB) |

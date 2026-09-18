@@ -21,11 +21,13 @@ flowchart LR
 | **Postgres** | Projects, runs, events, job queue, sealed tokens, worker heartbeats | Managed service recommended |
 | **/data volume** | Cloned repositories, governing workspaces (specs, memory, reports), Pi agent sessions | Persistent disk shared by app and workers |
 
-!!! danger "Authentication"
-    The web UI has **no built-in authentication**. Never expose port 3000
-    directly. Put an authenticating reverse proxy in front (Cloudflare
-    Access, Tailscale, Google IAP, Caddy/nginx with OIDC or basic auth) and
-    keep the app and workers on a private network. See `SECURITY.md`.
+!!! warning "Authentication and exposure"
+    Sign-in is on by default: the first account becomes owner and everyone
+    else joins by invite link. Still, agents run code and hold repository
+    tokens, so keep the deployment small and trusted: TLS in front (platforms
+    do this for you), a strong `ENCRYPTION_KEY`, and consider an extra
+    authenticating proxy (Cloudflare Access, Tailscale, IAP) for anything
+    reachable from the internet. See `SECURITY.md`.
 
 ## The container image
 
@@ -119,9 +121,10 @@ governing workspaces to a git remote of your own).
   (EFS on ECS, Filestore on Cloud Run/GKE, Azure Files). Cloned repositories
   and governing workspaces must be visible to the app (artifact browsing,
   plan-repo matching) and to the workers (runs).
-- **Secrets:** inject `ENCRYPTION_KEY`, `ANTHROPIC_API_KEY` and the OAuth
-  client secrets from the platform's secret manager; never bake them into the
-  image. Rotating `ENCRYPTION_KEY` invalidates every stored OAuth token.
+- **Secrets:** inject `DATABASE_URL` and `ENCRYPTION_KEY` from the
+  platform's secret manager; never bake them into the image. Provider keys and
+  OAuth apps are entered in the app and stored encrypted. Rotating
+  `ENCRYPTION_KEY` invalidates every stored key and token.
 - **Egress:** workers need HTTPS to `api.anthropic.com`, `api.github.com`,
   `github.com`, Atlassian and Linear APIs, and the package registries the
   projects use (dev-environment setup installs dependencies).
@@ -135,16 +138,81 @@ Give the supervisor pod a memory request sized for `SUPERVISOR_MAX_WORKERS`
 and set `terminationGracePeriodSeconds` to ~60 s so workers can re-queue or
 pause their runs cleanly on rollout.
 
-## Option D — Railway, Fly.io, Render
+## Option D — Railway
 
-Create two services from the same repository (Dockerfile build): **app** with
-the default command and a public domain behind an auth proxy, **supervisor**
-with the start command `bun run src/supervisor.ts` and no public port. Add a
-Postgres plugin/add-on and a persistent volume mounted at `/data` on both
-services (on Railway, one volume can be attached to one service — attach it to
-the supervisor and give the app its own smaller volume, or run app and
-supervisor as one service with a process manager). Set the environment
-variables from `.env.example` as service secrets.
+Railway is the quickest path to a hosted Spaces: one service built from the
+repository's `Dockerfile`, one Postgres database and one volume. The
+repository ships a `railway.json` that sets the start command, the health
+check and the restart policy, so the dashboard needs almost no configuration.
+
+**Why one service.** A Railway volume attaches to exactly one service, and
+the app and the workers must share `/data` (cloned repositories, governing
+workspaces, agent sessions). `bun run src/standalone.ts` therefore runs the
+web server and the supervisor together in one container: the supervisor
+still spawns one worker per active project, and if either process dies the
+service exits and Railway restarts it.
+
+### Steps
+
+1. **Create a project** at railway.com → *New Project* → *Deploy from GitHub
+   repo* and pick your fork of Spaces. Railway detects the `Dockerfile` and
+   `railway.json` (builder, start command `bun run src/standalone.ts`, health
+   check `/health`).
+2. **Add Postgres:** *Create* → *Database* → *PostgreSQL*. For vector search
+   over the knowledge base pick a pgvector-enabled template instead (search
+   the template marketplace for *pgvector*); without the extension the
+   knowledge base falls back to full-text search and everything else works.
+3. **Add a volume** to the Spaces service (*right-click the service* →
+   *Attach volume*) mounted at `/data`. 10–20 GB is plenty to start; it holds
+   clones and governing workspaces.
+4. **Variables** on the Spaces service (*Variables* tab, *Raw editor*):
+
+    ```ini
+    DATABASE_URL=${{Postgres.DATABASE_URL}}
+    ENCRYPTION_KEY=<openssl rand -base64 48>
+    PUBLIC_URL=https://<your-service>.up.railway.app
+    SUPERVISOR_MAX_WORKERS=2
+    WORKER_IDLE_EXIT_SECONDS=300
+    ```
+
+    `PORT` is injected by Railway and picked up automatically. `PUBLIC_URL`
+    can be left out: the app honours Railway's `X-Forwarded-Proto` and
+    `X-Forwarded-Host` headers, so OAuth callbacks and GitHub App manifests
+    already use the public `https://` origin. Set it when you serve Spaces on
+    a custom domain through another proxy.
+5. **Generate a domain** (*Settings* → *Networking* → *Generate Domain*, or
+   add a custom one). Railway terminates TLS; the container listens on plain
+   HTTP.
+6. **Open the URL** and register the first account (it becomes owner). Add a
+   provider key under Organization → Models, then set up integrations under
+   Organization → Integrations: *Create GitHub App* works as on localhost, and
+   the manifest now carries your public callback URL.
+
+Sizing: the container runs the web server, the supervisor and up to
+`SUPERVISOR_MAX_WORKERS` workers at roughly 300–500 MB each, so 2 GB covers
+two concurrent project runs and 4 GB covers four. Railway restarts the
+service on failure and on deploys; running runs are re-queued from their
+current stage and paused runs stay paused.
+
+Railway CLI equivalent:
+
+```bash
+railway init                                  # new project in this directory
+railway add --database postgres               # Postgres with DATABASE_URL
+railway volume add --mount-path /data
+railway variables --set ENCRYPTION_KEY="$(openssl rand -base64 48)" --set SUPERVISOR_MAX_WORKERS=2
+railway up                                    # build the Dockerfile and deploy
+railway domain                                # public URL
+```
+
+## Option E — Fly.io, Render
+
+Same shape as Railway: build the `Dockerfile`, start `bun run src/standalone.ts`
+when the platform allows one persistent disk per service (Render, Fly with a
+single volume), or run **app** (default command, public) and **supervisor**
+(`bun run src/supervisor.ts`, private) as two services when a shared file
+system is available. Add a managed Postgres, mount the disk at `/data`, and
+set the variables from `.env.example` as secrets.
 
 ## Environment for cloud deployments
 
@@ -153,6 +221,7 @@ variables from `.env.example` as service secrets.
 | `DATABASE_URL` | External, dedicated Postgres 16 (managed service or HA cluster), TLS (`?sslmode=require`); never the bundled dev container |
 | `ENCRYPTION_KEY` | From a secret manager; back it up with the database |
 | `PORT` | `3000` (or what the platform injects) |
+| `PUBLIC_URL` | Public `https://` origin when a proxy in front does not send `X-Forwarded-Proto` / `X-Forwarded-Host`; used for OAuth callbacks, GitHub App manifests and invite links |
 | `AIDLC_WORKSPACE_ROOT` | `/data/aidlc/workspaces` (image default) |
 | `AIDLC_GOVERNANCE_ROOT` | leave default (`<workspace root>/_governance`) |
 | `SUPERVISOR_MAX_WORKERS` | 3–4 per 8 GB |

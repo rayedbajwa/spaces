@@ -142,6 +142,7 @@ import {
   type KnowledgeSource,
 } from './lib/integration-sources'
 import { log } from './lib/logger'
+import { publicOrigin } from './lib/public-url'
 
 const serverLog = log.child({ mod: 'server' })
 
@@ -223,6 +224,8 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 async function route(req: Request): Promise<Response> {
   const method = req.method ?? 'GET'
   const url = new URL(req.url)
+  // Behind a TLS-terminating proxy the public scheme/host differ from req.url.
+  const origin = publicOrigin(req, url)
 
   if (method === 'GET' && url.pathname === '/') {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
@@ -235,7 +238,7 @@ async function route(req: Request): Promise<Response> {
 
   // Older project links used /p/<code>; send them to /spaces/<code>.
   if (method === 'GET' && url.pathname.startsWith('/p/')) {
-    return Response.redirect(`${url.origin}/spaces/${url.pathname.slice('/p/'.length)}${url.search}`, 301)
+    return Response.redirect(`${origin}/spaces/${url.pathname.slice('/p/'.length)}${url.search}`, 301)
   }
 
   // Client-side routes (sign-in page, invite acceptance, project pages) load the SPA shell.
@@ -394,7 +397,7 @@ async function route(req: Request): Promise<Response> {
       const inviteRole: InviteRole = body.role && ['admin', 'member', 'viewer'].includes(body.role) ? body.role : 'member'
       const { invite, token } = await createInvite({ teamId, email: body.email, role: inviteRole, invitedBy: auth.user.userId })
       // No mail server: the inviter shares this link. It only works for the invited email.
-      return sendJson(201, { invite, link: `${url.origin}/invite/${token}`, invites: await listInvites(teamId) })
+      return sendJson(201, { invite, link: `${origin}/invite/${token}`, invites: await listInvites(teamId) })
     }
     if (method === 'DELETE' && /^\/invites\/[0-9a-f-]{36}$/.test(rest)) {
       const denied = requireRole('admin'); if (denied) return denied
@@ -1416,7 +1419,7 @@ async function route(req: Request): Promise<Response> {
   // ---- OAuth app credentials (organization-level, required before connecting) ----
 
   if (method === 'GET' && url.pathname === '/api/oauth-apps') {
-    return sendJson(200, await listOAuthApps(url.origin))
+    return sendJson(200, await listOAuthApps(origin))
   }
 
   // GitHub App, created for the user through the manifest flow: this page
@@ -1428,7 +1431,7 @@ async function route(req: Request): Promise<Response> {
     if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can create the GitHub App.' })
     const organization = url.searchParams.get('org')?.trim() || undefined
     if (organization && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)) return sendJson(400, { error: 'That is not a valid GitHub organization name.' })
-    const { html } = githubAppManifestPage(url.origin, { organization })
+    const { html } = githubAppManifestPage(origin, { organization })
     return sendHtml(200, html)
   }
   if (method === 'GET' && url.pathname === '/api/oauth-apps/github/manifest/callback') {
@@ -1459,7 +1462,7 @@ async function route(req: Request): Promise<Response> {
     if (method === 'DELETE') {
       await deleteOAuthApp(provider)
       serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
-      return sendJson(200, { ok: true, apps: await listOAuthApps(url.origin) })
+      return sendJson(200, { ok: true, apps: await listOAuthApps(origin) })
     }
     const body = await readJson<{ clientId?: string; clientSecret?: string }>(req)
     try {
@@ -1468,7 +1471,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
     }
     serverLog.info('oauth app credentials saved', { provider, by: auth?.user.email ?? 'local' })
-    return sendJson(200, { ok: true, apps: await listOAuthApps(url.origin) })
+    return sendJson(200, { ok: true, apps: await listOAuthApps(origin) })
   }
 
   // ---- App-level integrations ----
@@ -1489,7 +1492,7 @@ async function route(req: Request): Promise<Response> {
     const provider = url.pathname.split('/')[3]!
     const cfg = await resolveProvider(provider)
     if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.` })
-    const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
+    const callbackUrl = `${origin}/api/oauth/${provider}/callback`
     // projectId is legacy: keep it optional in state so old links don't 500.
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
     const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
@@ -1511,7 +1514,7 @@ async function route(req: Request): Promise<Response> {
     const pending = consumeState(state)
     if (!pending || pending.provider !== provider) return sendJson(400, { error: 'Invalid or expired OAuth state.' })
 
-    const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
+    const callbackUrl = `${origin}/api/oauth/${provider}/callback`
     try {
       const tokens = await exchangeCode(cfg, code, callbackUrl)
 

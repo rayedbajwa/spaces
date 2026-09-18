@@ -10,6 +10,9 @@ const webDir = join(srcDir, 'web')
 const publicDir = join(srcDir, '..', 'public')
 
 export async function ensureFrontendBuilt(): Promise<void> {
+  // Production images ship prebuilt assets in a read-only, root-owned public/;
+  // rebuilding there fails (and is pointless). Use what was built.
+  if (process.env.NODE_ENV === 'production' && (await Bun.file(join(publicDir, 'main.js')).exists())) return
   await mkdir(publicDir, { recursive: true })
 
   const result = await Bun.build({

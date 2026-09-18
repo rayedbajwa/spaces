@@ -41,7 +41,7 @@ VOLUME ["/data"]
 
 # Copy production node_modules + source + built assets
 COPY --from=deps  /app/node_modules ./node_modules
-COPY --from=build /app/public       ./public
+COPY --from=build --chown=bun:bun /app/public ./public
 COPY package.json tsconfig.json ./
 COPY src ./src
 COPY data ./data

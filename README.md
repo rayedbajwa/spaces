@@ -543,15 +543,23 @@ per-stage model selection.
 
 ## Deployment note
 
-Spaces is designed for **local, single-user development** by default. There
-is no built-in authentication on the web UI. **Do not expose it to the
-public internet** without putting an authenticating reverse proxy in front
-(Cloudflare Access, Tailscale, Caddy basic-auth, etc.).
+Spaces runs locally by default. Sign-in is on (first account is owner,
+others join by invite), but agents execute code and hold repository tokens,
+so treat a hosted instance as a small, trusted deployment.
 
-See [SECURITY.md](SECURITY.md) for the full list of caveats before deploying,
-and the [cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/cloud-deployment/)
-for running the app, supervisor and Postgres with Docker Compose, managed
-containers (ECS/Cloud Run/Container Apps), Kubernetes, or Railway/Fly/Render.
+**Railway** is the quickest hosted setup: deploy the repository as one
+service (the shipped `railway.json` builds the `Dockerfile` and starts
+`bun run src/standalone.ts`, which runs the web server and the supervisor
+together so they share one `/data` volume), add a Postgres database and a
+volume mounted at `/data`, set `DATABASE_URL` and `ENCRYPTION_KEY`. Behind
+Railway's TLS proxy the app derives its public `https://` origin from the
+forwarded headers (or `PUBLIC_URL`), so OAuth callbacks and the GitHub App
+manifest just work.
+
+See [SECURITY.md](SECURITY.md) for the caveats before deploying, and the
+[cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/cloud-deployment/)
+for Railway step by step, Docker Compose, managed containers
+(ECS/Cloud Run/Container Apps), Kubernetes, and Fly/Render.
 The shipped image includes git and stores repos, governing workspaces and agent
 sessions under a `/data` volume. For production use an **external, dedicated
 Postgres 16** (managed service or HA cluster) and

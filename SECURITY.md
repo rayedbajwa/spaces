@@ -18,10 +18,12 @@ disclosure timeline with you.
 Spaces is designed for **local, single-user development** by default. Some
 important caveats:
 
-- **No built-in authentication.** The web UI on `PORT` is open to anyone who
-  can reach it. Do **not** expose the port to the internet without putting an
-  authenticating reverse proxy (e.g. Caddy with basic-auth, Cloudflare Access,
-  Tailscale) in front.
+- **Sign-in is basic.** Accounts are email + password or GitHub, with
+  invite-only registration by default (`OPEN_REGISTRATION` opens it;
+  `AUTH_DISABLED=1` removes sign-in entirely and must never be used on a
+  reachable host). There is no MFA, rate limiting or audit log; for anything
+  on the internet consider an authenticating proxy (Cloudflare Access,
+  Tailscale, IAP) in front as well.
 - **OAuth tokens are encrypted at rest** with `ENCRYPTION_KEY` (AES-256-GCM).
   If that key leaks or your Postgres instance is compromised, tokens are only
   as safe as your key management.
