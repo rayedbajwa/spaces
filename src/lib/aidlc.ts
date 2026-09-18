@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
 import { PROVIDER_ENV_KEYS } from './default-model'
 import { mkdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -37,6 +38,7 @@ const require = createRequire(import.meta.url)
 
 export const STAGE_DEFINITIONS = {
   init: { skill: 'speckit-init', argKey: undefined },
+  research: { skill: 'aidlc-research', argKey: 'feature' },
   constitution: { skill: 'speckit-constitution', argKey: 'constitution' },
   specify: { skill: 'speckit-specify', argKey: 'feature' },
   clarify: { skill: 'speckit-clarify', argKey: undefined },
@@ -54,7 +56,7 @@ export const STAGE_DEFINITIONS = {
   review: { skill: 'aidlc-review', argKey: undefined },
 } as const
 
-export const DEFAULT_STAGES: StageName[] = ['init', 'specify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze']
+export const DEFAULT_STAGES: StageName[] = ['init', 'research', 'specify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze']
 export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan', 'implement', 'orchestrate', 'review', 'verify', 'deliver']
 export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'review', 'verify', 'checklist', 'taskstoissues', 'deliver']
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
@@ -1842,6 +1844,10 @@ async function loadStagePrompt(options: {
   stage: StageName
   stageArgument: string
 }): Promise<string> {
+  if (options.stage === 'research') {
+    return buildResearchPrompt(options.stageArgument)
+  }
+
   if (options.stage === 'testplan') {
     return buildTestPlanPrompt()
   }
@@ -1874,7 +1880,7 @@ async function loadStagePrompt(options: {
     .replaceAll('$ARGUMENTS', options.stageArgument)
 
   if (options.stage === 'specify') {
-    return `${basePrompt}\n\nAdditional AIDLC requirement:\n- Include explicit test cases or acceptance test scenarios in the specification so QA can trace requirements early.`
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- If \`${RESEARCH_BRIEF_FILE}\` exists (written by the research stage), read it first and build on its repositories, reuse candidates, standards, constraints and open questions instead of rediscovering them.\n- Include explicit test cases or acceptance test scenarios in the specification so QA can trace requirements early.`
   }
 
   if (options.stage === 'tasks') {

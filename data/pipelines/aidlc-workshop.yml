@@ -8,6 +8,10 @@ steps:
   - id: state-init
     stage: init
     phase: initialization
+  - id: research
+    stage: research
+    phase: inception
+    role: architect
   - id: intent-capture
     stage: specify
     phase: inception

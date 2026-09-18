@@ -1713,6 +1713,7 @@ function App() {
     }
     switch (step) {
       case 'init': return { ok: true }
+      case 'research': return { ok: true }
       case 'specify': return { ok: true }
       case 'clarify': return hasArtifact('Specified') ? { ok: true } : { ok: false, reason: 'Needs a spec first (run specify).' }
       case 'plan': return hasArtifact('Specified') ? { ok: true } : { ok: false, reason: 'Needs a spec first (run specify).' }
@@ -3958,6 +3959,7 @@ function parseTaskTracker(markdown?: string): TaskTrackerItem[] {
 
 function mapStageToTab(stage: string): ProjectModalTab {
   switch (stage) {
+    case 'research':
     case 'specify':
     case 'plan':
       return 'specs'

@@ -97,6 +97,10 @@ inspectable artifacts each stage produces.
 ## Highlights
 
 - **AIDLC pipeline templates** — declarative YAML DSL for stage/role/model/branch/retry
+- **Research before specify** — a `research` stage suggests and clones the
+  repositories a feature needs, learns them, loads the organization knowledge
+  base and repository briefs, and writes a research brief the specification
+  builds on
 - **Per-project orchestrator + warm agent pool** — sub-agents dispatched per
   workstream; agent sessions are reused across runs for lower latency
 - **Cross-model handoff memory** — the last few stages' key outputs are

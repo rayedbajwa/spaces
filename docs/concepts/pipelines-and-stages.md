@@ -9,6 +9,7 @@ harness, human gate and `onComplete` branch rules.
 | Stage | What it produces | Notes |
 |---|---|---|
 | `init` | `.specify/` workspace | Deterministic during onboarding |
+| `research` | `.aidlc/research/brief.md` | Before specifying: suggests, clones and learns the repositories the feature needs, loads organization knowledge and repository briefs, then an agent explores and writes the brief (repositories to change, patterns to reuse, standards, risks, open questions). `specify` reads it first |
 | `specify` | `spec.md` with acceptance scenarios | Requires a feature description |
 | `clarify` | Clarified spec | May pause with a question |
 | `constitution` | `.specify/memory/constitution.md` | Requires constitution text |

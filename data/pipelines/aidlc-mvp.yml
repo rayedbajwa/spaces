@@ -15,6 +15,10 @@ steps:
     phase: initialization
     model: anthropic/claude-haiku-4-5
     thinking: off
+  - id: research
+    stage: research
+    phase: inception
+    role: architect
   - id: intent-capture
     stage: specify
     phase: ideation

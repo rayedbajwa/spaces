@@ -77,7 +77,7 @@ const TIER: Array<keyof typeof MODELS> = ['haiku', 'sonnet', 'opus']
  */
 function stageFamily(stage: string): 'plan' | 'implement' | 'review' | 'orchestrate' | 'chat' | 'other' {
   const s = stage.toLowerCase()
-  if (['specify', 'plan', 'checklist', 'constitution', 'clarify'].includes(s)) return 'plan'
+  if (['research', 'specify', 'plan', 'checklist', 'constitution', 'clarify'].includes(s)) return 'plan'
   if (['implement', 'tasks', 'testplan', 'parallelize', 'verify'].includes(s)) return 'implement'
   if (['review', 'gate'].includes(s)) return 'review'
   if (['orchestrate', 'merge'].includes(s)) return 'orchestrate'

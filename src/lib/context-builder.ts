@@ -165,10 +165,12 @@ async function loadProjectMemory(projectId: string): Promise<{ manualText: strin
 }
 
 async function loadFeatureArtifacts(projectPath: string): Promise<ContextArtifact[]> {
-  const featureDir = await getLatestFeatureDir(projectPath)
-  if (!featureDir) return []
-
   const artifacts: ContextArtifact[] = []
+  // Written by the research stage before any feature directory exists.
+  await pushArtifact(artifacts, 'Research brief', join(projectPath, '.aidlc', 'research', 'brief.md'))
+  const featureDir = await getLatestFeatureDir(projectPath)
+  if (!featureDir) return artifacts
+
   await pushArtifact(artifacts, 'Feature spec', join(projectPath, featureDir, 'spec.md'))
   await pushArtifact(artifacts, 'Implementation plan', join(projectPath, featureDir, 'plan.md'))
   await pushArtifact(artifacts, 'Tasks', join(projectPath, featureDir, 'tasks.md'))

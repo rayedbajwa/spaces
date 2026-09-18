@@ -16,6 +16,7 @@ import { loadPersona } from './persona-loader'
 import { MODELS, TIER_KEY, loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
 import { isProviderConfigured, tierOfModel } from './default-model'
 import { compactHandoff } from './context-compactor'
+import { prepareResearchInputs } from './research-stage'
 import { log } from './logger'
 
 export interface PipelineEngineOptions extends FlowOptions {
@@ -204,6 +205,23 @@ export class PipelineEngine {
       if (step.role) {
         const persona = await loadPersona(step.role)
         if (persona) parts.push(`# Active role: ${step.role}\n\n${persona.trim()}`)
+      }
+
+      // Research: bring in the repositories the feature needs and what is
+      // already known about them, so the agent starts from facts.
+      if (step.stage === 'research') {
+        try {
+          const prep = await prepareResearchInputs({
+            projectId: this.options.projectId,
+            cwd: this.options.cwd,
+            feature: this.options.feature,
+            model: this.options.model,
+            print: (line) => this.sinks.stdout?.(line),
+          })
+          parts.push(prep.markdown)
+        } catch (error) {
+          parts.push(`# Research inputs\n\n_Automatic preparation failed: ${error instanceof Error ? error.message : String(error)}. Gather the inputs yourself._`)
+        }
       }
 
       if (isRerun && step.stage === 'implement') {
