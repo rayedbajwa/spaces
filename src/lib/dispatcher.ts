@@ -315,7 +315,7 @@ export interface JobWithRun extends JobRow {
   runPauseKind?: 'clarification' | 'review'
   runError?: string
   runPipeline?: string
-  displayStatus: 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled' | 'claimed'
+  displayStatus: 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled' | 'claimed' | 'superseded'
 }
 
 export async function listJobsForProject(projectId: string, limit = 50): Promise<JobWithRun[]> {
@@ -341,7 +341,7 @@ export async function listJobsForProject(projectId: string, limit = 50): Promise
   }
   return rows.map((row) => {
     const speaksForRun = row.runId ? latestJobForRun.get(row.runId) === row.jobId : false
-    return { ...row, displayStatus: deriveDisplayStatus(row.status, speaksForRun ? row.runStatus : undefined) }
+    return { ...row, displayStatus: deriveDisplayStatus(row.status, speaksForRun ? row.runStatus : undefined, !speaksForRun && Boolean(row.runId)) }
   })
 }
 
@@ -354,10 +354,13 @@ export async function listJobsForProject(projectId: string, limit = 50): Promise
  *    finished. A finished job never borrows a *later* job's "running" — that is
  *    what made re-run projects look like they had several jobs in flight.
  */
-export function deriveDisplayStatus(jobStatus: JobStatus, runStatus?: JobWithRun['runStatus']): JobWithRun['displayStatus'] {
+export function deriveDisplayStatus(jobStatus: JobStatus, runStatus?: JobWithRun['runStatus'], superseded = false): JobWithRun['displayStatus'] {
   const jobActive = jobStatus === 'queued' || jobStatus === 'claimed' || jobStatus === 'running'
   if (jobActive) return runStatus ?? jobStatus
   if (runStatus === 'paused' || runStatus === 'completed' || runStatus === 'error') return runStatus
+  // An earlier attempt that a worker restart or rerun replaced: its "error" is
+  // history, not the run's state.
+  if (superseded && jobStatus === 'error') return 'superseded'
   return jobStatus
 }
 

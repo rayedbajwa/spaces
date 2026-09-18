@@ -2534,8 +2534,8 @@ function App() {
                         onClick={() => j.runId && void loadRunLog(j.runId)}
                       >
                         <span
-                          className={`mini-badge ${j.displayStatus === 'completed' ? 'completed' : j.displayStatus === 'error' ? 'error' : j.displayStatus === 'paused' ? 'paused' : j.displayStatus === 'queued' ? 'idle' : 'running'}`}
-                          title={j.runError ? j.runError : j.status !== j.displayStatus ? `Queue job state: ${j.status}; run state: ${j.displayStatus}` : undefined}
+                          className={`mini-badge ${j.displayStatus === 'completed' ? 'completed' : j.displayStatus === 'error' ? 'error' : j.displayStatus === 'paused' ? 'paused' : j.displayStatus === 'queued' || j.displayStatus === 'superseded' || j.displayStatus === 'cancelled' ? 'idle' : 'running'}`}
+                          title={j.displayStatus === 'superseded' ? 'An earlier attempt replaced by a later job for the same run (worker restart or rerun).' : j.runError ? j.runError : j.status !== j.displayStatus ? `Queue job state: ${j.status}; run state: ${j.displayStatus}` : undefined}
                         >
                           {j.displayStatus}{j.displayStatus === 'paused' && j.runPauseKind ? ` · ${j.runPauseKind}` : ''}
                         </span>
@@ -3638,6 +3638,16 @@ function AiAgentOutputBar({
   // null = follow the run (open while active or waiting); true/false = the user's choice.
   const [openChoice, setOpenChoice] = useState<boolean | null>(null)
   const expanded = openChoice ?? (isActive || needsInput)
+  const dockRef = useRef<HTMLElement>(null)
+  // Clicking anywhere outside the dock collapses it so it never blocks the page.
+  useEffect(() => {
+    if (!expanded) return
+    const onDown = (e: MouseEvent) => { if (dockRef.current && !dockRef.current.contains(e.target as Node)) setOpenChoice(false) }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [expanded])
+  // A new question or review request re-opens the dock even after it was dismissed.
+  useEffect(() => { if (needsInput) setOpenChoice(null) }, [needsInput, currentRun?.runId])
   const stages = currentRun?.stages ?? []
   const stageIndex = currentRun?.stage ? stages.indexOf(currentRun.stage) : -1
   const canPause = currentRun?.status === 'running' && !currentRun.queued
@@ -3653,7 +3663,7 @@ function AiAgentOutputBar({
   }, [currentRun?.log, isActive])
 
   return (
-    <section className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
+    <section ref={dockRef} className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
       <div className="section-header-row dock-header" onClick={() => setOpenChoice(!expanded)} role="button" aria-expanded={expanded} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(!expanded) } }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <h3 style={{ margin: 0 }}>

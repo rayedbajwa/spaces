@@ -2482,7 +2482,12 @@ async function buildBoard(): Promise<BoardResponse> {
   const cards: BoardCard[] = []
 
   for (const project of history.projects) {
-    const latestRun = history.runs.find((run) => run.projectNamespace === project.namespace)
+    // A run in flight always speaks for the project. Otherwise the most recently
+    // started one does — not the most recently *touched*, which let a reaper
+    // bumping an old failed run paint a healthy project red.
+    const projectRuns = history.runs.filter((run) => run.projectNamespace === project.namespace)
+    const active = projectRuns.filter((run) => run.status === 'running' || run.status === 'paused').sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    const latestRun = active[0] ?? [...projectRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     const artifacts = await collectProjectArtifacts(project.namespace, project.path)
 
     // Board derivations that used to blend legacy filesystem state (kanban override,
