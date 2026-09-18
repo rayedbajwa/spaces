@@ -86,8 +86,10 @@ Keys take effect in every process within a second — no restart. See
 
 ## Connect GitHub
 
-Open **Integrations** in the hero and press **Connect** for GitHub. Once
-connected, every repository the account can see is indexed with its README use
+Open **Organization → Integrations**, press **Set up app** on GitHub and
+then **Create GitHub App**: confirm on GitHub, come back, press **Install on
+GitHub**, pick repositories, and the connection is approved on the way back.
+Once connected, every repository the account can see is indexed with its README use
 case (the *repository catalog*), and the new-project wizard can autocomplete
 repositories.
 

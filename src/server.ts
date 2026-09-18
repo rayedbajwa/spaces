@@ -30,7 +30,9 @@ import { closeDb, getDb } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveProvider } from './lib/oauth'
-import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, saveOAuthApp } from './lib/oauth-apps'
+import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, recordGitHubInstallation, saveGitHubAppFromManifest, saveOAuthApp } from './lib/oauth-apps'
+import { consumeManifestState, convertGitHubAppManifest, githubAppManifestPage } from './lib/github-app'
+import { withExpiry } from './lib/integration-token'
 import { applyProviderKeysToEnv, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey } from './lib/provider-keys'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
@@ -1414,7 +1416,41 @@ async function route(req: Request): Promise<Response> {
   // ---- OAuth app credentials (organization-level, required before connecting) ----
 
   if (method === 'GET' && url.pathname === '/api/oauth-apps') {
-    return sendJson(200, await listOAuthApps())
+    return sendJson(200, await listOAuthApps(url.origin))
+  }
+
+  // GitHub App, created for the user through the manifest flow: this page
+  // posts the manifest to GitHub, the user confirms there, GitHub redirects to
+  // the manifest callback with a one-hour code that we convert into the app's
+  // credentials. Installing the app then lands on /installed, which starts
+  // the ordinary authorize flow to obtain the user token.
+  if (method === 'GET' && url.pathname === '/api/oauth-apps/github/manifest') {
+    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can create the GitHub App.' })
+    const organization = url.searchParams.get('org')?.trim() || undefined
+    if (organization && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)) return sendJson(400, { error: 'That is not a valid GitHub organization name.' })
+    const { html } = githubAppManifestPage(url.origin, { organization })
+    return sendHtml(200, html)
+  }
+  if (method === 'GET' && url.pathname === '/api/oauth-apps/github/manifest/callback') {
+    const back = (query: string) => new Response(null, { status: 302, headers: { location: `/organization?section=integrations&${query}` } })
+    const code = url.searchParams.get('code')
+    if (!code || !consumeManifestState(url.searchParams.get('state'))) return back(`error=${encodeURIComponent('The GitHub App setup link expired or was already used. Start again from Integrations.')}`)
+    try {
+      const app = await convertGitHubAppManifest(code)
+      await saveGitHubAppFromManifest(app, auth?.user.userId ?? null)
+      serverLog.info('github app created from manifest', { slug: app.slug, owner: app.owner?.login, by: auth?.user.email ?? 'local' })
+      return back('setup=github')
+    } catch (error) {
+      serverLog.warn('github app manifest conversion failed', { error: error instanceof Error ? error.message : String(error) })
+      return back(`error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`)
+    }
+  }
+  if (method === 'GET' && url.pathname === '/api/oauth-apps/github/installed') {
+    const installationId = Number(url.searchParams.get('installation_id'))
+    if (Number.isFinite(installationId) && installationId > 0) await recordGitHubInstallation(installationId).catch(() => undefined)
+    const returnTo = '/organization?section=integrations&connected=github'
+    if (!(await resolveProvider('github'))) return new Response(null, { status: 302, headers: { location: returnTo.replace('connected=github', `error=${encodeURIComponent('GitHub has no app credentials in Spaces; create the GitHub App first.')}`) } })
+    return new Response(null, { status: 302, headers: { location: `/api/oauth/github/authorize?return=${encodeURIComponent(returnTo)}` } })
   }
   if ((method === 'PUT' || method === 'DELETE') && /^\/api\/oauth-apps\/[a-z]+$/.test(url.pathname)) {
     const provider = url.pathname.split('/').pop()!
@@ -1423,7 +1459,7 @@ async function route(req: Request): Promise<Response> {
     if (method === 'DELETE') {
       await deleteOAuthApp(provider)
       serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
-      return sendJson(200, { ok: true, apps: await listOAuthApps() })
+      return sendJson(200, { ok: true, apps: await listOAuthApps(url.origin) })
     }
     const body = await readJson<{ clientId?: string; clientSecret?: string }>(req)
     try {
@@ -1432,7 +1468,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
     }
     serverLog.info('oauth app credentials saved', { provider, by: auth?.user.email ?? 'local' })
-    return sendJson(200, { ok: true, apps: await listOAuthApps() })
+    return sendJson(200, { ok: true, apps: await listOAuthApps(url.origin) })
   }
 
   // ---- App-level integrations ----
@@ -1452,13 +1488,16 @@ async function route(req: Request): Promise<Response> {
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
     const cfg = await resolveProvider(provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Add its client id and secret under Organization → Integrations (or in .env).` })
+    if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.` })
     const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
     // projectId is legacy: keep it optional in state so old links don't 500.
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
     const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
     const projectIdOrEmpty = loginMode ? `__login__:${url.searchParams.get('invite') ?? ''}` : (url.searchParams.get('projectId') ?? '')
-    const { redirectUrl } = beginAuthorization(cfg, projectIdOrEmpty, callbackUrl)
+    // Optional same-tab flows (GitHub App install) come back to a page in the app instead of a "close this window" notice.
+    const wantedReturn = url.searchParams.get('return') ?? ''
+    const returnTo = wantedReturn.startsWith('/') && !wantedReturn.startsWith('//') ? wantedReturn : undefined
+    const { redirectUrl } = beginAuthorization(cfg, projectIdOrEmpty, callbackUrl, returnTo)
     return new Response(null, { status: 302, headers: { location: redirectUrl } })
   }
 
@@ -1509,19 +1548,18 @@ async function route(req: Request): Promise<Response> {
 
       // Atlassian OAuth grants access to both Jira and Confluence — record both slots.
       const kinds: AppIntegrationKind[] = provider === 'atlassian' ? ['jira', 'confluence'] : [provider as AppIntegrationKind]
+      // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
+      const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
       for (const kind of kinds) {
-        await upsertAppIntegration({
-          kind,
-          status: 'connected',
-          credentials: tokens as unknown as Record<string, unknown>,
-        })
+        await upsertAppIntegration({ kind, status: 'connected', credentials })
       }
       // GitHub connected → index every visible repository (name, language,
       // topics, README use case) so plans can name repos without upfront selection.
       if (provider === 'github') {
         void syncGitHubRepoCatalog().catch((error) => serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) }))
       }
-      return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><script>window.close()</script></body></html>`)
+      if (pending.returnTo) return new Response(null, { status: 302, headers: { location: pending.returnTo } })
+      return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><p><a href="/organization?section=integrations">Back to Spaces</a></p><script>window.close()</script></body></html>`)
     } catch (error) {
       return sendJson(500, { error: `OAuth token exchange failed: ${error instanceof Error ? error.message : String(error)}` })
     }

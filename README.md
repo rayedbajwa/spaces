@@ -80,10 +80,11 @@ projects inherit, on a page of its own at `/teams/<slug>`.
 
 ### Self-serve integrations
 
-OAuth app credentials are entered once at the organization level and stored
-encrypted; each provider card shows the callback URL and scopes to register
-and the connection state of the integrations it powers. Nothing lives in
-`.env`.
+Provider apps are set up once at the organization level, in the app. GitHub
+is one click: Spaces creates a **GitHub App** for you through GitHub's
+manifest flow and walks you through installing it; Slack opens a prefilled
+*create app from manifest* page; Atlassian and Linear are guided through
+their consoles. Credentials are stored encrypted. Nothing lives in `.env`.
 
 ![Integrations](docs/screenshots/integrations.png)
 
@@ -320,14 +321,19 @@ the connected system (issues, tickets, docs, messages) and integrations show
 as connected dots in the hero.
 
 Everything is self-serve from **Organization → Integrations** (or the
-**Integrations** chip in the top bar). For each provider:
+**Integrations** chip in the top bar). Press **Set up app** on a provider
+card; an owner or admin of any team can do this, and the result is shared by
+every team.
 
-1. Press **Add credentials**. The card shows the callback URL and the scopes to
-   register, with a link to the provider's developer console.
-2. Register an OAuth app there (Jira **and** Confluence share one Atlassian
-   app), paste its client id and secret into the card and save. Secrets are
-   stored encrypted; an owner or admin of any team can do this.
-3. Press **Connect** and approve. The connection is shared by every team.
+| Provider | How the app is set up |
+|---|---|
+| GitHub | **One click.** *Create GitHub App* sends GitHub an app manifest (name, callback URL, repository permissions); you confirm on GitHub and land back in Spaces with the app's client id, secret, private key and webhook secret stored. *Install on GitHub* then lets you pick the repositories, and the connection is approved on the way back. Optionally create the app under a GitHub organization. An existing OAuth App or GitHub App can be pasted in instead. |
+| Slack | *Create Slack app* opens Slack's create-from-manifest page with the redirect URL and bot scopes filled in; paste the client id and secret from *Basic Information*. |
+| Atlassian (Jira + Confluence) | Guided: open the developer console, create an OAuth 2.0 (3LO) app with the callback URL and scopes the card shows (copy buttons), paste the client id and secret. One app covers both. |
+| Linear | Guided: create an OAuth application in Linear with the callback URL, paste the client id and secret. |
+
+Then press **Connect** and approve. GitHub App user tokens expire after
+eight hours and Atlassian tokens after one; Spaces refreshes them before use.
 
 Nothing about integrations lives in `.env`.
 

@@ -24,6 +24,8 @@ export interface OAuthState {
   projectId: string
   provider: string
   createdAt: number
+  /** Relative path to send the browser to after the callback stores the token. */
+  returnTo?: string
 }
 
 // In-memory pending state store — 10 min expiry. Callback verifies + consumes.
@@ -37,10 +39,10 @@ function pruneStates(): void {
   }
 }
 
-export function beginAuthorization(cfg: OAuthProviderConfig, projectId: string, callbackUrl: string): { redirectUrl: string; state: string } {
+export function beginAuthorization(cfg: OAuthProviderConfig, projectId: string, callbackUrl: string, returnTo?: string): { redirectUrl: string; state: string } {
   pruneStates()
   const state = randomBytes(24).toString('base64url')
-  pendingStates.set(state, { state, projectId, provider: cfg.provider, createdAt: Date.now() })
+  pendingStates.set(state, { state, projectId, provider: cfg.provider, createdAt: Date.now(), ...(returnTo ? { returnTo } : {}) })
 
   const params = new URLSearchParams({
     client_id: cfg.clientId,
@@ -116,8 +118,8 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     authorizeUrl: 'https://github.com/login/oauth/authorize',
     tokenUrl: 'https://github.com/login/oauth/access_token',
     scopes: ['repo', 'read:org', 'read:user'],
-    consoleUrl: 'https://github.com/settings/developers',
-    notes: 'A GitHub OAuth App (not a GitHub App). Scopes are requested at connect time.',
+    consoleUrl: 'https://github.com/settings/apps',
+    notes: 'Created for you as a GitHub App (one click). A classic OAuth App also works: paste its client id and secret; scopes are requested at connect time.',
   },
   atlassian: {
     provider: 'atlassian',

@@ -11,12 +11,24 @@ with AES-256-GCM using `ENCRYPTION_KEY` and stored in Postgres.
 | Linear | `linear` | Issue search and full issues with comments |
 | Slack | `slack` | Reserved for notifications |
 
-Setup is self-serve under **Organization → Integrations**: press **Add
-credentials** on a provider card, register an OAuth app in the provider's
-console with the callback URL and scopes the card shows, paste the client id
-and secret (stored encrypted with `ENCRYPTION_KEY`), then press **Connect**.
-Credentials are organization-wide and required before a provider can be
-connected; nothing about integrations is read from `.env`.
+Setup is self-serve under **Organization → Integrations**: press **Set up
+app** on a provider card, then **Connect**. Apps are organization-wide and
+required before a provider can be connected; nothing about integrations is
+read from `.env`.
+
+![GitHub App setup](../screenshots/github-app-setup.png)
+
+| Provider | Setup |
+|---|---|
+| GitHub | One click. Spaces posts a [GitHub App manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) (name, callback URL, permissions: contents, pull requests and issues write; metadata, checks, actions and email read). You confirm on GitHub, and Spaces exchanges the returned code for the app's client id, secret, private key and webhook secret, all stored encrypted. **Install on GitHub** picks the repositories; GitHub then returns to Spaces, which starts the ordinary authorize flow and stores the user token. The app can be created under a GitHub organization; a pre-existing OAuth App or GitHub App can be pasted in instead. |
+| Slack | **Create Slack app** opens Slack's create-from-manifest page prefilled with the redirect URL and bot scopes; the client id and secret are pasted from *Basic Information*. |
+| Atlassian | Guided through the developer console: create an OAuth 2.0 (3LO) app, add the callback URL and enable the listed scopes (copy buttons), paste the client id and secret. |
+| Linear | Guided through Linear's OAuth applications page: add the callback URL, paste the client id and secret. |
+
+Access tokens that expire (GitHub App user tokens after eight hours,
+Atlassian after one hour) are refreshed automatically before use through the
+provider's refresh token, and the new token is stored for every integration
+kind that shares it.
 
 !!! note "Reconnect needed"
     If the stored token can no longer be decrypted (for example the

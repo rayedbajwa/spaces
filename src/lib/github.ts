@@ -4,7 +4,8 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError } from './app-integrations'
+import { getAppIntegration } from './app-integrations'
+import { getIntegrationAccessToken } from './integration-token'
 import { updateRepoClone, type RepoRow } from './project-registry'
 
 const execFileAsync = promisify(execFile)
@@ -53,12 +54,10 @@ function splitFullName(fullName: string): [string, string] {
 export async function getGitHubToken(): Promise<string> {
   const integration = await getAppIntegration('github')
   if (!integration || integration.status !== 'connected') throw new GitHubNotConnectedError()
-  const creds = await getAppIntegrationCredentials('github')
-  const token = creds?.access_token
-  // Marked connected but the token is missing/undecryptable → say so; a plain
-  // "not connected" hides the real cause (a changed ENCRYPTION_KEY).
-  if (typeof token !== 'string' || !token) throw new IntegrationCredentialsError('github')
-  return token
+  // Refreshes GitHub App user tokens (8h lifetime) before they expire; throws
+  // IntegrationCredentialsError when the stored token cannot be read, so a
+  // changed ENCRYPTION_KEY is named instead of a vague "not connected".
+  return getIntegrationAccessToken('github')
 }
 
 async function githubGet<T>(token: string, url: string): Promise<{ data: T; next?: string }> {

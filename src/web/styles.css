@@ -2197,3 +2197,21 @@ textarea {
 @media (min-width: 1100px) { .project-overview > section.slim-panel:first-of-type { grid-column: 1 / -1; } }
 /* Lifecycle (pause / archive / delete) always closes the overview. */
 .project-overview > .danger-zone { order: 99; }
+
+/* ---- Integration app setup (install flows) ---- */
+.setup-flow { display: grid; gap: 12px; padding: 14px; border-radius: var(--r-md); background: var(--bg-elevated); border: 1px solid var(--border); }
+.setup-flow-text { display: grid; gap: 4px; font-size: 13px; }
+.setup-flow-text strong { font-size: 13.5px; }
+.setup-flow-text a { color: var(--accent-text); }
+.setup-flow-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.setup-flow-actions .primary-button, .setup-flow-actions .ghost-button { text-decoration: none; display: inline-flex; align-items: center; }
+.setup-inline-field { display: grid; gap: 4px; font-size: 12px; color: var(--text-muted); min-width: 240px; }
+.setup-inline-field input { width: 100%; }
+.setup-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; counter-reset: setup; }
+.setup-steps li { display: grid; gap: 10px; padding-left: 36px; position: relative; opacity: 0.55; }
+.setup-steps li.current, .setup-steps li.done { opacity: 1; }
+.setup-steps li::before { counter-increment: setup; content: counter(setup); position: absolute; left: 0; top: 0; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text-muted); }
+.setup-steps li.current::before { border-color: var(--accent); color: var(--accent-text); }
+.setup-steps li.done::before { content: '✓'; background: var(--ok-bg, rgba(63, 185, 80, 0.15)); border-color: var(--ok, #3fb950); color: var(--ok, #3fb950); }
+.setup-toggle { justify-self: start; font-size: 12.5px; text-decoration: underline; text-underline-offset: 3px; }
+.manual-credentials { display: grid; gap: 12px; padding-top: 4px; border-top: 1px dashed var(--border); }

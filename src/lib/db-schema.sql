@@ -601,6 +601,10 @@ CREATE TABLE IF NOT EXISTS oauth_apps (
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Provider app details beyond the client credentials (GitHub App id, slug,
+-- install url, sealed private key; Slack manifest source, …).
+ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- Organization model-routing policy (preference, provider order, premium, pins).
 ALTER TABLE org_memory ADD COLUMN IF NOT EXISTS model_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 

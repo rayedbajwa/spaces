@@ -66,11 +66,14 @@ GitHub sign-in reuses the GitHub OAuth app configured below.
 
 ## Integrations (OAuth)
 
-Not configured through the environment. A team owner or admin enters each
-provider's OAuth app credentials under **Organization → Integrations**; they
-are stored encrypted with `ENCRYPTION_KEY`. Register the OAuth app with
-callback `http://<host>:<port>/api/oauth/<provider>/callback` and these scopes
-(the card shows them ready to copy):
+Not configured through the environment. A team owner or admin sets each
+provider app up under **Organization → Integrations**; credentials are
+stored encrypted with `ENCRYPTION_KEY`. GitHub is created for you as a GitHub
+App (manifest flow) and Slack from a prefilled manifest; Atlassian and Linear
+are registered by hand with callback
+`http://<host>:<port>/api/oauth/<provider>/callback` and these scopes (the
+card shows them ready to copy). The GitHub scopes below only apply when a
+classic OAuth App is pasted in; a GitHub App carries its permissions itself.
 
 | Provider | Scopes |
 |---|---|

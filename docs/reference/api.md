@@ -99,5 +99,8 @@ to a team the caller is not a member of. `GET /api/projects`, `/api/board` and
 | `GET/DELETE /api/projects/:slug/assistant/history` | Conversation memory |
 | `GET /api/workers` · `GET /api/projects/:id/worker` | Live workers / the one serving a project |
 | `GET /api/integrations` · `DELETE /api/integrations/:kind` | Integration status (with `credentialsOk`) / disconnect |
-| `GET /api/oauth/:provider/authorize` · `…/callback` | OAuth flow |
+| `GET /api/oauth/:provider/authorize[?return=/path]` · `…/callback` | OAuth flow; `return` sends the browser back to a page in the app |
+| `GET /api/oauth-apps` · `PUT/DELETE /api/oauth-apps/:provider` | Provider app credentials and setup state / paste or remove credentials (admin) |
+| `GET /api/oauth-apps/github/manifest[?org=name]` | Page that posts the GitHub App manifest to GitHub (admin) |
+| `GET /api/oauth-apps/github/manifest/callback` · `…/installed` | GitHub returns here after creating / installing the app |
 | `GET /api/board` · `GET /api/history` | Board columns / run history |

@@ -2,16 +2,52 @@
  * OAuth app credentials (client id + secret) per provider, managed in the app.
  *
  * Stored in Postgres with the secret sealed by ENCRYPTION_KEY, so integrations
- * are self-serve: an owner or admin pastes the credentials from the provider's
- * developer console into the Integrations panel. This is the only source —
- * nothing is read from the environment.
+ * are self-serve. Where the provider allows it, the app is created for the
+ * user (GitHub App manifest, Slack app manifest); otherwise the panel guides
+ * them through the provider's console. This is the only source — nothing is
+ * read from the environment.
  */
 
 import { getDb } from './db'
 import { decryptSecret, encryptSecret } from './crypto-vault'
+import { githubAppInstallUrl, slackManifestUrl, type GitHubAppManifestResult } from './github-app'
 import { PROVIDER_TEMPLATES, type OAuthProviderId } from './oauth'
 
 export interface OAuthAppCredentials { clientId: string; clientSecret: string }
+
+/** How the app was set up and what the provider knows about it. */
+export interface OAuthAppConfig {
+  /** manifest: created by Spaces through the provider's manifest flow; manual: credentials pasted in. */
+  source?: 'manifest' | 'manual'
+  appId?: number
+  appSlug?: string
+  appName?: string
+  appUrl?: string
+  ownerLogin?: string
+  /** Sealed private key (GitHub App) — kept for future server-to-server use. */
+  pemEnc?: string
+  webhookSecretEnc?: string
+  /** GitHub App installation ids seen through the setup redirect. */
+  installationIds?: number[]
+  installedAt?: string
+}
+
+export type OAuthSetupMethod = 'github-manifest' | 'slack-manifest' | 'console'
+
+export interface OAuthAppSetup {
+  /** Best available way to create the provider app. */
+  method: OAuthSetupMethod
+  /** Spaces route (GitHub) or provider URL (Slack) that creates the app; undefined when only the console is available. */
+  createUrl?: string
+  /** Where the user installs the created app (GitHub). */
+  installUrl?: string
+  installed: boolean
+  appName?: string
+  appUrl?: string
+  appSlug?: string
+  ownerLogin?: string
+  source?: 'manifest' | 'manual'
+}
 
 export interface OAuthAppSummary {
   provider: OAuthProviderId
@@ -28,6 +64,7 @@ export interface OAuthAppSummary {
   notes?: string
   updatedAt: string | null
   updatedByName: string | null
+  setup: OAuthAppSetup
 }
 
 export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear']
@@ -51,10 +88,40 @@ export async function getOAuthAppCredentials(provider: OAuthProviderId): Promise
   }
 }
 
-export async function listOAuthApps(): Promise<OAuthAppSummary[]> {
+export async function getOAuthAppConfig(provider: OAuthProviderId): Promise<OAuthAppConfig> {
+  const [row] = await getDb()<Array<{ config: OAuthAppConfig | null }>>`SELECT config_json AS config FROM oauth_apps WHERE provider = ${provider}`.catch(() => [])
+  return row?.config ?? {}
+}
+
+/**
+ * Setup options for a provider given the deployment origin (needed for the
+ * callback URLs baked into manifests).
+ */
+export function describeSetup(provider: OAuthProviderId, origin: string, config: OAuthAppConfig): OAuthAppSetup {
+  const base = {
+    installed: Boolean(config.installationIds?.length),
+    appName: config.appName,
+    appUrl: config.appUrl,
+    appSlug: config.appSlug,
+    ownerLogin: config.ownerLogin,
+    source: config.source,
+  }
+  if (provider === 'github') {
+    return {
+      ...base,
+      method: 'github-manifest',
+      createUrl: '/api/oauth-apps/github/manifest',
+      installUrl: config.appSlug ? githubAppInstallUrl(config.appSlug) : undefined,
+    }
+  }
+  if (provider === 'slack') return { ...base, method: 'slack-manifest', createUrl: slackManifestUrl(origin) }
+  return { ...base, method: 'console' }
+}
+
+export async function listOAuthApps(origin: string): Promise<OAuthAppSummary[]> {
   const sql = getDb()
-  const rows = await sql<Array<{ provider: OAuthProviderId; clientId: string; updatedAt: string; updatedByName: string | null }>>`
-    SELECT a.provider, a.client_id AS "clientId", a.updated_at AS "updatedAt", u.name AS "updatedByName"
+  const rows = await sql<Array<{ provider: OAuthProviderId; clientId: string; config: OAuthAppConfig | null; updatedAt: string; updatedByName: string | null }>>`
+    SELECT a.provider, a.client_id AS "clientId", a.config_json AS config, a.updated_at AS "updatedAt", u.name AS "updatedByName"
     FROM oauth_apps a LEFT JOIN users u ON u.user_id = a.updated_by
   `.catch(() => [])
   const byProvider = new Map(rows.map((r) => [r.provider, r]))
@@ -76,27 +143,62 @@ export async function listOAuthApps(): Promise<OAuthAppSummary[]> {
       notes: template.notes,
       updatedAt: stored?.updatedAt ?? null,
       updatedByName: stored?.updatedByName ?? null,
+      // Rows saved before setup tracking existed were pasted in by hand.
+      setup: describeSetup(provider, origin, { ...(stored?.config ?? {}), source: stored?.config?.source ?? (stored ? 'manual' : undefined) }),
     })
   }
   return out
 }
 
-/** Save credentials. An empty secret keeps the stored one (so the id alone can be corrected). */
+/** Save pasted credentials. An empty secret keeps the stored one (so the id alone can be corrected). */
 export async function saveOAuthApp(provider: OAuthProviderId, input: { clientId: string; clientSecret?: string; updatedBy?: string | null }): Promise<void> {
   const sql = getDb()
   const clientId = input.clientId.trim()
   if (!clientId) throw new Error('Client id is required.')
   const secret = input.clientSecret?.trim()
+  const config: OAuthAppConfig = { source: 'manual' }
   if (secret) {
     await sql`
-      INSERT INTO oauth_apps (provider, client_id, client_secret_enc, updated_by, updated_at)
-      VALUES (${provider}, ${clientId}, ${encryptSecret(secret)}, ${input.updatedBy ?? null}, now())
-      ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc, updated_by = EXCLUDED.updated_by, updated_at = now()
+      INSERT INTO oauth_apps (provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
+      VALUES (${provider}, ${clientId}, ${encryptSecret(secret)}, ${sql.json(config as never)}, ${input.updatedBy ?? null}, now())
+      ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
+        config_json = EXCLUDED.config_json, updated_by = EXCLUDED.updated_by, updated_at = now()
     `
     return
   }
   const rows = await sql`UPDATE oauth_apps SET client_id = ${clientId}, updated_by = ${input.updatedBy ?? null}, updated_at = now() WHERE provider = ${provider} RETURNING provider`
   if (rows.length === 0) throw new Error('Client secret is required the first time.')
+}
+
+/** Store the GitHub App that the manifest flow just created. Replaces any pasted credentials. */
+export async function saveGitHubAppFromManifest(app: GitHubAppManifestResult, updatedBy?: string | null): Promise<OAuthAppConfig> {
+  const sql = getDb()
+  const config: OAuthAppConfig = {
+    source: 'manifest',
+    appId: app.id,
+    appSlug: app.slug,
+    appName: app.name,
+    appUrl: app.html_url,
+    ownerLogin: app.owner?.login,
+    pemEnc: app.pem ? encryptSecret(app.pem) : undefined,
+    webhookSecretEnc: app.webhook_secret ? encryptSecret(app.webhook_secret) : undefined,
+  }
+  await sql`
+    INSERT INTO oauth_apps (provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
+    VALUES ('github', ${app.client_id}, ${encryptSecret(app.client_secret)}, ${sql.json(config as never)}, ${updatedBy ?? null}, now())
+    ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
+      config_json = EXCLUDED.config_json, updated_by = EXCLUDED.updated_by, updated_at = now()
+  `
+  return config
+}
+
+/** Remember a GitHub App installation reported through the setup redirect. */
+export async function recordGitHubInstallation(installationId: number): Promise<void> {
+  const sql = getDb()
+  const current = await getOAuthAppConfig('github')
+  const ids = Array.from(new Set([...(current.installationIds ?? []), installationId]))
+  const patch: OAuthAppConfig = { installationIds: ids, installedAt: new Date().toISOString() }
+  await sql`UPDATE oauth_apps SET config_json = config_json || ${sql.json(patch as never)} WHERE provider = 'github'`
 }
 
 export async function deleteOAuthApp(provider: OAuthProviderId): Promise<boolean> {

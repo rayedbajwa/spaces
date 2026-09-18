@@ -1,7 +1,7 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError, upsertAppIntegration, type AppIntegrationKind } from './app-integrations'
+import { getAppIntegration, getAppIntegrationCredentials, upsertAppIntegration, type AppIntegrationKind } from './app-integrations'
 import { getDb } from './db'
-import { refreshAccessToken, resolveProvider } from './oauth'
+import { getIntegrationAccessToken, refreshIntegrationTokens } from './integration-token'
 import { getProject, listRepos, type ProjectKnowledgeConfig } from './project-registry'
 import { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge } from './knowledge-store'
 
@@ -114,11 +114,9 @@ async function requireToken(source: KnowledgeSource): Promise<string> {
   const kind = SOURCE_KIND[source]
   const row = await getAppIntegration(kind)
   if (row?.status !== 'connected') throw new KnowledgeSourceNotConnectedError(source)
-  const creds = await getAppIntegrationCredentials(kind)
-  const token = creds?.access_token
-  // Connected but the token is missing/undecryptable (ENCRYPTION_KEY changed): name the real cause.
-  if (typeof token !== 'string' || !token) throw new IntegrationCredentialsError(kind)
-  return token
+  // Refreshes expiring tokens (Atlassian hourly, GitHub App user tokens every
+  // 8h); throws IntegrationCredentialsError when the stored token cannot be read.
+  return getIntegrationAccessToken(kind)
 }
 
 function clip(text: string, max: number): string {
@@ -257,14 +255,8 @@ export async function atlassianFetchJson<T>(source: 'jira' | 'confluence', url: 
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } })
   if (response.status === 401 && attempt === 0) {
     const creds = await getAppIntegrationCredentials(source)
-    const cfg = await resolveProvider('atlassian')
-    const refreshToken = creds?.refresh_token
-    if (cfg && typeof refreshToken === 'string' && refreshToken) {
-      const refreshed = await refreshAccessToken(cfg, refreshToken)
-      const merged = { ...creds, ...refreshed, refresh_token: refreshed.refresh_token ?? refreshToken }
-      for (const kind of ['jira', 'confluence'] as const) {
-        await upsertAppIntegration({ kind, status: 'connected', credentials: merged as Record<string, unknown> })
-      }
+    if (typeof creds?.refresh_token === 'string' && creds.refresh_token) {
+      await refreshIntegrationTokens(source, creds)
       return atlassianFetchJson<T>(source, url, 1)
     }
   }

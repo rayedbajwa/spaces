@@ -1,0 +1,40 @@
+import { describe, expect, test } from 'bun:test'
+import { buildGitHubAppManifest, consumeManifestState, githubAppInstallUrl, githubAppManifestPage, slackManifestUrl } from '../src/lib/github-app'
+
+describe('GitHub App manifest', () => {
+  test('points every URL at the deployment origin and asks for what runs need', () => {
+    const m = buildGitHubAppManifest('https://spaces.example.com') as Record<string, any>
+    expect(m.name).toBe('Spaces (spaces.example.com)')
+    expect(m.redirect_url).toBe('https://spaces.example.com/api/oauth-apps/github/manifest/callback')
+    expect(m.callback_urls).toEqual(['https://spaces.example.com/api/oauth/github/callback'])
+    expect(m.setup_url).toBe('https://spaces.example.com/api/oauth-apps/github/installed')
+    // setup_url and request_oauth_on_install are mutually exclusive on GitHub; we use setup_url.
+    expect(m.request_oauth_on_install).toBe(false)
+    expect(m.default_permissions).toMatchObject({ contents: 'write', pull_requests: 'write', issues: 'write', metadata: 'read', email_addresses: 'read' })
+    expect(m.public).toBe(false)
+    expect(m.name.length).toBeLessThanOrEqual(34)
+  })
+
+  test('the page posts the manifest to GitHub with a one-time state', () => {
+    const { html, state } = githubAppManifestPage('http://localhost:3000')
+    expect(html).toContain(`action="https://github.com/settings/apps/new?state=${state}"`)
+    expect(html).toContain('name="manifest"')
+    expect(consumeManifestState(state)).toBe(true)
+    expect(consumeManifestState(state)).toBe(false)
+    expect(consumeManifestState('nope')).toBe(false)
+  })
+
+  test('organization apps are created under the organization', () => {
+    const { html } = githubAppManifestPage('http://localhost:3000', { organization: 'acme-inc' })
+    expect(html).toContain('https://github.com/organizations/acme-inc/settings/apps/new?state=')
+  })
+
+  test('install url and Slack manifest link', () => {
+    expect(githubAppInstallUrl('spaces-local')).toBe('https://github.com/apps/spaces-local/installations/new')
+    const url = new URL(slackManifestUrl('http://localhost:3000'))
+    expect(url.origin + url.pathname).toBe('https://api.slack.com/apps')
+    const manifest = JSON.parse(url.searchParams.get('manifest_json')!)
+    expect(manifest.oauth_config.redirect_urls).toEqual(['http://localhost:3000/api/oauth/slack/callback'])
+    expect(manifest.oauth_config.scopes.bot).toContain('chat:write')
+  })
+})
