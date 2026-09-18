@@ -3678,14 +3678,20 @@ function AiAgentOutputBar({
   return (
     <>
     {expanded && <div className="dock-backdrop" aria-hidden="true" />}
-    <section ref={dockRef} className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
+    <section ref={dockRef} className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'} ${needsInput && currentRun?.pauseKind !== 'user' ? 'needs-input' : ''} ${currentRun?.status === 'error' ? 'failed' : ''}`} aria-label="AI agent output">
       {(() => {
         const total = stages.length
         const done = currentRun?.status === 'completed' ? total : Math.max(0, stageIndex)
-        const statusKey = !currentRun ? 'idle' : currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : currentRun.status === 'error' ? (currentRun.interrupted ? 'paused' : 'error') : currentRun.status === 'cancelled' ? 'idle' : 'running'
-        const statusText = !currentRun ? 'no run' : currentRun.status === 'running' ? (currentRun.queued ? 'queued' : 'running') : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status
+        const failed = currentRun?.status === 'error'
+        const statusKey = !currentRun ? 'idle' : currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : failed ? (currentRun!.interrupted ? 'paused' : 'error') : currentRun.status === 'cancelled' ? 'idle' : 'running'
+        const statusText = !currentRun ? 'no run'
+          : currentRun.status === 'running' ? (currentRun.queued ? 'queued' : 'running')
+          : failed ? (currentRun.interrupted ? 'interrupted' : 'failed')
+          : currentRun.status
+        const retryStage = failed ? currentRun?.stage : undefined
         const controls = currentRun && (
           <span className="dock-controls" onClick={(e) => e.stopPropagation()}>
+            {failed && onRerun && <button type="button" className="dock-icon accent" disabled={busy || runInFlight} onClick={() => onRerun(retryStage)} title={retryStage ? `Retry from stage ${retryStage}` : 'Retry from the start'} aria-label="Retry">↻</button>}
             {(canPause || canPauseQueued) && onPause && <button type="button" className="dock-icon" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'} aria-label="Pause">❙❙</button>}
             {canResume && onResume && <button type="button" className="dock-icon accent" disabled={busy} onClick={onResume} title="Resume from the paused stage" aria-label="Resume">▶</button>}
             {canCancel && onCancel && <button type="button" className="dock-icon danger" disabled={busy} onClick={onCancel} title="Cancel this run" aria-label="Cancel">✕</button>}
@@ -3696,7 +3702,9 @@ function AiAgentOutputBar({
             <div className="dock-mini" onClick={() => setOpenChoice(true)} role="button" aria-expanded={false} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(true) } }} title="Open the agent output">
               <span className={`dock-dot ${statusKey}`} aria-hidden="true" />
               <span className="dock-mini-title">Agent</span>
-              <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}{needsInput && currentRun?.pauseKind !== 'user' ? ' · needs you' : ''}</span>
+              <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}</span>
+              {needsInput && currentRun?.pauseKind !== 'user' && <span className="dock-pill-badge attention">{currentRun?.pauseKind === 'review' ? 'approval needed' : 'answer needed'}</span>}
+              {failed && <span className="dock-pill-badge danger">{currentRun?.interrupted ? 'worker restarted' : 'agent failed'}</span>}
               {total > 0 && (
                 <span className="dock-mini-progress" title={`${done} of ${total} stages complete`}>
                   <span className="dock-bar"><span style={{ width: `${Math.round((done / total) * 100)}%` }} /></span>
@@ -3720,7 +3728,9 @@ function AiAgentOutputBar({
                 {needsInput && currentRun?.pauseKind !== 'user' && <span className="mini-badge paused">needs you</span>}
               </h3>
               <p className="panel-subtitle dock-summary" style={{ margin: '4px 0 0' }}>
-                {currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
+                {failed
+                  ? (currentRun?.interrupted ? `The worker restarted during ${currentRun.stage ?? 'the run'}; retry continues from that stage.` : `Failed${currentRun?.stage ? ` at ${currentRun.stage}` : ''}: ${currentRun?.error?.split('\n')[0]?.slice(0, 160) ?? 'no error detail recorded'}`)
+                  : currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
               </p>
               {total > 0 && (
                 <ol className="dock-progress" aria-label="Stage progress">
@@ -3736,6 +3746,7 @@ function AiAgentOutputBar({
               {(canPause || canPauseQueued) && onPause && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'}>Pause</button>}
               {canResume && onResume && <button type="button" className="primary-button dock-button" disabled={busy} onClick={onResume}>Resume</button>}
               {canCancel && onCancel && <button type="button" className="danger-button dock-button" disabled={busy} onClick={onCancel}>Cancel</button>}
+              {failed && onRerun && <button type="button" className="primary-button dock-button" disabled={busy || runInFlight} onClick={() => onRerun(retryStage)}>{retryStage ? `Retry from ${retryStage}` : 'Retry'}</button>}
               <button type="button" className="dock-icon" onClick={() => setOpenChoice(false)} title="Collapse" aria-label="Collapse">▾</button>
             </div>
           </div>
@@ -3779,6 +3790,7 @@ function AiAgentOutputBar({
             <span className="mini-badge paused">stage: {currentRun.stage ?? 'unknown'}</span>
           </div>
           <textarea
+            autoFocus
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && answerDraft.trim()) { e.preventDefault(); onSendAnswer(answerDraft); setAnswerDraft('') } }}

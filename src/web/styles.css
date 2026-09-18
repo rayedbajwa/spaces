@@ -2121,3 +2121,18 @@ textarea {
 .provider-key-form { display: flex; gap: 8px; align-items: center; flex: 1 1 100%; margin-top: 6px; }
 .provider-key-form input { flex: 1; margin: 0; }
 .provider-key-form a { font-size: 12px; white-space: nowrap; }
+
+/* Pill badges for states that need a human. */
+.dock-pill-badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.dock-pill-badge.attention { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(234, 179, 8, 0.45); animation: pulse 1.6s ease-in-out infinite; }
+.dock-pill-badge.danger { background: var(--red-soft); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.45); }
+.agent-dock.collapsed.needs-input { border-color: rgba(234, 179, 8, 0.6); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(234, 179, 8, 0.12); }
+.agent-dock.collapsed.failed { border-color: rgba(239, 68, 68, 0.55); }
+/* When the agent is waiting on a person, the answer panel takes the room and the log steps back. */
+.agent-dock.open.needs-input .dock-log-wrap { flex: 0 1 46%; min-height: 160px; }
+.agent-dock.open.needs-input .dock-body > .notice-warning {
+  flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column;
+  border-left-width: 4px; box-shadow: 0 0 0 1px rgba(234, 179, 8, 0.15) inset;
+}
+.agent-dock.open.needs-input .dock-body > .notice-warning textarea { flex: 1 1 auto; min-height: 140px; font-size: 14px; line-height: 1.5; }
+.agent-dock.open.failed .dock-body > .notice-error { border-left-width: 4px; }
