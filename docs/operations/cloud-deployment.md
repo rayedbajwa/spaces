@@ -32,10 +32,12 @@ flowchart LR
 ## The container image
 
 The repository ships a multi-stage `Dockerfile` (Bun 1.4 on Alpine) that
-bundles the frontend and runs as the non-root `bun` user. The image includes
-`git` (agents clone, branch, commit and push), sets `HOME=/data/home` and
-`AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces`, and declares `/data` as a
-volume. The same image runs every role:
+bundles the frontend and runs as the non-root `bun` user (the entrypoint
+starts as root only to fix the ownership of a freshly mounted `/data`
+volume, then drops privileges). The image includes `git` (agents clone,
+branch, commit and push), sets `HOME=/data/home` and
+`AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces`; mount a volume at `/data`.
+The same image runs every role:
 
 ```bash
 docker build -t spaces:latest .
@@ -173,13 +175,12 @@ service exits and Railway restarts it.
     PUBLIC_URL=https://<your-service>.up.railway.app
     SUPERVISOR_MAX_WORKERS=2
     WORKER_IDLE_EXIT_SECONDS=300
-    RAILWAY_RUN_UID=0
     ```
 
-    `RAILWAY_RUN_UID=0` is needed because Railway mounts volumes owned by
-    root while the image runs as the non-root `bun` user; without it nothing
-    can be written under `/data`. `PORT` is injected by Railway and picked up
-    automatically. `PUBLIC_URL`
+    Railway mounts volumes owned by root; the image's entrypoint hands
+    `/data` to the non-root `bun` user at start-up and drops privileges, so
+    no `RAILWAY_RUN_UID` override is needed. `PORT` is injected by Railway and
+    picked up automatically. `PUBLIC_URL`
     can be left out: the app honours Railway's `X-Forwarded-Proto` and
     `X-Forwarded-Host` headers, so OAuth callbacks and GitHub App manifests
     already use the public `https://` origin. Set it when you serve Spaces on

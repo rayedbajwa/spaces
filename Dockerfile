@@ -30,7 +30,8 @@ ENV PORT=3000
 
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
-RUN apk add --no-cache git ca-certificates openssh-client
+# su-exec lets the entrypoint fix the /data volume's ownership and then drop to bun.
+RUN apk add --no-cache git ca-certificates openssh-client su-exec
 
 # Durable state lives under /data (mount a volume there): cloned repos and
 # governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).
@@ -47,12 +48,17 @@ COPY package.json tsconfig.json ./
 COPY src ./src
 COPY data ./data
 COPY schemas ./schemas
-
-# Non-root user (bun image ships with uid 1000 "bun")
-USER bun
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000
 
-# Default entrypoint is the web server. Override with `worker` for the worker:
-#   docker run <image> bun run src/worker.ts
+# The container starts as root only long enough for the entrypoint to chown the
+# mounted /data volume (platforms mount volumes as root); the app itself runs
+# as the non-root "bun" user (uid 1000) via su-exec.
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+# Default command is the web server. Others:
+#   docker run <image> bun run src/supervisor.ts   # per-project workers
+#   docker run <image> bun run src/worker.ts       # single shared worker
+#   docker run <image> bun run src/standalone.ts   # server + supervisor (Railway)
 CMD ["bun", "run", "src/server.ts"]
