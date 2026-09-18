@@ -215,6 +215,19 @@ what those keys unlock.
 the organization policy decides which one routes (OpenRouter is a good single
 key: it fronts every vendor and routes each request itself).
 
+**Supported providers and where to get a key**
+
+| Provider | Get a key | Good for | Key looks like |
+|---|---|---|---|
+| **Anthropic** | [console.anthropic.com → API keys](https://console.anthropic.com/settings/keys) | Claude models directly; the pipeline's routing tables were designed around the haiku / sonnet / opus tiers | `sk-ant-…` |
+| **OpenAI** | [platform.openai.com → API keys](https://platform.openai.com/api-keys) | GPT models directly; also serves the knowledge-base embeddings | `sk-…` / `sk-proj-…` |
+| **OpenRouter** | [openrouter.ai → Keys](https://openrouter.ai/settings/keys) | One key for every vendor; OpenRouter routes each request itself (`openrouter/auto`) and also serves embeddings | `sk-or-…` |
+
+Create the key in the provider's console (a project-scoped key with model
+access is enough; no special permissions), then paste it here:
+
+![Provider keys under Organization → Models](docs/screenshots/provider-keys.png)
+
 **Where keys go.** Sign in as a team owner or admin, open **Organization →
 Models** and paste the key under **Provider keys**. It is verified against the
 provider before it is saved (a rejected key is never stored), sealed with

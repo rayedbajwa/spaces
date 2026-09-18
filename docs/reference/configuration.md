@@ -13,8 +13,15 @@ shell variable overrides the file). See `.env.example` for the annotated list.
 ## Models (bring your own key)
 
 Spaces ships without model access: you bring the keys of the providers you
-pay for and usage is billed to those accounts. LLM provider keys (Anthropic,
-OpenAI, OpenRouter) are entered under
+pay for and usage is billed to those accounts.
+
+| Provider | Get a key | Notes |
+|---|---|---|
+| **Anthropic** | [console.anthropic.com → API keys](https://console.anthropic.com/settings/keys) | Claude models directly (`sk-ant-…`) |
+| **OpenAI** | [platform.openai.com → API keys](https://platform.openai.com/api-keys) | GPT models directly; also serves knowledge-base embeddings (`sk-…`) |
+| **OpenRouter** | [openrouter.ai → Keys](https://openrouter.ai/settings/keys) | One key for every vendor; OpenRouter routes each request itself (`sk-or-…`) |
+
+LLM provider keys are entered under
 **Organization → Models**, stored encrypted with `ENCRYPTION_KEY` and verified
 when saved; they are not environment variables. No model is configured by
 name either. Spaces routes automatically for the provider in use: it scores that provider's chat models by price, generation and size

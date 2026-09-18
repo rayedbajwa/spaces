@@ -61,7 +61,15 @@ also **Continue with GitHub**. See
 ## Bring your model keys
 
 Spaces routes across the model providers you already have accounts with; it
-ships without any.
+ships without any. Supported providers and where to create a key:
+
+| Provider | Get a key | Notes |
+|---|---|---|
+| **Anthropic** | [console.anthropic.com → API keys](https://console.anthropic.com/settings/keys) | Claude models directly (`sk-ant-…`) |
+| **OpenAI** | [platform.openai.com → API keys](https://platform.openai.com/api-keys) | GPT models directly; also serves knowledge-base embeddings (`sk-…`) |
+| **OpenRouter** | [openrouter.ai → Keys](https://openrouter.ai/settings/keys) | One key for every vendor; OpenRouter routes each request itself (`sk-or-…`) |
+
+![Provider keys under Organization → Models](screenshots/provider-keys.png)
 
 1. Open the account menu → **Organization**, then **Models** (the account
    menu's *Models* row goes straight there).
