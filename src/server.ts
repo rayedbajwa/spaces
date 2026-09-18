@@ -2578,12 +2578,9 @@ async function buildBoard(): Promise<BoardResponse> {
         message: latestRun?.status ?? 'no runs yet',
         updatedAt: latestRun?.updatedAt ?? project.lastUpdated,
       },
-      recommendedAction: {
-        label: latestRun ? 'Open project' : 'Create first feature',
-        tab: 'specs',
-        step: (latestRun?.stage as StageName | undefined) ?? 'init',
-        reason: latestRun?.status === 'paused' ? 'Awaiting human input' : latestRun ? 'Continue where the run left off' : 'No runs yet',
-      },
+      // The next step the project can take, from its artifacts; nothing while a
+      // run is in flight (the agent bar owns that moment).
+      recommendedAction: latestRun && (latestRun.status === 'running' || latestRun.status === 'paused') ? undefined : nextStepFor(artifacts),
       updatedAt: latestRun?.updatedAt ?? project.lastUpdated,
       feature: latestRun?.feature,
       latestRun,
@@ -2601,6 +2598,20 @@ async function buildBoard(): Promise<BoardResponse> {
       cards: cards.filter((card) => card.status === column),
     })),
   }
+}
+
+/** Highest-milestone rule: the first stage whose artifact is missing is the next step. */
+function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'] {
+  const has = (stepLabel: string) => artifacts.links.some((l) => l.stepLabel === stepLabel)
+  if (!artifacts.initialized) return { step: 'init', label: 'Run init', tab: 'specs', reason: 'No Spec Kit workspace yet (.specify/).' }
+  if (!artifacts.specified) return { step: 'specify', label: 'Run specify', tab: 'specs', reason: 'No spec.md yet. Research runs first when the template has it.' }
+  if (!artifacts.planned) return { step: 'plan', label: 'Run plan', tab: 'specs', reason: 'Spec exists but no plan.md.' }
+  if (!artifacts.tasked) return { step: 'tasks', label: 'Run tasks', tab: 'tracker', reason: 'Plan exists but no tasks.md.' }
+  if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
+  if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
+  if (artifacts.verificationStatus === 'missing') return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'Ready to code — no verification report yet.' }
+  if (!artifacts.verifiedPass) return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
+  return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Verified and done. The next specify run starts a new feature.' }
 }
 
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {

@@ -2171,7 +2171,7 @@ function App() {
             {selectedCardFresh.recommendedAction && (
               <div className="recommended-banner">
                 <div>
-                  <strong>Recommended next action: {selectedCardFresh.recommendedAction.label}</strong>
+                  <strong>Next step: {selectedCardFresh.recommendedAction.label}</strong>
                   <p>{selectedCardFresh.recommendedAction.reason}</p>
                 </div>
                 <div className="button-row">
