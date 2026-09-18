@@ -39,6 +39,7 @@ import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } fro
 import type { FlowProgress, StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
+import { applyProviderKeysToEnv, listenProviderKeys } from './lib/provider-keys'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 
@@ -639,6 +640,8 @@ async function main(): Promise<void> {
   await heartbeatWorker(workerId, heartbeatMeta())
   if (WORKER_PROJECT_ID) workerLog.info('per-project worker', { projectId: WORKER_PROJECT_ID, idleExitSeconds: WORKER_IDLE_EXIT_SECONDS })
   // Non-fatal: warn loudly if the Anthropic key in this process's environment is a placeholder or rejected.
+  await applyProviderKeysToEnv().catch(() => undefined)
+  await listenProviderKeys().catch(() => undefined)
   void checkProviderKeys(workerLog)
   setInterval(() => {
     void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))

@@ -2115,3 +2115,9 @@ textarea {
 /* The log pane takes every pixel the sheet has left after the header and any notice. */
 .agent-dock .dock-body > .dock-log-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .agent-dock.open .dock-log-wrap .run-log { flex: 1 1 auto; height: 100%; min-height: 0; max-height: none; overflow: auto; }
+
+.provider-key-row { flex-wrap: wrap; }
+.provider-key-actions { display: flex; gap: 4px; margin-left: auto; }
+.provider-key-form { display: flex; gap: 8px; align-items: center; flex: 1 1 100%; margin-top: 6px; }
+.provider-key-form input { flex: 1; margin: 0; }
+.provider-key-form a { font-size: 12px; white-space: nowrap; }

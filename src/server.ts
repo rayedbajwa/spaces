@@ -31,6 +31,7 @@ import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } f
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveProvider } from './lib/oauth'
 import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, saveOAuthApp } from './lib/oauth-apps'
+import { applyProviderKeysToEnv, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey } from './lib/provider-keys'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
@@ -160,8 +161,11 @@ try {
   )
 }
 await ensureFrontendBuilt()
-// A shell API key overrides .env; a placeholder there makes every agent call
-// 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
+// Provider keys live in the database: import any left in the environment once,
+// then load the stored ones into this process and follow later changes.
+await importProviderKeysFromEnv().catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
+await applyProviderKeysToEnv().catch((error) => serverLog.warn('provider keys could not be loaded', { error: error instanceof Error ? error.message : String(error) }))
+await listenProviderKeys(() => { void warmModelRouting(serverLog).catch(() => undefined) }).catch(() => undefined)
 void checkProviderKeys(serverLog)
 // Decide the tier models for the configured provider once, before serving.
 await warmModelRouting(serverLog).catch((error) => serverLog.warn('model routing could not be computed', { error: error instanceof Error ? error.message : String(error) }))
@@ -422,6 +426,38 @@ async function route(req: Request): Promise<Response> {
     const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
     await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
     return sendJson(200, await getOrgMemory())
+  }
+
+  // ---- LLM provider keys (organization-level, encrypted) ----
+
+  if (method === 'GET' && url.pathname === '/api/org/provider-keys') {
+    return sendJson(200, { keys: await listProviderKeys() })
+  }
+  if (/^\/api\/org\/provider-keys\/[a-z]+(\/verify)?$/.test(url.pathname) && (method === 'PUT' || method === 'DELETE' || method === 'POST')) {
+    const parts = url.pathname.split('/')
+    const provider = parts[4]!
+    if (!isProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
+    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can manage provider keys.' })
+    try {
+      if (method === 'DELETE') {
+        await deleteProviderKey(provider)
+        serverLog.info('provider key removed', { provider, by: auth?.user.email ?? 'local' })
+      } else if (method === 'POST' && parts[5] === 'verify') {
+        const result = await reverifyProviderKey(provider)
+        return sendJson(200, { result, keys: await listProviderKeys() })
+      } else if (method === 'PUT') {
+        const body = await readJson<{ key?: string }>(req)
+        const result = await saveProviderKey(provider, body.key ?? '', auth?.user.userId ?? null)
+        serverLog.info('provider key saved', { provider, by: auth?.user.email ?? 'local', status: result.status })
+        await warmModelRouting(serverLog).catch(() => undefined)
+        return sendJson(200, { result, keys: await listProviderKeys(), routing: await getTierRouting(true) })
+      } else {
+        return sendJson(405, { error: 'Method not allowed.' })
+      }
+    } catch (error) {
+      return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+    }
+    return sendJson(200, { keys: await listProviderKeys(), routing: await getTierRouting(true) })
   }
 
   // ---- Organization model routing: automatic per provider, tuned by policy ----

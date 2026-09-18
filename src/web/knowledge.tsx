@@ -159,7 +159,7 @@ export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams:
           <span>{status.sources} source{status.sources === 1 ? '' : 's'}</span>
           <span>{status.documents} document{status.documents === 1 ? '' : 's'}</span>
           <span>{status.chunks} chunks{status.vectorSearch ? ` · ${status.embeddedChunks} embedded` : ''}</span>
-          <span>{status.embeddings.available && status.vectorSearch ? `semantic + keyword search (${status.embeddings.model})` : status.vectorSearch ? 'keyword search only — set OPENAI_API_KEY or OPENROUTER_API_KEY for semantic search' : 'keyword search only — pgvector extension not installed'}</span>
+          <span>{status.embeddings.available && status.vectorSearch ? `semantic + keyword search (${status.embeddings.model})` : status.vectorSearch ? 'keyword search only — add an OpenAI or OpenRouter key under Organization → Models for semantic search' : 'keyword search only — pgvector extension not installed'}</span>
           {status.pendingEmbeddings > 0 && status.embeddings.available && <span>{status.pendingEmbeddings} awaiting embeddings</span>}
         </div>
       )}

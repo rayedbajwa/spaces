@@ -82,7 +82,7 @@ Docker, the production compose file and a managed Postgres.
 git clone https://github.com/rayedbajwa/spaces.git && cd spaces
 cp .env.example .env
 # set DATABASE_URL to the external instance (…?sslmode=require),
-# ENCRYPTION_KEY and the LLM API key (integrations are set up in the UI)
+# and ENCRYPTION_KEY (provider keys and integrations are set up in the UI)
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml logs -f app supervisor
 ```
@@ -152,12 +152,12 @@ variables from `.env.example` as service secrets.
 |---|---|
 | `DATABASE_URL` | External, dedicated Postgres 16 (managed service or HA cluster), TLS (`?sslmode=require`); never the bundled dev container |
 | `ENCRYPTION_KEY` | From a secret manager; back it up with the database |
-| `ANTHROPIC_API_KEY` | From a secret manager; verified at boot |
 | `PORT` | `3000` (or what the platform injects) |
 | `AIDLC_WORKSPACE_ROOT` | `/data/aidlc/workspaces` (image default) |
 | `AIDLC_GOVERNANCE_ROOT` | leave default (`<workspace root>/_governance`) |
 | `SUPERVISOR_MAX_WORKERS` | 3–4 per 8 GB |
 | `WORKER_IDLE_EXIT_SECONDS` | `300`; raise if cold-starting workers is slow |
+| Provider keys | Not variables: add Anthropic / OpenAI / OpenRouter keys under Organization → Models; stored encrypted |
 | Integrations | Not variables: add OAuth app credentials under Organization → Integrations once the public host is up (callbacks point at it) |
 
 ## Operations

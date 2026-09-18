@@ -126,6 +126,10 @@ async function reconcile(): Promise<void> {
 async function main(): Promise<void> {
   supLog.info('supervisor starting', { maxWorkers: MAX_WORKERS, idleExitSeconds: IDLE_EXIT_SECONDS })
   const sql = getDb()
+  // Workers inherit this process's environment: keep the stored provider keys in it.
+  const { applyProviderKeysToEnv, listenProviderKeys } = await import('./lib/provider-keys')
+  await applyProviderKeysToEnv().catch(() => undefined)
+  await listenProviderKeys().catch(() => undefined)
   await sql.listen('project_job', () => { void reconcile() })
   setInterval(() => { void reconcile() }, POLL_MS)
   setInterval(() => {

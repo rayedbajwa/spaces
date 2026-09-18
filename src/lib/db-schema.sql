@@ -603,3 +603,14 @@ CREATE TABLE IF NOT EXISTS oauth_apps (
 
 -- Organization model-routing policy (preference, provider order, premium, pins).
 ALTER TABLE org_memory ADD COLUMN IF NOT EXISTS model_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- LLM provider API keys, managed under Organization → Models (sealed with ENCRYPTION_KEY).
+CREATE TABLE IF NOT EXISTS provider_keys (
+  provider            TEXT PRIMARY KEY CHECK (provider IN ('anthropic','openai','openrouter')),
+  key_enc             TEXT NOT NULL,
+  updated_by          UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_verified_at    TIMESTAMPTZ,
+  last_verify_status  TEXT,
+  last_verify_error   TEXT
+);

@@ -34,7 +34,7 @@ help: ## Show this help
 # ---- setup -------------------------------------------------------------------
 
 setup: env install db-up migrate build ## First-time setup: .env, deps, Postgres, schema, frontend build
-	@echo "✓ setup complete — edit .env (ENCRYPTION_KEY and an LLM API key), then: make up. Integrations are set up in the app."
+	@echo "✓ setup complete — edit .env (ENCRYPTION_KEY), then: make up. Provider keys and integrations are set up in the app (Organization page)."
 
 env: ## Create .env from .env.example if missing
 	@if [ ! -f .env ]; then cp .env.example .env; \

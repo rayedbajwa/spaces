@@ -28,9 +28,8 @@ const REQUIRED = [
   },
 ] as const
 
-const AT_LEAST_ONE_OF = [
-  { keys: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'], label: 'LLM provider API key' },
-] as const
+// LLM provider keys are managed in the app (Organization → Models), not here.
+const AT_LEAST_ONE_OF: ReadonlyArray<{ keys: readonly string[]; label: string }> = []
 
 /** Non-fatal cross-checks — report as warnings only. */
 function collectWarnings(): string[] {

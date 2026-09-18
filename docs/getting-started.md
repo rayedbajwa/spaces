@@ -13,8 +13,8 @@
 git clone https://github.com/rayedbajwa/spaces.git
 cd spaces
 cp .env.example .env
-# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48) and an LLM key
-#   (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY)
+# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48); add provider keys
+#   in the app under Organization → Models afterwards
 bun install
 bun run db:up            # Postgres in Docker
 bun run db:migrate       # idempotent schema (the server also applies it at boot)
@@ -43,10 +43,10 @@ make down           # stop everything
 
 `make help` lists all targets.
 
-!!! warning "Shell variables override `.env`"
-    A placeholder `ANTHROPIC_API_KEY` exported in your shell silently wins over
-    `.env` and makes every agent call fail with 401. Both server and worker
-    verify the key at boot and log a clear warning when that happens.
+!!! note "Provider keys live in the app"
+    Anthropic, OpenAI and OpenRouter keys are added under **Organization →
+    Models**, stored encrypted and verified when saved. A key left in `.env`
+    or the shell is ignored; the server logs a warning naming it at boot.
 
 ## Sign in and create your team
 

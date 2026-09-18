@@ -159,8 +159,8 @@ Anthropic API key.
 git clone https://github.com/<you>/spaces.git
 cd spaces
 cp .env.example .env
-# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48) + an LLM key
-#   (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY)
+# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48); provider keys
+#   and integrations are added in the app afterwards
 bun install
 bun run db:up
 bun run db:migrate

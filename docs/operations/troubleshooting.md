@@ -18,8 +18,9 @@ stay paused.
 ## Symptoms and causes
 
 **Every agent call fails with `401 invalid x-api-key`.**
-A placeholder `ANTHROPIC_API_KEY` in the shell overrides `.env`. Both server and
-worker log a warning at boot; restart them from a shell that uses the real key.
+The stored provider key was revoked or replaced. Open **Organization →
+Models**, press **Verify** on the provider to confirm, then **Replace** it. Keys
+in `.env` or the shell are ignored (the boot log names any leftovers).
 
 **"Your credit balance is too low to access the Anthropic API".**
 Top up the account, then **Rerun from &lt;stage&gt;**; the run kept its stage.

@@ -47,6 +47,78 @@ const TIER_HINT: Record<Tier, string> = {
   large: 'Quality mode and retry escalation. The most capable.',
 }
 
+interface ProviderKey {
+  provider: Provider
+  label: string
+  consoleUrl: string
+  configured: boolean
+  keyMasked: string | null
+  updatedAt: string | null
+  updatedByName: string | null
+  lastVerifiedAt: string | null
+  lastVerifyStatus: 'ok' | 'rejected' | 'forbidden' | 'unreachable' | 'unknown' | null
+  lastVerifyError: string | null
+  envLeftover: boolean
+}
+
+function ProviderKeysCard({ canEdit, onChanged }: { canEdit: boolean; onChanged: () => Promise<void> }) {
+  const [keys, setKeys] = useState<ProviderKey[] | null>(null)
+  const [editing, setEditing] = useState<Provider | null>(null)
+  const [draft, setDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const load = useCallback(async () => { try { setKeys((await json<{ keys: ProviderKey[] }>('/api/org/provider-keys')).keys) } catch (e) { setError(e instanceof Error ? e.message : String(e)) } }, [])
+  useEffect(() => { void load() }, [load])
+  const flash = (m: string) => { setNotice(m); setError(''); window.setTimeout(() => setNotice(''), 3000) }
+  const act = async (fn: () => Promise<unknown>, done: string) => {
+    setBusy(true); setError('')
+    try { await fn(); await load(); await onChanged(); flash(done) } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+  }
+  return (
+    <section className="card panel team-section">
+      <div className="team-section-head">
+        <h3>Provider keys</h3>
+        <span className="panel-subtitle">Stored encrypted in the database and verified against the provider when saved. Nothing lives in .env.</span>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+      {notice && <p className="team-flash team-flash-ok">{notice}</p>}
+      {keys === null && <p className="panel-subtitle">Loading…</p>}
+      <ul className="member-list">
+        {keys?.map((k) => (
+          <li key={k.provider} className="member-row provider-key-row">
+            <span className={`dock-dot ${k.configured ? (k.lastVerifyStatus === 'ok' ? 'completed' : k.lastVerifyStatus === 'rejected' ? 'error' : 'paused') : ''}`} aria-hidden="true" />
+            <div className="member-id">
+              <strong>{k.label}{k.configured ? <span className="text-subtle"> · {k.keyMasked}</span> : null}</strong>
+              <span className="text-subtle">
+                {k.configured
+                  ? `${k.lastVerifyStatus === 'ok' ? 'verified' : `verification: ${k.lastVerifyStatus ?? 'unknown'}${k.lastVerifyError ? ` — ${k.lastVerifyError}` : ''}`}${k.lastVerifiedAt ? ` ${new Date(k.lastVerifiedAt).toLocaleString()}` : ''}${k.updatedByName ? ` · set by ${k.updatedByName}` : ''}`
+                  : 'no key'}
+                {k.envLeftover ? ' · a value is still in .env and is ignored' : ''}
+              </span>
+            </div>
+            {canEdit && editing !== k.provider && (
+              <span className="provider-key-actions">
+                {k.configured && <button type="button" className="ghost-button" disabled={busy} onClick={() => void act(() => json(`/api/org/provider-keys/${k.provider}/verify`, { method: 'POST', body: '{}' }), `${k.label} key re-verified.`)}>Verify</button>}
+                <button type="button" className={k.configured ? 'ghost-button' : 'primary-button'} disabled={busy} onClick={() => { setEditing(k.provider); setDraft('') }}>{k.configured ? 'Replace' : 'Add key'}</button>
+                {k.configured && <button type="button" className="ghost-button" disabled={busy} onClick={() => { if (window.confirm(`Remove the ${k.label} key? Runs routed through ${k.label} will fail until a key is added again.`)) void act(() => json(`/api/org/provider-keys/${k.provider}`, { method: 'DELETE' }), `${k.label} key removed.`) }}>Remove</button>}
+              </span>
+            )}
+            {canEdit && editing === k.provider && (
+              <form className="provider-key-form" onSubmit={(e) => { e.preventDefault(); if (!draft.trim()) return; void act(() => json(`/api/org/provider-keys/${k.provider}`, { method: 'PUT', body: JSON.stringify({ key: draft }) }), `${k.label} key saved and verified.`).then(() => { setEditing(null); setDraft('') }) }}>
+                <input type="password" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`Paste the ${k.label} API key`} autoFocus autoComplete="off" />
+                <button type="submit" className="primary-button" disabled={busy || !draft.trim()}>{busy ? 'Verifying…' : 'Save'}</button>
+                <button type="button" className="ghost-button" disabled={busy} onClick={() => { setEditing(null); setDraft('') }}>Cancel</button>
+                <a className="text-subtle" href={k.consoleUrl} target="_blank" rel="noreferrer">Get a key ↗</a>
+              </form>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export function ModelsSection({ canEdit }: { canEdit: boolean }) {
   const [routing, setRouting] = useState<Routing | null>(null)
   const [error, setError] = useState('')
@@ -68,11 +140,13 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
 
   if (!routing) return <section className="card panel team-section"><p className="panel-subtitle">{error || 'Loading…'}</p></section>
   const { policy } = routing
+  const keysCard = <ProviderKeysCard canEdit={canEdit} onChanged={() => load(true)} />
   const isOpenRouter = routing.provider === 'openrouter'
   const money = (n: number) => `$${n < 1 ? n.toFixed(2) : n.toFixed(n < 10 ? 1 : 0)}`
 
   return (
     <>
+      {keysCard}
       <section className="card panel team-section">
         <div className="team-section-head">
           <h3>Model routing</h3>
@@ -83,7 +157,7 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
 
         <div className="routing-provider">
           <span className="text-subtle">Routing through</span>
-          <strong>{routing.provider ? PROVIDER_LABEL[routing.provider] : 'no provider'}</strong>
+          <strong>{routing.provider ? PROVIDER_LABEL[routing.provider] : 'no provider — add a key above'}</strong>
           {routing.configuredProviders.length > 1 && <span className="text-subtle">· keys present for {routing.configuredProviders.map((p) => PROVIDER_LABEL[p]).join(', ')}</span>}
           <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void load(true)}>Recompute</button>
         </div>
