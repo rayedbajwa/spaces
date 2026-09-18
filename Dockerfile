@@ -36,8 +36,9 @@ RUN apk add --no-cache git ca-certificates openssh-client
 # governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).
 ENV HOME=/data/home
 ENV AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces
+# Mount a volume at /data (docker run -v … or a Railway volume). No VOLUME
+# instruction: Railway's builder rejects it and Docker does not need it.
 RUN mkdir -p /data/home /data/aidlc/workspaces && chown -R bun:bun /data
-VOLUME ["/data"]
 
 # Copy production node_modules + source + built assets
 COPY --from=deps  /app/node_modules ./node_modules
