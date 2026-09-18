@@ -10,9 +10,11 @@ shell variable overrides the file). See `.env.example` for the annotated list.
 | `DATABASE_URL` | Postgres connection string (matches `docker-compose.yml`) |
 | `ENCRYPTION_KEY` | 32+ random characters; derives the AES-256-GCM key that seals OAuth tokens. Rotating it invalidates every stored token. |
 
-## Models
+## Models (bring your own key)
 
-LLM provider keys (Anthropic, OpenAI, OpenRouter) are entered under
+Spaces ships without model access: you bring the keys of the providers you
+pay for and usage is billed to those accounts. LLM provider keys (Anthropic,
+OpenAI, OpenRouter) are entered under
 **Organization → Models**, stored encrypted with `ENCRYPTION_KEY` and verified
 when saved; they are not environment variables. No model is configured by
 name either. Spaces routes automatically for the provider in use: it scores that provider's chat models by price, generation and size

@@ -58,6 +58,24 @@ invite teammates by email and role, and share the generated link. Teammates can
 also **Continue with GitHub**. See
 [Organization, teams & access](concepts/organization-teams-and-access.md).
 
+## Bring your model keys
+
+Spaces routes across the model providers you already have accounts with; it
+ships without any.
+
+1. Open the account menu → **Organization**, then **Models** (the account
+   menu's *Models* row goes straight there).
+2. Under **Provider keys**, press **Add key** for Anthropic, OpenAI or
+   OpenRouter and paste the key. It is verified live and stored encrypted; a
+   rejected key is not saved. One provider is enough.
+3. Read the **Model routing** card: it shows which provider routes and what
+   the small / medium / large tiers resolved to, with the reason. Adjust the
+   **Policy** (cost / balanced / quality, provider order, premium models,
+   pins) if you like. With OpenRouter, OpenRouter picks the model per request.
+
+Keys take effect in every process within a second — no restart. See
+[Configuration → Models](reference/configuration.md#models) for the details.
+
 ## Connect GitHub
 
 Open **Integrations** in the hero and press **Connect** for GitHub. Once

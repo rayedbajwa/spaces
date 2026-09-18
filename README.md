@@ -165,6 +165,8 @@ inspectable artifacts each stage produces.
 
 ## Documentation
 
+See **[Model setup: bring your own key](#model-setup-bring-your-own-key-byok)** below for how model access works.
+
 Full docs are published at **https://rayedbajwa.github.io/spaces/** (built from
 `docs/` with MkDocs Material by the `Docs` workflow on every push to `main`).
 
@@ -202,6 +204,50 @@ make down
 ```
 
 ---
+
+## Model setup: bring your own key (BYOK)
+
+Spaces does not come with model access and never names a model. You bring
+the API keys of the providers you already pay for, and Spaces routes across
+what those keys unlock.
+
+**Providers.** Anthropic, OpenAI and OpenRouter. One is enough; with several,
+the organization policy decides which one routes (OpenRouter is a good single
+key: it fronts every vendor and routes each request itself).
+
+**Where keys go.** Sign in as a team owner or admin, open **Organization →
+Models** and paste the key under **Provider keys**. It is verified against the
+provider before it is saved (a rejected key is never stored), sealed with
+AES-256-GCM using your `ENCRYPTION_KEY`, and shown masked afterwards. Nothing
+about model access lives in `.env`; a key left there is ignored and named in
+the boot log.
+
+**What happens next.** Every process (web server, supervisor, per-project
+workers) loads the stored keys at boot and again the moment one changes, so a
+new or rotated key takes effect within a second without a restart. The same
+keys serve agent runs, the knowledge base embeddings (OpenAI or OpenRouter)
+and cross-stage compaction.
+
+**Routing.** For the provider in use, Spaces reads the runtime's model catalog
+(price per million tokens, context size, reasoning support), keeps the
+current-generation chat models and fills three tiers:
+
+| Tier | Used for | Balanced default |
+|---|---|---|
+| small | review, chat, fast mode | cheapest small model of the newest line |
+| medium | planning, implementation | base model of the newest line |
+| large | quality mode, retry escalation | most capable non-premium model |
+
+The policy on the same page shifts this towards **cost** or **quality**,
+orders providers, allows premium ("pro") models for the large tier, and can pin
+a tier to an exact model. With OpenRouter first, every tier is
+`openrouter/openrouter/auto`. Templates may still pin a model per step; a pin
+from a provider without a key falls back to the same-size tier.
+
+**Costs and limits.** Usage is billed by your provider to your account; Spaces
+adds nothing. Verification calls are single cheap list requests. Rotating
+`ENCRYPTION_KEY` means re-entering the keys, exactly as it does for
+integration tokens.
 
 ## Architecture
 
