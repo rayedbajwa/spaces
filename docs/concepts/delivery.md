@@ -17,6 +17,29 @@ Every commit message and PR title the pipeline writes follows
 period, header ≤ 72 characters. `implement` uses `feat`, `verify` uses `test`,
 `orchestrate` uses `chore`; the scope is the feature branch or workstream.
 
+## What is committed to implementation repositories
+
+Planning stays in the governing workspace; each implementation repository
+gets a **repo-local change**, committed with the code on the same branch and
+pull request, in the same `specs/` directory Spec Kit uses:
+
+```
+<repo>/specs/<initiative-id>/
+  change.yaml   schema, created, initiative, repository, links to sibling changes
+  tasks.md      the tasks this repository owns (its workstreams), as a checklist
+  spec.md       the delta spec as seen from this repository
+```
+
+The governing workspace's feature directory is the **initiative**: alongside
+`spec.md`, `plan.md`, `tasks.md` and the rest it carries `initiative.yaml` and
+`links.yaml` naming every implementation repository and its change. Links use
+stable project identifiers (`github.com/org/repo`, or `local/<dir>` for
+unhosted checkouts), never filesystem paths, and are informational: a missing
+sibling never fails anything. Sub-agents tick `tasks.md` as work lands and
+leave `change.yaml` and `spec.md` alone; PR bodies name the change and the
+initiative. The pattern follows OpenSpec's workspace architecture design
+decisions (initiative-first planning with linked repo-local changes).
+
 ## Code review loop
 
 The `review` stage refreshes CI and PR state from GitHub, reviews the diff

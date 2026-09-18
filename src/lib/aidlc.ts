@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChangePlan } from './repo-change'
 import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
 import { PROVIDER_ENV_KEYS } from './default-model'
 import { mkdir, readFile } from 'node:fs/promises'
@@ -1559,6 +1560,19 @@ export async function runAIDLCParallelSubAgents(options: {
     }
     return [...deps]
   }
+  // Repo-local changes: one `specs/<initiative>/` per implementation repository,
+  // recorded as an initiative with links in the governing feature directory.
+  let changePlan: RepoChangePlan | undefined
+  try {
+    changePlan = await planRepoChanges({
+      featureDir,
+      workstreams: selected,
+      repoFor: (ws) => repoFor(ws as ParsedWorkstream),
+      project: options.projectId ? await import('./project-registry').then((m) => m.getProject(options.projectId!)).then((p) => (p ? { name: p.name, code: p.code } : undefined)).catch(() => undefined) : undefined,
+    })
+  } catch (error) {
+    options.onProgress?.({ type: 'workstream_update', featureDir, workstream: 'Repo-local changes', summary: `Could not plan repo-local changes: ${error instanceof Error ? error.message : String(error)}` })
+  }
   const defaultBaseCache = new Map<string, Promise<string>>()
   const baseBranchFor = (repo: WorkstreamRepoTarget): Promise<string> => {
     if (options.pullRequests?.baseBranch) return Promise.resolve(options.pullRequests.baseBranch)
@@ -1616,6 +1630,18 @@ export async function runAIDLCParallelSubAgents(options: {
             options.onProgress?.({ type: 'workstream_update', featureDir, workstream: workstream.title, summary: `Worktree setup failed (${error instanceof Error ? error.message : String(error)}); running in the shared checkout without a PR.` })
           }
         }
+        // Write this repository's change into the checkout/worktree so it ships with the code.
+        let changeNote = ''
+        const changeRepo = prRepo ?? target
+        const change = changeRepo && changePlan ? changePlan.changes.find((c) => path.resolve(c.repo.localPath) === path.resolve(changeRepo.localPath)) : undefined
+        if (change && changePlan) {
+          try {
+            const written = await writeRepoChange({ cwd: workstreamCwd, featureDir, plan: changePlan, change })
+            changeNote = `\n\n${repoChangeInstructions(written.relativeDir)}`
+          } catch (error) {
+            options.onProgress?.({ type: 'workstream_update', featureDir, workstream: workstream.title, summary: `Could not write the repo-local change: ${error instanceof Error ? error.message : String(error)}` })
+          }
+        }
         const repoLine = (target
           ? `${target.label}${target.githubRepo ? ` (${target.githubRepo})` : ''} — working directory: ${workstreamCwd}`
           : workstream.repository && !/^primary$/i.test(workstream.repository)
@@ -1671,7 +1697,7 @@ export async function runAIDLCParallelSubAgents(options: {
         })
 
         const prompt = withSharedContext(
-          `You are an implementation sub-agent assigned to one approved workstream only.\n\nWorkstream: ${workstream.title}\n\nRepository: ${repoLine}\nOnly edit files inside this working directory. The Spec Kit feature directory (specs, tasks, reports) lives in the primary checkout at ${cwd}.\n\nTasks:\n${workstream.tasks || '(not specified)'}\n\nInputs:\n${workstream.inputs || '(not specified)'}\n\nOutputs:\n${workstream.outputs || '(not specified)'}\n\nDependencies:\n${workstream.dependencies || '(not specified)'}\n\nScoped Files:\n${workstream.scopedFiles || '(not specified)'}\n\nQA Focus:\n${workstream.qaFocus || '(not specified)'}\n\nYour job:\n1. Implement this workstream by editing code and tests only within the scoped area.\n2. Add or update tests that prove the workstream behavior.\n3. Avoid touching files outside the scoped area unless absolutely necessary for imports or wiring.\n4. Write a workstream report to ${outputFile} summarizing files changed, tests added, risks, and follow-ups.\n5. End with a concise status summary in chat.`,
+          `You are an implementation sub-agent assigned to one approved workstream only.\n\nWorkstream: ${workstream.title}\n\nRepository: ${repoLine}\nOnly edit files inside this working directory. The Spec Kit feature directory (specs, tasks, reports) lives in the primary checkout at ${cwd}.\n\nTasks:\n${workstream.tasks || '(not specified)'}\n\nInputs:\n${workstream.inputs || '(not specified)'}\n\nOutputs:\n${workstream.outputs || '(not specified)'}\n\nDependencies:\n${workstream.dependencies || '(not specified)'}\n\nScoped Files:\n${workstream.scopedFiles || '(not specified)'}\n\nQA Focus:\n${workstream.qaFocus || '(not specified)'}\n\nYour job:\n1. Implement this workstream by editing code and tests only within the scoped area.\n2. Add or update tests that prove the workstream behavior.\n3. Avoid touching files outside the scoped area unless absolutely necessary for imports or wiring.\n4. Write a workstream report to ${outputFile} summarizing files changed, tests added, risks, and follow-ups.\n5. End with a concise status summary in chat.${changeNote}`,
           { sharedContextPrompt: options.sharedContextPrompt },
         )
 
@@ -1737,6 +1763,7 @@ export async function runAIDLCParallelSubAgents(options: {
                 artifacts: [path.relative(cwd, outputFile)],
                 stackedOn: prPlan.stackedOn,
                 workstream: workstream.title,
+                extra: change && changePlan ? `**Change:** \`specs/${change.changeId}/\` in this repository · **Initiative:** \`${changePlan.initiativeId}\` (governing workspace \`${path.relative(cwd, featureDir)}\`)${changePlan.changes.length > 1 ? `\n**Linked repositories:** ${changePlan.changes.filter((c) => c.project !== change.project).map((c) => `\`${c.project}\``).join(', ')}` : ''}` : undefined,
               }),
               draft: options.pullRequests?.draft,
             })

@@ -106,6 +106,10 @@ inspectable artifacts each stage produces.
 - **Cross-model handoff memory** — the last few stages' key outputs are
   injected as a preamble so the next model has context even when you swap
   Sonnet → Opus → Haiku mid-pipeline
+- **Repo-local changes** — each implementation repository gets
+  `specs/<initiative-id>/` (`change.yaml`, `tasks.md`, `spec.md`) committed with
+  its code and PR, linked back to the initiative in the governing workspace by
+  stable `github.com/org/repo` identifiers
 - **Human-in-the-loop review gates** after `specify`, `plan`, `tasks`,
   `testplan`, `implement`, `verify`
 - **Live streaming output** in a bottom dock with stage progress, approvals,
