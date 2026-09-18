@@ -38,12 +38,12 @@ interface KnowledgeConfig {
 
 type Section = 'overview' | 'members' | 'invites' | 'memory' | 'knowledge'
 
-const SECTIONS: Array<{ id: Section; label: string; hint: string; adminOnly?: boolean }> = [
-  { id: 'overview', label: 'Overview', hint: 'Projects and numbers' },
-  { id: 'members', label: 'Members', hint: 'People and roles' },
-  { id: 'invites', label: 'Invites', hint: 'Bring people in', adminOnly: true },
-  { id: 'memory', label: 'Memory', hint: 'What every agent knows' },
-  { id: 'knowledge', label: 'Knowledge defaults', hint: 'Sources projects inherit', adminOnly: true },
+const SECTIONS: Array<{ id: Section; label: string; hint: string; adminOnly?: boolean; group: string }> = [
+  { id: 'overview', label: 'Overview', hint: 'Projects and numbers', group: 'Team' },
+  { id: 'members', label: 'Members', hint: 'People and roles', group: 'People' },
+  { id: 'invites', label: 'Invites', hint: 'Bring people in', adminOnly: true, group: 'People' },
+  { id: 'memory', label: 'Memory', hint: 'What every agent knows', group: 'Context' },
+  { id: 'knowledge', label: 'Knowledge defaults', hint: 'Sources projects inherit', adminOnly: true, group: 'Context' },
 ]
 
 const ROLE_HINT: Record<TeamRole, string> = {
@@ -139,12 +139,17 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
 
       <div className="team-layout">
         <nav className="team-nav card" aria-label="Team settings sections">
-          {visibleSections.map((s) => (
-            <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
-              <span className="team-nav-label">{s.label}</span>
-              <span className="team-nav-hint">{s.hint}</span>
-              {s.id === 'invites' && (detail?.invites.length ?? 0) > 0 && <span className="team-nav-count">{detail!.invites.length}</span>}
-            </button>
+          {[...new Set(visibleSections.map((s) => s.group))].map((group) => (
+            <div key={group} className="team-nav-group">
+              <div className="team-nav-group-title">{group}</div>
+              {visibleSections.filter((s) => s.group === group).map((s) => (
+                <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
+                  <span className="team-nav-label">{s.label}</span>
+                  <span className="team-nav-hint">{s.hint}</span>
+                  {s.id === 'invites' && (detail?.invites.length ?? 0) > 0 && <span className="team-nav-count">{detail!.invites.length}</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 

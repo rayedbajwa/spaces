@@ -2121,33 +2121,41 @@ function App() {
       {isProjectModalOpen && !teamPageSlug && !orgPageOpen && selectedCardFresh && (
         <section className="project-page" aria-label={selectedCardFresh.projectLabel}>
           <div className="project-page-shell">
-            <div className="modal-header project-page-header">
-              <div className="modal-title">
-                <div className="breadcrumb">
-                  <button type="button" className="ghost-button" onClick={() => closeProject()} title="Back to the board (Esc)">← Board</button>
-                  {selectedCardFresh.code && (
-                    <button type="button" className="code-badge code-badge-button" title="Copy project link" onClick={() => { void navigator.clipboard?.writeText(`${window.location.origin}/spaces/${selectedCardFresh.code}`); setStatusMessage(`Link to ${selectedCardFresh.code} copied.`) }}>
-                      {selectedCardFresh.code}
-                    </button>
-                  )}
-                  {projectDetail?.archivedAt && <span className="mini-badge archived">archived</span>}
-                  {projectDetail?.pausedAt && !projectDetail.archivedAt && <span className="mini-badge paused">paused</span>}
+            <header className="project-hero">
+              <div className="project-hero-main">
+                <div className="project-tile" aria-hidden="true">{(selectedCardFresh.code ?? selectedCardFresh.projectLabel).split('-')[0].slice(0, 4)}</div>
+                <div className="project-hero-text">
+                  <div className="breadcrumb">
+                    <button type="button" className="ghost-button" onClick={() => closeProject()} title="Back to the board (Esc)">← Board</button>
+                    {selectedCardFresh.code && (
+                      <button type="button" className="code-badge code-badge-button" title="Copy project link" onClick={() => { void navigator.clipboard?.writeText(`${window.location.origin}/spaces/${selectedCardFresh.code}`); setStatusMessage(`Link to ${selectedCardFresh.code} copied.`) }}>
+                        {selectedCardFresh.code}
+                      </button>
+                    )}
+                    {projectDetail?.archivedAt && <span className="mini-badge archived">archived</span>}
+                    {projectDetail?.pausedAt && !projectDetail.archivedAt && <span className="mini-badge paused">paused</span>}
+                  </div>
+                  <h1 className="project-title">{selectedCardFresh.projectLabel}</h1>
+                  <p className="project-feature">{selectedCardFresh.feature || 'No active feature yet'}</p>
+                  <div className="team-chips">
+                    <span className={`chip lane ${selectedCardFresh.status}`}><strong>{selectedCardFresh.status}</strong> lane</span>
+                    <span className={`chip run ${selectedCardFresh.latestRun?.status ?? 'idle'}`}>
+                      {selectedCardFresh.latestRun ? <>run <strong>{selectedCardFresh.latestRun.status}</strong>{selectedCardFresh.latestRun.stage ? ` · ${selectedCardFresh.latestRun.stage}` : ''}</> : 'no runs yet'}
+                    </span>
+                    <span className={`chip verify ${selectedCardFresh.verificationStatus}`}>verify <strong>{selectedCardFresh.verificationStatus}</strong></span>
+                    {projectDetail && <span className="chip"><strong>{projectDetail.repos.filter((r) => r.label !== 'governance').length}</strong> repositor{projectDetail.repos.filter((r) => r.label !== 'governance').length === 1 ? 'y' : 'ies'}</span>}
+                    {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
+                      <button className={`chip attention chip-button`} onClick={() => setActiveProjectTab('assistant')} type="button">{selectedCardFresh.automationState.state.replace('_', ' ')} →</button>
+                    )}
+                  </div>
                 </div>
-                <h2>{selectedCardFresh.projectLabel}</h2>
-                <p className="panel-subtitle">{selectedCardFresh.feature || selectedCardFresh.projectPath}</p>
               </div>
-              <div className="modal-actions">
-                <span className={`mini-badge ${selectedCardFresh.latestRun?.status ?? 'idle'}`}>{selectedCardFresh.status}</span>
-                {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
-                  <button className={`automation-badge ${selectedCardFresh.automationState.state}`} onClick={() => setActiveProjectTab('assistant')} type="button">
-                    {selectedCardFresh.automationState.state.replace('_', ' ')}
-                  </button>
-                )}
+              <div className="team-hero-actions">
                 <button className="secondary-button" onClick={() => closeProject()} type="button" title="Back to the board (Esc)">Back to board</button>
               </div>
-            </div>
+            </header>
 
-            <div className="tab-row modal-tabs project-page-tabs" role="tablist">
+            <div className="tab-row project-tabs" role="tablist">
               {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
                 const needsAttention = tab === 'assistant' && selectedCardFresh.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(selectedCardFresh.automationState.state)
                 return (
@@ -2207,18 +2215,17 @@ function App() {
             </div>
 
             {activeProjectTab === 'overview' && (
-              <div className="modal-grid">
+              <div className="modal-grid project-overview">
+                <div className="stat-grid project-stats">
+                  <div className="stat card"><span className="stat-label">Lane</span><strong className="stat-value stat-text">{selectedCardFresh.status}</strong><span className="stat-sub">{selectedCardFresh.currentAgent ? `agent: ${selectedCardFresh.currentAgent}` : 'no agent active'}</span></div>
+                  <div className="stat card"><span className="stat-label">Run</span><strong className="stat-value stat-text">{selectedCardFresh.latestRun?.status ?? '—'}</strong><span className="stat-sub">{selectedCardFresh.latestRun?.stage ? `stage ${selectedCardFresh.latestRun.stage}` : 'no run yet'}</span></div>
+                  <div className="stat card"><span className="stat-label">Verification</span><strong className="stat-value stat-text">{selectedCardFresh.verificationStatus}</strong><span className="stat-sub">{selectedCardFresh.estimate}</span></div>
+                  <div className="stat card"><span className="stat-label">Jobs</span><strong className="stat-value">{projectJobs.filter((j) => ['running', 'queued', 'claimed'].includes(j.displayStatus)).length}</strong><span className="stat-sub">{projectJobs.filter((j) => j.displayStatus === 'paused').length} paused · {projectJobs.length} recent</span></div>
+                </div>
                 <section className="card panel slim-panel">
-                  <h3>Project info</h3>
-                  <div className="summary-grid details-grid">
-                    <div><span>Status</span><strong>{selectedCardFresh.status}</strong></div>
-                    <div><span>Agent</span><strong>{selectedCardFresh.currentAgent}</strong></div>
-                    <div><span>Estimate</span><strong>{selectedCardFresh.estimate}</strong></div>
-                    <div><span>Verify</span><strong>{selectedCardFresh.verificationStatus}</strong></div>
-                  </div>
+                  <h3>Summary</h3>
                   <div className="auto-memory-box compact-box">
-                    <h3>Executive summary</h3>
-                    <pre>{currentRun?.executiveSummary || 'No executive summary yet.'}</pre>
+                    <pre>{currentRun?.executiveSummary || 'No executive summary yet — it appears once a run completes a stage.'}</pre>
                   </div>
                   <label>
                     Estimate

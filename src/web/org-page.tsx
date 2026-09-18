@@ -31,14 +31,14 @@ interface KnowledgeStatus { sources: number; documents: number; chunks: number; 
 
 type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'promotions' | 'teams'
 
-const SECTIONS: Array<{ id: Section; label: string; hint: string }> = [
-  { id: 'overview', label: 'Overview', hint: 'Teams, projects, knowledge' },
-  { id: 'memory', label: 'Memory', hint: 'Shared by every agent' },
-  { id: 'knowledge', label: 'Knowledge base', hint: 'Imports and search' },
-  { id: 'integrations', label: 'Integrations', hint: 'App credentials and connections' },
-  { id: 'models', label: 'Models', hint: 'Automatic routing by cost and speed' },
-  { id: 'promotions', label: 'Promotions', hint: 'Project learnings going org-wide' },
-  { id: 'teams', label: 'Teams', hint: 'Spaces and a new one' },
+const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [
+  { id: 'overview', label: 'Overview', hint: 'Teams, projects, knowledge', group: 'Organization' },
+  { id: 'teams', label: 'Teams', hint: 'Spaces and a new one', group: 'Organization' },
+  { id: 'memory', label: 'Memory', hint: 'Shared by every agent', group: 'Shared context' },
+  { id: 'knowledge', label: 'Knowledge base', hint: 'Imports and search', group: 'Shared context' },
+  { id: 'promotions', label: 'Promotions', hint: 'Project learnings going org-wide', group: 'Shared context' },
+  { id: 'integrations', label: 'Integrations', hint: 'App credentials and connections', group: 'Setup' },
+  { id: 'models', label: 'Models', hint: 'Provider keys and routing', group: 'Setup' },
 ]
 
 export function OrgPage() {
@@ -113,12 +113,17 @@ export function OrgPage() {
 
       <div className="team-layout">
         <nav className="team-nav card" aria-label="Organization sections">
-          {SECTIONS.map((s) => (
-            <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
-              <span className="team-nav-label">{s.label}</span>
-              <span className="team-nav-hint">{s.hint}</span>
-              {s.id === 'promotions' && pending.length > 0 && <span className="team-nav-count">{pending.length}</span>}
-            </button>
+          {[...new Set(SECTIONS.map((s) => s.group))].map((group) => (
+            <div key={group} className="team-nav-group">
+              <div className="team-nav-group-title">{group}</div>
+              {SECTIONS.filter((s) => s.group === group).map((s) => (
+                <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
+                  <span className="team-nav-label">{s.label}</span>
+                  <span className="team-nav-hint">{s.hint}</span>
+                  {s.id === 'promotions' && pending.length > 0 && <span className="team-nav-count">{pending.length}</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
