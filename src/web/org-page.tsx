@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { json, navigate, useAuth, type MeTeam } from './auth'
 import { OrgKnowledgePanel } from './knowledge'
 import { IntegrationsPanel } from './integrations'
+import { PageHead } from './shell'
 import { ModelsSection } from './models'
 
 /**
@@ -30,6 +31,16 @@ interface PromotionProposal {
 interface KnowledgeStatus { sources: number; documents: number; chunks: number; embeddings: { available: boolean; model: string }; vectorSearch: boolean; lastSyncAt: string | null }
 
 type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'promotions' | 'teams'
+
+const SECTION_BLURB: Record<Section, string> = {
+  overview: '',
+  teams: 'Spaces that own projects, people and memory. Anyone can start a new one.',
+  memory: 'The first thing every agent reads, in every team and project. Team and project memory refine it.',
+  knowledge: 'Import Confluence spaces, Jira projects, Linear initiatives, GitHub repositories, web pages and notes. Agents search all of it.',
+  promotions: 'Learnings that projects propose for the whole organization; approve to add them to memory.',
+  integrations: 'Set each provider app up once. Connections are shared by every team.',
+  models: 'Bring your own Anthropic, OpenAI or OpenRouter key. Routing picks a model per task by cost and speed.',
+}
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Teams, projects, knowledge', group: 'Organization' },
@@ -86,37 +97,35 @@ export function OrgPage() {
   }
 
   const name = org?.name ?? me?.org?.name ?? 'Organization'
+  const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]!
   const projectCount = teams.reduce((n, t) => n + t.projectCount, 0)
   const membershipCount = teams.reduce((n, t) => n + t.memberCount, 0)
   const pending = (promotions ?? []).filter((p) => p.status === 'pending')
 
   return (
-    <section className="team-page org-page" aria-label={`${name} settings`}>
-      <header className="team-hero card org-hero">
-        <div className="team-hero-main">
-          <div className="team-avatar org-avatar" aria-hidden="true">{initials(name)}</div>
-          <div className="team-hero-text">
-            <div className="breadcrumb"><span className="text-subtle">Organization · shared by every team</span></div>
-            <OrgName name={name} canEdit={canEdit} busy={busy} onRename={(next) => act(() => json('/api/org/memory', { method: 'PUT', body: JSON.stringify({ name: next, manualText: org?.manualText ?? '' }) }).then(() => refresh()), 'Organization renamed.')} />
-            <div className="team-chips">
-              <span className="chip"><strong>{teams.length}</strong> team{teams.length === 1 ? '' : 's'}</span>
-              <span className="chip"><strong>{projectCount}</strong> project{projectCount === 1 ? '' : 's'}</span>
-              <span className="chip"><strong>{membershipCount}</strong> membership{membershipCount === 1 ? '' : 's'}</span>
-              {knowledge && <span className="chip"><strong>{knowledge.documents}</strong> knowledge doc{knowledge.documents === 1 ? '' : 's'}</span>}
-              {pending.length > 0 && <span className="chip attention"><strong>{pending.length}</strong> promotion{pending.length === 1 ? '' : 's'} to review</span>}
-            </div>
-          </div>
+    <section className="team-page org-page" aria-label={`${name} settings`} data-section={section}>
+      <PageHead
+        title={section === 'overview' ? <OrgName name={name} canEdit={canEdit} busy={busy} onRename={(next) => act(() => json('/api/org/memory', { method: 'PUT', body: JSON.stringify({ name: next, manualText: org?.manualText ?? '' }) }).then(() => refresh()), 'Organization renamed.')} /> : current.label}
+        eyebrow={section === 'overview' ? 'Organization · shared by every team' : (name.toLowerCase() === 'organization' ? 'Organization · shared by every team' : `${name} · organization`)}
+        subtitle={section === 'overview' ? undefined : SECTION_BLURB[section]}
+      >
+        {section === 'overview' && canEdit && <button type="button" className="primary-button" onClick={() => setSection('knowledge')}>Import knowledge</button>}
+        {section === 'knowledge' && pending.length > 0 && <button type="button" className="secondary-button" onClick={() => setSection('promotions')}>{pending.length} promotion{pending.length === 1 ? '' : 's'} to review</button>}
+      </PageHead>
+      {section === 'overview' && (
+        <div className="team-chips page-chips">
+          <span className="chip"><strong>{teams.length}</strong> team{teams.length === 1 ? '' : 's'}</span>
+          <span className="chip"><strong>{projectCount}</strong> project{projectCount === 1 ? '' : 's'}</span>
+          <span className="chip"><strong>{membershipCount}</strong> membership{membershipCount === 1 ? '' : 's'}</span>
+          {knowledge && <span className="chip"><strong>{knowledge.documents}</strong> knowledge doc{knowledge.documents === 1 ? '' : 's'}</span>}
+          {pending.length > 0 && <span className="chip attention"><strong>{pending.length}</strong> promotion{pending.length === 1 ? '' : 's'} to review</span>}
         </div>
-        <div className="team-hero-actions">
-          {canEdit && <button type="button" className="primary-button" onClick={() => setSection('knowledge')}>Import knowledge</button>}
-        </div>
-      </header>
+      )}
 
       {error && <p className="error-text team-flash">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
 
-      <div className="team-layout single">
-        <div className="team-content">
+      <div className="team-content">
           {section === 'overview' && (
             <>
               <div className="stat-grid">
@@ -160,15 +169,7 @@ export function OrgPage() {
 
           {section === 'knowledge' && <OrgKnowledgePanel canEdit={canEdit} teams={teams} />}
 
-          {section === 'integrations' && (
-            <section className="card panel team-section">
-              <div className="team-section-head">
-                <h3>Integrations</h3>
-                <span className="panel-subtitle">Shared by every team. Credentials first, then connect.</span>
-              </div>
-              <IntegrationsPanel embedded />
-            </section>
-          )}
+          {section === 'integrations' && <IntegrationsPanel embedded />}
 
           {section === 'models' && <ModelsSection canEdit={canEdit} />}
 
@@ -179,7 +180,6 @@ export function OrgPage() {
           {section === 'teams' && (
             <TeamsSection teams={teams} busy={busy} act={act} onCreated={refresh} />
           )}
-        </div>
       </div>
     </section>
   )

@@ -212,6 +212,9 @@ make down
 
 ## Model setup: bring your own key (BYOK)
 
+A key is required before the first project: **New project** is disabled and
+`POST /api/projects` answers `409 no_provider_key` until one is stored.
+
 Spaces does not come with model access and never names a model. You bring
 the API keys of the providers you already pay for, and Spaces routes across
 what those keys unlock.

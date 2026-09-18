@@ -14,7 +14,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer'
 export interface MeUser { userId: string; email: string; name: string; avatarUrl?: string | null; githubLogin?: string | null }
 export interface MeTeam { teamId: string; name: string; slug: string; role: TeamRole; memberCount: number; projectCount: number }
-export interface Me { authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string }
+export interface Me { authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string; /** A model provider key is stored; projects cannot be created without one. */ modelsReady?: boolean }
 
 interface AuthState { me: Me | null; refresh: () => Promise<void>; signOut: () => Promise<void>; switchTeam: (teamId: string) => Promise<void> }
 
@@ -35,16 +35,16 @@ export async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function AuthRoot({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string } | null>(null)
+  const [status, setStatus] = useState<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string; modelsReady?: boolean } | null>(null)
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const [signedOut, setSignedOut] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const s = await json<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string }>('/api/auth/status')
+      const s = await json<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string; modelsReady?: boolean }>('/api/auth/status')
       setStatus(s)
-      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel }); setSignedOut(false); return }
+      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel, modelsReady: s.modelsReady }); setSignedOut(false); return }
       const m = await json<Me>('/api/me')
       setMe(m)
       setSignedOut(false)

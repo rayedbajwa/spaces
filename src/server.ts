@@ -40,6 +40,7 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkProviderKeys } from './lib/provider-check'
 import { defaultModel, getModelPolicy, getTierRouting, updateModelPolicy, warmModelRouting, type ModelPolicy } from './lib/model-policy'
+import { configuredProviders } from './lib/default-model'
 import {
   createKnowledgeSource, deleteKnowledgeDocument, deleteKnowledgeSource, getKnowledgeSource, getKnowledgeStatus,
   indexKnowledgeDocument, KNOWLEDGE_SOURCE_KINDS, listKnowledgeDocuments, listKnowledgeSources, resetKnowledgeSourceCursor,
@@ -255,7 +256,7 @@ async function route(req: Request): Promise<Response> {
   let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: await defaultModel() })
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: await defaultModel(), modelsReady: configuredProviders().length > 0 })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
@@ -313,8 +314,9 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/me') {
-    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: await defaultModel() })
-    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: await defaultModel() })
+    const modelsReady = configuredProviders().length > 0
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: await defaultModel(), modelsReady })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: await defaultModel(), modelsReady })
   }
 
   if (method === 'POST' && url.pathname === '/api/me/team' && auth) {
@@ -652,6 +654,8 @@ async function route(req: Request): Promise<Response> {
     }>(req)
     if (!body.name?.trim()) return sendJson(400, { error: 'name is required' })
     if (auth && !auth.activeTeam) return sendJson(400, { error: 'Create or join a team before creating a project.' })
+    // Onboarding and every stage need a model: refuse rather than create a project that cannot run.
+    if (configuredProviders().length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
     const project = await projCreate({ name: body.name.trim(), description: body.description?.trim(), teamId: auth?.activeTeam?.teamId ?? null })
     for (const r of body.repos ?? []) {
       await projAddRepo({ projectId: project.projectId, ...r })
@@ -683,6 +687,7 @@ async function route(req: Request): Promise<Response> {
     const project = await projGet(projectId)
     if (!project) return sendJson(404, { error: 'Project not found.' })
     if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it before re-running onboarding.' })
+    if (configuredProviders().length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
     const body = await readJson<{ model?: string }>(req)
     void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel() })
     return sendJson(202, getOnboardingSnapshot(projectId))

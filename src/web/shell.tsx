@@ -283,11 +283,15 @@ function AccountBlock({ user, onSignOut, onTeam }: { user: { name: string; email
 }
 
 /** Page header inside the main panel: title, optional count, right-hand tools. */
-export function PageHead({ title, count, children }: { title: string; count?: ReactNode; children?: ReactNode }) {
+export function PageHead({ title, count, eyebrow, subtitle, children }: { title: ReactNode; count?: ReactNode; eyebrow?: ReactNode; subtitle?: ReactNode; children?: ReactNode }) {
   return (
     <div className="page-head">
-      <h1 className="page-title">{title}{count !== undefined && <span className="page-count">{count}</span>}</h1>
-      <div className="page-tools">{children}</div>
+      <div className="page-head-text">
+        {eyebrow && <div className="page-eyebrow">{eyebrow}</div>}
+        <h1 className="page-title">{title}{count !== undefined && <span className="page-count">{count}</span>}</h1>
+        {subtitle && <p className="page-subtitle">{subtitle}</p>}
+      </div>
+      {children && <div className="page-tools">{children}</div>}
     </div>
   )
 }

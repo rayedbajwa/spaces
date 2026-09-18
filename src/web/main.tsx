@@ -431,7 +431,9 @@ const defaultWizard: WizardState = {
 }
 
 function App() {
-  const { me } = useAuth()
+  const { me, refresh: refreshMe } = useAuth()
+  // Undefined (older payload) counts as ready so the UI never blocks by mistake; the server still refuses.
+  const modelsReady = me?.modelsReady !== false
   const serverDefaultModel = me?.defaultModel ? `auto: ${me.defaultModel}` : 'auto (organization routing)'
   const [board, setBoard] = useState<BoardResponse>({ columns: [] })
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null)
@@ -1796,7 +1798,7 @@ function App() {
       setTeamPageSlug(null)
       const match = /^\/spaces\/([^/]+)/.exec(window.location.pathname)
       if (match) void openProjectByCode(decodeURIComponent(match[1]!), true)
-      else { setIsProjectModalOpen(false); document.title = 'Spaces' }
+      else { setIsProjectModalOpen(false); document.title = 'Spaces'; void refreshMe() }
     }
     fromPath()
     window.addEventListener('popstate', fromPath)
@@ -1823,7 +1825,10 @@ function App() {
   const visibleCards = allCards.filter(({ card }) => cardMatches(card))
   const boardHasProjects = allCards.length > 0
   const attentionCount = allCards.filter(({ card }) => card.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(card.automationState.state)).length
-  const openWizard = () => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }
+  const openWizard = () => {
+    if (!modelsReady) { setStatusMessage('Add a model provider key under Models before creating a project.'); navigate('/organization?section=models'); return }
+    setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true)
+  }
 
   return (
     <main className="app-shell">
@@ -1858,8 +1863,17 @@ function App() {
       {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && (<>
       <PageHead title="Projects" count={boardHasProjects ? `${allCards.length}` : undefined}>
         {boardHasProjects && <SearchBox value={boardQuery} onChange={setBoardQuery} placeholder="Search projects…" />}
-        <button className="primary-button" onClick={openWizard} type="button">+ New project</button>
+        <button className={modelsReady ? 'primary-button' : 'secondary-button'} onClick={openWizard} type="button" title={modelsReady ? undefined : 'Add a model provider key first'}>+ New project</button>
       </PageHead>
+      {!modelsReady && (
+        <div className="setup-banner" role="status">
+          <div className="setup-banner-text">
+            <strong>Add a model key to start creating projects.</strong>
+            <span>Spaces runs its agents on your own Anthropic, OpenAI or OpenRouter key. Keys are stored encrypted and verified when saved.</span>
+          </div>
+          <button type="button" className="primary-button" onClick={() => navigate('/organization?section=models')}>Open Models</button>
+        </div>
+      )}
       {!boardHasProjects ? (
         <section className="card welcome-panel">
           <div className="welcome-copy">
@@ -1871,7 +1885,7 @@ function App() {
               initialises the Spec Kit workspace and runs the AIDLC pipeline while you watch.
             </p>
             <div className="button-row">
-              <button className="primary-button" onClick={openWizard} type="button">New project</button>
+              <button className="primary-button" onClick={openWizard} type="button" disabled={!modelsReady} title={modelsReady ? undefined : 'Add a model provider key first'}>New project</button>
               {!allIntegrationsConnected && (
                 <button className="secondary-button" onClick={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }} type="button">Connect integrations</button>
               )}
@@ -2116,9 +2130,6 @@ function App() {
                     )}
                   </div>
                 </div>
-              </div>
-              <div className="team-hero-actions">
-                <button className="secondary-button" onClick={() => closeProject()} type="button" title="Back to the board (Esc)">Back to board</button>
               </div>
             </header>
 

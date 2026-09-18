@@ -150,7 +150,7 @@ export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams:
 
   return (
     <section className="card panel slim-panel knowledge-panel">
-      <div>
+      <div className="knowledge-panel-intro">
         <h3 style={{ margin: 0 }}>Knowledge base</h3>
         <p className="panel-subtitle">Import spaces, projects, initiatives, repositories, web pages and notes. Agents search it (<code>org_knowledge_search</code>) and every stage starts with the excerpts relevant to its project.</p>
       </div>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { json, navigate, useAuth, type MeTeam, type TeamRole } from './auth'
+import { PageHead } from './shell'
 
 /**
  * Team (space) settings as a full page at /teams/<slug>.
@@ -110,44 +111,31 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
 
   return (
     <section className="team-page" aria-label={`${team.name} settings`}>
-      <header className="team-hero card">
-        <div className="team-hero-main">
-          <div className="team-avatar" aria-hidden="true">{detail?.team.codePrefix ?? team.name.slice(0, 2).toUpperCase()}</div>
-          <div className="team-hero-text">
-            <div className="breadcrumb"><span className="text-subtle">Team space</span></div>
-            <TeamName name={detail?.team.name ?? team.name} canEdit={canManage} busy={busy} onRename={(name) => act(() => json(`/api/teams/${team.teamId}`, { method: 'PATCH', body: JSON.stringify({ name }) }).then(() => refresh()), 'Team renamed.')} />
-            <div className="team-chips">
-              <span className="chip"><strong>{members.length}</strong> member{members.length === 1 ? '' : 's'}</span>
-              <span className="chip"><strong>{active.length}</strong> active project{active.length === 1 ? '' : 's'}</span>
-              {archived.length > 0 && <span className="chip muted"><strong>{archived.length}</strong> archived</span>}
-              <span className="chip role" title={ROLE_HINT[role]}>you: {role}</span>
-              {detail?.team.codePrefix && <span className="chip mono" title="Project codes start with this prefix">codes {detail.team.codePrefix}-…</span>}
-            </div>
-          </div>
-        </div>
-        <div className="team-hero-actions">
-          {canManage && <button type="button" className="primary-button" onClick={() => setSection('invites')}>Invite people</button>}
-        </div>
-      </header>
+      <PageHead
+        title={<TeamName name={detail?.team.name ?? team.name} canEdit={canManage} busy={busy} onRename={(name) => act(() => json(`/api/teams/${team.teamId}`, { method: 'PATCH', body: JSON.stringify({ name }) }).then(() => refresh()), 'Team renamed.')} />}
+        eyebrow="Team space"
+      >
+        {canManage && <button type="button" className="primary-button" onClick={() => setSection('invites')}>Invite people</button>}
+      </PageHead>
+      <div className="team-chips page-chips">
+        <span className="chip"><strong>{members.length}</strong> member{members.length === 1 ? '' : 's'}</span>
+        <span className="chip"><strong>{active.length}</strong> active project{active.length === 1 ? '' : 's'}</span>
+        {archived.length > 0 && <span className="chip muted"><strong>{archived.length}</strong> archived</span>}
+        <span className="chip role" title={ROLE_HINT[role]}>you: {role}</span>
+        {detail?.team.codePrefix && <span className="chip mono" title="Project codes start with this prefix">codes {detail.team.codePrefix}-…</span>}
+      </div>
 
       {error && <p className="error-text team-flash">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
 
-      <div className="team-layout">
-        <nav className="team-nav card" aria-label="Team settings sections">
-          {[...new Set(visibleSections.map((s) => s.group))].map((group) => (
-            <div key={group} className="team-nav-group">
-              <div className="team-nav-group-title">{group}</div>
-              {visibleSections.filter((s) => s.group === group).map((s) => (
-                <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
-                  <span className="team-nav-label">{s.label}</span>
-                  <span className="team-nav-hint">{s.hint}</span>
-                  {s.id === 'invites' && (detail?.invites.length ?? 0) > 0 && <span className="team-nav-count">{detail!.invites.length}</span>}
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
+      <div className="tab-row page-tabs" role="tablist" aria-label="Team settings sections">
+        {visibleSections.map((s) => (
+          <button key={s.id} type="button" role="tab" className={`tab-button ${section === s.id ? 'active' : ''}`} aria-selected={section === s.id} onClick={() => setSection(s.id)}>
+            {s.label}
+            {s.id === 'invites' && (detail?.invites.length ?? 0) > 0 && <span className="tab-count">{detail!.invites.length}</span>}
+          </button>
+        ))}
+      </div>
 
         <div className="team-content">
           {section === 'overview' && (
@@ -241,7 +229,6 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
           )}
 
         </div>
-      </div>
     </section>
   )
 }

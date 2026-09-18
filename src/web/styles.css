@@ -2342,3 +2342,32 @@ textarea {
   .search-box { min-width: 0; flex: 1 1 160px; }
   .archived-popover.side { left: 0; top: calc(100% + 4px); margin-left: 0; }
 }
+
+/* Setup banner (e.g. no model key yet) */
+.setup-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin: 0 0 18px; padding: 14px 18px; border-radius: var(--r-lg);
+  border: 1px solid rgba(234, 179, 8, 0.32); background: linear-gradient(90deg, rgba(234, 179, 8, 0.10), rgba(234, 179, 8, 0.04));
+}
+.setup-banner-text { display: grid; gap: 2px; font-size: 13.5px; }
+.setup-banner-text strong { color: var(--text-strong); }
+.setup-banner-text span { color: var(--text-muted); }
+
+/* Page headers on team / organization pages */
+.page-head-text { display: grid; gap: 4px; min-width: 0; }
+.page-eyebrow { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-subtle); }
+.page-subtitle { margin: 0; font-size: 13.5px; color: var(--text-muted); max-width: 72ch; }
+.page-title .team-title { margin: 0; font-size: inherit; font-weight: inherit; letter-spacing: inherit; }
+.page-title .team-title-edit input { font-size: 20px; }
+.page-chips { margin: -8px 0 18px; }
+.page-tabs { margin: 0 0 16px; }
+.tab-count { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--amber-soft); color: var(--amber); }
+.team-page > .team-content { display: grid; gap: 14px; }
+.project-hero .team-hero-actions { display: none; }
+
+/* Flat project hero inside the main panel; the shell already frames the page */
+.project-page { margin-top: 0; }
+.project-page-shell { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.project-hero { padding: 4px 0 18px; border-radius: 0; background: transparent; border-bottom: 1px solid var(--border); }
+.project-tabs { padding-left: 0; padding-right: 0; }
+.org-page .knowledge-panel-intro { display: none; }

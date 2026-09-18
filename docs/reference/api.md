@@ -35,7 +35,7 @@ to a team the caller is not a member of. `GET /api/projects`, `/api/board` and
 | Method & path | Purpose |
 |---|---|
 | `GET /api/projects` | List projects |
-| `POST /api/projects` | Create: `{ name, description?, repos?, model?, feature? }`. Creates the governing workspace and starts onboarding |
+| `POST /api/projects` | Create: `{ name, description?, repos?, model?, feature? }`. Creates the governing workspace and starts onboarding; `409 no_provider_key` when no model key is stored |
 | `GET /api/projects/:id` | Detail with repos, integrations and suggestions |
 | `PATCH /api/projects/:id` | Update |
 | `POST /api/runs/:id/pause` · `POST …/resume` · `POST …/cancel` | Pause a running run at its next stage boundary (a queued run is held before start), resume a user-paused run, or cancel a queued/running/paused run; each returns the run snapshot |

@@ -60,6 +60,11 @@ also **Continue with GitHub**. See
 
 ## Bring your model keys
 
+!!! note "Required before the first project"
+    **New project** stays disabled, and `POST /api/projects` answers `409`,
+    until at least one provider key is stored. The Projects page shows a
+    banner with a shortcut to **Models** until then.
+
 Spaces routes across the model providers you already have accounts with; it
 ships without any. Supported providers and where to create a key:
 
