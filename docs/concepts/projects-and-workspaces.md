@@ -4,6 +4,15 @@ A **project** is the unit you work with on the board. It can span several
 repositories and draws on app-wide integrations. Runs belong to a project and
 target its primary checkout.
 
+## Codes and pages
+
+Every project has a readable code such as `PLAT-12`: a prefix derived from
+its team's name (initials of the words, or the first letters of a single
+word) and a counter per prefix. The code appears on cards and opens the
+project's own page at `/spaces/PLAT-12`, so it can be linked, bookmarked and
+refreshed. Click the code on the page to copy its link; **← Board** or Esc
+returns to the board. `GET /api/projects/by-code/PLAT-12` resolves a code.
+
 ## The governing workspace
 
 Every new project gets a **governing workspace**: a local git repository
@@ -65,6 +74,35 @@ Adding, re-cloning or editing a repository later re-learns it, sets it up and
 recomposes memory; removing one drops its brief and prunes the knowledge scope.
 `Rebuild from code` in the Memory tab does the same for projects created before
 onboarding existed.
+
+## Pausing, archiving and deleting a project
+
+**Pause** (Overview tab) holds the project without losing anything: queued
+jobs stay queued but are not dispatched, and running runs finish the stage
+they are in, then stop (`paused`, kind `user`). **Resume** lets jobs dispatch
+again and re-queues those runs from the stage they stopped before.
+
+**Archive** (Overview tab) is the recommended way to retire a project: it
+cancels anything queued, running or paused (jobs and runs end as
+`cancelled`, live agent sessions are disposed), keeps every run, artifact,
+memory and snapshot, removes the project from the board, and refuses new runs
+and jobs until you **Unarchive**. Archived projects are listed in the
+**Archived** dropdown above the board; pick one to open it.
+
+**Delete permanently…** is offered only for archived projects and cannot be
+undone. It shows what would go and requires typing `delete <project-key>`,
+where the key is the project's code (for example `delete plat-12`); the exact
+phrase is shown above the field and can be copied.
+Deletion is refused while the project is active: queued, running or paused
+runs, queued or running jobs, busy agents, or onboarding still in progress.
+
+What is removed: every run with its steps, events, gates, artifacts and
+handoff memory; jobs; project memory; imported snapshots; agents and
+orchestrator settings; the governing workspace on disk; GitHub clones that no
+other project uses, with their worktrees; and agent session files. A local
+repository you registered yourself is never deleted — only the worktrees
+Spaces created inside it. A clone shared with another project is kept.
+`DELETE /api/projects/:id` with `{ "confirm": "delete" }` does the same.
 
 ## Memory and context
 

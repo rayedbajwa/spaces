@@ -17,6 +17,8 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
 
 ![The board](screenshots/board.png)
 
+![Project page with the docked agent output](screenshots/project-page.png)
+
 ## What it does
 
 <div class="grid cards" markdown>
@@ -41,9 +43,18 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
 
 -   **Integrations as knowledge**
 
-    Jira, Confluence, Linear and GitHub are exposed to agents as scoped tools;
-    tickets can be imported as the starting point of a feature.
+    Jira, Confluence, Linear and GitHub are exposed to agents as scoped tools,
+    tickets can be imported as the starting point of a feature, and whole
+    spaces, projects, initiatives, repositories, web pages and notes can be
+    imported into an organization knowledge base with semantic search.
     See [Integrations as knowledge](concepts/integrations-and-knowledge.md).
+
+-   **Self-serve, organization-wide setup**
+
+    OAuth app credentials, memory, the knowledge base and teams are managed
+    on the organization page; each team has a page for members, invites,
+    memory and knowledge defaults. See
+    [Organization, teams & access](concepts/organization-teams-and-access.md).
 
 -   **Delivery, end to end**
 

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 
 /**
  * Authentication + teams for the web UI.
@@ -14,14 +14,20 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer'
 export interface MeUser { userId: string; email: string; name: string; avatarUrl?: string | null; githubLogin?: string | null }
 export interface MeTeam { teamId: string; name: string; slug: string; role: TeamRole; memberCount: number; projectCount: number }
-export interface Me { authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string } }
+export interface Me { authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string }
 
 interface AuthState { me: Me | null; refresh: () => Promise<void>; signOut: () => Promise<void>; switchTeam: (teamId: string) => Promise<void> }
 
 const AuthContext = createContext<AuthState>({ me: null, refresh: async () => undefined, signOut: async () => undefined, switchTeam: async () => undefined })
 export const useAuth = () => useContext(AuthContext)
 
-async function json<T>(url: string, init?: RequestInit): Promise<T> {
+/** Navigate inside the SPA: push the URL and let the app's router effect react. */
+export function navigate(path: string): void {
+  if (window.location.pathname !== path) window.history.pushState({}, '', path)
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+export async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { ...(init?.body ? { 'content-type': 'application/json' } : {}), ...(init?.headers ?? {}) } })
   const data = (await response.json().catch(() => ({}))) as T & { error?: string }
   if (!response.ok) throw new Error(data.error ?? `${response.status}`)
@@ -29,16 +35,16 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function AuthRoot({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean } | null>(null)
+  const [status, setStatus] = useState<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string } | null>(null)
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const [signedOut, setSignedOut] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const s = await json<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean }>('/api/auth/status')
+      const s = await json<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string }>('/api/auth/status')
       setStatus(s)
-      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null }); setSignedOut(false); return }
+      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel }); setSignedOut(false); return }
       const m = await json<Me>('/api/me')
       setMe(m)
       setSignedOut(false)
@@ -170,10 +176,8 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
 export function UserMenu() {
   const { me, signOut, switchTeam, refresh } = useAuth()
   const [open, setOpen] = useState(false)
-  const [teamOpen, setTeamOpen] = useState(false)
-  const [orgOpen, setOrgOpen] = useState(false)
-  const [newTeam, setNewTeam] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [switching, setSwitching] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
   const inviteToken = inviteTokenFromPath()
   const [inviteMsg, setInviteMsg] = useState('')
 
@@ -185,52 +189,88 @@ export function UserMenu() {
       .catch((e) => setInviteMsg(e instanceof Error ? e.message : String(e)))
   }, [inviteToken, me?.user?.userId, refresh])
 
+  // Close on outside click and Escape.
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => { if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false) }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+
   if (!me?.authEnabled || !me.user) return null
   const active = me.activeTeam
   const canManage = active && (active.role === 'owner' || active.role === 'admin')
-
-  async function createTeam() {
-    if (!newTeam.trim()) return
-    setBusy(true)
-    try {
-      await json('/api/teams', { method: 'POST', body: JSON.stringify({ name: newTeam.trim() }) })
-      setNewTeam('')
-      await refresh()
-      window.location.reload()
-    } finally { setBusy(false) }
-  }
+  const isAdminAnywhere = me.teams.some((t) => t.role === 'owner' || t.role === 'admin')
+  const go = (path: string) => { setOpen(false); navigate(path) }
 
   return (
-    <div className="user-menu">
+    <div className="user-menu" ref={rootRef}>
       {inviteMsg && <span className="mini-badge idle">{inviteMsg}</span>}
-      <select className="team-switcher" value={active?.teamId ?? ''} onChange={(e) => void switchTeam(e.target.value)} title="Active team (space)">
-        {me.teams.map((t) => <option key={t.teamId} value={t.teamId}>{t.name} · {t.role}</option>)}
-        {me.teams.length === 0 && <option value="">No team yet</option>}
-      </select>
-      <button type="button" className="avatar-button" onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} title={`${me.user.name} · ${me.user.email}`}>
+      <button type="button" className={`account-button ${open ? 'open' : ''}`} onClick={() => setOpen((v) => !v)} aria-haspopup="menu" aria-expanded={open} title={`${me.user.name} · ${me.user.email}`}>
         {me.user.avatarUrl ? <img className="avatar" src={me.user.avatarUrl} alt="" /> : <span className="avatar avatar-initial">{me.user.name.slice(0, 1).toUpperCase()}</span>}
+        <span className="account-team">{active?.name ?? 'No team'}</span>
+        <span className="account-chevron" aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div className="menu-popover card" role="menu">
-          <div className="menu-section">
-            <strong className="menu-name">{me.user.name}</strong>
-            <span className="menu-label">{me.user.email}</span>
-            {active && <span className="menu-label">Team: {active.name} ({active.role})</span>}
-          </div>
-          {active && <button type="button" className="menu-item" onClick={() => { setOpen(false); setTeamOpen(true) }}>{canManage ? 'Team settings, members & invites' : 'Team members'}</button>}
-          <button type="button" className="menu-item" onClick={() => { setOpen(false); setOrgOpen(true) }}>Organization memory</button>
-          <div className="menu-section">
-            <span className="menu-label">New team (space)</span>
-            <div className="button-row">
-              <input value={newTeam} onChange={(e) => setNewTeam(e.target.value)} placeholder="Platform team" />
-              <button type="button" className="secondary-button" disabled={busy || !newTeam.trim()} onClick={() => void createTeam()}>Create</button>
+        <div className="menu-popover card account-menu" role="menu">
+          <div className="account-head">
+            {me.user.avatarUrl ? <img className="avatar account-avatar" src={me.user.avatarUrl} alt="" /> : <span className="avatar avatar-initial account-avatar">{me.user.name.slice(0, 1).toUpperCase()}</span>}
+            <div className="account-id">
+              <strong>{me.user.name}</strong>
+              <span>{me.user.email}</span>
             </div>
           </div>
-          <button type="button" className="menu-item" onClick={() => void signOut()}>Sign out</button>
+
+          <div className="menu-group">
+            <div className="menu-group-title">Teams <span className="text-subtle">· switch</span></div>
+            {me.teams.map((t) => {
+              const isActive = t.teamId === active?.teamId
+              return (
+                <button key={t.teamId} type="button" className={`menu-row ${isActive ? 'active' : ''}`} role="menuitemradio" aria-checked={isActive} disabled={switching !== null} onClick={() => { if (isActive) { go(`/teams/${encodeURIComponent(t.slug)}`); return } setSwitching(t.teamId); void switchTeam(t.teamId) }}>
+                  <span className="menu-row-icon team-dot" aria-hidden="true">{t.name.slice(0, 1).toUpperCase()}</span>
+                  <span className="menu-row-main">
+                    <span className="menu-row-title">{t.name}</span>
+                    <span className="menu-row-sub">{t.role} · {t.projectCount} project{t.projectCount === 1 ? '' : 's'} · {t.memberCount} member{t.memberCount === 1 ? '' : 's'}</span>
+                  </span>
+                  <span className="menu-row-end">{switching === t.teamId ? '…' : isActive ? '✓' : ''}</span>
+                </button>
+              )
+            })}
+            {me.teams.length === 0 && <div className="menu-row-sub" style={{ padding: '6px 10px' }}>You are not in a team yet.</div>}
+            {active && (
+              <button type="button" className="menu-row" role="menuitem" onClick={() => go(`/teams/${encodeURIComponent(active.slug)}`)}>
+                <span className="menu-row-icon" aria-hidden="true">⚙</span>
+                <span className="menu-row-main"><span className="menu-row-title">{canManage ? 'Team settings' : 'Team members'}</span><span className="menu-row-sub">{canManage ? 'Members, invites, memory, knowledge defaults' : `Who is in ${active.name}`}</span></span>
+              </button>
+            )}
+          </div>
+
+          <div className="menu-group">
+            <div className="menu-group-title">Organization</div>
+            <button type="button" className="menu-row" role="menuitem" onClick={() => go('/organization')}>
+              <span className="menu-row-icon" aria-hidden="true">◈</span>
+              <span className="menu-row-main"><span className="menu-row-title">Overview &amp; memory</span><span className="menu-row-sub">Shared by every team</span></span>
+            </button>
+            <button type="button" className="menu-row" role="menuitem" onClick={() => go('/organization?section=knowledge')}>
+              <span className="menu-row-icon" aria-hidden="true">▤</span>
+              <span className="menu-row-main"><span className="menu-row-title">Knowledge base</span><span className="menu-row-sub">Imports and search</span></span>
+            </button>
+            <button type="button" className="menu-row" role="menuitem" onClick={() => go('/organization?section=integrations')}>
+              <span className="menu-row-icon" aria-hidden="true">⇄</span>
+              <span className="menu-row-main"><span className="menu-row-title">Integrations</span><span className="menu-row-sub">{isAdminAnywhere ? 'Credentials and connections' : 'Connection status'}</span></span>
+            </button>
+          </div>
+
+          <div className="menu-group">
+            <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); void signOut() }}>
+              <span className="menu-row-icon" aria-hidden="true">⎋</span>
+              <span className="menu-row-main"><span className="menu-row-title">Sign out</span></span>
+            </button>
+          </div>
         </div>
       )}
-      {teamOpen && active && <TeamDialog team={active} onClose={() => { setTeamOpen(false); void refresh() }} />}
-      {orgOpen && <OrgDialog onClose={() => { setOrgOpen(false); void refresh() }} canEdit={me.teams.some((t) => t.role === 'owner' || t.role === 'admin')} />}
     </div>
   )
 }
@@ -238,175 +278,3 @@ export function UserMenu() {
 // ---------------------------------------------------------------------------
 // Team dialog: members, roles, invites, memory, rename
 // ---------------------------------------------------------------------------
-
-interface TeamDetail {
-  team: { teamId: string; name: string; slug: string }
-  role: TeamRole
-  members: Array<{ userId: string; email: string; name: string; role: TeamRole; joinedAt: string }>
-  invites: Array<{ inviteId: string; email: string; role: string; expiresAt: string; invitedByName?: string | null }>
-  memory: { manualText: string; updatedAt: string }
-}
-
-function TeamDialog({ team, onClose }: { team: MeTeam; onClose: () => void }) {
-  const { me } = useAuth()
-  const [detail, setDetail] = useState<TeamDetail | null>(null)
-  const [error, setError] = useState('')
-  const [inviteEmail, setInviteEmail] = useState('')
-  const [inviteRole, setInviteRole] = useState<'admin' | 'member' | 'viewer'>('member')
-  const [inviteLink, setInviteLink] = useState('')
-  const [memory, setMemory] = useState('')
-  const [name, setName] = useState(team.name)
-  const [busy, setBusy] = useState(false)
-
-  const load = useCallback(async () => {
-    try {
-      const d = await json<TeamDetail>(`/api/teams/${team.teamId}`)
-      setDetail(d)
-      setMemory(d.memory.manualText)
-      setName(d.team.name)
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
-  }, [team.teamId])
-  useEffect(() => { void load() }, [load])
-
-  const canManage = detail?.role === 'owner' || detail?.role === 'admin'
-  const act = async (fn: () => Promise<unknown>) => {
-    setBusy(true); setError('')
-    try { await fn(); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
-  }
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-shell" style={{ maxWidth: 780 }} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <h2>{detail?.team.name ?? team.name}</h2>
-            <p className="panel-subtitle">Team (space) · your role: {detail?.role ?? team.role} · {detail?.members.length ?? team.memberCount} member(s)</p>
-          </div>
-          <button type="button" className="ghost-button" onClick={onClose}>Close</button>
-        </div>
-        {error && <p className="error-text">{error}</p>}
-
-        {canManage && (
-          <section className="card panel slim-panel">
-            <h3>Name</h3>
-            <div className="button-row">
-              <input value={name} onChange={(e) => setName(e.target.value)} />
-              <button type="button" className="secondary-button" disabled={busy || !name.trim() || name === detail?.team.name} onClick={() => void act(() => json(`/api/teams/${team.teamId}`, { method: 'PATCH', body: JSON.stringify({ name }) }))}>Rename</button>
-            </div>
-          </section>
-        )}
-
-        <section className="card panel slim-panel">
-          <h3>Members</h3>
-          <div className="repo-list">
-            {(detail?.members ?? []).map((m) => (
-              <div key={m.userId} className="repo-row">
-                <div className="repo-row-main">
-                  <strong>{m.name}</strong>
-                  <span className="repo-row-source">{m.email}</span>
-                  {canManage && m.userId !== me?.user?.userId ? (
-                    <select value={m.role} disabled={busy} onChange={(e) => void act(() => json(`/api/teams/${team.teamId}/members/${m.userId}`, { method: 'PATCH', body: JSON.stringify({ role: e.target.value }) }))} style={{ width: 'auto', marginLeft: 'auto' }}>
-                      {(['owner', 'admin', 'member', 'viewer'] as TeamRole[]).map((r) => <option key={r} value={r} disabled={r === 'owner' && detail?.role !== 'owner'}>{r}</option>)}
-                    </select>
-                  ) : <span className="mini-badge idle" style={{ marginLeft: 'auto' }}>{m.role}</span>}
-                  {(canManage || m.userId === me?.user?.userId) && (
-                    <button type="button" className="ghost-button" disabled={busy} onClick={() => { if (window.confirm(`Remove ${m.name} from ${team.name}?`)) void act(() => json(`/api/teams/${team.teamId}/members/${m.userId}`, { method: 'DELETE' })) }}>
-                      {m.userId === me?.user?.userId ? 'Leave' : 'Remove'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {canManage && (
-          <section className="card panel slim-panel">
-            <h3>Invite people</h3>
-            <p className="panel-subtitle">Creates a link bound to the email. Share it; it works for 14 days and only for that address.</p>
-            <div className="button-row">
-              <input type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="teammate@company.com" style={{ flex: 1 }} />
-              <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as 'admin' | 'member' | 'viewer')} style={{ width: 'auto' }}>
-                <option value="admin">admin</option><option value="member">member</option><option value="viewer">viewer</option>
-              </select>
-              <button type="button" className="primary-button" disabled={busy || !inviteEmail.trim()} onClick={() => void act(async () => {
-                const r = await json<{ link: string }>(`/api/teams/${team.teamId}/invites`, { method: 'POST', body: JSON.stringify({ email: inviteEmail, role: inviteRole }) })
-                setInviteLink(r.link); setInviteEmail('')
-              })}>Create invite</button>
-            </div>
-            {inviteLink && (
-              <div className="repo-row" style={{ marginTop: 8 }}>
-                <span className="repo-row-source">Invite link (copy and send):</span>
-                <div className="button-row"><code style={{ wordBreak: 'break-all', flex: 1 }}>{inviteLink}</code><button type="button" className="secondary-button" onClick={() => void navigator.clipboard?.writeText(inviteLink)}>Copy</button></div>
-              </div>
-            )}
-            {(detail?.invites ?? []).length > 0 && (
-              <div className="repo-list" style={{ marginTop: 8 }}>
-                {detail!.invites.map((i) => (
-                  <div key={i.inviteId} className="repo-row-main">
-                    <span>{i.email}</span><span className="mini-badge idle">{i.role}</span>
-                    <span className="repo-row-source">expires {new Date(i.expiresAt).toLocaleDateString()}{i.invitedByName ? ` · by ${i.invitedByName}` : ''}</span>
-                    <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void act(() => json(`/api/teams/${team.teamId}/invites/${i.inviteId}`, { method: 'DELETE' }))}>Revoke</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
-
-        <section className="card panel slim-panel">
-          <h3>Team memory</h3>
-          <p className="panel-subtitle">Shared by every project of this team and injected into every agent's context (below the organization memory, above project memory): conventions, review preferences, architecture decisions, rollout rules.</p>
-          <textarea className="memory-editor" value={memory} onChange={(e) => setMemory(e.target.value)} readOnly={detail?.role === 'viewer'} />
-          {detail?.role !== 'viewer' && (
-            <div className="button-row">
-              <button type="button" className="primary-button" disabled={busy} onClick={() => void act(() => json(`/api/teams/${team.teamId}/memory`, { method: 'PUT', body: JSON.stringify({ text: memory }) }))}>Save team memory</button>
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Organization dialog: memory shared by every team
-// ---------------------------------------------------------------------------
-
-function OrgDialog({ onClose, canEdit }: { onClose: () => void; canEdit: boolean }) {
-  const [org, setOrg] = useState<{ name: string; manualText: string; updatedAt: string } | null>(null)
-  const [name, setName] = useState('')
-  const [text, setText] = useState('')
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    json<{ name: string; manualText: string; updatedAt: string }>('/api/org/memory').then((o) => { setOrg(o); setName(o.name); setText(o.manualText) }).catch((e) => setError(e instanceof Error ? e.message : String(e)))
-  }, [])
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-shell" style={{ maxWidth: 720 }} onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <h2>{org?.name ?? 'Organization'}</h2>
-            <p className="panel-subtitle">Shared by every team and project. Agents receive it first, then team memory, then project memory (AIDLC spaces).</p>
-          </div>
-          <button type="button" className="ghost-button" onClick={onClose}>Close</button>
-        </div>
-        {error && <p className="error-text">{error}</p>}
-        <section className="card panel slim-panel">
-          {canEdit && <label>Organization name<input value={name} onChange={(e) => setName(e.target.value)} /></label>}
-          <textarea className="memory-editor" value={text} onChange={(e) => setText(e.target.value)} readOnly={!canEdit} placeholder="Company-wide engineering principles, security policies, architecture standards, definitions of done…" />
-          {canEdit && (
-            <div className="button-row">
-              <button type="button" className="primary-button" disabled={busy} onClick={async () => {
-                setBusy(true); setError('')
-                try { const o = await json<{ name: string; manualText: string; updatedAt: string }>('/api/org/memory', { method: 'PUT', body: JSON.stringify({ name, text }) }); setOrg(o) } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
-              }}>Save organization memory</button>
-              {org?.updatedAt && <span className="panel-subtitle">Updated {new Date(org.updatedAt).toLocaleString()}</span>}
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  )
-}

@@ -82,6 +82,8 @@ export async function buildContextBundle(options: {
   const repoCatalog = await loadRepoCatalog().catch(() => '')
   // Shared layers above the project: organization (everyone) and team (this space).
   const shared = await loadSharedMemoryLayers(projectId).catch(() => ({ orgName: 'Organization', orgMemory: '', teamName: undefined, teamMemory: '' }))
+  // Organization knowledge base: excerpts relevant to this project and its current feature.
+  const orgKnowledge = await loadRetrievedKnowledge(projectId, projectSlug, featureArtifacts).catch(() => ({ available: false, retrieved: '' }))
 
   return {
     projectId,
@@ -109,8 +111,28 @@ export async function buildContextBundle(options: {
       orgMemory: shared.orgMemory,
       teamName: shared.teamName,
       teamMemory: shared.teamMemory,
+      orgKnowledge,
     }),
   }
+}
+
+/**
+ * Pull the handful of knowledge-base excerpts most relevant to the project and
+ * the feature being worked on, so every stage starts with the organization's
+ * standards and prior decisions in view. Scope: organization sources plus the
+ * project's team. Empty when nothing has been imported.
+ */
+async function loadRetrievedKnowledge(projectId: string | undefined, projectSlug: string | undefined, artifacts: ContextArtifact[]): Promise<{ available: boolean; retrieved: string }> {
+  const { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge } = await import('./knowledge-store')
+  const project = projectId ? await getProject(projectId).catch(() => undefined) : undefined
+  const scope = { teamIds: project?.teamId ? [project.teamId] : [] }
+  if (!(await hasOrgKnowledge(scope))) return { available: false, retrieved: '' }
+  // The spec (or the newest artifact) says what this work is about; the project name anchors it.
+  const focus = artifacts[0]?.content.replace(/\s+/g, ' ').slice(0, 800) ?? ''
+  const query = [project?.name ?? projectSlug ?? '', project?.description ?? '', focus].filter(Boolean).join('. ').trim()
+  if (!query) return { available: true, retrieved: '' }
+  const { hits } = await searchOrgKnowledge({ query, scope, limit: 5 })
+  return { available: true, retrieved: hits.length ? renderKnowledgeHits(hits, { maxCharsPerHit: 900 }) : '' }
 }
 
 async function loadOrgContext(): Promise<Record<string, string>> {
@@ -236,6 +258,8 @@ function buildPromptBundle(options: {
   orgMemory?: string
   teamName?: string
   teamMemory?: string
+  /** Organization knowledge base: whether it exists, and excerpts retrieved for this work. */
+  orgKnowledge?: { available: boolean; retrieved: string }
 }): string {
   // Build each section as a labeled block so we can drop the lowest-priority
   // ones if the total exceeds the token budget.
@@ -291,6 +315,17 @@ function buildPromptBundle(options: {
       label: 'repo-catalog',
       priority: 55,
       text: `## Repository catalog (GitHub)\nEvery repository the connected account can see, with what it is for. Plans should name the repositories a feature touches from this list (owner/name); unregistered ones are cloned into the project automatically after the plan stage.\n${options.repoCatalog.trim()}`,
+    })
+  }
+
+  if (options.orgKnowledge?.available) {
+    const intro = `## Organization knowledge base\nThe organization's imported knowledge (Confluence spaces, Jira/Linear projects and initiatives, repository docs, web pages, notes) is searchable with \`org_knowledge_search(query)\`. Check it for standards, architecture decisions, runbooks and prior decisions before designing or implementing, and cite what you rely on.`
+    blocks.push({
+      label: 'org-knowledge',
+      priority: 75,
+      text: options.orgKnowledge.retrieved
+        ? `${intro}\n\nExcerpts retrieved for this project and feature (search for more or for the full documents):\n\n${options.orgKnowledge.retrieved}`
+        : intro,
     })
   }
 

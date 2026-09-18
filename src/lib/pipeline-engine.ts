@@ -13,7 +13,8 @@ import {
 import type { PipelineStep, PipelineTemplate } from './pipeline-template'
 import { evaluateBranchExpression, readCodeReviewStatus, readDeliveryStatus, readVerificationStatus } from './pipeline-branch'
 import { loadPersona } from './persona-loader'
-import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
+import { MODELS, TIER_KEY, loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
+import { isProviderConfigured, tierOfModel } from './default-model'
 import { compactHandoff } from './context-compactor'
 import { log } from './logger'
 
@@ -286,16 +287,29 @@ export class PipelineEngine {
 
   private buildStepModelResolver(): FlowOptions['stepModel'] {
     const engineLog = log.child({ mod: 'pipeline-engine', pipeline: this.template.name })
+    const substituted = new Set<string>()
     return async ({ stageIndex, stage }) => {
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
       const config = await loadRoutingConfig()
       const attempt = step ? this.visitCount.get(step.id) ?? 0 : 0
+      // A template may pin a model from a provider this deployment has no key
+      // for (the bundled templates pin Anthropic models). Keep the author's
+      // intent — the size tier — but on a provider we can actually call.
+      let explicitModel = step?.model
+      if (explicitModel && !isProviderConfigured(explicitModel)) {
+        const substitute = MODELS[TIER_KEY[tierOfModel(explicitModel)]]
+        if (step && !substituted.has(step.id)) {
+          substituted.add(step.id)
+          engineLog.warn('template pins a model whose provider has no credentials; using the equivalent tier instead', { stepId: step.id, pinned: explicitModel, model: substitute })
+        }
+        explicitModel = substitute
+      }
       const decision = routeModel({
         stage: String(stage),
         role: step?.role,
         mode: this.options.speedMode,
         attempt: Math.max(0, attempt - 1), // first visit = attempt 0
-        explicitModel: step?.model,
+        explicitModel,
         explicitThinking: step?.thinking as never,
         // promptSize would require pre-rendering the prompt; wired in the
         // beforeStagePrompt hook instead where the actual bytes are known.

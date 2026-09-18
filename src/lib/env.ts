@@ -3,9 +3,11 @@
  * clear diagnostic if required vars are missing or malformed.
  *
  * We only enforce the vars that are truly required for the process to run.
- * Integration vars (GITHUB_CLIENT_ID, etc.) are optional — missing means the
- * integration is disabled, not an error.
+ * Integration credentials are not environment variables at all: they are set
+ * in the app (Organization → Integrations) and stored encrypted.
  */
+
+import { PROVIDER_ENV_KEYS, isProviderConfigured, providerOfModel } from './default-model'
 
 export interface EnvReport {
   ok: boolean
@@ -29,31 +31,30 @@ const REQUIRED = [
 ] as const
 
 const AT_LEAST_ONE_OF = [
-  { keys: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'], label: 'LLM provider API key' },
+  { keys: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'], label: 'LLM provider API key' },
 ] as const
 
 /** Non-fatal cross-checks — report as warnings only. */
 function collectWarnings(): string[] {
   const w: string[] = []
 
-  // OAuth: both id + secret must be set together or neither. Half-configured
-  // credentials will confuse the OAuth flow at authorize-time.
-  const pairs: Array<[string, string, string]> = [
-    ['GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET', 'GitHub'],
-    ['ATLASSIAN_CLIENT_ID', 'ATLASSIAN_CLIENT_SECRET', 'Atlassian'],
-    ['SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET', 'Slack'],
-  ]
-  for (const [idKey, secretKey, label] of pairs) {
-    const hasId = !!process.env[idKey]
-    const hasSecret = !!process.env[secretKey]
-    if (hasId !== hasSecret) {
-      w.push(`${label} OAuth is half-configured: set both ${idKey} and ${secretKey}, or neither.`)
-    }
-  }
+  // OAuth credentials moved into the app; leftover variables are ignored and
+  // worth deleting so nobody believes they do something.
+  const leftovers = ['GITHUB', 'ATLASSIAN', 'SLACK', 'LINEAR'].flatMap((p) => [`${p}_CLIENT_ID`, `${p}_CLIENT_SECRET`]).filter((k) => process.env[k])
+  if (leftovers.length) w.push(`${leftovers.join(', ')} are no longer read. Integration credentials are managed under Organization → Integrations; remove these from .env.`)
 
   const port = process.env.PORT
   if (port && !/^\d+$/.test(port)) {
     w.push(`PORT is set to "${port}" — must be an integer; defaulting to 3000.`)
+  }
+
+  // Default models must be callable: a DEFAULT_MODEL on a provider without a
+  // key makes every run fail at the first agent call.
+  for (const key of ['DEFAULT_MODEL', 'DEFAULT_MODEL_SMALL', 'DEFAULT_MODEL_LARGE']) {
+    const spec = process.env[key]?.trim()
+    if (!spec) continue
+    if (!spec.includes('/')) w.push(`${key}="${spec}" should be provider/model, e.g. anthropic/claude-sonnet-4-5 or openrouter/openrouter/auto.`)
+    else if (!isProviderConfigured(spec)) w.push(`${key}="${spec}" names a provider with no API key set (${PROVIDER_ENV_KEYS[providerOfModel(spec) as keyof typeof PROVIDER_ENV_KEYS]}).`)
   }
 
   return w

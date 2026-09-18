@@ -13,7 +13,8 @@
 git clone https://github.com/rayedbajwa/spaces.git
 cd spaces
 cp .env.example .env
-# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48) and ANTHROPIC_API_KEY
+# Edit .env — set ENCRYPTION_KEY (openssl rand -base64 48) and an LLM key
+#   (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY)
 bun install
 bun run db:up            # Postgres in Docker
 bun run db:migrate       # idempotent schema (the server also applies it at boot)

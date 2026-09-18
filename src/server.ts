@@ -29,12 +29,23 @@ import type { PipelineTemplate } from './lib/pipeline-template'
 import { closeDb, getDb } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
-import { beginAuthorization, consumeState, exchangeCode, getProvider } from './lib/oauth'
+import { beginAuthorization, consumeState, exchangeCode, resolveProvider } from './lib/oauth'
+import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, saveOAuthApp } from './lib/oauth-apps'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
-import { checkAnthropicKey } from './lib/provider-check'
+import { checkProviderKeys } from './lib/provider-check'
+import { defaultModel } from './lib/default-model'
+import {
+  createKnowledgeSource, deleteKnowledgeDocument, deleteKnowledgeSource, getKnowledgeSource, getKnowledgeStatus,
+  indexKnowledgeDocument, KNOWLEDGE_SOURCE_KINDS, listKnowledgeDocuments, listKnowledgeSources, resetKnowledgeSourceCursor,
+  searchOrgKnowledge, updateKnowledgeSource, type KnowledgeSourceKind,
+} from './lib/knowledge-store'
+import { importQueueSnapshot, queueKnowledgeImport, recoverInterruptedImports } from './lib/knowledge-import'
+import { listImportCatalog, validateSourceConfig, type CatalogIntegration } from './lib/knowledge-connectors'
+import { confirmPhraseFor, deleteProjectCompletely, previewProjectDeletion, ProjectBusyError, ProjectNotArchivedError } from './lib/project-delete'
+import { cancelProjectWork } from './lib/project-cancel'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import {
@@ -95,12 +106,15 @@ import {
 import {
   addRepo as projAddRepo,
   createProject as projCreate,
-  deleteProject as projDelete,
   getProject as projGet,
   getProjectDetail as projGetDetail,
   getRepo as projGetRepo,
   updateRepo as projUpdateRepo,
   listProjects as projList,
+  setProjectArchived as projSetArchived,
+  setProjectPaused as projSetPaused,
+  ensureProjectCodes,
+  getProjectByCode as projGetByCode,
   removeIntegration as projRemoveIntegration,
   removeRepo as projRemoveRepo,
   updateProject as projUpdate,
@@ -146,9 +160,14 @@ try {
   )
 }
 await ensureFrontendBuilt()
-// A shell ANTHROPIC_API_KEY overrides .env; a placeholder there makes every agent
-// call 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
-void checkAnthropicKey(serverLog)
+// A shell API key overrides .env; a placeholder there makes every agent call
+// 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
+void checkProviderKeys(serverLog)
+// Older projects get their readable code (TEAM-N) on first boot after the upgrade.
+void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
+// Knowledge imports run inside this process; ones cut off by the last restart
+// must not look like they are still running.
+void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked interrupted knowledge imports as failed', { count: n }) }).catch(() => undefined)
 // Keep the GitHub repository catalog fresh (on boot when connected, then every 6h).
 {
   const syncCatalog = () => syncGitHubRepoCatalog().catch((error) => {
@@ -206,8 +225,13 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { ok: true })
   }
 
-  // Client-side routes (sign-in page, invite acceptance) load the SPA shell.
-  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/'))) {
+  // Older project links used /p/<code>; send them to /spaces/<code>.
+  if (method === 'GET' && url.pathname.startsWith('/p/')) {
+    return Response.redirect(`${url.origin}/spaces/${url.pathname.slice('/p/'.length)}${url.search}`, 301)
+  }
+
+  // Client-side routes (sign-in page, invite acceptance, project pages) load the SPA shell.
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname === '/organization')) {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
     return sendHtml(200, html)
   }
@@ -220,7 +244,7 @@ async function route(req: Request): Promise<Response> {
   let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(getProvider('github')) })
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: defaultModel() })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
@@ -278,8 +302,8 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/me') {
-    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null })
-    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory() })
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: defaultModel() })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: defaultModel() })
   }
 
   if (method === 'POST' && url.pathname === '/api/me/team' && auth) {
@@ -334,6 +358,8 @@ async function route(req: Request): Promise<Response> {
       return sendJson(200, { team: await getTeam(teamId) })
     }
     if (method === 'GET' && rest === '/members') return sendJson(200, { members: await listMembers(teamId) })
+    // Every project of the team, archived ones included, for the team page.
+    if (method === 'GET' && rest === '/projects') return sendJson(200, { projects: await projList(teamId) })
     if (method === 'PATCH' && /^\/members\/[0-9a-f-]{36}$/.test(rest)) {
       const denied = requireRole('admin'); if (denied) return denied
       const userId = rest.split('/')[2]!
@@ -394,6 +420,123 @@ async function route(req: Request): Promise<Response> {
     const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
     await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
     return sendJson(200, await getOrgMemory())
+  }
+
+  // ---- Organization knowledge base (RAG): import from integrations, search ----
+  // Sources belong to the organization (every team sees them) or to one team.
+  // Owners/admins of a team import for that team; any owner/admin may import
+  // for the organization. Everyone signed in can search what they can see.
+
+  if (url.pathname === '/api/org/knowledge' || url.pathname.startsWith('/api/org/knowledge/')) {
+    const rest = url.pathname.slice('/api/org/knowledge'.length)
+    const myTeamIds: string[] | 'all' = auth ? auth.teams.map((t) => t.teamId) : 'all'
+    const scope = { teamIds: myTeamIds }
+    const canEditOrg = !auth || auth.teams.some((t) => roleAtLeast(t.role, 'admin'))
+    const canEditScope = (teamId: string | null) => !auth || (teamId ? roleAtLeast(teamRole(teamId) ?? 'viewer', 'admin') : canEditOrg)
+    const visible = (teamId: string | null) => myTeamIds === 'all' || teamId === null || myTeamIds.includes(teamId)
+    const forbidden = () => sendJson(403, { error: 'Only team owners or admins can change the knowledge base.' })
+
+    if (method === 'GET' && rest === '/status') return sendJson(200, await getKnowledgeStatus(scope))
+
+    // What a connected integration offers to import: spaces, projects, teams, initiatives, repositories.
+    if (method === 'GET' && rest === '/catalog') {
+      const integration = url.searchParams.get('integration') as CatalogIntegration | null
+      if (!integration || !['confluence', 'jira', 'linear', 'github'].includes(integration)) return sendJson(400, { error: 'integration must be confluence, jira, linear or github.' })
+      try {
+        return sendJson(200, { integration, entries: await listImportCatalog(integration) })
+      } catch (error) {
+        if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message, entries: [] })
+        return sendJson(502, { error: error instanceof Error ? error.message : String(error), entries: [] })
+      }
+    }
+
+    if (method === 'GET' && rest === '/sources') {
+      return sendJson(200, { sources: await listKnowledgeSources(scope), importing: importQueueSnapshot() })
+    }
+
+    if (method === 'POST' && rest === '/sources') {
+      const body = await readJson<{ kind?: KnowledgeSourceKind; label?: string; config?: Record<string, unknown>; teamId?: string | null }>(req)
+      if (!body.kind || !KNOWLEDGE_SOURCE_KINDS.includes(body.kind)) return sendJson(400, { error: `kind must be one of ${KNOWLEDGE_SOURCE_KINDS.join(', ')}.` })
+      const teamId = body.teamId?.trim() || null
+      if (teamId && auth && !auth.teams.some((t) => t.teamId === teamId)) return sendJson(403, { error: 'You are not a member of that team.' })
+      if (!canEditScope(teamId)) return forbidden()
+      const config = body.config && typeof body.config === 'object' ? body.config : {}
+      const problem = validateSourceConfig(body.kind, config)
+      if (problem) return sendJson(400, { error: problem })
+      if (!body.label?.trim()) return sendJson(400, { error: 'label is required.' })
+      const source = await createKnowledgeSource({ kind: body.kind, label: body.label, config, teamId, createdBy: auth?.user.userId ?? null })
+      if (source.kind !== 'manual') queueKnowledgeImport(source.sourceId)
+      return sendJson(201, { source })
+    }
+
+    // Notes (misc): free text added straight to a "Notes" source of the chosen scope.
+    if (method === 'POST' && rest === '/notes') {
+      const body = await readJson<{ title?: string; content?: string; url?: string; teamId?: string | null }>(req)
+      const teamId = body.teamId?.trim() || null
+      if (teamId && auth && !auth.teams.some((t) => t.teamId === teamId)) return sendJson(403, { error: 'You are not a member of that team.' })
+      if (!canEditScope(teamId)) return forbidden()
+      if (!body.title?.trim() || !body.content?.trim()) return sendJson(400, { error: 'title and content are required.' })
+      const existing = (await listKnowledgeSources({ teamIds: teamId ? [teamId] : [] })).find((s) => s.kind === 'manual' && s.teamId === teamId)
+      const source = existing ?? await createKnowledgeSource({ kind: 'manual', label: 'Notes', teamId, createdBy: auth?.user.userId ?? null })
+      const result = await indexKnowledgeDocument(source, { externalId: `note:${crypto.randomUUID()}`, title: body.title, content: body.content, url: body.url?.trim() || undefined, metadata: { addedBy: auth?.user.email ?? 'local' } })
+      return sendJson(201, { source: await getKnowledgeSource(source.sourceId), result })
+    }
+
+    if (method === 'GET' && rest === '/search') {
+      const query = url.searchParams.get('q')?.trim() ?? ''
+      if (!query) return sendJson(400, { error: 'q is required.' })
+      const limit = Number(url.searchParams.get('limit') ?? '8')
+      const sourceIds = (url.searchParams.get('sources') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+      const result = await searchOrgKnowledge({ query, scope: { teamIds: myTeamIds, sourceIds: sourceIds.length ? sourceIds : undefined }, limit, perDocument: url.searchParams.get('perDocument') !== '0' })
+      return sendJson(200, result)
+    }
+
+    const sourceMatch = /^\/sources\/([0-9a-f-]{36})(\/.*)?$/.exec(rest)
+    if (sourceMatch) {
+      const sourceId = sourceMatch[1]!
+      const sub = sourceMatch[2] ?? ''
+      const source = await getKnowledgeSource(sourceId)
+      if (!source || !visible(source.teamId)) return sendJson(404, { error: 'Knowledge source not found.' })
+
+      if (method === 'GET' && sub === '') return sendJson(200, { source, documents: await listKnowledgeDocuments(sourceId, Number(url.searchParams.get('limit') ?? '100')) })
+      if (method === 'PATCH' && sub === '') {
+        if (!canEditScope(source.teamId)) return forbidden()
+        const body = await readJson<{ label?: string; config?: Record<string, unknown>; enabled?: boolean }>(req)
+        if (body.config) {
+          const problem = validateSourceConfig(source.kind, body.config)
+          if (problem) return sendJson(400, { error: problem })
+        }
+        const updated = await updateKnowledgeSource(sourceId, { label: body.label, config: body.config, enabled: body.enabled })
+        if (body.config && source.kind !== 'manual') queueKnowledgeImport(sourceId)
+        return sendJson(200, { source: updated })
+      }
+      if (method === 'DELETE' && sub === '') {
+        if (!canEditScope(source.teamId)) return forbidden()
+        await deleteKnowledgeSource(sourceId)
+        return sendJson(200, { ok: true })
+      }
+      if (method === 'POST' && sub === '/import') {
+        if (!canEditScope(source.teamId)) return forbidden()
+        if (source.kind === 'manual') return sendJson(400, { error: 'Notes have nothing to import; add notes instead.' })
+        const body = await readJson<{ full?: boolean }>(req)
+        if (body.full) await resetKnowledgeSourceCursor(sourceId)
+        const queued = queueKnowledgeImport(sourceId)
+        return sendJson(202, { queued, source: await getKnowledgeSource(sourceId), importing: importQueueSnapshot() })
+      }
+      if (method === 'POST' && sub === '/documents') {
+        if (!canEditScope(source.teamId)) return forbidden()
+        const body = await readJson<{ externalId?: string; title?: string; content?: string; url?: string }>(req)
+        if (!body.title?.trim() || !body.content?.trim()) return sendJson(400, { error: 'title and content are required.' })
+        const result = await indexKnowledgeDocument(source, { externalId: body.externalId?.trim() || `note:${crypto.randomUUID()}`, title: body.title, content: body.content, url: body.url?.trim() || undefined, metadata: { addedBy: auth?.user.email ?? 'local' } })
+        return sendJson(201, { result, source: await getKnowledgeSource(sourceId) })
+      }
+      const docMatch = /^\/documents\/([0-9a-f-]{36})$/.exec(sub)
+      if (method === 'DELETE' && docMatch) {
+        if (!canEditScope(source.teamId)) return forbidden()
+        return sendJson(200, { ok: await deleteKnowledgeDocument(docMatch[1]!) })
+      }
+    }
+    return sendJson(404, { error: 'Unknown knowledge endpoint.' })
   }
 
   // ---- Authorization: viewers read only; projects belong to teams ----
@@ -466,7 +609,7 @@ async function route(req: Request): Promise<Response> {
     if (governanceEnabled()) {
       await ensureGovernanceWorkspace(project).catch((error) => serverLog.warn('governance workspace creation failed', { slug: project.slug, error: error instanceof Error ? error.message : String(error) }))
     }
-    void startProjectOnboarding(project, { model: body.model?.trim() || 'anthropic/claude-sonnet-4-5', feature: body.feature?.trim() || undefined })
+    void startProjectOnboarding(project, { model: body.model?.trim() || defaultModel(), feature: body.feature?.trim() || undefined })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
   }
@@ -481,9 +624,20 @@ async function route(req: Request): Promise<Response> {
     const projectId = url.pathname.split('/')[3]!
     const project = await projGet(projectId)
     if (!project) return sendJson(404, { error: 'Project not found.' })
+    if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it before re-running onboarding.' })
     const body = await readJson<{ model?: string }>(req)
-    void startProjectOnboarding(project, { model: body.model?.trim() || 'anthropic/claude-sonnet-4-5' })
+    void startProjectOnboarding(project, { model: body.model?.trim() || defaultModel() })
     return sendJson(202, getOnboardingSnapshot(projectId))
+  }
+
+  // Project page by readable code (PLAT-12): detail plus the board card fields the page needs.
+  if (method === 'GET' && /^\/api\/projects\/by-code\/[A-Za-z0-9-]+$/.test(url.pathname)) {
+    const code = decodeURIComponent(url.pathname.split('/').pop()!)
+    const project = await projGetByCode(code)
+    if (!project) return sendJson(404, { error: `No project with code ${code.toUpperCase()}.` })
+    if (auth && project.teamId && !teamRole(project.teamId)) return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
+    const detail = await projGetDetail(project.projectId)
+    return sendJson(200, { ...detail, code: project.code, slug: project.slug })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}$/.test(url.pathname)) {
@@ -501,10 +655,85 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, updated)
   }
 
+  // What deleting the project would remove, and whether it is allowed right now.
+  if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}\/deletion-check$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const role = project.teamId ? teamRole(project.teamId) : undefined
+    const allowed = !auth || !project.teamId || roleAtLeast(role ?? 'viewer', 'admin')
+    return sendJson(200, { ...(await previewProjectDeletion(project)), allowed })
+  }
+
+  // Pause (reversible): queued jobs wait and running runs stop before their next
+  // stage. Resume lets jobs dispatch again and re-queues the runs that paused.
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/(pause|resume)$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const pause = url.pathname.endsWith('/pause')
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    if (auth && project.teamId && !roleAtLeast(teamRole(project.teamId) ?? 'viewer', 'admin')) return sendJson(403, { error: `Only team owners or admins can ${pause ? 'pause' : 'resume'} a project.` })
+    if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it first.' })
+    const { getDb } = await import('./lib/db')
+    const sql = getDb()
+    if (pause) {
+      const updated = await projSetPaused(projectId, true)
+      const running = await sql<Array<{ runId: string }>>`SELECT run_id AS "runId" FROM pipeline_runs WHERE (project_namespace = ${project.slug} OR project_id = ${projectId}) AND status = 'running'`
+      for (const { runId } of running) await sql`SELECT pg_notify('run_pause', ${runId})`
+      const [held] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM project_jobs WHERE project_id = ${projectId} AND status = 'queued'`
+      serverLog.info('project paused', { slug: project.slug, by: auth?.user.email ?? 'local', pausingRuns: running.length, heldJobs: held?.n ?? 0 })
+      return sendJson(200, { ...updated, pausingRuns: running.length, heldJobs: held?.n ?? 0 })
+    }
+    const updated = await projSetPaused(projectId, false)
+    const { requeueRunFromStage } = await import('./lib/run-store')
+    const pausedRuns = await sql<Array<{ runId: string; currentStage: StageName | null }>>`
+      SELECT run_id AS "runId", current_stage AS "currentStage" FROM pipeline_runs
+      WHERE (project_namespace = ${project.slug} OR project_id = ${projectId}) AND status = 'paused' AND pause_kind = 'user'
+    `
+    for (const { runId, currentStage } of pausedRuns) {
+      await requeueRunFromStage(runId, currentStage, 'Resumed by a user.')
+      await enqueueJob({ projectId, kind: 'pipeline_run', triggerSource: 'user', payload: { runId, ...(currentStage ? { fromStage: currentStage } : {}) }, runId })
+    }
+    // Held jobs need no re-insert; wake the dispatchers so they claim them now.
+    await sql`SELECT pg_notify('project_job', ${projectId})`
+    serverLog.info('project resumed', { slug: project.slug, by: auth?.user.email ?? 'local', resumedRuns: pausedRuns.length })
+    return sendJson(200, { ...updated, resumedRuns: pausedRuns.length })
+  }
+
+  // Archive (reversible): hidden from the board, no new runs or jobs, everything kept.
+  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/(archive|unarchive)$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
+    const archive = url.pathname.endsWith('/archive')
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    if (auth && project.teamId && !roleAtLeast(teamRole(project.teamId) ?? 'viewer', 'admin')) return sendJson(403, { error: `Only team owners or admins can ${archive ? 'archive' : 'unarchive'} a project.` })
+    // Archiving stops the project: anything queued, running or paused is cancelled first.
+    const cancelled = archive ? await cancelProjectWork(project, 'Cancelled: project archived') : { jobsCancelled: 0, runsCancelled: 0, runIds: [] }
+    const updated = await projSetArchived(projectId, archive)
+    serverLog.info(archive ? 'project archived' : 'project unarchived', { slug: project.slug, by: auth?.user.email ?? 'local', ...cancelled })
+    return sendJson(200, { ...updated, cancelled })
+  }
+
+  // Delete a project and everything it owns. Permanent, so it takes friction:
+  // the project must be archived, the caller an owner/admin of its team, no
+  // work in progress, and the body must carry "delete <slug>".
   if (method === 'DELETE' && /^\/api\/projects\/[0-9a-f-]{36}$/.test(url.pathname)) {
     const projectId = url.pathname.split('/').pop()!
-    await projDelete(projectId)
-    return sendJson(204, {})
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    if (auth && project.teamId && !roleAtLeast(teamRole(project.teamId) ?? 'viewer', 'admin')) return sendJson(403, { error: 'Only team owners or admins can delete a project.' })
+    const body = await readJson<{ confirm?: string }>(req)
+    if (!project.archivedAt) return sendJson(409, { error: new ProjectNotArchivedError().message, code: 'not_archived' })
+    if ((body.confirm ?? '').trim().toLowerCase().replace(/\s+/g, ' ') !== confirmPhraseFor(project)) return sendJson(400, { error: `Type "${confirmPhraseFor(project)}" to confirm.` })
+    try {
+      const report = await deleteProjectCompletely(project, body.confirm!)
+      serverLog.info('project deleted', { slug: project.slug, by: auth?.user.email ?? 'local', runs: report.runsDeleted, removed: report.removedPaths.length })
+      return sendJson(200, report)
+    } catch (error) {
+      if (error instanceof ProjectBusyError) return sendJson(409, { error: `This project is still active: ${error.activity.reasons.join('; ')}. Finish or cancel that work first.`, activity: error.activity })
+      if (error instanceof ProjectNotArchivedError) return sendJson(409, { error: error.message, code: 'not_archived' })
+      return sendJson(500, { error: error instanceof Error ? error.message : String(error) })
+    }
   }
 
   if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/repos$/.test(url.pathname)) {
@@ -825,10 +1054,26 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/board') {
     const board = await buildBoard()
-    if (!auth?.activeTeam) return sendJson(200, board)
-    // Team scope: cards for this team's projects only.
-    const slugs = new Set((await projList(auth.activeTeam.teamId)).map((p) => p.slug))
-    return sendJson(200, { ...board, columns: board.columns.map((c) => ({ ...c, cards: c.cards.filter((card) => slugs.has(card.projectNamespace)) })) })
+    // Archived projects leave the board unless ?archived=1 asks for them (marked as such).
+    const projects = await projList(auth?.activeTeam?.teamId)
+    const archivedBySlug = new Map(projects.filter((p) => p.archivedAt).map((p) => [p.slug, p.archivedAt!]))
+    const pausedBySlug = new Map(projects.filter((p) => p.pausedAt).map((p) => [p.slug, p.pausedAt!]))
+    const codeBySlug = new Map(projects.filter((p) => p.code).map((p) => [p.slug, p.code!]))
+    const showArchived = url.searchParams.get('archived') === '1'
+    const slugs = auth?.activeTeam ? new Set(projects.map((p) => p.slug)) : undefined
+    const columns = board.columns.map((c) => ({
+      ...c,
+      cards: c.cards
+        .filter((card) => (!slugs || slugs.has(card.projectNamespace)) && (showArchived || !archivedBySlug.has(card.projectNamespace)))
+        .map((card) => ({
+          ...card,
+          ...(codeBySlug.has(card.projectNamespace) ? { code: codeBySlug.get(card.projectNamespace) } : {}),
+          ...(archivedBySlug.has(card.projectNamespace) ? { archivedAt: archivedBySlug.get(card.projectNamespace) } : {}),
+          ...(pausedBySlug.has(card.projectNamespace) ? { pausedAt: pausedBySlug.get(card.projectNamespace) } : {}),
+        })),
+    }))
+    const visibleArchived = [...archivedBySlug.keys()].filter((slug) => !slugs || slugs.has(slug)).length
+    return sendJson(200, { ...board, columns, archivedCount: visibleArchived })
   }
 
   if (method === 'GET' && url.pathname === '/api/org/promotions') {
@@ -1113,6 +1358,30 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, tracker)
   }
 
+  // ---- OAuth app credentials (organization-level, required before connecting) ----
+
+  if (method === 'GET' && url.pathname === '/api/oauth-apps') {
+    return sendJson(200, await listOAuthApps())
+  }
+  if ((method === 'PUT' || method === 'DELETE') && /^\/api\/oauth-apps\/[a-z]+$/.test(url.pathname)) {
+    const provider = url.pathname.split('/').pop()!
+    if (!isOAuthProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
+    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can manage app credentials.' })
+    if (method === 'DELETE') {
+      await deleteOAuthApp(provider)
+      serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
+      return sendJson(200, { ok: true, apps: await listOAuthApps() })
+    }
+    const body = await readJson<{ clientId?: string; clientSecret?: string }>(req)
+    try {
+      await saveOAuthApp(provider, { clientId: body.clientId ?? '', clientSecret: body.clientSecret, updatedBy: auth?.user.userId ?? null })
+    } catch (error) {
+      return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+    }
+    serverLog.info('oauth app credentials saved', { provider, by: auth?.user.email ?? 'local' })
+    return sendJson(200, { ok: true, apps: await listOAuthApps() })
+  }
+
   // ---- App-level integrations ----
 
   if (method === 'GET' && url.pathname === '/api/integrations') {
@@ -1129,8 +1398,8 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
-    const cfg = getProvider(provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" is not configured. Set ${provider.toUpperCase()}_CLIENT_ID + _CLIENT_SECRET in .env.` })
+    const cfg = await resolveProvider(provider)
+    if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Add its client id and secret under Organization → Integrations (or in .env).` })
     const callbackUrl = `${url.origin}/api/oauth/${provider}/callback`
     // projectId is legacy: keep it optional in state so old links don't 500.
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
@@ -1142,8 +1411,8 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/callback$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
-    const cfg = getProvider(provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" no longer configured.` })
+    const cfg = await resolveProvider(provider)
+    if (!cfg) return sendJson(400, { error: `Provider "${provider}" no longer has app credentials.` })
     const code = url.searchParams.get('code')
     const state = url.searchParams.get('state')
     if (!code || !state) return sendJson(400, { error: 'Missing code or state.' })
@@ -1301,11 +1570,11 @@ async function route(req: Request): Promise<Response> {
     const contextBundle = await buildContextBundle({ projectId: project.projectId, projectSlug: project.slug, projectPath: cwd })
 
     // Model resolution: prefer the model from the project's most recent run so
-    // one-off Run <step> clicks don't fall back to whatever Pi's resolver picks
-    // (which lately has been an OpenAI quota-exhausted default).
+    // one-off Run <step> clicks stay on the model the project has been using;
+    // otherwise the deployment default (DEFAULT_MODEL / first configured provider).
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : 'anthropic/claude-sonnet-4-5'
+    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : defaultModel()
 
     const row = await dbCreateRun({
       projectNamespace: project.slug,
@@ -1461,12 +1730,12 @@ async function route(req: Request): Promise<Response> {
     const projectLabel = project.name
     const projectNamespace = project.slug
     const cwd = resolveCwd(repo.localPath)
+    if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it before starting a run.' })
     // Model resolution: prefer explicit body.model → inherit from latest run →
-    // default to a known-good Anthropic model. Prevents Pi's global default from
-    // routing us to a quota-exhausted OpenAI catalog when the caller didn't specify.
+    // the deployment default. Never leave it to Pi's global default provider.
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : 'anthropic/claude-sonnet-4-5')
+    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : defaultModel())
     const baseOptions = toFlowOptions(body)
     const options: FlowOptions = {
       ...baseOptions,
@@ -1558,6 +1827,50 @@ async function route(req: Request): Promise<Response> {
     }
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
+  }
+
+  // Run controls from the agent output dock: pause at the next stage boundary
+  // (or before start), resume a user pause, or cancel outright.
+  if (method === 'POST' && /^\/api\/runs\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
+    const parts = url.pathname.split('/')
+    const runId = parts[3]!
+    const action = parts[4] as 'pause' | 'resume' | 'cancel'
+    const row = await dbGetRun(runId)
+    if (!row) return sendJson(404, { error: 'Run not found.' })
+    const { getDb } = await import('./lib/db')
+    const sql = getDb()
+    const by = auth?.user.email ?? 'local'
+    if (action === 'pause') {
+      if (row.status === 'running') {
+        // The worker finishes the current stage, then records the run as paused (kind 'user').
+        await sql`SELECT pg_notify('run_pause', ${runId})`
+        await dbAppendEvent({ runId, kind: 'pause_requested', payload: { by, note: 'Pausing at the next stage boundary.' } })
+      } else if (row.status === 'queued') {
+        await sql`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = 'Paused by a user before start' WHERE run_id = ${runId} AND status IN ('queued', 'claimed')`
+        const firstStage = (row.templateJson?.steps ?? [])[0]?.stage as StageName | undefined
+        await dbUpdateRunStatus(runId, { status: 'paused', pauseKind: 'user', currentStage: (row.currentStage as StageName | null) ?? firstStage ?? null, errorMessage: null })
+        await dbAppendEvent({ runId, kind: 'paused', payload: { pauseKind: 'user', by, stage: row.currentStage ?? firstStage } })
+      } else {
+        return sendJson(409, { error: `Only a queued or running run can be paused (this one is ${row.status}).` })
+      }
+    } else if (action === 'resume') {
+      if (row.status !== 'paused' || row.pauseKind !== 'user') return sendJson(409, { error: 'Only a run paused by a user can be resumed here; answer or approve other pauses instead.' })
+      const requeued = await requeueRun(row, (row.currentStage as StageName | null) ?? undefined, 'Resumed by a user.', 'user')
+      if (!requeued.ok) return sendJson(409, { error: requeued.error })
+      await dbAppendEvent({ runId, kind: 'resumed', payload: { by, fromStage: row.currentStage } })
+    } else {
+      if (!['queued', 'running', 'paused'].includes(row.status)) return sendJson(409, { error: `This run already finished (${row.status}).` })
+      await sql.begin(async (tx) => {
+        await tx`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = 'Cancelled by a user' WHERE run_id = ${runId} AND status IN ('queued', 'claimed', 'running')`
+        await tx`UPDATE pipeline_runs SET status = 'cancelled', error_message = 'Cancelled by a user', pause_kind = NULL, owning_worker_id = NULL, updated_at = now() WHERE run_id = ${runId}`
+        await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ${runId} AND status = 'open'`
+        await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${runId}, 'cancelled', ${tx.json({ by, reason: 'Cancelled by a user' } as never)})`
+      })
+      await sql`SELECT pg_notify('run_cancel', ${runId})`
+    }
+    serverLog.info(`run ${action}`, { runId, by })
+    const refreshed = await dbGetRun(runId)
+    return sendJson(200, await snapshotFromRow(refreshed ?? row))
   }
 
   // Rerun a failed, interrupted, or completed run — from the stage where it stopped
@@ -2603,14 +2916,14 @@ function attachSubagentEventStream(req: Request, job: SubAgentJobRecord): Respon
 
 /**
  * Model for sub-agent jobs: explicit request → model of the project's latest
- * run → known-good Anthropic default. Same rule as run creation, so sub-agents
- * never fall through to Pi's global default provider.
+ * run → deployment default. Same rule as run creation, so sub-agents never
+ * fall through to Pi's global default provider.
  */
 async function resolveSubagentModel(projectNamespace: string, requested?: string): Promise<string> {
   if (requested?.trim()) return requested.trim()
   const latest = await dbGetLatestRunForProject(projectNamespace)
   const inherited = latest?.optionsJson?.model
-  return inherited?.trim() ? inherited.trim() : 'anthropic/claude-sonnet-4-5'
+  return inherited?.trim() ? inherited.trim() : defaultModel()
 }
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */
@@ -3110,7 +3423,7 @@ interface TimelineEntry {
   stage?: StageName
   title: string
   detail?: string
-  status: 'running' | 'paused' | 'completed' | 'error'
+  status: 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
   createdAt: string
 }
 
@@ -3133,7 +3446,7 @@ interface RunSnapshot {
   stages: StageName[]
   reviewHarness: boolean
   humanInLoop: boolean
-  status: 'running' | 'paused' | 'completed' | 'error'
+  status: 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
   stage?: StageName
   pauseKind?: PauseKind
   log: string
@@ -3268,6 +3581,8 @@ interface BoardColumn {
 
 interface BoardResponse {
   columns: BoardColumn[]
+  /** Archived projects the caller could reveal with ?archived=1. */
+  archivedCount?: number
 }
 
 interface QAArtifactPreview {

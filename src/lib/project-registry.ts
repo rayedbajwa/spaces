@@ -32,11 +32,17 @@ export interface ProjectRow {
   projectId: string
   name: string
   slug: string
+  /** Readable code, e.g. PLAT-12: team prefix + per-prefix counter. */
+  code?: string | null
   description?: string
   knowledgeJson?: ProjectKnowledgeConfig
   suggestionsJson?: ProjectSuggestions | null
   /** Owning team ("space"); null only for legacy rows before the first user bootstrapped. */
   teamId?: string | null
+  /** Set when the project is archived: hidden from the board, no new work; everything kept. */
+  archivedAt?: string | null
+  /** Set while paused: queued jobs wait, runs stop at the next stage boundary; reversible. */
+  pausedAt?: string | null
   createdAt: string
   updatedAt: string
 }
@@ -80,10 +86,13 @@ const PROJECT_COLS = `
   project_id  AS "projectId",
   name        AS "name",
   slug        AS "slug",
+  code        AS "code",
   description AS "description",
   knowledge_json AS "knowledgeJson",
   suggestions_json AS "suggestionsJson",
   team_id AS "teamId",
+  archived_at AS "archivedAt",
+  paused_at AS "pausedAt",
   created_at  AS "createdAt",
   updated_at  AS "updatedAt"
 `
@@ -131,11 +140,77 @@ export async function createProject(input: {
   const sql = getDb()
   const projectId = randomUUID()
   const slug = input.slug ?? generateSlug(input.name)
-  const [row] = await sql<ProjectRow[]>`
+  await sql`
     INSERT INTO projects (project_id, name, slug, description, team_id)
     VALUES (${projectId}, ${input.name}, ${slug}, ${input.description ?? null}, ${input.teamId ?? null})
-    RETURNING ${sql.unsafe(PROJECT_COLS)}
   `
+  return (await assignProjectCode(projectId)) ?? (await getProject(projectId))!
+}
+
+// ---------------------------------------------------------------------------
+// Readable project codes (PLAT-12): prefix from the team name, counter per prefix
+// ---------------------------------------------------------------------------
+
+const FALLBACK_PREFIX = 'PRJ'
+
+/** "Platform Engineering" → PE, "payments" → PAYM, "Data & ML team" → DMT (letters only, 2–4 chars). */
+export function prefixForTeamName(name: string): string {
+  const words = name.toUpperCase().replace(/[^A-Z0-9\s]/g, ' ').split(/\s+/).filter((w) => w && !['TEAM', 'THE', 'AND', 'OF', 'SPACE'].includes(w))
+  let prefix = words.length >= 2 ? words.map((w) => w[0]!).join('').slice(0, 4) : (words[0] ?? '').replace(/[^A-Z]/g, '').slice(0, 4)
+  if (prefix.length < 2) prefix = (words.join('').replace(/[^A-Z]/g, '') + FALLBACK_PREFIX).slice(0, 4)
+  return prefix || FALLBACK_PREFIX
+}
+
+/** The team's code prefix, generated (and made unique) on first use. */
+export async function ensureTeamPrefix(teamId: string): Promise<string> {
+  const sql = getDb()
+  const [team] = await sql<Array<{ name: string; codePrefix: string | null }>>`SELECT name, code_prefix AS "codePrefix" FROM teams WHERE team_id = ${teamId}`
+  if (!team) return FALLBACK_PREFIX
+  if (team.codePrefix) return team.codePrefix
+  const base = prefixForTeamName(team.name)
+  for (let i = 0; i < 100; i += 1) {
+    const candidate = i === 0 ? base : `${base}${i + 1}`
+    const [taken] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM teams WHERE code_prefix = ${candidate}`
+    if (taken?.n) continue
+    const rows = await sql`UPDATE teams SET code_prefix = ${candidate} WHERE team_id = ${teamId} AND code_prefix IS NULL RETURNING team_id`
+    if (rows.length) return candidate
+    const [now] = await sql<Array<{ codePrefix: string | null }>>`SELECT code_prefix AS "codePrefix" FROM teams WHERE team_id = ${teamId}`
+    if (now?.codePrefix) return now.codePrefix
+  }
+  return FALLBACK_PREFIX
+}
+
+/** Give a project the next code for its team's prefix (idempotent). */
+export async function assignProjectCode(projectId: string): Promise<ProjectRow | undefined> {
+  const sql = getDb()
+  const project = await getProject(projectId)
+  if (!project) return undefined
+  if (project.code) return project
+  const prefix = project.teamId ? await ensureTeamPrefix(project.teamId) : FALLBACK_PREFIX
+  return sql.begin(async (tx) => {
+    // One counter per prefix; the lock serialises concurrent creations.
+    await tx`SELECT pg_advisory_xact_lock(8142, hashtext(${prefix}))`
+    const [max] = await tx<Array<{ n: number | null }>>`SELECT max(code_number)::int AS n FROM projects WHERE code LIKE ${`${prefix}-%`} AND code_number IS NOT NULL`
+    const number = (max?.n ?? 0) + 1
+    const [row] = await tx<ProjectRow[]>`
+      UPDATE projects SET code = ${`${prefix}-${number}`}, code_number = ${number} WHERE project_id = ${projectId} AND code IS NULL
+      RETURNING ${sql.unsafe(PROJECT_COLS)}
+    `
+    return row ?? (await getProject(projectId))
+  })
+}
+
+/** Backfill codes for projects created before codes existed, oldest first. */
+export async function ensureProjectCodes(): Promise<number> {
+  const sql = getDb()
+  const rows = await sql<Array<{ projectId: string }>>`SELECT project_id AS "projectId" FROM projects WHERE code IS NULL ORDER BY created_at ASC`
+  for (const { projectId } of rows) await assignProjectCode(projectId)
+  return rows.length
+}
+
+export async function getProjectByCode(code: string): Promise<ProjectRow | undefined> {
+  const sql = getDb()
+  const [row] = await sql<ProjectRow[]>`SELECT ${sql.unsafe(PROJECT_COLS)} FROM projects WHERE upper(code) = ${code.trim().toUpperCase()}`
   return row
 }
 
@@ -166,6 +241,24 @@ export async function listProjects(teamId?: string | null): Promise<ProjectRow[]
   return await sql<ProjectRow[]>`
     SELECT ${sql.unsafe(PROJECT_COLS)} FROM projects ORDER BY updated_at DESC
   `
+}
+
+export async function setProjectPaused(projectId: string, paused: boolean): Promise<ProjectRow | undefined> {
+  const sql = getDb()
+  const [row] = await sql<ProjectRow[]>`
+    UPDATE projects SET paused_at = ${paused ? sql`now()` : null}, updated_at = now() WHERE project_id = ${projectId}
+    RETURNING ${sql.unsafe(PROJECT_COLS)}
+  `
+  return row
+}
+
+export async function setProjectArchived(projectId: string, archived: boolean): Promise<ProjectRow | undefined> {
+  const sql = getDb()
+  const [row] = await sql<ProjectRow[]>`
+    UPDATE projects SET archived_at = ${archived ? sql`now()` : null}, updated_at = now() WHERE project_id = ${projectId}
+    RETURNING ${sql.unsafe(PROJECT_COLS)}
+  `
+  return row
 }
 
 export async function updateProject(projectId: string, patch: { name?: string; description?: string }): Promise<ProjectRow | undefined> {

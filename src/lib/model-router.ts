@@ -9,7 +9,8 @@
  *   3. Retry escalation (attempt N → next tier up)
  *   4. Speed mode override (fast → cheapest viable; quality → most capable)
  *   5. Stage-family default from data/org/model-routing.yml
- *   6. Hard-coded fallback (`anthropic/claude-sonnet-4-5`)
+ *   6. The default tier models (DEFAULT_MODEL* env, else the first configured
+ *      provider — see default-model.ts)
  *
  * The router is decision-only — actually setting the model on the session is
  * still `stepModel` in AIDLCFlow. This module is pure functions + async config
@@ -20,6 +21,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { log } from './logger'
+import { resolveTierModels, type ModelTier } from './default-model'
 
 const routerLog = log.child({ mod: 'model-router' })
 
@@ -50,12 +52,22 @@ export interface RouteDecision {
   reason: string
 }
 
-/** Canonical model IDs. Kept in one place so routing tables are readable. */
-export const MODELS = {
-  haiku: 'anthropic/claude-haiku-4-5',
-  sonnet: 'anthropic/claude-sonnet-4-5',
-  opus: 'anthropic/claude-opus-4-7',
-} as const
+/**
+ * Tier → model spec. The routing tables (and data/org/model-routing.yml) speak
+ * in tiers named after the Anthropic line-up — haiku (small), sonnet (medium),
+ * opus (large) — but what each tier resolves to comes from DEFAULT_MODEL* or the
+ * first provider with credentials (see default-model.ts), so the same tables
+ * work for OpenAI- or OpenRouter-only setups.
+ */
+const tiers = resolveTierModels()
+export const MODELS: Record<'haiku' | 'sonnet' | 'opus', string> = {
+  haiku: tiers.small,
+  sonnet: tiers.medium,
+  opus: tiers.large,
+}
+
+/** Routing-table key for a size tier. */
+export const TIER_KEY: Record<ModelTier, keyof typeof MODELS> = { small: 'haiku', medium: 'sonnet', large: 'opus' }
 
 const TIER: Array<keyof typeof MODELS> = ['haiku', 'sonnet', 'opus']
 

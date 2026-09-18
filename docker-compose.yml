@@ -5,8 +5,9 @@
 #
 # DEVELOPMENT ONLY. The Postgres container here is for local work and demos:
 # it shares the host with the app, has default credentials, no backups and no
-# failover. In production use an external, dedicated Postgres 16 instance and
-# docker-compose.prod.yml (app + supervisor, no bundled database).
+# failover. In production use an external, dedicated Postgres 16 instance with
+# the pgvector extension available (RDS, Cloud SQL, Neon and Supabase ship it)
+# and docker-compose.prod.yml (app + supervisor, no bundled database).
 #
 # The default `docker compose up` starts Postgres only, matching the local
 # dev workflow (`bun run dev` + `bun run supervisor` on the host).
@@ -16,7 +17,9 @@
 
 services:
   postgres:
-    image: postgres:16
+    # Postgres 16 with the pgvector extension (organization knowledge embeddings).
+    # Same on-disk format as postgres:16, so the existing volume carries over.
+    image: pgvector/pgvector:pg16
     container_name: pi-speckit-postgres
     restart: unless-stopped
     environment:

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { PROVIDER_ENV_KEYS } from './default-model'
 import { mkdir, readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -61,7 +62,7 @@ export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhig
 
 export type StageName = keyof typeof STAGE_DEFINITIONS
 export type ThinkingLevel = NonNullable<CreateAgentSessionOptions['thinkingLevel']>
-export type PauseKind = 'clarification' | 'review'
+export type PauseKind = 'clarification' | 'review' | 'user'
 
 export interface ParallelSubAgentResult {
   workstream: string
@@ -120,6 +121,8 @@ export interface FlowOptions {
   sessionManagerFactory?: () => Promise<import('@earendil-works/pi-coding-agent').SessionManager>
   /** Per-stage model override. Returns undefined → use run-level model. */
   stepModel?: (ctx: { stageIndex: number; stage: StageName }) => { model?: string; thinking?: ThinkingLevel } | undefined | Promise<{ model?: string; thinking?: ThinkingLevel } | undefined>
+  /** Checked before each stage; true pauses the flow there (pause kind 'user') so a paused project stops at a clean boundary. */
+  shouldPauseBeforeStage?: (ctx: { stageIndex: number; stage: StageName }) => boolean | Promise<boolean>
   /**
    * Called after each stage's prompt fully returns, with the raw assistant output.
    * PipelineEngine uses this to build a cross-stage handoff thread that preserves
@@ -371,6 +374,10 @@ export class AIDLCFlow {
   private async advance(): Promise<FlowProgress> {
     while (this.stageIndex < this.stages.length) {
       const stage = this.stages[this.stageIndex]
+      if (await this.options.shouldPauseBeforeStage?.({ stageIndex: this.stageIndex, stage })) {
+        this.print(`\n[paused] Project paused by a user before stage ${stage}. Resume the project to continue from here.\n`)
+        return this.pause('user', stage)
+      }
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
 
       const output = await this.runStage(stage)
@@ -975,16 +982,15 @@ function getStageArgument(stage: StageName, options: FlowOptions): string {
  * Create a ModelRuntime with env-provided credentials injected. Every code path
  * that spins up an agent session (the main flow, assistant chat, task/workstream
  * runners, parallel sub-agents) must go through this so they all authenticate
- * the same way. If ANTHROPIC_API_KEY / OPENAI_API_KEY are set (from .env or the
- * shell), they override any stored OAuth token for that provider.
+ * the same way. If ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY are
+ * set (from .env or the shell), they override any stored OAuth token for that
+ * provider.
  */
 export async function createConfiguredModelRuntime(): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create()
-  if (process.env.ANTHROPIC_API_KEY) {
-    await runtime.setRuntimeApiKey('anthropic', process.env.ANTHROPIC_API_KEY)
-  }
-  if (process.env.OPENAI_API_KEY) {
-    await runtime.setRuntimeApiKey('openai', process.env.OPENAI_API_KEY)
+  for (const [provider, envKey] of Object.entries(PROVIDER_ENV_KEYS)) {
+    const key = process.env[envKey]?.trim()
+    if (key) await runtime.setRuntimeApiKey(provider, key)
   }
   return runtime
 }

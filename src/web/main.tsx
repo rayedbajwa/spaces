@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { marked } from 'marked'
-import { AuthRoot, UserMenu } from './auth'
+import { AuthRoot, UserMenu, navigate, useAuth } from './auth'
+import { TeamPage } from './team-page'
+import { OrgPage } from './org-page'
+import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import './styles.css'
 
@@ -37,8 +40,8 @@ function isErrorMessage(message: string): boolean {
   return /^(could not|cannot|can't|error|failed|.*failed:|wizard failed|clone retry failed|disconnect failed)/i.test(message.trim())
 }
 
-type RunStatus = 'running' | 'paused' | 'completed' | 'error'
-type PauseKind = 'clarification' | 'review'
+type RunStatus = 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
+type PauseKind = 'clarification' | 'review' | 'user'
 type TimelineStatus = 'running' | 'paused' | 'completed' | 'error'
 type TimelineKind = 'run' | 'stage' | 'review' | 'input'
 type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'done'
@@ -138,6 +141,10 @@ type BoardCard = {
     reason: string
   }
   artifactLinks: BoardArtifactLink[]
+  archivedAt?: string
+  pausedAt?: string
+  /** Readable code (PLAT-12); also the page URL /spaces/PLAT-12. */
+  code?: string
   artifactDiffs: ArtifactDiffEntry[]
   statusOverride?: BoardStatus
 }
@@ -150,6 +157,7 @@ type BoardColumn = {
 
 type BoardResponse = {
   columns: BoardColumn[]
+  archivedCount?: number
 }
 
 type ProjectMemoryResponse = {
@@ -268,11 +276,25 @@ type ProjectRepoRecord = {
   cloneError?: string
 }
 
+type DeletionPreview = {
+  allowed: boolean
+  archived: boolean
+  confirmPhrase: string
+  activity: { active: boolean; reasons: string[] }
+  runs: number
+  jobs: number
+  snapshots: number
+  repos: Array<{ label: string; kind: string; localPath: string | null; githubRepo: string | null; action: 'delete-clone' | 'delete-workspace' | 'keep-shared' | 'keep-local' | 'none' }>
+}
+
 type ProjectDetailRecord = {
   projectId: string
   slug: string
   name: string
   repos: ProjectRepoRecord[]
+  code?: string | null
+  archivedAt?: string | null
+  pausedAt?: string | null
   integrations: Array<{ integrationId: string; kind: string; status: string; displayName?: string }>
   suggestionsJson?: {
     generatedAt: string
@@ -402,12 +424,14 @@ const defaultWizard: WizardState = {
   ],
   firstFeature: '',
   planContext: '',
-  model: 'anthropic/claude-sonnet-4-5',
+  model: '', // empty = the server's default model (DEFAULT_MODEL / first configured provider)
   thinking: '',
   pipelineName: 'aidlc-classic',
 }
 
 function App() {
+  const { me } = useAuth()
+  const serverDefaultModel = me?.defaultModel ?? 'server default'
   const [board, setBoard] = useState<BoardResponse>({ columns: [] })
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null)
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
@@ -448,6 +472,11 @@ function App() {
   const [isWizardOpen, setIsWizardOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
+  // Team settings page (/teams/<slug>) replaces the board while open.
+  const [teamPageSlug, setTeamPageSlug] = useState<string | null>(null)
+  const [orgPageOpen, setOrgPageOpen] = useState(false)
+  // Archived projects live in a dropdown, never on the board itself.
+  const [archivedMenu, setArchivedMenu] = useState<{ open: boolean; cards: BoardCard[] | null }>({ open: false, cards: null })
   const [boardView, setBoardView] = useState<'board' | 'list'>(() => {
     try { return window.localStorage.getItem('spaces:boardView') === 'list' ? 'list' : 'board' } catch { return 'board' }
   })
@@ -480,6 +509,8 @@ function App() {
   const [projectAgents, setProjectAgents] = useState<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>([])
   const [inspectedRun, setInspectedRun] = useState<RunSnapshot | null>(null)
   const [projectDetail, setProjectDetail] = useState<ProjectDetailRecord | null>(null)
+  // Delete-project flow: preview of what goes, then a typed "delete" confirmation.
+  const [deletion, setDeletion] = useState<{ open: boolean; loading: boolean; preview: DeletionPreview | null; confirm: string; busy: boolean; error: string }>({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })
   const [githubRepos, setGithubRepos] = useState<GitHubRepoOption[] | null>(null)
   const [githubReposNote, setGithubReposNote] = useState('')
   const [onboarding, setOnboarding] = useState<{ projectName: string; snapshot: OnboardingSnapshot } | null>(null)
@@ -769,7 +800,40 @@ function App() {
     }
   }
 
-  async function openProject(card: BoardCard, preferredTab?: ProjectModalTab) {
+  /** Leave the project page: back to the board, URL reset to /. */
+  function closeProject() {
+    setIsProjectModalOpen(false)
+    document.title = 'Spaces'
+    if (window.location.pathname.startsWith('/spaces/')) window.history.pushState({}, '', '/')
+  }
+
+  /** Open a project from its readable code (the /spaces/<code> URL). */
+  async function openProjectByCode(code: string, viaUrl = true) {
+    try {
+      const detail = await getJson<{ slug: string }>(`/api/projects/by-code/${encodeURIComponent(code)}`)
+      await openProjectBySlug(detail.slug, viaUrl)
+    } catch (error) {
+      setStatusMessage(`Could not open project ${code.toUpperCase()}: ${toMessage(error)}`)
+      if (viaUrl) window.history.replaceState({}, '', '/')
+    }
+  }
+
+  /** Open a project by slug, wherever its card lives (board or archived). */
+  async function openProjectBySlug(slug: string, viaUrl = false, preferredTab?: ProjectModalTab) {
+    const everything = await getJson<BoardResponse>('/api/board?archived=1')
+    const card = everything.columns.flatMap((c) => c.cards).find((c) => c.projectNamespace === slug)
+    if (!card) { setStatusMessage('That project is not visible in your current team.'); if (viaUrl) window.history.replaceState({}, '', '/'); return }
+    await openProject(card, preferredTab, viaUrl)
+  }
+
+  async function openProject(card: BoardCard, preferredTab?: ProjectModalTab, viaUrl = false) {
+    // The project is a page with its own URL, so links and refreshes land on it.
+    const path = `/spaces/${encodeURIComponent(card.code ?? card.projectNamespace)}`
+    if (window.location.pathname !== path) {
+      if (viaUrl) window.history.replaceState({}, '', path)
+      else window.history.pushState({}, '', path)
+    }
+    document.title = `${card.code ? `${card.code} · ` : ''}${card.projectLabel} · Spaces`
     // Tear down any previously-connected run SSE before switching projects.
     // loadLatestRun() below will re-open one if the new project has an active
     // run; if it doesn't, the stream stays closed. Without this, the previous
@@ -822,6 +886,86 @@ function App() {
     }
   }
 
+  async function openDeletion() {
+    if (!projectDetail) return
+    setDeletion({ open: true, loading: true, preview: null, confirm: '', busy: false, error: '' })
+    try {
+      const preview = await getJson<DeletionPreview>(`/api/projects/${projectDetail.projectId}/deletion-check`)
+      setDeletion((d) => ({ ...d, loading: false, preview }))
+    } catch (error) {
+      setDeletion((d) => ({ ...d, loading: false, error: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+
+  async function toggleArchivedMenu() {
+    if (archivedMenu.open) { setArchivedMenu((m) => ({ ...m, open: false })); return }
+    setArchivedMenu({ open: true, cards: null })
+    try {
+      const archivedBoard = await getJson<BoardResponse>('/api/board?archived=1')
+      const cards = archivedBoard.columns.flatMap((c) => c.cards).filter((c) => c.archivedAt).sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? ''))
+      setArchivedMenu({ open: true, cards })
+    } catch {
+      setArchivedMenu({ open: true, cards: [] })
+    }
+  }
+
+  async function setPaused(pause: boolean) {
+    if (!projectDetail) return
+    setDeletion((d) => ({ ...d, busy: true, error: '' }))
+    try {
+      const response = await fetch(`/api/projects/${projectDetail.projectId}/${pause ? 'pause' : 'resume'}`, { method: 'POST' })
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; pausedAt?: string | null; pausingRuns?: number; heldJobs?: number; resumedRuns?: number }
+      if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`)
+      setProjectDetail((d) => (d ? { ...d, pausedAt: payload.pausedAt ?? null } : d))
+      setDeletion((d) => ({ ...d, busy: false }))
+      setStatusMessage(pause
+        ? `${projectDetail.name} paused.${payload.pausingRuns ? ` ${payload.pausingRuns} running run(s) will stop at the next stage boundary.` : ''}${payload.heldJobs ? ` ${payload.heldJobs} queued job(s) are held.` : ''}`
+        : `${projectDetail.name} resumed.${payload.resumedRuns ? ` ${payload.resumedRuns} paused run(s) re-queued.` : ''}`)
+      await refreshBoard()
+    } catch (error) {
+      setDeletion((d) => ({ ...d, busy: false, error: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+
+  async function setArchived(archive: boolean) {
+    if (!projectDetail) return
+    const busy = selectedCardFresh?.automationState && !['idle', 'completed'].includes(selectedCardFresh.automationState.state)
+    if (archive && !window.confirm(`Archive ${projectDetail.name}?${busy ? ' Its queued, running or paused work will be cancelled.' : ''} Nothing is deleted; you can unarchive later.`)) return
+    setDeletion((d) => ({ ...d, busy: true, error: '' }))
+    try {
+      const response = await fetch(`/api/projects/${projectDetail.projectId}/${archive ? 'archive' : 'unarchive'}`, { method: 'POST' })
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; archivedAt?: string | null; cancelled?: { jobsCancelled: number; runsCancelled: number } }
+      if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`)
+      setProjectDetail((d) => (d ? { ...d, archivedAt: payload.archivedAt ?? null } : d))
+      setDeletion({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })
+      const cancelledNote = payload.cancelled && (payload.cancelled.runsCancelled || payload.cancelled.jobsCancelled) ? ` Cancelled ${payload.cancelled.runsCancelled} run(s) and ${payload.cancelled.jobsCancelled} job(s).` : ''
+      setStatusMessage(archive ? `${projectDetail.name} archived.${cancelledNote} Find it under Archived above the board; unarchive any time.` : `${projectDetail.name} unarchived.`)
+      if (archive) { closeProject(); setSelectedCard(null); setCurrentRun(null) }
+      await refreshBoard()
+    } catch (error) {
+      setDeletion((d) => ({ ...d, busy: false, error: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+
+  async function confirmDeletion() {
+    if (!projectDetail) return
+    setDeletion((d) => ({ ...d, busy: true, error: '' }))
+    try {
+      const response = await fetch(`/api/projects/${projectDetail.projectId}`, { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm: deletion.confirm }) })
+      const payload = (await response.json().catch(() => ({}))) as { error?: string; runsDeleted?: number; removedPaths?: string[] }
+      if (!response.ok) throw new Error(payload.error ?? `HTTP ${response.status}`)
+      setDeletion({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })
+      closeProject()
+      setSelectedCard(null)
+      setCurrentRun(null)
+      setProjectDetail(null)
+      setStatusMessage(`Project deleted: ${payload.runsDeleted ?? 0} runs and ${payload.removedPaths?.length ?? 0} workspace paths removed.`)
+      await refreshBoard()
+    } catch (error) {
+      setDeletion((d) => ({ ...d, busy: false, error: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+
   async function loadAppIntegrations() {
     try {
       setAppIntegrations(await getJson<Array<{ kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }>>('/api/integrations'))
@@ -871,26 +1015,7 @@ function App() {
     }
   }
 
-  function openOAuthPopup(provider: string) {
-    const url = `/api/oauth/${provider}/authorize`
-    const w = window.open(url, `oauth-${provider}`, 'width=700,height=800')
-    const timer = setInterval(() => {
-      if (!w || w.closed) {
-        clearInterval(timer)
-        void loadAppIntegrations()
-      }
-    }, 800)
-  }
 
-  async function disconnectAppIntegration(kind: string) {
-    if (!confirm(`Disconnect ${kind}? The stored token will be deleted; you'll need to reconnect to sync again.`)) return
-    try {
-      await fetch(`/api/integrations/${kind}`, { method: 'DELETE' })
-      await loadAppIntegrations()
-    } catch (error) {
-      setStatusMessage(`Disconnect failed: ${toMessage(error)}`)
-    }
-  }
 
   async function loadProjectJobs(namespace: string) {
     try {
@@ -1168,6 +1293,7 @@ function App() {
       setImportSearch((c) => ({ ...c, query: '', results: [], note: '' }))
       setWizard(defaultWizard)
       await refreshBoard()
+      await openProjectBySlug(project.slug).catch(() => undefined)
     } catch (error) {
       setOnboarding(null)
       setStatusMessage(`Wizard failed: ${toMessage(error)}`)
@@ -1294,6 +1420,25 @@ function App() {
       if (response.projectNamespace) await loadProjectJobs(response.projectNamespace)
     } catch (error) {
       setStatusMessage(`Could not rerun: ${toMessage(error)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Pause (at the next stage boundary), resume a user pause, or cancel the current run. */
+  async function controlRun(action: 'pause' | 'resume' | 'cancel') {
+    if (!currentRun) return
+    if (action === 'cancel' && !window.confirm(`Cancel this run${currentRun.stage ? ` at stage ${currentRun.stage}` : ''}? Finished stages keep their artifacts; the run itself ends as cancelled.`)) return
+    setBusy(true)
+    try {
+      const response = await postJson<RunSnapshot>(`/api/runs/${currentRun.runId}/${action}`, {})
+      setCurrentRun(response)
+      if (action === 'cancel') disconnectRunEvents()
+      else connectRunEvents(response.runId)
+      setStatusMessage(action === 'pause' ? (response.status === 'paused' ? 'Run paused.' : 'Pause requested — the run stops when the current stage finishes.') : action === 'resume' ? 'Run resumed.' : 'Run cancelled.')
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(`Could not ${action} the run: ${toMessage(error)}`)
     } finally {
       setBusy(false)
     }
@@ -1463,7 +1608,7 @@ function App() {
         // user isn't stuck on a project that no longer exists in the DB.
         setStatusMessage('This project no longer exists in the database. Refreshing…')
         await refreshBoard()
-        setIsProjectModalOpen(false)
+        closeProject()
         setSelectedCard(null)
         setCurrentRun(null)
         return
@@ -1635,6 +1780,26 @@ function App() {
     return groups
   }, [])
 
+  // URL ↔ project page: /spaces/<code> opens that project; Back returns to the board.
+  useEffect(() => {
+    const fromPath = () => {
+      const isOrg = window.location.pathname === '/organization'
+      setOrgPageOpen(isOrg)
+      if (isOrg) setIsIntegrationsModalOpen(false)
+      if (isOrg) { setTeamPageSlug(null); setIsProjectModalOpen(false); return }
+      const teamMatch = /^\/teams\/([^/]+)/.exec(window.location.pathname)
+      if (teamMatch) { setTeamPageSlug(decodeURIComponent(teamMatch[1]!)); setIsProjectModalOpen(false); return }
+      setTeamPageSlug(null)
+      const match = /^\/spaces\/([^/]+)/.exec(window.location.pathname)
+      if (match) void openProjectByCode(decodeURIComponent(match[1]!), true)
+      else { setIsProjectModalOpen(false); document.title = 'Spaces' }
+    }
+    fromPath()
+    window.addEventListener('popstate', fromPath)
+    return () => window.removeEventListener('popstate', fromPath)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Escape closes the top-most overlay (the stage-input prompt handles its own).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1642,7 +1807,7 @@ function App() {
       if (inspectedRun) setInspectedRun(null)
       else if (isIntegrationsModalOpen) setIsIntegrationsModalOpen(false)
       else if (isWizardOpen && !onboarding) setIsWizardOpen(false)
-      else if (isProjectModalOpen) setIsProjectModalOpen(false)
+      else if (isProjectModalOpen) closeProject()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -1656,13 +1821,13 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="topbar-brand">
+        <a className="topbar-brand" href="/" title="Back to the board" onClick={(e) => { e.preventDefault(); navigate('/') }}>
           <span className="topbar-logo" aria-hidden="true">S</span>
           <div>
             <h1>Spaces</h1>
             <p className="eyebrow">Agent-driven SDLC</p>
           </div>
-        </div>
+        </a>
         <div className="hero-actions">
           <button
             className={`integrations-chip ${allIntegrationsConnected ? 'all' : connectedIntegrationCount > 0 ? 'partial' : 'none'}`}
@@ -1694,6 +1859,25 @@ function App() {
               )}
             </span>
           </button>
+          {(board.archivedCount ?? 0) > 0 && (
+            <div className="archived-menu">
+              <button type="button" className="secondary-button" aria-haspopup="menu" aria-expanded={archivedMenu.open} onClick={() => void toggleArchivedMenu()}>
+                Archived ({board.archivedCount}) ▾
+              </button>
+              {archivedMenu.open && (
+                <div className="menu-popover card archived-popover" role="menu">
+                  {archivedMenu.cards === null && <span className="menu-label">Loading…</span>}
+                  {archivedMenu.cards?.length === 0 && <span className="menu-label">No archived projects.</span>}
+                  {archivedMenu.cards?.map((card) => (
+                    <button key={card.projectNamespace} type="button" className="menu-item" role="menuitem" onClick={() => { setArchivedMenu({ open: false, cards: archivedMenu.cards }); void openProject(card) }}>
+                      <strong>{card.projectLabel}</strong>
+                      <span className="menu-label">{card.code ?? card.projectNamespace}{card.archivedAt ? ` · archived ${new Date(card.archivedAt).toLocaleDateString()}` : ''}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <button className="primary-button" onClick={openWizard} type="button">New project</button>
           <UserMenu />
         </div>
@@ -1706,11 +1890,15 @@ function App() {
         </div>
       )}
 
-      {!boardHasProjects ? (
+      {orgPageOpen && <OrgPage />}
+      {teamPageSlug && <TeamPage slug={teamPageSlug} teams={me?.teams ?? []} />}
+
+      {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && (!boardHasProjects ? (
         <section className="card welcome-panel">
           <div className="welcome-copy">
-            <p className="eyebrow">Nothing here yet</p>
-            <h2>Start your first project in this team</h2>
+            <p className="eyebrow">{(board.archivedCount ?? 0) > 0 ? 'Nothing active' : 'Nothing here yet'}</p>
+            <h2>{(board.archivedCount ?? 0) > 0 ? `All ${board.archivedCount} project${board.archivedCount === 1 ? ' is' : 's are'} archived` : 'Start your first project in this team'}</h2>
+            {(board.archivedCount ?? 0) > 0 && <p className="hero-copy">Open them from the <strong>Archived</strong> menu in the top bar, where you can unarchive or delete them. Or start something new.</p>}
             <p className="hero-copy">
               Describe what you want to build, or import a Jira / Linear ticket. Onboarding clones your repositories, learns them,
               initialises the Spec Kit workspace and runs the AIDLC pipeline while you watch.
@@ -1762,7 +1950,7 @@ function App() {
                 {allCards.map(({ card, column }) => (
                   <tr key={card.projectNamespace} onClick={() => void openProject(card)}>
                     <td>
-                      <strong>{card.projectLabel}</strong>
+                      <strong>{card.code && <span className="code-badge">{card.code}</span>} {card.projectLabel}</strong>
                       <small>{card.projectNamespace}</small>
                     </td>
                     <td><span className="mini-badge idle">{column.title}</span></td>
@@ -1879,8 +2067,10 @@ function App() {
                     onClick={() => void openProject(card)}
                   >
                     <div className="board-card-top">
-                      <strong>{card.projectLabel}</strong>
+                      <strong>{card.code && <span className="code-badge">{card.code}</span>} {card.projectLabel}</strong>
                       <span className={`mini-badge ${card.latestRun?.status ?? 'idle'}`}>{card.status}</span>
+                      {card.archivedAt && <span className="mini-badge archived">archived</span>}
+                      {card.pausedAt && !card.archivedAt && <span className="mini-badge paused">paused</span>}
                     </div>
                     <p className="board-card-copy">{card.feature || 'No active feature yet'}</p>
                     <div className="summary-grid">
@@ -1925,13 +2115,23 @@ function App() {
         </div>
         )}
       </section>
-      )}
+      ))}
 
-      {isProjectModalOpen && selectedCardFresh && (
-        <div className="modal-overlay" onClick={() => setIsProjectModalOpen(false)}>
-          <div className="modal-shell modal-sticky" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={selectedCardFresh.projectLabel}>
-            <div className="modal-header">
+      {isProjectModalOpen && !teamPageSlug && !orgPageOpen && selectedCardFresh && (
+        <section className="project-page" aria-label={selectedCardFresh.projectLabel}>
+          <div className="project-page-shell">
+            <div className="modal-header project-page-header">
               <div className="modal-title">
+                <div className="breadcrumb">
+                  <button type="button" className="ghost-button" onClick={() => closeProject()} title="Back to the board (Esc)">← Board</button>
+                  {selectedCardFresh.code && (
+                    <button type="button" className="code-badge code-badge-button" title="Copy project link" onClick={() => { void navigator.clipboard?.writeText(`${window.location.origin}/spaces/${selectedCardFresh.code}`); setStatusMessage(`Link to ${selectedCardFresh.code} copied.`) }}>
+                      {selectedCardFresh.code}
+                    </button>
+                  )}
+                  {projectDetail?.archivedAt && <span className="mini-badge archived">archived</span>}
+                  {projectDetail?.pausedAt && !projectDetail.archivedAt && <span className="mini-badge paused">paused</span>}
+                </div>
                 <h2>{selectedCardFresh.projectLabel}</h2>
                 <p className="panel-subtitle">{selectedCardFresh.feature || selectedCardFresh.projectPath}</p>
               </div>
@@ -1942,11 +2142,11 @@ function App() {
                     {selectedCardFresh.automationState.state.replace('_', ' ')}
                   </button>
                 )}
-                <button className="ghost-button icon-button" onClick={() => setIsProjectModalOpen(false)} type="button" aria-label="Close" title="Close (Esc)">×</button>
+                <button className="secondary-button" onClick={() => closeProject()} type="button" title="Back to the board (Esc)">Back to board</button>
               </div>
             </div>
 
-            <div className="tab-row modal-tabs" role="tablist">
+            <div className="tab-row modal-tabs project-page-tabs" role="tablist">
               {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
                 const needsAttention = tab === 'assistant' && selectedCardFresh.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(selectedCardFresh.automationState.state)
                 return (
@@ -1989,41 +2189,6 @@ function App() {
               </div>
             )}
 
-            {/* Always-visible AI agent output — persists across every tab.
-                Only surface currentRun if it belongs to the currently-open
-                project — protects the log from cross-project leaks caused by
-                stale SSE subscriptions or overlapping loads. */}
-            <AiAgentOutputBar
-              currentRun={
-                currentRun && (!currentRun.projectNamespace || currentRun.projectNamespace === selectedProjectNamespace)
-                  ? currentRun
-                  : null
-              }
-              runInFlight={runInFlight}
-              nextStep={(() => {
-                // Derive the next actionable step from artifact state (highest-milestone rule).
-                if (!selectedCardFresh) return undefined
-                if (!hasArtifact('Initialized')) return { step: 'init', label: 'Initialize the project scaffolding.', reason: 'No .specify/ or AGENTS.md yet.' }
-                if (!hasArtifact('Specified')) return { step: 'specify', label: 'Write the feature specification.', reason: 'No spec.md found.' }
-                if (!hasArtifact('Planned')) return { step: 'plan', label: 'Design the implementation plan.', reason: 'Spec exists but no plan.md.' }
-                if (!hasArtifact('Tasked')) return { step: 'tasks', label: 'Break the plan into implementable tasks.', reason: 'Plan exists but no tasks.md.' }
-                if (!hasArtifact('Test Plan')) return { step: 'testplan', label: 'Draft the test plan.', reason: 'Tasks exist but no test-plan.md.' }
-                if (!hasArtifact('Parallelize')) return { step: 'parallelize', label: 'Group tasks into parallel workstreams.', reason: 'No parallel-workstreams.md yet.' }
-                if (!hasArtifact('Verify')) {
-                  // All tracked tasks done → verification is the next move, not more implementation.
-                  const tasksDone = taskTrackerItems.length > 0 && taskTrackerItems.every((item) => item.status === 'done' || item.checked)
-                  if (tasksDone) return { step: 'verify', label: 'Run verification.', reason: `All ${taskTrackerItems.length} tasks are complete — no verification report yet.` }
-                  return { step: 'implement', label: 'Run implementation.', reason: 'Ready to code — no verification report yet.' }
-                }
-                if (selectedCardFresh.verificationStatus !== 'pass') return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
-                return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Verified and done.' }
-              })()}
-              onRunNext={(step) => void executeStep(step, 'implementation')}
-              canAnswer={canAnswer}
-              onSendAnswer={(a) => void sendAnswer(a)}
-              onRerun={(fromStage) => void rerunRun(fromStage)}
-              busy={busy}
-            />
 
             <div className="gate-strip">
               {gateReadiness.map((gate) => (
@@ -2220,6 +2385,83 @@ function App() {
                     ))}
                   </div>
                 </section>
+                {projectDetail && (
+                  <section className="card panel slim-panel danger-zone">
+                    <h3>{projectDetail.archivedAt ? 'Archived project' : 'Pause, archive or delete'}</h3>
+                    {!projectDetail.archivedAt && (
+                      <div className="button-row" style={{ marginBottom: 8 }}>
+                        {projectDetail.pausedAt
+                          ? <button type="button" className="primary-button" disabled={deletion.busy} onClick={() => void setPaused(false)}>Resume project</button>
+                          : <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setPaused(true)}>Pause project</button>}
+                        <span className="panel-subtitle">
+                          {projectDetail.pausedAt
+                            ? `Paused ${new Date(projectDetail.pausedAt).toLocaleString()}. Queued jobs are held and runs stopped at a stage boundary; resuming picks them up where they left off.`
+                            : 'Holds queued jobs and lets running runs finish their current stage, then stops. Nothing is lost; resume any time.'}
+                        </span>
+                      </div>
+                    )}
+                    {projectDetail.archivedAt && (
+                      <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>Archived {new Date(projectDetail.archivedAt).toLocaleString()}. Hidden from the board; runs and jobs are refused until it is unarchived. Nothing has been removed.</p>
+                    )}
+                    {deletion.error && !deletion.open && <p className="error-text">{deletion.error}</p>}
+                    {!deletion.open && !projectDetail.archivedAt && (
+                      <div className="button-row">
+                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(true)}>Archive project</button>
+                        <span className="panel-subtitle">Recommended. Cancels anything queued, running or paused, keeps every run, artifact and memory, and moves the project to the Archived menu above the board. Reversible. Deletion is only offered for archived projects.</span>
+                      </div>
+                    )}
+                    {!deletion.open && projectDetail.archivedAt && (
+                      <div className="button-row">
+                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(false)}>Unarchive</button>
+                        <button type="button" className="danger-button" disabled={deletion.busy} onClick={() => void openDeletion()}>Delete permanently…</button>
+                        <span className="panel-subtitle">Deleting cannot be undone: runs, memory, snapshots, the governing workspace and clones only this project uses are removed.</span>
+                      </div>
+                    )}
+                    {deletion.open && (
+                      <div className="knowledge-inline-form">
+                        {deletion.loading && <span className="panel-subtitle">Checking what would be removed…</span>}
+                        {deletion.error && <p className="error-text">{deletion.error}</p>}
+                        {deletion.preview && !deletion.preview.allowed && <p className="error-text">Only owners or admins of this project's team can delete it.</p>}
+                        {deletion.preview && !deletion.preview.archived && <p className="error-text">Archive the project first. Deletion is permanent; archiving keeps everything and can be undone.</p>}
+                        {deletion.preview?.activity.active && (
+                          <p className="error-text">Still active: {deletion.preview.activity.reasons.join('; ')}. Finish or cancel that work first.</p>
+                        )}
+                        {deletion.preview && !deletion.preview.activity.active && (
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                            <li>{deletion.preview.runs} run{deletion.preview.runs === 1 ? '' : 's'}, {deletion.preview.jobs} job{deletion.preview.jobs === 1 ? '' : 's'}, {deletion.preview.snapshots} imported snapshot{deletion.preview.snapshots === 1 ? '' : 's'}, memory, agents and orchestrator settings</li>
+                            {deletion.preview.repos.map((r) => (
+                              <li key={`${r.label}-${r.localPath ?? r.githubRepo ?? ''}`}>
+                                <strong>{r.label}</strong>{' '}
+                                {r.action === 'delete-workspace' && <>— governing workspace <code>{r.localPath}</code> will be removed</>}
+                                {r.action === 'delete-clone' && <>— clone <code>{r.localPath ?? r.githubRepo}</code> will be removed</>}
+                                {r.action === 'keep-shared' && <>— kept, another project also uses it</>}
+                                {r.action === 'keep-local' && <>— your local checkout <code>{r.localPath}</code> is kept (only its worktrees are removed)</>}
+                                {r.action === 'none' && <>— nothing on disk</>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {deletion.preview && deletion.preview.allowed && deletion.preview.archived && !deletion.preview.activity.active && (
+                          <div className="knowledge-inline-form">
+                            <p className="error-text" style={{ margin: 0 }}>This cannot be undone. There is no trash and no restore.</p>
+                            <div className="confirm-phrase">
+                              <span className="panel-subtitle" style={{ margin: 0 }}>Type this to confirm:</span>
+                              <code className="confirm-phrase-text" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }} title="Click to copy">{deletion.preview.confirmPhrase}</code>
+                              <button type="button" className="ghost-button" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }}>Copy</button>
+                            </div>
+                            <div className="button-row">
+                              <input value={deletion.confirm} onChange={(e) => setDeletion((d) => ({ ...d, confirm: e.target.value }))} placeholder={deletion.preview.confirmPhrase} autoFocus style={{ flex: 1 }} />
+                              <button type="button" className="danger-button" disabled={deletion.busy || deletion.confirm.trim().toLowerCase().replace(/\s+/g, ' ') !== deletion.preview.confirmPhrase} onClick={() => void confirmDeletion()}>{deletion.busy ? 'Deleting…' : 'Delete permanently'}</button>
+                            </div>
+                          </div>
+                        )}
+                        <div className="button-row">
+                          <button type="button" className="ghost-button" disabled={deletion.busy} onClick={() => setDeletion({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                )}
                 <section className="card panel slim-panel">
                   <h3>Orchestrator</h3>
                   {projectWorker && (
@@ -2822,53 +3064,61 @@ function App() {
               </section>
             )}
             </div>
+            {/* Always-visible AI agent output — persists across every tab.
+                Only surface currentRun if it belongs to the currently-open
+                project — protects the log from cross-project leaks caused by
+                stale SSE subscriptions or overlapping loads. */}
+            <AiAgentOutputBar
+              currentRun={
+                currentRun && (!currentRun.projectNamespace || currentRun.projectNamespace === selectedProjectNamespace)
+                  ? currentRun
+                  : null
+              }
+              runInFlight={runInFlight}
+              nextStep={(() => {
+                // Derive the next actionable step from artifact state (highest-milestone rule).
+                if (!selectedCardFresh) return undefined
+                if (!hasArtifact('Initialized')) return { step: 'init', label: 'Initialize the project scaffolding.', reason: 'No .specify/ or AGENTS.md yet.' }
+                if (!hasArtifact('Specified')) return { step: 'specify', label: 'Write the feature specification.', reason: 'No spec.md found.' }
+                if (!hasArtifact('Planned')) return { step: 'plan', label: 'Design the implementation plan.', reason: 'Spec exists but no plan.md.' }
+                if (!hasArtifact('Tasked')) return { step: 'tasks', label: 'Break the plan into implementable tasks.', reason: 'Plan exists but no tasks.md.' }
+                if (!hasArtifact('Test Plan')) return { step: 'testplan', label: 'Draft the test plan.', reason: 'Tasks exist but no test-plan.md.' }
+                if (!hasArtifact('Parallelize')) return { step: 'parallelize', label: 'Group tasks into parallel workstreams.', reason: 'No parallel-workstreams.md yet.' }
+                if (!hasArtifact('Verify')) {
+                  // All tracked tasks done → verification is the next move, not more implementation.
+                  const tasksDone = taskTrackerItems.length > 0 && taskTrackerItems.every((item) => item.status === 'done' || item.checked)
+                  if (tasksDone) return { step: 'verify', label: 'Run verification.', reason: `All ${taskTrackerItems.length} tasks are complete — no verification report yet.` }
+                  return { step: 'implement', label: 'Run implementation.', reason: 'Ready to code — no verification report yet.' }
+                }
+                if (selectedCardFresh.verificationStatus !== 'pass') return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
+                return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Verified and done.' }
+              })()}
+              onRunNext={(step) => void executeStep(step, 'implementation')}
+              canAnswer={canAnswer}
+              onSendAnswer={(a) => void sendAnswer(a)}
+              onRerun={(fromStage) => void rerunRun(fromStage)}
+              onPause={() => void controlRun('pause')}
+              onResume={() => void controlRun('resume')}
+              onCancel={() => void controlRun('cancel')}
+              projectPaused={Boolean(projectDetail?.pausedAt)}
+              busy={busy}
+            />
           </div>
-        </div>
+        </section>
       )}
 
       {isIntegrationsModalOpen && (
-        <div className="modal-overlay" onClick={() => setIsIntegrationsModalOpen(false)}>
-          <div className="modal-shell" style={{ maxWidth: 720, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-overlay" onClick={() => { setIsIntegrationsModalOpen(false); void loadAppIntegrations() }}>
+          <div className="modal-shell modal-sticky" style={{ maxWidth: 900, width: '92vw' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 style={{ margin: 0 }}>App integrations</h2>
-                <p className="panel-subtitle" style={{ marginTop: 4 }}>
-                  One connection per external system for the whole app. All projects share these credentials.
-                  Requires provider CLIENT_ID + CLIENT_SECRET in .env (and ENCRYPTION_KEY for token storage).
-                </p>
+                <h2 style={{ margin: 0 }}>Integrations</h2>
+                <p className="panel-subtitle" style={{ marginTop: 4 }}>What is connected for the whole organization.</p>
               </div>
-              <button type="button" className="ghost-button" onClick={() => setIsIntegrationsModalOpen(false)}>Close</button>
+              <button type="button" className="ghost-button" onClick={() => { setIsIntegrationsModalOpen(false); void loadAppIntegrations() }}>Close</button>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 12 }}>
-              {INTEGRATION_KINDS.map((kind) => {
-                const found = appIntegrations.find((i) => i.kind === kind)
-                const status = found?.status ?? 'not_connected'
-                const oauthProvider = kind === 'jira' || kind === 'confluence' ? 'atlassian' : kind
-                return (
-                  <div key={kind} className="card" style={{ padding: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span className={`mini-badge ${status === 'connected' && found?.credentialsOk !== false ? 'completed' : status === 'error' || found?.credentialsOk === false ? 'error' : 'idle'}`} style={{ minWidth: 90, textAlign: 'center' }} title={found?.credentialsOk === false ? 'The stored token cannot be decrypted with this server’s ENCRYPTION_KEY (it changed, or was saved by another environment). Reconnect to fix.' : undefined}>
-                      {status === 'connected' ? (found?.credentialsOk === false ? '⚠ reconnect needed' : '✓ connected') : status}
-                    </span>
-                    <div style={{ flex: 1 }}>
-                      <strong style={{ textTransform: 'capitalize' }}>{kind}</strong>
-                      {found?.displayName && <span style={{ marginLeft: 8, color: '#6b7280', fontSize: 13 }}>{found.displayName}</span>}
-                      {found?.updatedAt && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>updated {new Date(found.updatedAt).toLocaleString()}</div>}
-                      {(kind === 'jira' || kind === 'confluence') && (
-                        <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>Uses the shared Atlassian OAuth token.</div>
-                      )}
-                    </div>
-                    {status === 'connected' && found?.credentialsOk !== false ? (
-                      <button type="button" className="ghost-button" style={{ padding: '4px 10px', fontSize: 12 }} onClick={() => void disconnectAppIntegration(kind)}>
-                        Disconnect
-                      </button>
-                    ) : (
-                      <button type="button" className="primary-button" style={{ padding: '4px 12px', fontSize: 12 }} onClick={() => openOAuthPopup(oauthProvider)}>
-                        {found?.credentialsOk === false ? 'Reconnect via OAuth' : 'Connect via OAuth'}
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
+            <div className="modal-body">
+              <IntegrationsPanel readOnly />
             </div>
           </div>
         </div>
@@ -3247,7 +3497,7 @@ function App() {
                   </label>
                   <label>
                     Model
-                    <input value={wizard.model} onChange={(event) => setWizard((c) => ({ ...c, model: event.target.value }))} placeholder="anthropic/claude-sonnet-4-5" />
+                    <input value={wizard.model} onChange={(event) => setWizard((c) => ({ ...c, model: event.target.value }))} placeholder={serverDefaultModel} title="Leave empty to use the server default model" />
                   </label>
                 </div>
               </>
@@ -3361,6 +3611,10 @@ function AiAgentOutputBar({
   canAnswer,
   onSendAnswer,
   onRerun,
+  onPause,
+  onResume,
+  onCancel,
+  projectPaused,
   busy,
 }: {
   currentRun: RunSnapshot | null
@@ -3370,13 +3624,25 @@ function AiAgentOutputBar({
   canAnswer?: boolean
   onSendAnswer?: (answer: string) => void
   onRerun?: (fromStage?: string) => void
+  onPause?: () => void
+  onResume?: () => void
+  onCancel?: () => void
+  projectPaused?: boolean
   busy?: boolean
 }) {
   const [answerDraft, setAnswerDraft] = useState('')
   const logRef = useRef<HTMLPreElement>(null)
   const isActive = currentRun?.status === 'running' || currentRun?.status === 'paused'
-  const [manuallyCollapsed, setManuallyCollapsed] = useState(false)
-  const expanded = isActive || !manuallyCollapsed && !!currentRun?.log
+  const needsInput = currentRun?.status === 'paused'
+  // null = follow the run (open while active or waiting); true/false = the user's choice.
+  const [openChoice, setOpenChoice] = useState<boolean | null>(null)
+  const expanded = openChoice ?? (isActive || needsInput)
+  const stages = currentRun?.stages ?? []
+  const stageIndex = currentRun?.stage ? stages.indexOf(currentRun.stage) : -1
+  const canPause = currentRun?.status === 'running' && !currentRun.queued
+  const canPauseQueued = currentRun?.status === 'running' && !!currentRun.queued
+  const canResume = currentRun?.status === 'paused' && currentRun.pauseKind === 'user' && !projectPaused
+  const canCancel = !!currentRun && ['running', 'paused'].includes(currentRun.status)
 
   // Auto-scroll log to bottom on every update while the run is streaming.
   useEffect(() => {
@@ -3386,35 +3652,49 @@ function AiAgentOutputBar({
   }, [currentRun?.log, isActive])
 
   return (
-    <section className="card panel slim-panel" style={{ marginBottom: 12 }}>
-      <div className="section-header-row">
-        <div style={{ flex: 1 }}>
-          <h3 style={{ margin: 0 }}>AI agent output</h3>
-          <p className="panel-subtitle" style={{ margin: '4px 0 0' }}>
-            {currentRun?.executiveSummary || 'No active or loaded run yet.'}
+    <section className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
+      <div className="section-header-row dock-header" onClick={() => setOpenChoice(!expanded)} role="button" aria-expanded={expanded} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(!expanded) } }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h3 style={{ margin: 0 }}>
+            <span className="dock-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span> AI agent output
+            {needsInput && currentRun?.pauseKind !== 'user' && <span className="mini-badge paused" style={{ marginLeft: 8 }}>needs you</span>}
+          </h3>
+          <p className="panel-subtitle dock-summary" style={{ margin: '4px 0 0' }}>
+            {currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
           </p>
+          {stages.length > 0 && (
+            <ol className="dock-progress" aria-label="Stage progress">
+              {stages.map((stage, i) => (
+                <li key={`${stage}-${i}`} className={i < stageIndex || currentRun?.status === 'completed' ? 'done' : i === stageIndex ? (currentRun?.status === 'paused' ? 'paused' : currentRun?.status === 'running' ? 'active' : currentRun?.status === 'error' ? 'error' : 'current') : ''} title={stage}>
+                  <span />{stage}
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
         {currentRun && (
-          <div className="entry-links">
+          <div className="entry-links" onClick={(e) => e.stopPropagation()}>
+            {(canPause || canPauseQueued) && onPause && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'}>Pause</button>}
+            {canResume && onResume && <button type="button" className="primary-button dock-button" disabled={busy} onClick={onResume}>Resume</button>}
+            {canCancel && onCancel && <button type="button" className="danger-button dock-button" disabled={busy} onClick={onCancel}>Cancel</button>}
             <span className={`mini-badge ${currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : currentRun.status === 'error' ? (currentRun.interrupted ? 'paused' : 'error') : 'running'}`}>
               {currentRun.status === 'running' ? (currentRun.queued ? '◌ queued' : '● running') : currentRun.status === 'error' && currentRun.interrupted ? 'interrupted' : currentRun.status}
             </span>
             {(currentRun.retryCount ?? 0) > 0 && <span className="mini-badge idle">attempt {(currentRun.retryCount ?? 0) + 1}</span>}
             {currentRun.stage && <span className="mini-badge idle">stage: {currentRun.stage}</span>}
             {currentRun.pauseKind && <span className="mini-badge paused">{currentRun.pauseKind}</span>}
-            {currentRun.log && (
-              <button
-                type="button"
-                className="ghost-button"
-                style={{ padding: '2px 8px', fontSize: 12 }}
-                onClick={() => setManuallyCollapsed((v) => !v)}
-              >
-                {expanded ? 'Hide log' : `Show log (${currentRun.log.length.toLocaleString()} chars)`}
-              </button>
-            )}
+            <button
+              type="button"
+              className="ghost-button"
+              style={{ padding: '2px 8px', fontSize: 12 }}
+              onClick={() => setOpenChoice(!expanded)}
+            >
+              {expanded ? 'Collapse' : `Expand${currentRun.log ? ` (${currentRun.log.length.toLocaleString()} chars)` : ''}`}
+            </button>
           </div>
         )}
       </div>
+      <div className="dock-body">
       {expanded && (
         <pre
           ref={logRef}
@@ -3425,7 +3705,19 @@ function AiAgentOutputBar({
       )}
       {/* Paused-run answer UI — moved here from the Assistant tab so users don't have
           to navigate to answer. Shows when currentRun is paused and resumable. */}
-      {canAnswer && currentRun?.status === 'paused' && onSendAnswer && (
+      {expanded && currentRun?.status === 'paused' && currentRun.pauseKind === 'user' && (
+        <div className="notice notice-warning">
+          <div className="notice-title">
+            <strong>Paused</strong>
+            <span className="mini-badge paused">next stage: {currentRun.stage ?? 'unknown'}</span>
+          </div>
+          <p style={{ margin: '6px 0 0' }}>
+            {projectPaused ? 'The whole project is paused. Resume it from the Overview tab; this run continues from the stage shown.' : 'This run is paused. Resume to continue from the stage shown, or cancel it.'}
+          </p>
+          {!projectPaused && onResume && <div className="button-row" style={{ marginTop: 8 }}><button type="button" className="primary-button" disabled={busy} onClick={onResume}>Resume run</button></div>}
+        </div>
+      )}
+      {expanded && canAnswer && currentRun?.status === 'paused' && currentRun.pauseKind !== 'user' && onSendAnswer && (
         <div className="notice notice-warning">
           <div className="notice-title">
             <strong>{currentRun.pauseKind === 'review' ? 'Waiting for your review' : 'The agent has a question'}</strong>
@@ -3464,7 +3756,7 @@ function AiAgentOutputBar({
         </div>
       )}
       {/* Failed or interrupted run: explain what happened and offer a rerun. */}
-      {currentRun && currentRun.status === 'error' && onRerun && (
+      {expanded && currentRun && currentRun.status === 'error' && onRerun && (
         <div className={`notice ${currentRun.interrupted ? 'notice-warning' : 'notice-error'}`}>
           <div className="notice-title">
             <strong>
@@ -3490,12 +3782,12 @@ function AiAgentOutputBar({
         </div>
       )}
       {/* Paused run whose worker restarted: answering restarts the stage; say so. */}
-      {currentRun && currentRun.status === 'paused' && currentRun.interrupted && (
+      {expanded && currentRun && currentRun.status === 'paused' && currentRun.interrupted && (
         <p style={{ marginTop: 8, fontSize: 12, color: '#9a3412' }}>
           ⚠ The worker that paused this run has restarted. Approving continues to the next stage on a fresh worker; any other answer re-runs stage {currentRun.stage ?? '?'} with your answer recorded in the timeline.
         </p>
       )}
-      {nextStep && !isActive && !canAnswer && (
+      {expanded && nextStep && !isActive && !canAnswer && (
         <div style={{ marginTop: 10, padding: 10, background: '#f0f9ff', borderRadius: 6, borderLeft: '3px solid #0ea5e9', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <strong style={{ color: '#075985' }}>Next up:</strong>{' '}
@@ -3515,6 +3807,7 @@ function AiAgentOutputBar({
           )}
         </div>
       )}
+      </div>
     </section>
   )
 }

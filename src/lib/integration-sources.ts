@@ -1,8 +1,9 @@
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError, upsertAppIntegration, type AppIntegrationKind } from './app-integrations'
 import { getDb } from './db'
-import { atlassianProvider, refreshAccessToken } from './oauth'
+import { refreshAccessToken, resolveProvider } from './oauth'
 import { getProject, listRepos, type ProjectKnowledgeConfig } from './project-registry'
+import { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge } from './knowledge-store'
 
 /**
  * Effective knowledge scope for one project: which sources are exposed and how
@@ -129,7 +130,7 @@ function clip(text: string, max: number): string {
 // Linear (GraphQL)
 // ---------------------------------------------------------------------------
 
-async function linearGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+export async function linearGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await requireToken('linear')
   const response = await fetch('https://api.linear.app/graphql', {
     method: 'POST',
@@ -146,7 +147,7 @@ async function linearGraphQL<T>(query: string, variables: Record<string, unknown
   return payload.data
 }
 
-interface LinearIssueNode {
+export interface LinearIssueNode {
   id: string
   identifier: string
   title: string
@@ -161,7 +162,7 @@ interface LinearIssueNode {
   labels?: { nodes: Array<{ name: string }> }
 }
 
-const LINEAR_ISSUE_FIELDS = `
+export const LINEAR_ISSUE_FIELDS = `
   id identifier title description url updatedAt priorityLabel
   state { name } team { key name } project { name } assignee { name } labels { nodes { name } }
 `
@@ -233,7 +234,7 @@ interface AtlassianAccess {
   siteUrl: string
 }
 
-async function atlassianAccess(source: 'jira' | 'confluence'): Promise<AtlassianAccess> {
+export async function atlassianAccess(source: 'jira' | 'confluence'): Promise<AtlassianAccess> {
   const token = await requireToken(source)
   const row = await getAppIntegration(source)
   const cached = row?.configJson as { cloudId?: string; siteUrl?: string } | undefined
@@ -251,12 +252,12 @@ async function atlassianAccess(source: 'jira' | 'confluence'): Promise<Atlassian
 }
 
 /** GET with one automatic token refresh on 401 (Atlassian access tokens last an hour). */
-async function atlassianFetchJson<T>(source: 'jira' | 'confluence', url: string, attempt = 0): Promise<T> {
+export async function atlassianFetchJson<T>(source: 'jira' | 'confluence', url: string, attempt = 0): Promise<T> {
   const token = await requireToken(source)
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } })
   if (response.status === 401 && attempt === 0) {
     const creds = await getAppIntegrationCredentials(source)
-    const cfg = atlassianProvider()
+    const cfg = await resolveProvider('atlassian')
     const refreshToken = creds?.refresh_token
     if (cfg && typeof refreshToken === 'string' && refreshToken) {
       const refreshed = await refreshAccessToken(cfg, refreshToken)
@@ -269,13 +270,22 @@ async function atlassianFetchJson<T>(source: 'jira' | 'confluence', url: string,
   }
   if (!response.ok) {
     const text = await response.text().catch(() => '')
+    if (response.status === 410) {
+      throw new Error(`${SOURCE_LABEL[source]} has retired the API endpoint this feature used (${url.replace(/\?.*$/, '')}). Please report this so it can be moved to the replacement endpoint.`)
+    }
+    if (response.status === 401 && /scope does not match/i.test(text)) {
+      const needed = source === 'confluence'
+        ? 'read:confluence-content.all, read:confluence-content.summary, read:confluence-space.summary, search:confluence'
+        : 'read:jira-work, read:jira-user'
+      throw new Error(`${SOURCE_LABEL[source]} refused the request because the Atlassian app's token lacks a required scope. In the Atlassian developer console give the app these ${SOURCE_LABEL[source]} scopes (${needed}), then disconnect and reconnect Atlassian under Integrations so a new token is issued.`)
+    }
     throw new Error(`${SOURCE_LABEL[source]} API ${response.status}: ${text.slice(0, 300)}`)
   }
   return (await response.json()) as T
 }
 
 /** Flatten Atlassian Document Format (Jira v3 descriptions/comments) to plain text. */
-function adfToText(node: unknown): string {
+export function adfToText(node: unknown): string {
   if (!node || typeof node !== 'object') return ''
   const n = node as { type?: string; text?: string; content?: unknown[]; attrs?: Record<string, unknown> }
   if (n.type === 'text') return n.text ?? ''
@@ -294,7 +304,7 @@ function adfToText(node: unknown): string {
   }
 }
 
-interface JiraIssue {
+export interface JiraIssue {
   key: string
   fields: {
     summary: string
@@ -373,7 +383,7 @@ async function jiraGet(key: string): Promise<KnowledgeDoc> {
   }
 }
 
-function htmlToText(html: string): string {
+export function htmlToText(html: string): string {
   return html
     .replace(/<\/(p|div|li|h[1-6]|tr|br)>/gi, '\n')
     .replace(/<li[^>]*>/gi, '- ')
@@ -388,7 +398,7 @@ function htmlToText(html: string): string {
     .trim()
 }
 
-interface ConfluencePage {
+export interface ConfluencePage {
   id: string
   title: string
   type?: string
@@ -420,10 +430,13 @@ async function confluenceSearch(query: string, limit: number, scope?: KnowledgeS
 
 async function confluenceGet(id: string): Promise<KnowledgeDoc> {
   const access = await atlassianAccess('confluence')
-  const page = await atlassianFetchJson<ConfluencePage>(
+  // The v1 /content/{id} endpoint was retired; a CQL search by id returns the same page with its body.
+  const data = await atlassianFetchJson<{ results: ConfluencePage[] }>(
     'confluence',
-    `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/content/${encodeURIComponent(id)}?expand=body.storage,version,space`,
+    `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/content/search?cql=${encodeURIComponent(`id = ${id.replace(/[^0-9]/g, '')}`)}&limit=1&expand=body.storage,version,space`,
   )
+  const page = data.results[0]
+  if (!page) throw new Error(`Confluence page "${id}" not found or not visible to the connected account.`)
   const text = htmlToText(page.body?.storage?.value ?? '')
   return {
     source: 'confluence',
@@ -451,7 +464,7 @@ interface GitHubSearchItem {
   repository_url: string
 }
 
-async function githubFetchJson<T>(url: string): Promise<T> {
+export async function githubFetchJson<T>(url: string): Promise<T> {
   const token = await requireToken('github')
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'pi-speckit-pdlc' },
@@ -570,7 +583,14 @@ export async function buildKnowledgeTools(options: { projectId?: string; repos?:
   // without a project, every connected source is available unscoped.
   const scope = await resolveKnowledgeScope(options.projectId)
   const connected = scope.sources
-  if (connected.length === 0) return []
+  // The organization knowledge base (imported spaces, projects, repos, notes) is
+  // searchable whenever it has content the project's team may see.
+  const teamId = options.projectId ? (await getProject(options.projectId).catch(() => undefined))?.teamId ?? null : null
+  const knowledgeScope = { teamIds: teamId ? [teamId] : [] }
+  const orgKnowledge = await hasOrgKnowledge(knowledgeScope).catch(() => false)
+  const tools: ToolDefinition[] = []
+  if (orgKnowledge) tools.push(buildOrgKnowledgeTool(knowledgeScope))
+  if (connected.length === 0) return tools
   const repos = options.repos?.length ? options.repos : scope.githubRepos
   const sourceList = describeScope(scope)
   const idHints: string[] = []
@@ -638,5 +658,43 @@ export async function buildKnowledgeTools(options: { projectId?: string; repos?:
     },
   }
 
-  return [search, get]
+  tools.push(search, get)
+  return tools
+}
+
+/**
+ * `org_knowledge_search`: semantic + full-text search over the organization
+ * knowledge base — Confluence spaces, Jira/Linear projects and initiatives,
+ * repository docs, web pages and notes imported by the team.
+ */
+function buildOrgKnowledgeTool(scope: { teamIds: string[] }): ToolDefinition {
+  return {
+    name: 'org_knowledge_search',
+    label: 'Search organization knowledge',
+    description: 'Search the organization knowledge base (imported Confluence spaces, Jira and Linear projects and initiatives, repository documentation, web pages and team notes) with a natural-language question. Returns the most relevant excerpts with their source links. Use it for standards, architecture decisions, runbooks, product context and past decisions before designing or implementing; prefer it over guessing.',
+    promptSnippet: 'org_knowledge_search(query): relevant excerpts from the organization knowledge base',
+    promptGuidelines: [
+      'Before proposing a design or convention, check org_knowledge_search for existing standards, ADRs and prior decisions; follow them or say why you deviate.',
+      'Cite the excerpt source (title or link) in artifacts so reviewers can trace the decision.',
+    ],
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'A natural-language question or topic, e.g. "how do we roll back a payments deploy" or "authentication standards".' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Max excerpts (default 6).' },
+      },
+      required: ['query'],
+    } as unknown as ToolDefinition['parameters'],
+    executionMode: 'parallel',
+    async execute(_toolCallId, params) {
+      const p = params as { query: string; limit?: number }
+      try {
+        const { hits, mode } = await searchOrgKnowledge({ query: p.query, scope, limit: p.limit ?? 6 })
+        if (hits.length === 0) return textResult(`No organization knowledge matched "${p.query}".`, { hits: [] })
+        return textResult(`${hits.length} excerpt${hits.length === 1 ? '' : 's'} (${mode} search) for "${p.query}":\n\n${renderKnowledgeHits(hits, { maxCharsPerHit: 1_800 })}`, { hits: hits.map((h) => ({ title: h.title, url: h.url, source: h.sourceLabel, score: h.score })) })
+      } catch (error) {
+        return textResult(`org_knowledge_search failed: ${error instanceof Error ? error.message : String(error)}`, { error: true })
+      }
+    },
+  }
 }

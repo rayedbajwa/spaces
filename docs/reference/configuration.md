@@ -9,14 +9,29 @@ shell variable overrides the file). See `.env.example` for the annotated list.
 |---|---|
 | `DATABASE_URL` | Postgres connection string (matches `docker-compose.yml`) |
 | `ENCRYPTION_KEY` | 32+ random characters; derives the AES-256-GCM key that seals OAuth tokens. Rotating it invalidates every stored token. |
-| `ANTHROPIC_API_KEY` | Used by every agent step; verified at boot |
+| `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` | At least one LLM provider key; each one present is verified at boot |
+
+## Models
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DEFAULT_MODEL` | first configured provider's medium tier | Model used when a run, sub-agent or onboarding job does not name one. `provider/model-id`, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5.4`, `openrouter/anthropic/claude-sonnet-4.5`, or `openrouter/openrouter/auto` to let OpenRouter choose. Also the fallback for the two tiers below. |
+| `DEFAULT_MODEL_SMALL` | `DEFAULT_MODEL`, else the provider's small tier | Cheap tier the router uses for review, chat and fast mode |
+| `DEFAULT_MODEL_LARGE` | `DEFAULT_MODEL`, else the provider's large tier | Top tier for quality-mode orchestration and retry escalation |
+
+| `EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Embedding model for the organization knowledge base; served by `OPENAI_API_KEY`, or through OpenRouter (`OPENROUTER_API_KEY`) for `openai/*` and `openrouter/<vendor>/<model>` ids. Without a usable key, knowledge search is full-text only. |
+| `EMBEDDING_DIMENSIONS` | `1536` | Size of the `vector` column; must match the model's output |
+
+Without any `DEFAULT_MODEL*`, the provider is picked from the keys present
+(Anthropic, then OpenRouter, then OpenAI) with a built-in small/medium/large
+trio each. Pipeline templates that pin a model from a provider you have no key
+for fall back to the same-size tier of the configured provider.
 
 ## Optional
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PORT` | `3000` | Web UI + API port |
-| `OPENAI_API_KEY` | — | Alternative provider |
 | `WORKER_ID` | random UUID | Worker identity (per process) |
 | `WORKER_MAX_CONCURRENT_JOBS` | `4` | Jobs one worker runs at once across projects |
 | `SUPERVISOR_MAX_WORKERS` | `4` | Cap on per-project workers (each ~300–500 MB) |
@@ -39,15 +54,18 @@ GitHub sign-in reuses the GitHub OAuth app configured below.
 
 ## Integrations (OAuth)
 
-Each provider needs a registered OAuth app with callback
-`http://<host>:<port>/api/oauth/<provider>/callback`:
+Not configured through the environment. A team owner or admin enters each
+provider's OAuth app credentials under **Organization → Integrations**; they
+are stored encrypted with `ENCRYPTION_KEY`. Register the OAuth app with
+callback `http://<host>:<port>/api/oauth/<provider>/callback` and these scopes
+(the card shows them ready to copy):
 
-| Provider | Variables | Scopes |
-|---|---|---|
-| GitHub | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | `repo`, `read:org`, `read:user` |
-| Atlassian (Jira + Confluence) | `ATLASSIAN_CLIENT_ID`, `ATLASSIAN_CLIENT_SECRET` | read/write jira-work, read/write confluence-content, `offline_access` |
-| Linear | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` | `read`, `write` |
-| Slack | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET` | `channels:read`, `chat:write`, `users:read` |
+| Provider | Scopes |
+|---|---|
+| GitHub | `repo`, `read:org`, `read:user` |
+| Atlassian (Jira + Confluence) | `read:jira-user`, `read:jira-work`, `write:jira-work`, `read:confluence-content.all`, `read:confluence-content.summary`, `read:confluence-space.summary`, `search:confluence`, `write:confluence-content`, `offline_access` — enable the same scopes on the app's Permissions page, and reconnect after adding any |
+| Linear | `read`, `write` |
+| Slack | `channels:read`, `chat:write`, `users:read` |
 
 ## Per-project settings (UI)
 

@@ -34,6 +34,8 @@ export interface TeamRow {
   teamId: string
   name: string
   slug: string
+  /** Prefix of this team's project codes (PLAT in PLAT-12); set on the first project. */
+  codePrefix?: string | null
   createdBy?: string | null
   createdAt: string
   knowledgeJson?: Record<string, unknown>
@@ -90,7 +92,7 @@ const USER_COLS = `
   created_at AS "createdAt", last_login_at AS "lastLoginAt"
 `
 const TEAM_COLS = `
-  t.team_id AS "teamId", t.name, t.slug, t.created_by AS "createdBy", t.created_at AS "createdAt", t.knowledge_json AS "knowledgeJson"
+  t.team_id AS "teamId", t.name, t.slug, t.code_prefix AS "codePrefix", t.created_by AS "createdBy", t.created_at AS "createdAt", t.knowledge_json AS "knowledgeJson"
 `
 
 function hashToken(token: string): string {

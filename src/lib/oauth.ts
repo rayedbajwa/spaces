@@ -95,80 +95,83 @@ export async function exchangeCode(cfg: OAuthProviderConfig, code: string, callb
 
 // -------- Provider definitions --------
 
-export function githubProvider(): OAuthProviderConfig | undefined {
-  const clientId = process.env.GITHUB_CLIENT_ID
-  const clientSecret = process.env.GITHUB_CLIENT_SECRET
-  if (!clientId || !clientSecret) return undefined
-  return {
-    provider: 'github',
-    authorizeUrl: 'https://github.com/login/oauth/authorize',
-    tokenUrl: 'https://github.com/login/oauth/access_token',
-    clientId,
-    clientSecret,
-    scopes: ['repo', 'read:org', 'read:user'],
-  }
+export type OAuthProviderId = 'github' | 'atlassian' | 'slack' | 'linear'
+
+export interface OAuthProviderTemplate extends Omit<OAuthProviderConfig, 'clientId' | 'clientSecret' | 'provider'> {
+  provider: OAuthProviderId
+  label: string
+  /** Integration kinds this provider powers. */
+  kinds: string[]
+  /** Where to register the OAuth app. */
+  consoleUrl: string
+  notes?: string
 }
 
-export function atlassianProvider(): OAuthProviderConfig | undefined {
-  const clientId = process.env.ATLASSIAN_CLIENT_ID
-  const clientSecret = process.env.ATLASSIAN_CLIENT_SECRET
-  if (!clientId || !clientSecret) return undefined
-  return {
+/** Everything about a provider except the credentials, which are set in the app (Organization → Integrations). */
+export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> = {
+  github: {
+    provider: 'github',
+    label: 'GitHub',
+    kinds: ['github'],
+    authorizeUrl: 'https://github.com/login/oauth/authorize',
+    tokenUrl: 'https://github.com/login/oauth/access_token',
+    scopes: ['repo', 'read:org', 'read:user'],
+    consoleUrl: 'https://github.com/settings/developers',
+    notes: 'A GitHub OAuth App (not a GitHub App). Scopes are requested at connect time.',
+  },
+  atlassian: {
     provider: 'atlassian',
+    label: 'Atlassian (Jira + Confluence)',
+    kinds: ['jira', 'confluence'],
     authorizeUrl: 'https://auth.atlassian.com/authorize',
     tokenUrl: 'https://auth.atlassian.com/oauth/token',
-    clientId,
-    clientSecret,
     scopes: [
       // Jira
       'read:jira-user', 'read:jira-work', 'write:jira-work',
-      // Confluence
-      'read:confluence-content.all', 'write:confluence-content',
+      // Confluence: content.all reads page bodies; summary + search list spaces
+      // and pages (the knowledge import and integration_search need them).
+      'read:confluence-content.all', 'read:confluence-content.summary', 'read:confluence-space.summary', 'search:confluence', 'write:confluence-content',
       // Meta
       'offline_access',
     ],
     extraAuthorizeParams: { audience: 'api.atlassian.com', prompt: 'consent' },
-  }
-}
-
-export function slackProvider(): OAuthProviderConfig | undefined {
-  const clientId = process.env.SLACK_CLIENT_ID
-  const clientSecret = process.env.SLACK_CLIENT_SECRET
-  if (!clientId || !clientSecret) return undefined
-  return {
+    consoleUrl: 'https://developer.atlassian.com/console/myapps/',
+    notes: 'OAuth 2.0 (3LO) app. Enable the same scopes under Permissions → Jira API / Confluence API, or Atlassian answers "scope does not match".',
+  },
+  slack: {
     provider: 'slack',
+    label: 'Slack',
+    kinds: ['slack'],
     authorizeUrl: 'https://slack.com/oauth/v2/authorize',
     tokenUrl: 'https://slack.com/api/oauth.v2.access',
-    clientId,
-    clientSecret,
     scopes: ['channels:read', 'chat:write', 'users:read'],
-  }
-}
-
-export function linearProvider(): OAuthProviderConfig | undefined {
-  const clientId = process.env.LINEAR_CLIENT_ID
-  const clientSecret = process.env.LINEAR_CLIENT_SECRET
-  if (!clientId || !clientSecret) return undefined
-  return {
+    consoleUrl: 'https://api.slack.com/apps',
+  },
+  linear: {
     provider: 'linear',
+    label: 'Linear',
+    kinds: ['linear'],
     authorizeUrl: 'https://linear.app/oauth/authorize',
     tokenUrl: 'https://api.linear.app/oauth/token',
-    clientId,
-    clientSecret,
     // read: issues/projects/docs for knowledge; write: create issues/comments from tasks.
     scopes: ['read', 'write'],
     extraAuthorizeParams: { prompt: 'consent' },
-  }
+    consoleUrl: 'https://linear.app/settings/api/applications',
+  },
 }
 
-export function getProvider(provider: string): OAuthProviderConfig | undefined {
-  switch (provider) {
-    case 'github': return githubProvider()
-    case 'atlassian': return atlassianProvider()
-    case 'slack': return slackProvider()
-    case 'linear': return linearProvider()
-    default: return undefined
-  }
+/**
+ * Provider config with credentials, or undefined when none are set. Credentials
+ * come from the oauth_apps table, set in the Integrations panel.
+ */
+export async function resolveProvider(provider: string): Promise<OAuthProviderConfig | undefined> {
+  if (!(provider in PROVIDER_TEMPLATES)) return undefined
+  const id = provider as OAuthProviderId
+  const { getOAuthAppCredentials } = await import('./oauth-apps')
+  const creds = await getOAuthAppCredentials(id)
+  if (!creds) return undefined
+  const { label: _label, kinds: _kinds, consoleUrl: _console, notes: _notes, ...rest } = PROVIDER_TEMPLATES[id]
+  return { ...rest, clientId: creds.clientId, clientSecret: creds.clientSecret }
 }
 
 /**

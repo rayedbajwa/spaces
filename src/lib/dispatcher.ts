@@ -66,6 +66,9 @@ export async function enqueueJob(input: {
   runId?: string
 }): Promise<JobRow> {
   const sql = getDb()
+  // Archived projects are read-only: nothing new may be queued for them.
+  const [archived] = await sql<Array<{ archivedAt: string | null }>>`SELECT archived_at AS "archivedAt" FROM projects WHERE project_id = ${input.projectId}`
+  if (archived?.archivedAt) throw new Error('This project is archived. Unarchive it before starting new work.')
   const jobId = randomUUID()
   const [row] = await sql<JobRow[]>`
     INSERT INTO project_jobs (
@@ -219,6 +222,7 @@ export async function claimNextJob(workerId: string, projectId?: string): Promis
              j.project_id  AS "projectId",
              o.max_concurrent AS "maxConcurrent"
         FROM project_jobs j
+        JOIN projects p ON p.project_id = j.project_id
         LEFT JOIN project_orchestrators o ON o.project_id = j.project_id
         LEFT JOIN LATERAL (
           SELECT COUNT(*)::int AS in_flight
@@ -226,6 +230,7 @@ export async function claimNextJob(workerId: string, projectId?: string): Promis
            WHERE r.project_id = j.project_id AND r.status IN ('claimed','running')
         ) inflight ON true
        WHERE j.status = 'queued'
+         AND p.paused_at IS NULL
          AND (${projectFilter}::uuid IS NULL OR j.project_id = ${projectFilter}::uuid)
          AND inflight.in_flight < COALESCE(o.max_concurrent, 1)
        ORDER BY j.priority DESC, j.created_at ASC
@@ -273,17 +278,18 @@ export async function claimNextJob(workerId: string, projectId?: string): Promis
 
 export async function markJobRunning(jobId: string): Promise<void> {
   const sql = getDb()
-  await sql`UPDATE project_jobs SET status = 'running' WHERE job_id = ${jobId}`
+  await sql`UPDATE project_jobs SET status = 'running' WHERE job_id = ${jobId} AND status = 'claimed'`
 }
 
+/** A job cancelled from outside (project archived) keeps that status; only live jobs complete. */
 export async function completeJob(jobId: string): Promise<void> {
   const sql = getDb()
-  await sql`UPDATE project_jobs SET status = 'completed', ended_at = now() WHERE job_id = ${jobId}`
+  await sql`UPDATE project_jobs SET status = 'completed', ended_at = now() WHERE job_id = ${jobId} AND status IN ('claimed', 'running')`
 }
 
 export async function failJob(jobId: string, error: string): Promise<void> {
   const sql = getDb()
-  await sql`UPDATE project_jobs SET status = 'error', ended_at = now(), error_message = ${error} WHERE job_id = ${jobId}`
+  await sql`UPDATE project_jobs SET status = 'error', ended_at = now(), error_message = ${error} WHERE job_id = ${jobId} AND status IN ('claimed', 'running')`
 }
 
 export async function cancelJob(jobId: string): Promise<void> {
@@ -304,7 +310,7 @@ export async function getJob(jobId: string): Promise<JobRow | undefined> {
  * which follows the run whenever there is one.
  */
 export interface JobWithRun extends JobRow {
-  runStatus?: 'queued' | 'running' | 'paused' | 'completed' | 'error'
+  runStatus?: 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
   runStage?: string
   runPauseKind?: 'clarification' | 'review'
   runError?: string

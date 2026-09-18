@@ -23,10 +23,24 @@ restart onboarding, open a pull request — and uses them once you say yes.
 
 ## Models and speed
 
-Runs default to `anthropic/claude-sonnet-4-5`; templates can pin a model and
-thinking level per step, and the project's **speed mode** (fast / balanced /
-quality) feeds a model router that picks Haiku, Sonnet or Opus per stage. The
-API key in the environment overrides `.env` and is verified at boot.
+Runs default to `DEFAULT_MODEL`, or to the first provider with an API key
+(Anthropic, OpenRouter, then OpenAI). Templates can pin a model and thinking
+level per step, and the project's **speed mode** (fast / balanced / quality)
+feeds a model router that picks a small, medium or large tier per stage
+(`DEFAULT_MODEL_SMALL` / `DEFAULT_MODEL` / `DEFAULT_MODEL_LARGE`). A pinned
+model from a provider without a key falls back to the same-size tier. API keys
+in the environment override `.env` and are verified at boot.
+
+## The agent output dock
+
+On a project page the live agent output is docked at the bottom of the
+screen. Its header always shows the run status, the stage progress dots and
+the controls; click it to expand or collapse the streamed log. Waiting runs
+surface their question or review request there, with **Approve and
+continue**, **Continue** or a free-text answer. **Pause** lets a running run
+finish its current stage and then stop (a queued run is held before it
+starts), **Resume** continues a paused run from that stage, and **Cancel**
+ends it — finished stages keep their artifacts.
 
 ## Workers
 

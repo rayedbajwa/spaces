@@ -38,7 +38,7 @@ import {
 import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
 import type { FlowProgress, StageName } from './lib/aidlc'
 import { log } from './lib/logger'
-import { checkAnthropicKey } from './lib/provider-check'
+import { checkProviderKeys } from './lib/provider-check'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 
@@ -57,6 +57,27 @@ const engines = new Map<string, PipelineEngine>()
 
 /** project_jobs row currently executing each run, so shutdown can release it. */
 const activeJobs = new Map<string, string>()
+/** Runs cancelled from outside (project archived) while this worker held them. */
+const cancelledRuns = new Set<string>()
+/** Runs asked to pause (project paused); the flow stops before its next stage. */
+const pausedRuns = new Set<string>()
+
+/** A run_cancel NOTIFY: drop the live engine; the run row is already final. */
+async function handleRunCancel(runId: string): Promise<void> {
+  const engine = engines.get(runId)
+  if (!engine && !activeJobs.has(runId)) return
+  cancelledRuns.add(runId)
+  workerLog.info('run cancelled; disposing engine', { runId })
+  engines.delete(runId)
+  await engine?.dispose().catch(() => undefined)
+}
+
+/** True when the run was cancelled — by NOTIFY here, or in the database by another process. */
+async function runWasCancelled(runId: string): Promise<boolean> {
+  if (cancelledRuns.has(runId)) return true
+  const run = await getRun(runId).catch(() => undefined)
+  return run?.status === 'cancelled'
+}
 
 /**
  * Per-run promise chain that serializes appendEvent() writes. Without this,
@@ -139,6 +160,13 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     ...run.optionsJson,
     ...(startStage ? { startStage } : {}),
     ...(speedMode ? { speedMode } : {}),
+    // Project paused (by NOTIFY here, or in the database): stop before the next stage.
+    shouldPauseBeforeStage: async () => {
+      if (pausedRuns.has(runId)) return true
+      if (!run.projectId) return false
+      const [row] = await getDb()<Array<{ pausedAt: string | null }>>`SELECT paused_at AS "pausedAt" FROM projects WHERE project_id = ${run.projectId}`
+      return Boolean(row?.pausedAt)
+    },
     ...(priorHandoffs.length ? { priorHandoffs } : {}),
     ...(resumeSessionFile
       ? {
@@ -215,10 +243,22 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     await handleEngineError(runId, error)
     return
   }
+  if (await runWasCancelled(runId)) {
+    // Cancelled between claim and start: never run it.
+    await engine.dispose().catch(() => undefined)
+    await releaseAgent?.(null)
+    cancelledRuns.delete(runId)
+    return
+  }
   engines.set(runId, engine)
 
   try {
     const result = await engine.start()
+    if (await runWasCancelled(runId)) {
+      await finishCancelledRun(runId)
+      await releaseAgent?.(null)
+      return
+    }
     // Report warm-agent status once (after ensureSession has fired).
     if (poolInfo && poolInfo.wasWarm) {
       await queueEvent(runId, 'agent_reused', { agentId: poolInfo.agentId, role: 'primary' })
@@ -227,8 +267,22 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     await releaseAgent?.(result.sessionFile ?? null)
   } catch (error) {
     await releaseAgent?.(null)
+    if (await runWasCancelled(runId)) {
+      // The engine was disposed under the running stage; that is the cancel, not a failure.
+      await finishCancelledRun(runId)
+      return
+    }
     await handleEngineError(runId, error)
   }
+}
+
+async function finishCancelledRun(runId: string): Promise<void> {
+  cancelledRuns.delete(runId)
+  const engine = engines.get(runId)
+  engines.delete(runId)
+  await engine?.dispose().catch(() => undefined)
+  await drainEvents(runId).catch(() => undefined)
+  workerLog.info('run stopped after cancellation', { runId })
 }
 
 async function handleAnswerJob(runId: string, answer: string): Promise<void> {
@@ -299,6 +353,17 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
       currentStage: progress.stage,
       sessionFile: progress.sessionFile ?? null,
     })
+    if (progress.pauseKind === 'user') {
+      // Paused by a user at a stage boundary: no question to answer. Resuming the
+      // project re-queues the run from `progress.stage`, so the engine can go.
+      await queueEvent(runId, 'paused', { stage: progress.stage, pauseKind: 'user', reason: 'Project paused by a user' })
+      pausedRuns.delete(runId)
+      const held = engines.get(runId)
+      engines.delete(runId)
+      await held?.dispose().catch(() => undefined)
+      await drainEvents(runId).catch(() => undefined)
+      return
+    }
     const engine = engines.get(runId)
     const template = engine ? getTemplateFromEngine(engine) : undefined
     const stepIndex = template ? indexOfStage(template, progress.stage) : 0
@@ -574,7 +639,7 @@ async function main(): Promise<void> {
   await heartbeatWorker(workerId, heartbeatMeta())
   if (WORKER_PROJECT_ID) workerLog.info('per-project worker', { projectId: WORKER_PROJECT_ID, idleExitSeconds: WORKER_IDLE_EXIT_SECONDS })
   // Non-fatal: warn loudly if the Anthropic key in this process's environment is a placeholder or rejected.
-  void checkAnthropicKey(workerLog)
+  void checkProviderKeys(workerLog)
   setInterval(() => {
     void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))
 
@@ -597,6 +662,19 @@ async function main(): Promise<void> {
   const sql = getDb()
   await sql.listen('project_job', () => {
     void drainDispatcher(workerId)
+  })
+
+  // Pause requests (project paused): the flow stops before its next stage.
+  await sql.listen('run_pause', (runId) => {
+    if (engines.has(runId) || activeJobs.has(runId)) {
+      pausedRuns.add(runId)
+      workerLog.info('pause requested; run will stop at its next stage boundary', { runId })
+    }
+  })
+
+  // Cancellations (project archived): dispose the live engine for that run.
+  await sql.listen('run_cancel', (runId) => {
+    void handleRunCancel(runId).catch((err) => workerLog.error('run cancel failed', { runId }, err instanceof Error ? err : new Error(String(err))))
   })
 
   // Answer notifications for paused runs (unchanged from Phase 3).

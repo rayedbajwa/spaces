@@ -3,7 +3,7 @@ import { getDb } from './db'
 import type { FlowOptions, PauseKind, StageName } from './aidlc'
 import type { PipelineTemplate } from './pipeline-template'
 
-export type RunStatus = 'queued' | 'running' | 'paused' | 'completed' | 'error'
+export type RunStatus = 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
 
 export interface RunRow {
   runId: string

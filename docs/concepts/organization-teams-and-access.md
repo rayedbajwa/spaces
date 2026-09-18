@@ -71,3 +71,20 @@ Team-level **knowledge defaults** (which integrations and repositories a team's
 agents may query) use the same shape as a project's knowledge scope
 (`PUT /api/teams/:id/knowledge`) and are the fallback for projects without
 their own scope.
+
+## The team page
+
+**Team settings, members & invites** in the user menu opens the team's page at
+`/teams/<slug>`. Its overview shows members, active and archived projects
+(codes open the project pages) and the team memory. Owners and admins rename
+the team, change roles, create invite links and set the knowledge defaults
+that new projects inherit; every member can edit team memory, and anyone can
+leave from the Members section.
+
+## The organization page
+
+**Organization: memory, knowledge & teams** in the user menu opens
+`/organization`. It gathers everything shared across teams: the organization
+name and memory, the knowledge base (imports and search), promotion proposals
+from projects with approve and reject, and your teams with a way to start a
+new one. Owners and admins of any team edit; everyone reads.

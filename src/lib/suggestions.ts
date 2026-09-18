@@ -1,4 +1,5 @@
 import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent'
+import { defaultModel } from './default-model'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createConfiguredModelRuntime, findLatestFeatureDirAbsolute, parsePlanRepositories } from './aidlc'
@@ -104,7 +105,7 @@ Rules: only list repositories that exist in the catalog or are already registere
 
   const modelRuntime = await createConfiguredModelRuntime()
   const { resolveCliModel } = await import('@earendil-works/pi-coding-agent')
-  const modelSpec = options.model ?? 'anthropic/claude-sonnet-4-5'
+  const modelSpec = options.model ?? defaultModel()
   const resolved = resolveCliModel({ cliModel: modelSpec, modelRuntime })
   if (resolved.error) throw new Error(resolved.error)
   const cwd = pickRunnableRepo(repos)?.localPath ?? process.cwd()

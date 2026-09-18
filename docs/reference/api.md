@@ -37,7 +37,13 @@ to a team the caller is not a member of. `GET /api/projects`, `/api/board` and
 | `GET /api/projects` | List projects |
 | `POST /api/projects` | Create: `{ name, description?, repos?, model?, feature? }`. Creates the governing workspace and starts onboarding |
 | `GET /api/projects/:id` | Detail with repos, integrations and suggestions |
-| `PATCH /api/projects/:id` · `DELETE /api/projects/:id` | Update / delete |
+| `PATCH /api/projects/:id` | Update |
+| `POST /api/runs/:id/pause` · `POST …/resume` · `POST …/cancel` | Pause a running run at its next stage boundary (a queued run is held before start), resume a user-paused run, or cancel a queued/running/paused run; each returns the run snapshot |
+| `POST /api/projects/:id/pause` · `POST …/resume` | Pause: queued jobs are held, running runs stop before their next stage (`pausingRuns`, `heldJobs`) / resume: dispatch continues and user-paused runs are re-queued (`resumedRuns`) |
+| `POST /api/projects/:id/archive` · `POST …/unarchive` | Archive: cancels queued, running and paused work (`cancelled` on the response), hides the project from the board, refuses new runs and jobs, keeps everything / restore |
+| `GET /api/projects/:id/deletion-check` | What deleting would remove (runs, jobs, snapshots, per-repository action), whether the project is archived, the confirmation phrase, and whether the caller may delete |
+| `DELETE /api/projects/:id` | Permanently delete an archived project and everything it owns. Body `{ "confirm": "delete <project-key>" }` (the key is the project code, e.g. `delete plat-12`; the `deletion-check` response carries the exact phrase); owner/admin of the project's team; `409` unless archived and idle |
+| `GET /api/board?archived=1` | Include archived projects (cards carry `archivedAt`); the default response omits them and reports `archivedCount` |
 | `GET /api/projects/:id/onboarding` · `POST …/onboarding` | Onboarding progress / restart |
 | `GET /api/projects/:id/suggestions` · `POST …/suggestions` | Suggested repositories & work areas / regenerate (`{ basis: 'project' | 'plan' }`) |
 | `POST /api/projects/:id/export` | Export memory, knowledge and manifest into the governing workspace |

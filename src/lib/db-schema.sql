@@ -502,3 +502,101 @@ CREATE TRIGGER pipeline_runs_touch
   BEFORE UPDATE ON pipeline_runs
   FOR EACH ROW
   EXECUTE FUNCTION touch_pipeline_run();
+
+-- ---------------------------------------------------------------------------
+-- Organization knowledge (RAG). Sources are synced in the background into
+-- documents and retrieval-sized chunks; chunks carry a full-text index always
+-- and a pgvector embedding when the extension is available (added by
+-- applySchema() as a guarded step so a database without pgvector still works).
+-- A source belongs to the organization (team_id NULL) or to one team.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS knowledge_sources (
+  source_id              UUID PRIMARY KEY,
+  team_id                UUID REFERENCES teams(team_id) ON DELETE CASCADE,
+  kind                   TEXT NOT NULL CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual')),
+  label                  TEXT NOT NULL,
+  config_json            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled                BOOLEAN NOT NULL DEFAULT true,
+  sync_interval_minutes  INT NOT NULL DEFAULT 360,
+  cursor_json            JSONB NOT NULL DEFAULT '{}'::jsonb,
+  sync_requested_at      TIMESTAMPTZ,
+  last_sync_started_at   TIMESTAMPTZ,
+  last_sync_finished_at  TIMESTAMPTZ,
+  last_sync_status       TEXT CHECK (last_sync_status IN ('running','ok','error')),
+  last_sync_error        TEXT,
+  last_sync_stats        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by             UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS knowledge_sources_team_idx ON knowledge_sources (team_id);
+
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  document_id        UUID PRIMARY KEY,
+  source_id          UUID NOT NULL REFERENCES knowledge_sources(source_id) ON DELETE CASCADE,
+  external_id        TEXT NOT NULL,
+  title              TEXT NOT NULL,
+  url                TEXT,
+  content            TEXT NOT NULL,
+  content_hash       TEXT NOT NULL,
+  metadata_json      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_updated_at  TIMESTAMPTZ,
+  fetched_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  indexed_at         TIMESTAMPTZ,
+  embedding_status   TEXT NOT NULL DEFAULT 'pending' CHECK (embedding_status IN ('pending','done','skipped','error')),
+  embedding_error    TEXT,
+  UNIQUE (source_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS knowledge_documents_source_idx ON knowledge_documents (source_id, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS knowledge_documents_embedding_status_idx ON knowledge_documents (embedding_status);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  chunk_id         BIGSERIAL PRIMARY KEY,
+  document_id      UUID NOT NULL REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+  source_id        UUID NOT NULL REFERENCES knowledge_sources(source_id) ON DELETE CASCADE,
+  team_id          UUID,
+  chunk_index      INT NOT NULL,
+  heading_path     TEXT[] NOT NULL DEFAULT '{}',
+  content          TEXT NOT NULL,
+  content_tsv      TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', left(content, 100000))) STORED,
+  embedding_model  TEXT,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS knowledge_chunks_tsv_idx      ON knowledge_chunks USING GIN (content_tsv);
+CREATE INDEX IF NOT EXISTS knowledge_chunks_document_idx ON knowledge_chunks (document_id, chunk_index);
+CREATE INDEX IF NOT EXISTS knowledge_chunks_team_idx     ON knowledge_chunks (team_id);
+
+-- Archived projects keep everything but are hidden from the board and refuse
+-- new work. Deleting a project requires archiving it first.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS projects_archived_idx ON projects (archived_at) WHERE archived_at IS NOT NULL;
+
+-- Runs can be cancelled (archiving a project cancels its in-flight work).
+ALTER TABLE pipeline_runs DROP CONSTRAINT IF EXISTS pipeline_runs_status_check;
+ALTER TABLE pipeline_runs ADD CONSTRAINT pipeline_runs_status_check
+  CHECK (status IN ('queued','running','paused','completed','error','cancelled'));
+
+-- Paused projects: queued jobs wait and running runs stop at their next stage
+-- boundary (pause_kind 'user'); resuming re-queues them. Everything is kept.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS paused_at TIMESTAMPTZ;
+ALTER TABLE pipeline_runs DROP CONSTRAINT IF EXISTS pipeline_runs_pause_kind_check;
+ALTER TABLE pipeline_runs ADD CONSTRAINT pipeline_runs_pause_kind_check
+  CHECK (pause_kind IN ('clarification','review','user'));
+
+-- Readable project codes: a prefix derived from the team (space) name plus a
+-- per-prefix counter, e.g. PLAT-12. Backfilled at boot for older rows.
+ALTER TABLE teams ADD COLUMN IF NOT EXISTS code_prefix TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS teams_code_prefix_idx ON teams (code_prefix) WHERE code_prefix IS NOT NULL;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS code TEXT;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS code_number INT;
+CREATE UNIQUE INDEX IF NOT EXISTS projects_code_idx ON projects (code) WHERE code IS NOT NULL;
+
+-- OAuth app credentials per provider, set from the Integrations panel by an
+-- owner/admin (secret sealed with ENCRYPTION_KEY). .env values are a fallback.
+CREATE TABLE IF NOT EXISTS oauth_apps (
+  provider           TEXT PRIMARY KEY CHECK (provider IN ('github','atlassian','slack','linear')),
+  client_id          TEXT NOT NULL,
+  client_secret_enc  TEXT NOT NULL,
+  updated_by         UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);

@@ -1,22 +1,15 @@
 #!/usr/bin/env bun
-import { readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { closeDb, getDb, getDatabaseUrl } from './lib/db'
+import { applySchema, closeDb, getDatabaseUrl } from './lib/db'
 import { log } from './lib/logger'
 
 const migrateLog = log.child({ mod: 'db-migrate' })
 
-const srcDir = dirname(fileURLToPath(import.meta.url))
-const schemaPath = join(srcDir, 'lib', 'db-schema.sql')
-
-const sql = getDb()
-
 try {
-  const ddl = await readFile(schemaPath, 'utf8')
   migrateLog.info('applying schema', { databaseUrl: getDatabaseUrl() })
-  await sql.unsafe(ddl)
-  migrateLog.info('schema applied')
+  // Same code path as the server's boot-time apply: db-schema.sql plus the
+  // guarded pgvector step (extension, embedding column, HNSW index).
+  const vector = await applySchema().then(() => import('./lib/db')).then((m) => m.vectorSearchAvailable())
+  migrateLog.info('schema applied', { vectorSearch: vector })
 } catch (error) {
   migrateLog.error('migration failed', error instanceof Error ? error : new Error(String(error)))
   process.exitCode = 1
