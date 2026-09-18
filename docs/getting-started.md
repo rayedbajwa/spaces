@@ -53,7 +53,7 @@ make down           # stop everything
 Open [http://localhost:3000](http://localhost:3000). With no accounts yet, the
 sign-in screen offers **Create the first account**; that account becomes the
 owner of the default team and adopts any existing projects. Afterwards,
-registration is by invitation: open **Team settings** from the user menu,
+registration is by invitation: open **People** in the sidebar,
 invite teammates by email and role, and share the generated link. Teammates can
 also **Continue with GitHub**. See
 [Organization, teams & access](concepts/organization-teams-and-access.md).

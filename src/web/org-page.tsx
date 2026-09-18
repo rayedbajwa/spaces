@@ -48,10 +48,18 @@ export function OrgPage() {
   const [org, setOrg] = useState<OrgMemory | null>(null)
   const [knowledge, setKnowledge] = useState<KnowledgeStatus | null>(null)
   const [promotions, setPromotions] = useState<PromotionProposal[] | null>(null)
-  const [section, setSection] = useState<Section>(() => {
+  // The section lives in the URL (?section=…) so the app sidebar can drive it.
+  const sectionFromUrl = (): Section => {
     const wanted = new URLSearchParams(window.location.search).get('section')
     return SECTIONS.some((s) => s.id === wanted) ? (wanted as Section) : 'overview'
-  })
+  }
+  const [section, setSectionState] = useState<Section>(sectionFromUrl)
+  useEffect(() => {
+    const sync = () => setSectionState(sectionFromUrl())
+    window.addEventListener('popstate', sync)
+    return () => window.removeEventListener('popstate', sync)
+  }, [])
+  const setSection = (next: Section) => navigate(next === 'overview' ? '/organization' : `/organization?section=${next}`)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
@@ -88,10 +96,7 @@ export function OrgPage() {
         <div className="team-hero-main">
           <div className="team-avatar org-avatar" aria-hidden="true">{initials(name)}</div>
           <div className="team-hero-text">
-            <div className="breadcrumb">
-              <button type="button" className="ghost-button" onClick={() => navigate('/')}>← Board</button>
-              <span className="text-subtle">Organization · shared by every team</span>
-            </div>
+            <div className="breadcrumb"><span className="text-subtle">Organization · shared by every team</span></div>
             <OrgName name={name} canEdit={canEdit} busy={busy} onRename={(next) => act(() => json('/api/org/memory', { method: 'PUT', body: JSON.stringify({ name: next, manualText: org?.manualText ?? '' }) }).then(() => refresh()), 'Organization renamed.')} />
             <div className="team-chips">
               <span className="chip"><strong>{teams.length}</strong> team{teams.length === 1 ? '' : 's'}</span>
@@ -104,29 +109,13 @@ export function OrgPage() {
         </div>
         <div className="team-hero-actions">
           {canEdit && <button type="button" className="primary-button" onClick={() => setSection('knowledge')}>Import knowledge</button>}
-          <button type="button" className="secondary-button" onClick={() => navigate('/')}>Back to board</button>
         </div>
       </header>
 
       {error && <p className="error-text team-flash">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
 
-      <div className="team-layout">
-        <nav className="team-nav card" aria-label="Organization sections">
-          {[...new Set(SECTIONS.map((s) => s.group))].map((group) => (
-            <div key={group} className="team-nav-group">
-              <div className="team-nav-group-title">{group}</div>
-              {SECTIONS.filter((s) => s.group === group).map((s) => (
-                <button key={s.id} type="button" className={`team-nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)} aria-current={section === s.id ? 'page' : undefined}>
-                  <span className="team-nav-label">{s.label}</span>
-                  <span className="team-nav-hint">{s.hint}</span>
-                  {s.id === 'promotions' && pending.length > 0 && <span className="team-nav-count">{pending.length}</span>}
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
-
+      <div className="team-layout single">
         <div className="team-content">
           {section === 'overview' && (
             <>

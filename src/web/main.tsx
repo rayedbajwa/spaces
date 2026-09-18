@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { marked } from 'marked'
-import { AuthRoot, UserMenu, navigate, useAuth } from './auth'
+import { AuthRoot, navigate, useAuth } from './auth'
+import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
 import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
@@ -475,8 +476,10 @@ function App() {
   // Team settings page (/teams/<slug>) replaces the board while open.
   const [teamPageSlug, setTeamPageSlug] = useState<string | null>(null)
   const [orgPageOpen, setOrgPageOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [boardQuery, setBoardQuery] = useState('')
+  const archivedCardsRef = useRef<BoardCard[]>([])
   // Archived projects live in a dropdown, never on the board itself.
-  const [archivedMenu, setArchivedMenu] = useState<{ open: boolean; cards: BoardCard[] | null }>({ open: false, cards: null })
   const [boardView, setBoardView] = useState<'board' | 'list'>(() => {
     try { return window.localStorage.getItem('spaces:boardView') === 'list' ? 'list' : 'board' } catch { return 'board' }
   })
@@ -897,16 +900,16 @@ function App() {
     }
   }
 
-  async function toggleArchivedMenu() {
-    if (archivedMenu.open) { setArchivedMenu((m) => ({ ...m, open: false })); return }
-    setArchivedMenu({ open: true, cards: null })
-    try {
-      const archivedBoard = await getJson<BoardResponse>('/api/board?archived=1')
-      const cards = archivedBoard.columns.flatMap((c) => c.cards).filter((c) => c.archivedAt).sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? ''))
-      setArchivedMenu({ open: true, cards })
-    } catch {
-      setArchivedMenu({ open: true, cards: [] })
-    }
+  /** Archived projects for the sidebar menu (newest archived first). */
+  async function loadArchivedCards(): Promise<BoardCard[]> {
+    const archivedBoard = await getJson<BoardResponse>('/api/board?archived=1')
+    const cards = archivedBoard.columns.flatMap((c) => c.cards).filter((c) => c.archivedAt).sort((a, b) => (b.archivedAt ?? '').localeCompare(a.archivedAt ?? ''))
+    archivedCardsRef.current = cards
+    return cards
+  }
+  function openArchived(summary: ArchivedCardSummary) {
+    const card = archivedCardsRef.current.find((c) => c.projectNamespace === summary.projectNamespace)
+    if (card) void openProject(card)
   }
 
   async function setPaused(pause: boolean) {
@@ -1815,74 +1818,32 @@ function App() {
   }, [stageInputPrompt, inspectedRun, isIntegrationsModalOpen, isWizardOpen, onboarding, isProjectModalOpen])
 
   const allCards = board.columns.flatMap((column) => column.cards.map((card) => ({ card, column })))
+  const boardQ = boardQuery.trim().toLowerCase()
+  const cardMatches = (card: BoardCard) => !boardQ || [card.projectLabel, card.code ?? '', card.projectNamespace, card.feature ?? ''].some((v) => String(v).toLowerCase().includes(boardQ))
+  const visibleCards = allCards.filter(({ card }) => cardMatches(card))
   const boardHasProjects = allCards.length > 0
   const attentionCount = allCards.filter(({ card }) => card.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(card.automationState.state)).length
   const openWizard = () => { setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true) }
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <a className="topbar-brand" href="/" title="Back to the board" onClick={(e) => { e.preventDefault(); navigate('/') }}>
-          <span className="topbar-logo" aria-hidden="true">S</span>
-          <div>
-            <h1>Spaces</h1>
-            <p className="eyebrow">Agent-driven SDLC</p>
-          </div>
-        </a>
-        <div className="hero-actions">
-          <button
-            className={`integrations-chip ${allIntegrationsConnected ? 'all' : connectedIntegrationCount > 0 ? 'partial' : 'none'}`}
-            onClick={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }}
-            type="button"
-            aria-label={`Integrations: ${connectedIntegrationCount} of ${INTEGRATION_KINDS.length} connected`}
-          >
-            <span className="integrations-chip-dots" aria-hidden="true">
-              {INTEGRATION_KINDS.map((kind) => {
-                const isConnected = appIntegrations.some((i) => i.kind === kind && i.status === 'connected')
-                return (
-                  <span
-                    key={kind}
-                    className={`integrations-chip-dot ${isConnected ? 'on' : 'off'}`}
-                    title={`${kind}: ${isConnected ? 'connected' : 'not connected'}`}
-                  />
-                )
-              })}
-            </span>
-            <span className="integrations-chip-label">Integrations</span>
-            <span className="integrations-chip-count">
-              {allIntegrationsConnected ? (
-                <>
-                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.5l2.5 2.5 4.5-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  All connected
-                </>
-              ) : (
-                <>{connectedIntegrationCount}/{INTEGRATION_KINDS.length}</>
-              )}
-            </span>
-          </button>
-          {(board.archivedCount ?? 0) > 0 && (
-            <div className="archived-menu">
-              <button type="button" className="secondary-button" aria-haspopup="menu" aria-expanded={archivedMenu.open} onClick={() => void toggleArchivedMenu()}>
-                Archived ({board.archivedCount}) ▾
-              </button>
-              {archivedMenu.open && (
-                <div className="menu-popover card archived-popover" role="menu">
-                  {archivedMenu.cards === null && <span className="menu-label">Loading…</span>}
-                  {archivedMenu.cards?.length === 0 && <span className="menu-label">No archived projects.</span>}
-                  {archivedMenu.cards?.map((card) => (
-                    <button key={card.projectNamespace} type="button" className="menu-item" role="menuitem" onClick={() => { setArchivedMenu({ open: false, cards: archivedMenu.cards }); void openProject(card) }}>
-                      <strong>{card.projectLabel}</strong>
-                      <span className="menu-label">{card.code ?? card.projectNamespace}{card.archivedAt ? ` · archived ${new Date(card.archivedAt).toLocaleDateString()}` : ''}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-          <button className="primary-button" onClick={openWizard} type="button">New project</button>
-          <UserMenu />
-        </div>
-      </header>
+      <TopStrip
+        integrationsConnected={connectedIntegrationCount}
+        integrationsTotal={INTEGRATION_KINDS.length}
+        onIntegrations={() => { void loadAppIntegrations(); setIsIntegrationsModalOpen(true) }}
+        attentionCount={attentionCount}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((v) => !v)}
+      />
+      <div className="shell-body">
+        <AppSidebar
+          open={sidebarOpen}
+          onNavigate={() => setSidebarOpen(false)}
+          archivedCount={board.archivedCount ?? 0}
+          loadArchived={loadArchivedCards}
+          onOpenArchived={openArchived}
+        />
+        <section className="main-panel">
 
       {statusMessage && (
         <div className={`toast ${isErrorMessage(statusMessage) ? 'toast-error' : ''}`} role="status">
@@ -1894,12 +1855,17 @@ function App() {
       {orgPageOpen && <OrgPage />}
       {teamPageSlug && <TeamPage slug={teamPageSlug} teams={me?.teams ?? []} />}
 
-      {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && (!boardHasProjects ? (
+      {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && (<>
+      <PageHead title="Projects" count={boardHasProjects ? `${allCards.length}` : undefined}>
+        {boardHasProjects && <SearchBox value={boardQuery} onChange={setBoardQuery} placeholder="Search projects…" />}
+        <button className="primary-button" onClick={openWizard} type="button">+ New project</button>
+      </PageHead>
+      {!boardHasProjects ? (
         <section className="card welcome-panel">
           <div className="welcome-copy">
             <p className="eyebrow">{(board.archivedCount ?? 0) > 0 ? 'Nothing active' : 'Nothing here yet'}</p>
             <h2>{(board.archivedCount ?? 0) > 0 ? `All ${board.archivedCount} project${board.archivedCount === 1 ? ' is' : 's are'} archived` : 'Start your first project in this team'}</h2>
-            {(board.archivedCount ?? 0) > 0 && <p className="hero-copy">Open them from the <strong>Archived</strong> menu in the top bar, where you can unarchive or delete them. Or start something new.</p>}
+            {(board.archivedCount ?? 0) > 0 && <p className="hero-copy">Open them from <strong>Archived</strong> in the sidebar, where you can unarchive or delete them. Or start something new.</p>}
             <p className="hero-copy">
               Describe what you want to build, or import a Jira / Linear ticket. Onboarding clones your repositories, learns them,
               initialises the Spec Kit workspace and runs the AIDLC pipeline while you watch.
@@ -1921,7 +1887,7 @@ function App() {
       <section className="board-panel card panel">
         <div className="board-toolbar">
           <div className="board-summary">
-            <strong>{allCards.length} {allCards.length === 1 ? 'project' : 'projects'}</strong>
+            {boardQ && <strong>{visibleCards.length} of {allCards.length} match</strong>}
             {attentionCount > 0 && (
               <span className="mini-badge paused">{attentionCount} need{attentionCount === 1 ? 's' : ''} attention</span>
             )}
@@ -1948,7 +1914,7 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {allCards.map(({ card, column }) => (
+                {visibleCards.map(({ card, column }) => (
                   <tr key={card.projectNamespace} onClick={() => void openProject(card)}>
                     <td>
                       <strong>{card.code && <span className="code-badge">{card.code}</span>} {card.projectLabel}</strong>
@@ -2054,8 +2020,8 @@ function App() {
                 </p>
               )}
               <div className="board-stack">
-                {column.cards.length === 0 && !dragging && <p className="empty-state">No projects</p>}
-                {column.cards.map((card) => (
+                {column.cards.filter(cardMatches).length === 0 && !dragging && <p className="empty-state">{boardQ ? 'No matches' : 'No projects'}</p>}
+                {column.cards.filter(cardMatches).map((card) => (
                   <article
                     key={card.projectNamespace}
                     className="board-card board-summary-card"
@@ -2116,7 +2082,8 @@ function App() {
         </div>
         )}
       </section>
-      ))}
+      )}
+      </>)}
 
       {isProjectModalOpen && !teamPageSlug && !orgPageOpen && selectedCardFresh && (
         <section className="project-page" aria-label={selectedCardFresh.projectLabel}>
@@ -3529,6 +3496,8 @@ function App() {
           </div>
         </div>
       )}
+        </section>
+      </div>
     </main>
   )
 }

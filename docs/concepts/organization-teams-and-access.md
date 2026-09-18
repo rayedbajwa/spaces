@@ -23,7 +23,8 @@ flowchart TB
 Agents receive the three memory layers in that order in every stage's
 context: organization first, then the team's, then the project's. The board,
 history and project list show only the active team's projects; a session
-remembers which team is active and you switch teams from the user menu.
+remembers which team is active and you switch teams from the switcher at the
+top of the sidebar.
 
 ## Accounts and sign-in
 
@@ -59,10 +60,10 @@ joins immediately. Pending invites can be revoked.
 
 ## Organization and team memory
 
-- **Organization memory** (user menu → Organization memory) is edited by owners
+- **Organization memory** (sidebar → Memory) is edited by owners
   and admins and applies to every team: engineering principles, security
   policies, architecture standards, definitions of done.
-- **Team memory** (user menu → Team settings) is edited by members and applies
+- **Team memory** (sidebar → People → Memory) is edited by members and applies
   to the team's projects: conventions, reviewer preferences, rollout rules.
 - **Project memory** (Memory tab) stays with the project, together with the
   auto-summary composed from its repositories.
@@ -74,7 +75,7 @@ their own scope.
 
 ## The team page
 
-**Team settings, members & invites** in the user menu opens the team's page at
+**People** in the sidebar opens the active team's page at
 `/teams/<slug>`. Its overview shows members, active and archived projects
 (codes open the project pages) and the team memory. Owners and admins rename
 the team, change roles, create invite links and set the knowledge defaults
@@ -83,8 +84,9 @@ leave from the Members section.
 
 ## The organization page
 
-**Organization: memory, knowledge & teams** in the user menu opens
-`/organization`. It gathers everything shared across teams: the organization
+**Organization** in the sidebar opens `/organization`; Knowledge base,
+Memory, Integrations, Models and Promotions are its sections, each one a
+sidebar entry. It gathers everything shared across teams: the organization
 name and memory, the knowledge base (imports and search), promotion proposals
 from projects with approve and reject, and your teams with a way to start a
 new one. Owners and admins of any team edit; everyone reads.

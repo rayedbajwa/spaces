@@ -114,10 +114,7 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
         <div className="team-hero-main">
           <div className="team-avatar" aria-hidden="true">{detail?.team.codePrefix ?? team.name.slice(0, 2).toUpperCase()}</div>
           <div className="team-hero-text">
-            <div className="breadcrumb">
-              <button type="button" className="ghost-button" onClick={() => navigate('/')}>← Board</button>
-              <span className="text-subtle">Team space</span>
-            </div>
+            <div className="breadcrumb"><span className="text-subtle">Team space</span></div>
             <TeamName name={detail?.team.name ?? team.name} canEdit={canManage} busy={busy} onRename={(name) => act(() => json(`/api/teams/${team.teamId}`, { method: 'PATCH', body: JSON.stringify({ name }) }).then(() => refresh()), 'Team renamed.')} />
             <div className="team-chips">
               <span className="chip"><strong>{members.length}</strong> member{members.length === 1 ? '' : 's'}</span>
@@ -130,7 +127,6 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
         </div>
         <div className="team-hero-actions">
           {canManage && <button type="button" className="primary-button" onClick={() => setSection('invites')}>Invite people</button>}
-          <button type="button" className="secondary-button" onClick={() => navigate('/')}>Back to board</button>
         </div>
       </header>
 

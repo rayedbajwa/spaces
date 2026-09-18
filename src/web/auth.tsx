@@ -173,21 +173,26 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
 // User menu: team switcher, team settings, organization, sign out
 // ---------------------------------------------------------------------------
 
-export function UserMenu() {
-  const { me, signOut, switchTeam, refresh } = useAuth()
-  const [open, setOpen] = useState(false)
-  const [switching, setSwitching] = useState<string | null>(null)
-  const rootRef = useRef<HTMLDivElement>(null)
+/** Signed in and landed on an invite link: accept it now. Returns a status message to show. */
+export function useInviteAcceptance(): string {
+  const { me, refresh } = useAuth()
   const inviteToken = inviteTokenFromPath()
   const [inviteMsg, setInviteMsg] = useState('')
-
-  // Signed in and landed on an invite link: accept it now.
   useEffect(() => {
     if (!inviteToken || !me?.user) return
     json<{ team: { name: string } }>(`/api/invites/${encodeURIComponent(inviteToken)}/accept`, { method: 'POST', body: '{}' })
       .then(async (r) => { setInviteMsg(`Joined ${r.team.name}.`); window.history.replaceState({}, '', '/'); await refresh(); window.location.reload() })
       .catch((e) => setInviteMsg(e instanceof Error ? e.message : String(e)))
   }, [inviteToken, me?.user?.userId, refresh])
+  return inviteMsg
+}
+
+export function UserMenu() {
+  const { me, signOut, switchTeam } = useAuth()
+  const [open, setOpen] = useState(false)
+  const [switching, setSwitching] = useState<string | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const inviteMsg = useInviteAcceptance()
 
   // Close on outside click and Escape.
   useEffect(() => {

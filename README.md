@@ -27,8 +27,12 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
 
 Every project is a card with a readable code (`COMP-1`) on a kanban board whose
 seven lanes always span the full width and derive from the artifacts each
-project has produced. The **Integrations** chip shows connection status; the
-account menu switches teams and opens the team and organization pages.
+project has produced. Navigation lives in a sidebar: the team switcher at the
+top, then Projects (with search, `⌘K`), the shared Knowledge base, Memory,
+Integrations and Models, then People (team settings), Organization and
+Promotions, and your account at the bottom. The top strip shows what needs
+attention and the integration status; on small screens the sidebar folds
+behind a menu button.
 
 ![Spaces board](docs/screenshots/board.png)
 
@@ -320,8 +324,8 @@ Each integration is optional. When configured, agents can pull context from
 the connected system (issues, tickets, docs, messages) and integrations show
 as connected dots in the hero.
 
-Everything is self-serve from **Organization → Integrations** (or the
-**Integrations** chip in the top bar). Press **Set up app** on a provider
+Everything is self-serve from **Integrations** in the sidebar (the status
+chip in the top strip opens a read-only summary). Press **Set up app** on a provider
 card; an owner or admin of any team can do this, and the result is shared by
 every team.
 
