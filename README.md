@@ -25,33 +25,51 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
 
 ### The board
 
-Every project is a card with a readable code (`COMP-1`) on a kanban board that
-derives its lane (Backlog → Initialized → Specified → Planned → Tasked →
-Implementing → Done) from the artifacts the project has produced. The
-**Integrations** chip shows connection status; the account menu switches
-teams and opens team and organization pages.
+Every project is a card with a readable code (`COMP-1`) on a kanban board whose
+seven lanes always span the full width and derive from the artifacts each
+project has produced. The **Integrations** chip shows connection status; the
+account menu switches teams and opens the team and organization pages.
 
-![Spaces board with a project in flight](docs/screenshots/board.png)
+![Spaces board](docs/screenshots/board.png)
 
-### Project page with the agent output dock
+### Project page
 
-Each project has its own page at `/spaces/<code>`. The live agent output is
-docked at the bottom: stage progress, the streamed log, approval and
-clarification prompts, and **Pause**, **Resume** and **Cancel** for the run.
-Tabs cover specs, tests, implementation, QA, the assistant, context, memory
-and lessons.
+Each project has its own page at `/spaces/<code>`: a hero with lane, run,
+verification and repository chips, pill tabs, and an overview that opens with
+stat tiles, the summary and repositories, the orchestrator and artifacts, and
+the pause / archive / delete controls at the bottom. The live agent output is
+a slim pill anchored at the bottom.
 
-![Project page with a running pipeline and the docked agent output](docs/screenshots/project-page.png)
+![Project page](docs/screenshots/project-page.png)
+
+### Agent output
+
+Open the pill and the agent output becomes a full-height sheet: stage
+progress, the streamed log with scroll-to-top / bottom and smart following,
+approval and clarification prompts that take the room when a human is
+needed, and **Pause**, **Resume**, **Cancel** and **Retry** for the run.
+
+![Agent output sheet](docs/screenshots/agent-output.png)
+
+### Models: automatic routing, keys in the app
+
+No model is named anywhere. Provider keys (Anthropic, OpenAI, OpenRouter) are
+entered here, stored encrypted and verified; for the provider in use the
+catalog is scored by cost and speed into small / medium / large tiers, tuned by
+a policy (cost / balanced / quality, provider order, premium models, pins).
+With OpenRouter, OpenRouter routes each request.
+
+![Model routing and provider keys](docs/screenshots/models.png)
 
 ### Organization knowledge base
 
 Import Confluence spaces, Jira projects, Linear teams, projects and
 initiatives, GitHub repository docs and issues, web pages and notes. Content
-is chunked and indexed in Postgres (full-text plus pgvector embeddings);
-agents search it with `org_knowledge_search` and every stage starts with the
-excerpts relevant to its project.
+is chunked and indexed in Postgres (full-text plus pgvector embeddings); agents
+search it with `org_knowledge_search`, the `research` stage loads it before
+specifying, and every stage starts with the excerpts relevant to its project.
 
-![Knowledge base with imported sources and the integration picker](docs/screenshots/knowledge-base.png)
+![Knowledge base](docs/screenshots/knowledge-base.png)
 
 ### Team page
 
@@ -67,7 +85,7 @@ encrypted; each provider card shows the callback URL and scopes to register
 and the connection state of the integrations it powers. Nothing lives in
 `.env`.
 
-![Integrations with credential cards](docs/screenshots/integrations.png)
+![Integrations](docs/screenshots/integrations.png)
 
 ### Generated artifacts, browsable in-app
 

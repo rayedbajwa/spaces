@@ -17,7 +17,9 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
 
 ![The board](screenshots/board.png)
 
-![Project page with the docked agent output](screenshots/project-page.png)
+![Project page](screenshots/project-page.png)
+
+![Agent output sheet](screenshots/agent-output.png)
 
 ## What it does
 
@@ -51,10 +53,26 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
 
 -   **Self-serve, organization-wide setup**
 
-    OAuth app credentials, memory, the knowledge base and teams are managed
-    on the organization page; each team has a page for members, invites,
-    memory and knowledge defaults. See
+    Provider keys, OAuth app credentials, model routing, memory, the knowledge
+    base and teams are managed on the organization page; each team has a page
+    for members, invites, memory and knowledge defaults. See
     [Organization, teams & access](concepts/organization-teams-and-access.md).
+
+-   **Automatic model routing**
+
+    No model is named anywhere: for the provider in use the catalog is scored
+    by cost and speed into small / medium / large tiers, tuned by an
+    organization policy; with OpenRouter, OpenRouter routes each request. See
+    [Configuration](reference/configuration.md#models).
+
+-   **Research before specify, changes committed with the code**
+
+    A `research` stage clones and learns the repositories a feature needs and
+    loads the knowledge base before anything is specified; each implementation
+    repository then carries `specs/<initiative-id>/` with its change, tasks and
+    delta spec on the same pull request. See
+    [Pipelines & stages](concepts/pipelines-and-stages.md) and
+    [Delivery](concepts/delivery.md).
 
 -   **Delivery, end to end**
 
