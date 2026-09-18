@@ -2010,9 +2010,9 @@ function App() {
             const eligible = dragging && isEligibleDrop(draggedCard, column.id)
             const disabled = dragging && !eligible
             const columnStep = stepForColumn(column.id)
-            // Empty lanes collapse to a narrow rail so the populated ones get the
-            // width; a lane re-expands while it is a valid drop target.
-            const collapsed = column.cards.length === 0 && !eligible
+            // Every lane keeps its full share of the width, empty or not, so the
+            // board always reads as the whole pipeline.
+            const collapsed = false
             if (collapsed) {
               return (
                 <section
@@ -3655,14 +3655,29 @@ function AiAgentOutputBar({
   const canResume = currentRun?.status === 'paused' && currentRun.pauseKind === 'user' && !projectPaused
   const canCancel = !!currentRun && ['running', 'paused'].includes(currentRun.status)
 
-  // Auto-scroll log to bottom on every update while the run is streaming.
+  // Follow the stream only while the reader is at the bottom; scrolling up to
+  // read pauses following until they return (or press the arrow).
+  const [followLog, setFollowLog] = useState(true)
   useEffect(() => {
-    if (isActive && logRef.current) {
+    if (isActive && followLog && logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
-  }, [currentRun?.log, isActive])
+  }, [currentRun?.log, isActive, followLog])
+  const onLogScroll = () => {
+    const el = logRef.current
+    if (!el) return
+    setFollowLog(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
+  }
+  const scrollLog = (where: 'top' | 'bottom') => {
+    const el = logRef.current
+    if (!el) return
+    el.scrollTo({ top: where === 'top' ? 0 : el.scrollHeight, behavior: 'smooth' })
+    setFollowLog(where === 'bottom')
+  }
 
   return (
+    <>
+    {expanded && <div className="dock-backdrop" aria-hidden="true" />}
     <section ref={dockRef} className={`card panel slim-panel agent-dock ${expanded ? 'open' : 'collapsed'}`} aria-label="AI agent output">
       {(() => {
         const total = stages.length
@@ -3728,12 +3743,20 @@ function AiAgentOutputBar({
       })()}
       <div className="dock-body">
       {expanded && (
-        <pre
-          ref={logRef}
-          className="context-preview modal-preview run-log"
-        >
-          {currentRun?.log || (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
-        </pre>
+        <div className="dock-log-wrap">
+          <pre
+            ref={logRef}
+            className="context-preview modal-preview run-log"
+            onScroll={onLogScroll}
+          >
+            {currentRun?.log || (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
+          </pre>
+          <div className="dock-scrollers" aria-label="Scroll the log">
+            <button type="button" className="dock-icon" onClick={() => scrollLog('top')} title="Scroll to top" aria-label="Scroll to top">↑</button>
+            <button type="button" className={`dock-icon ${followLog ? 'accent' : ''}`} onClick={() => scrollLog('bottom')} title={followLog ? 'Following the live output' : 'Scroll to bottom and follow'} aria-label="Scroll to bottom">↓</button>
+          </div>
+          {isActive && !followLog && <button type="button" className="dock-new-output" onClick={() => scrollLog('bottom')}>New output below ↓</button>}
+        </div>
       )}
       {/* Paused-run answer UI — moved here from the Assistant tab so users don't have
           to navigate to answer. Shows when currentRun is paused and resumable. */}
@@ -3841,6 +3864,7 @@ function AiAgentOutputBar({
       )}
       </div>
     </section>
+    </>
   )
 }
 
