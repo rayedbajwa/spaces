@@ -247,7 +247,7 @@ function GitHubAppSetup({ app }: { app: OAuthApp }) {
             <span className="text-subtle">
               {created
                 ? <>Owned by <b>{app.setup.ownerLogin ?? 'your account'}</b>. Credentials, private key and webhook secret are stored encrypted. <a href={app.setup.appUrl} target="_blank" rel="noreferrer">Open app settings ↗</a></>
-                : 'Spaces sends GitHub a manifest with the app name, callback URL and repository permissions (contents, pull requests, issues; read metadata, checks and actions). You confirm on GitHub and come straight back — no copying of ids or secrets.'}
+                : 'Spaces sends GitHub a manifest with the app name, callback URL and repository permissions (contents, pull requests and issues; read metadata, checks and actions). You confirm on GitHub and come straight back — no copying of ids or secrets.'}
             </span>
           </div>
           {!created && (

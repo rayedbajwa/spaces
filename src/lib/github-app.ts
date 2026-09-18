@@ -46,7 +46,10 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
     setup_url: `${origin}/api/oauth-apps/github/installed`,
     setup_on_update: false,
     request_oauth_on_install: false,
-    hook_attributes: { url: `${origin}/api/webhooks/github`, active: false },
+    // No webhook: Spaces polls, and GitHub refuses hook URLs that are not on
+    // the public internet (localhost), so the block is left out entirely.
+    // Repository permissions only — GitHub's manifest validator rejects the
+    // account/organization ones ("resource is not included in the list").
     default_permissions: {
       contents: 'write',
       pull_requests: 'write',
@@ -54,8 +57,6 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
       metadata: 'read',
       checks: 'read',
       actions: 'read',
-      members: 'read',
-      email_addresses: 'read',
     },
     default_events: [],
   }
