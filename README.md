@@ -136,9 +136,10 @@ inspectable artifacts each stage produces.
   searched by agents through `org_knowledge_search` and fed into every stage's
   context. Works with OpenAI or OpenRouter embeddings; degrades to keyword
   search without them
-- **Provider-agnostic defaults** — `DEFAULT_MODEL*` or the first configured
-  key (Anthropic, OpenRouter, OpenAI) drives every model tier; template pins
-  from a provider without a key fall back to the equivalent tier
+- **Automatic model routing** — no model names anywhere: for the provider in
+  use, the catalog is scored by cost and speed into small / medium / large
+  tiers, tuned by an organization policy (cost / balanced / quality, provider
+  order, premium models, pins); with OpenRouter, OpenRouter routes each request
 - **Postgres-backed** job queue with per-project concurrency (SKIP LOCKED),
   stale-job reaper, and LISTEN/NOTIFY for reactive workers
 

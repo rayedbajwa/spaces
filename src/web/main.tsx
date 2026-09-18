@@ -431,7 +431,7 @@ const defaultWizard: WizardState = {
 
 function App() {
   const { me } = useAuth()
-  const serverDefaultModel = me?.defaultModel ?? 'server default'
+  const serverDefaultModel = me?.defaultModel ? `auto: ${me.defaultModel}` : 'auto (organization routing)'
   const [board, setBoard] = useState<BoardResponse>({ columns: [] })
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null)
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
@@ -3498,7 +3498,7 @@ function App() {
                   </label>
                   <label>
                     Model
-                    <input value={wizard.model} onChange={(event) => setWizard((c) => ({ ...c, model: event.target.value }))} placeholder={serverDefaultModel} title="Leave empty to use the server default model" />
+                    <input value={wizard.model} onChange={(event) => setWizard((c) => ({ ...c, model: event.target.value }))} placeholder={serverDefaultModel} title="Leave empty for automatic routing (Organization → Models)" />
                   </label>
                 </div>
               </>

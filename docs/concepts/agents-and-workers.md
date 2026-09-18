@@ -23,13 +23,16 @@ restart onboarding, open a pull request — and uses them once you say yes.
 
 ## Models and speed
 
-Runs default to `DEFAULT_MODEL`, or to the first provider with an API key
-(Anthropic, OpenRouter, then OpenAI). Templates can pin a model and thinking
-level per step, and the project's **speed mode** (fast / balanced / quality)
-feeds a model router that picks a small, medium or large tier per stage
-(`DEFAULT_MODEL_SMALL` / `DEFAULT_MODEL` / `DEFAULT_MODEL_LARGE`). A pinned
-model from a provider without a key falls back to the same-size tier. API keys
-in the environment override `.env` and are verified at boot.
+No model is named anywhere. For the provider in use (the first in the
+organization's provider order that has a key), Spaces scores the catalog by
+cost and speed and fills a small, medium and large tier; the project's **speed
+mode** (fast / balanced / quality) and the stage family pick the tier per
+stage, retries escalate a tier, and oversized prompts skip the small tier.
+**Organization → Models** shows the choices and tunes the policy (cost /
+balanced / quality, provider order, premium models, pins). With OpenRouter
+every tier is OpenRouter's own auto-router. Templates may still pin a model
+and thinking level per step; a pin from a provider without a key falls back to
+the same-size tier.
 
 ## The agent output dock
 

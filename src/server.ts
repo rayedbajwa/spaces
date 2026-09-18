@@ -36,7 +36,7 @@ import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkProviderKeys } from './lib/provider-check'
-import { defaultModel } from './lib/default-model'
+import { defaultModel, getModelPolicy, getTierRouting, updateModelPolicy, warmModelRouting, type ModelPolicy } from './lib/model-policy'
 import {
   createKnowledgeSource, deleteKnowledgeDocument, deleteKnowledgeSource, getKnowledgeSource, getKnowledgeStatus,
   indexKnowledgeDocument, KNOWLEDGE_SOURCE_KINDS, listKnowledgeDocuments, listKnowledgeSources, resetKnowledgeSourceCursor,
@@ -163,6 +163,8 @@ await ensureFrontendBuilt()
 // A shell API key overrides .env; a placeholder there makes every agent call
 // 401 with nothing in the UI explaining why. Check once at boot (non-fatal).
 void checkProviderKeys(serverLog)
+// Decide the tier models for the configured provider once, before serving.
+await warmModelRouting(serverLog).catch((error) => serverLog.warn('model routing could not be computed', { error: error instanceof Error ? error.message : String(error) }))
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
@@ -244,7 +246,7 @@ async function route(req: Request): Promise<Response> {
   let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: defaultModel() })
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: await defaultModel() })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
@@ -302,8 +304,8 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/me') {
-    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: defaultModel() })
-    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: defaultModel() })
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: await defaultModel() })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: await defaultModel() })
   }
 
   if (method === 'POST' && url.pathname === '/api/me/team' && auth) {
@@ -420,6 +422,21 @@ async function route(req: Request): Promise<Response> {
     const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
     await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
     return sendJson(200, await getOrgMemory())
+  }
+
+  // ---- Organization model routing: automatic per provider, tuned by policy ----
+
+  if (method === 'GET' && url.pathname === '/api/org/models') {
+    const routing = await getTierRouting(url.searchParams.get('refresh') === '1')
+    return sendJson(200, routing)
+  }
+  if (method === 'PUT' && url.pathname === '/api/org/models') {
+    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can change model routing.' })
+    const body = await readJson<Partial<ModelPolicy>>(req)
+    await updateModelPolicy(body)
+    const routing = await getTierRouting(true)
+    serverLog.info('model policy updated', { by: auth?.user.email ?? 'local', preference: routing.policy.preference, provider: routing.provider, ...routing.tiers })
+    return sendJson(200, routing)
   }
 
   // ---- Organization knowledge base (RAG): import from integrations, search ----
@@ -609,7 +626,7 @@ async function route(req: Request): Promise<Response> {
     if (governanceEnabled()) {
       await ensureGovernanceWorkspace(project).catch((error) => serverLog.warn('governance workspace creation failed', { slug: project.slug, error: error instanceof Error ? error.message : String(error) }))
     }
-    void startProjectOnboarding(project, { model: body.model?.trim() || defaultModel(), feature: body.feature?.trim() || undefined })
+    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel(), feature: body.feature?.trim() || undefined })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
   }
@@ -626,7 +643,7 @@ async function route(req: Request): Promise<Response> {
     if (!project) return sendJson(404, { error: 'Project not found.' })
     if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it before re-running onboarding.' })
     const body = await readJson<{ model?: string }>(req)
-    void startProjectOnboarding(project, { model: body.model?.trim() || defaultModel() })
+    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel() })
     return sendJson(202, getOnboardingSnapshot(projectId))
   }
 
@@ -1574,7 +1591,7 @@ async function route(req: Request): Promise<Response> {
     // otherwise the deployment default (DEFAULT_MODEL / first configured provider).
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : defaultModel()
+    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : await defaultModel()
 
     const row = await dbCreateRun({
       projectNamespace: project.slug,
@@ -1735,7 +1752,7 @@ async function route(req: Request): Promise<Response> {
     // the deployment default. Never leave it to Pi's global default provider.
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : defaultModel())
+    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : await defaultModel())
     const baseOptions = toFlowOptions(body)
     const options: FlowOptions = {
       ...baseOptions,
@@ -2928,7 +2945,7 @@ async function resolveSubagentModel(projectNamespace: string, requested?: string
   if (requested?.trim()) return requested.trim()
   const latest = await dbGetLatestRunForProject(projectNamespace)
   const inherited = latest?.optionsJson?.model
-  return inherited?.trim() ? inherited.trim() : defaultModel()
+  return inherited?.trim() ? inherited.trim() : await defaultModel()
 }
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */

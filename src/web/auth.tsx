@@ -261,6 +261,10 @@ export function UserMenu() {
               <span className="menu-row-icon" aria-hidden="true">⇄</span>
               <span className="menu-row-main"><span className="menu-row-title">Integrations</span><span className="menu-row-sub">{isAdminAnywhere ? 'Credentials and connections' : 'Connection status'}</span></span>
             </button>
+            <button type="button" className="menu-row" role="menuitem" onClick={() => go('/organization?section=models')}>
+              <span className="menu-row-icon" aria-hidden="true">◎</span>
+              <span className="menu-row-main"><span className="menu-row-title">Models</span><span className="menu-row-sub">Automatic routing by cost and speed</span></span>
+            </button>
           </div>
 
           <div className="menu-group">

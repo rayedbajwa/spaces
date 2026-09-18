@@ -13,19 +13,21 @@ shell variable overrides the file). See `.env.example` for the annotated list.
 
 ## Models
 
+No model is configured by name. Spaces routes automatically for the provider
+in use: it scores that provider's chat models by price, generation and size
+class and fills three tiers — **small** (review, chat, fast mode), **medium**
+(planning and implementation) and **large** (quality mode, retry escalation).
+The organization policy under **Organization → Models** tunes it: preference
+(cost / balanced / quality), provider order, whether premium ("pro") models
+may be used, and optional pins per tier. With OpenRouter first in the order
+every tier is `openrouter/openrouter/auto` and OpenRouter routes each request
+itself. Templates that still pin a model from a provider without a key fall
+back to the same-size tier.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `DEFAULT_MODEL` | first configured provider's medium tier | Model used when a run, sub-agent or onboarding job does not name one. `provider/model-id`, e.g. `anthropic/claude-sonnet-4-5`, `openai/gpt-5.4`, `openrouter/anthropic/claude-sonnet-4.5`, or `openrouter/openrouter/auto` to let OpenRouter choose. Also the fallback for the two tiers below. |
-| `DEFAULT_MODEL_SMALL` | `DEFAULT_MODEL`, else the provider's small tier | Cheap tier the router uses for review, chat and fast mode |
-| `DEFAULT_MODEL_LARGE` | `DEFAULT_MODEL`, else the provider's large tier | Top tier for quality-mode orchestration and retry escalation |
-
 | `EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Embedding model for the organization knowledge base; served by `OPENAI_API_KEY`, or through OpenRouter (`OPENROUTER_API_KEY`) for `openai/*` and `openrouter/<vendor>/<model>` ids. Without a usable key, knowledge search is full-text only. |
 | `EMBEDDING_DIMENSIONS` | `1536` | Size of the `vector` column; must match the model's output |
-
-Without any `DEFAULT_MODEL*`, the provider is picked from the keys present
-(Anthropic, then OpenRouter, then OpenAI) with a built-in small/medium/large
-trio each. Pipeline templates that pin a model from a provider you have no key
-for fall back to the same-size tier of the configured provider.
 
 ## Optional
 

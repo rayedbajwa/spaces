@@ -5,9 +5,10 @@
 # not overridden fall back to the built-in default.
 #
 # Model keys: haiku | sonnet | opus — size tiers (small / medium / large).
-# What each tier resolves to comes from DEFAULT_MODEL_SMALL / DEFAULT_MODEL /
-# DEFAULT_MODEL_LARGE, or the first provider with an API key (see
-# src/lib/default-model.ts), so the same table works with OpenAI or OpenRouter.
+# What each tier resolves to is chosen automatically per provider by cost and
+# speed (src/lib/model-policy.ts) and tuned under Organization → Models, so
+# the same table works with any provider; with OpenRouter every tier is its
+# auto-router.
 
 # Base per-stage-family defaults. Used when speed mode is 'balanced'.
 defaults:

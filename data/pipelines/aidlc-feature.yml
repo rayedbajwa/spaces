@@ -9,7 +9,6 @@ steps:
   - id: state-init
     stage: init
     phase: initialization
-    model: anthropic/claude-haiku-4-5
     thinking: off
   - id: research
     stage: research
@@ -21,13 +20,11 @@ steps:
     role: product
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: user-stories
     stage: clarify
     phase: inception
     role: product
-    model: anthropic/claude-haiku-4-5
     thinking: low
   - id: domain-design
     stage: plan
@@ -35,13 +32,11 @@ steps:
     role: architect
     review: true
     humanGate: true
-    model: anthropic/claude-opus-4-5
     thinking: high
   - id: contract-design
     stage: constitution
     phase: inception
     role: architect
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: units-generation
     stage: tasks
@@ -49,7 +44,6 @@ steps:
     role: architect
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: functional-design
     stage: testplan
@@ -57,20 +51,17 @@ steps:
     role: quality
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: delivery-planning
     stage: parallelize
     phase: construction
     role: delivery
-    model: anthropic/claude-haiku-4-5
     thinking: low
   - id: code-generation
     stage: implement
     phase: construction
     role: developer
     maxIterations: 3
-    model: anthropic/claude-sonnet-4-5
     thinking: high
     parallel:
       source: parallel-workstreams.md
@@ -81,7 +72,6 @@ steps:
     role: delivery
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   # Implementation harness: task execution (implement, PR opened) → CI checks →
   # code review posted on the PR → back to implement on CHANGES_REQUESTED → QA.
@@ -89,7 +79,6 @@ steps:
     stage: review
     phase: construction
     role: quality
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
     maxIterations: 4
     onComplete:
@@ -104,7 +93,6 @@ steps:
     role: quality
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
     onComplete:
       branch:
@@ -124,7 +112,6 @@ steps:
     review: true
     humanGate: true
     maxIterations: 20
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
     onComplete:
       branch:

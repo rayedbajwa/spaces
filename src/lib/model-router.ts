@@ -9,8 +9,8 @@
  *   3. Retry escalation (attempt N → next tier up)
  *   4. Speed mode override (fast → cheapest viable; quality → most capable)
  *   5. Stage-family default from data/org/model-routing.yml
- *   6. The default tier models (DEFAULT_MODEL* env, else the first configured
- *      provider — see default-model.ts)
+ *   6. The tier models chosen by the organization's routing policy
+ *      (model-policy.ts: automatic per provider by cost and speed)
  *
  * The router is decision-only — actually setting the model on the session is
  * still `stepModel` in AIDLCFlow. This module is pure functions + async config
@@ -21,7 +21,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { log } from './logger'
-import { resolveTierModels, type ModelTier } from './default-model'
+import type { ModelTier } from './default-model'
 
 const routerLog = log.child({ mod: 'model-router' })
 
@@ -53,23 +53,23 @@ export interface RouteDecision {
 }
 
 /**
- * Tier → model spec. The routing tables (and data/org/model-routing.yml) speak
- * in tiers named after the Anthropic line-up — haiku (small), sonnet (medium),
- * opus (large) — but what each tier resolves to comes from DEFAULT_MODEL* or the
- * first provider with credentials (see default-model.ts), so the same tables
- * work for OpenAI- or OpenRouter-only setups.
+ * The routing tables (and data/org/model-routing.yml) speak in tiers named after
+ * the Anthropic line-up — haiku (small), sonnet (medium), opus (large). What each
+ * tier resolves to is decided per provider by the organization's routing policy
+ * (model-policy.ts) and passed into routeModel, so the same tables work for any
+ * provider, and with OpenRouter every tier is OpenRouter's own auto-router.
  */
-const tiers = resolveTierModels()
-export const MODELS: Record<'haiku' | 'sonnet' | 'opus', string> = {
-  haiku: tiers.small,
-  sonnet: tiers.medium,
-  opus: tiers.large,
-}
+export type TierKey = 'haiku' | 'sonnet' | 'opus'
+export interface TierModels { small: string; medium: string; large: string }
 
-/** Routing-table key for a size tier. */
-export const TIER_KEY: Record<ModelTier, keyof typeof MODELS> = { small: 'haiku', medium: 'sonnet', large: 'opus' }
+/** Routing-table key for a size tier, and back. */
+export const TIER_KEY: Record<ModelTier, TierKey> = { small: 'haiku', medium: 'sonnet', large: 'opus' }
+export const TIER_SIZE: Record<TierKey, ModelTier> = { haiku: 'small', sonnet: 'medium', opus: 'large' }
 
-const TIER: Array<keyof typeof MODELS> = ['haiku', 'sonnet', 'opus']
+const TIER: TierKey[] = ['haiku', 'sonnet', 'opus']
+
+/** Only for unit tests calling routeModel without a policy; production always passes real tiers. */
+const PLACEHOLDER_TIERS: TierModels = { small: 'tier/small', medium: 'tier/medium', large: 'tier/large' }
 
 /**
  * Stage-family classification. Multiple AIDLC stages share a family and
@@ -87,12 +87,12 @@ function stageFamily(stage: string): 'plan' | 'implement' | 'review' | 'orchestr
 
 interface RoutingConfig {
   defaults: Record<'plan' | 'implement' | 'review' | 'orchestrate' | 'chat' | 'other', {
-    model: keyof typeof MODELS
+    model: TierKey
     thinking?: ThinkingLevel
   }>
   modes: Record<SpeedMode, Partial<Record<
     'plan' | 'implement' | 'review' | 'orchestrate' | 'chat' | 'other',
-    { model: keyof typeof MODELS; thinking?: ThinkingLevel }
+    { model: TierKey; thinking?: ThinkingLevel }
   >>>
   /** Prompt size (chars) at which we always upgrade to Sonnet. */
   haikuMaxPromptChars: number
@@ -171,7 +171,7 @@ export function _resetRoutingConfigCache(): void {
  * Bump a model tier up by N steps. Haiku → Sonnet → Opus.
  * Capped at Opus; going beyond returns Opus.
  */
-function bumpTier(model: keyof typeof MODELS, steps: number): keyof typeof MODELS {
+function bumpTier(model: TierKey, steps: number): TierKey {
   const idx = TIER.indexOf(model)
   const next = Math.min(TIER.length - 1, idx + Math.max(0, steps))
   return TIER[next]!
@@ -182,7 +182,8 @@ function bumpTier(model: keyof typeof MODELS, steps: number): keyof typeof MODEL
  * Uses the loaded config; call loadRoutingConfig() first (pipeline-engine does
  * this on start).
  */
-export function routeModel(input: RouteInput, config: RoutingConfig = BUILTIN_CONFIG): RouteDecision {
+export function routeModel(input: RouteInput, config: RoutingConfig = BUILTIN_CONFIG, tiers: TierModels = PLACEHOLDER_TIERS): RouteDecision {
+  const modelFor = (key: TierKey) => tiers[TIER_SIZE[key]]
   // Precedence 1: explicit model on the pipeline step wins outright.
   if (input.explicitModel) {
     return {
@@ -208,7 +209,7 @@ export function routeModel(input: RouteInput, config: RoutingConfig = BUILTIN_CO
     modelKey = bumpTier(modelKey, attempt)
     if (previous !== modelKey) {
       return {
-        model: MODELS[modelKey],
+        model: modelFor(modelKey),
         thinking,
         reason: `retry #${attempt} — escalated ${previous} → ${modelKey} for ${family} stage`,
       }
@@ -219,7 +220,7 @@ export function routeModel(input: RouteInput, config: RoutingConfig = BUILTIN_CO
   // Sonnet's; if we're routing to Haiku but the prompt is huge, bump.
   if (modelKey === 'haiku' && input.promptSize && input.promptSize > config.haikuMaxPromptChars) {
     return {
-      model: MODELS.sonnet,
+      model: modelFor('sonnet'),
       thinking,
       reason: `prompt is ${input.promptSize} chars (>${config.haikuMaxPromptChars} threshold); routed to Sonnet instead of Haiku to avoid truncation`,
     }
@@ -227,7 +228,7 @@ export function routeModel(input: RouteInput, config: RoutingConfig = BUILTIN_CO
 
   const modeSuffix = mode === 'balanced' ? '' : ` (${mode} mode)`
   return {
-    model: MODELS[modelKey],
+    model: modelFor(modelKey),
     thinking,
     reason: `default for ${family} stage${modeSuffix}`,
   }

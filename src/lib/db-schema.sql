@@ -600,3 +600,6 @@ CREATE TABLE IF NOT EXISTS oauth_apps (
   updated_by         UUID REFERENCES users(user_id) ON DELETE SET NULL,
   updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Organization model-routing policy (preference, provider order, premium, pins).
+ALTER TABLE org_memory ADD COLUMN IF NOT EXISTS model_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb;

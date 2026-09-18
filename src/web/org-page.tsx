@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { json, navigate, useAuth, type MeTeam } from './auth'
 import { OrgKnowledgePanel } from './knowledge'
 import { IntegrationsPanel } from './integrations'
+import { ModelsSection } from './models'
 
 /**
  * Organization page at /organization: the layer every team shares.
@@ -28,13 +29,14 @@ interface PromotionProposal {
 
 interface KnowledgeStatus { sources: number; documents: number; chunks: number; embeddings: { available: boolean; model: string }; vectorSearch: boolean; lastSyncAt: string | null }
 
-type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'promotions' | 'teams'
+type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'promotions' | 'teams'
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string }> = [
   { id: 'overview', label: 'Overview', hint: 'Teams, projects, knowledge' },
   { id: 'memory', label: 'Memory', hint: 'Shared by every agent' },
   { id: 'knowledge', label: 'Knowledge base', hint: 'Imports and search' },
   { id: 'integrations', label: 'Integrations', hint: 'App credentials and connections' },
+  { id: 'models', label: 'Models', hint: 'Automatic routing by cost and speed' },
   { id: 'promotions', label: 'Promotions', hint: 'Project learnings going org-wide' },
   { id: 'teams', label: 'Teams', hint: 'Spaces and a new one' },
 ]
@@ -173,6 +175,8 @@ export function OrgPage() {
               <IntegrationsPanel embedded />
             </section>
           )}
+
+          {section === 'models' && <ModelsSection canEdit={canEdit} />}
 
           {section === 'promotions' && (
             <PromotionsSection proposals={promotions ?? []} canDecide={canEdit} busy={busy} act={act} />

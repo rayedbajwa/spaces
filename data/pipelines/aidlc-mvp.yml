@@ -13,7 +13,6 @@ steps:
   - id: state-init
     stage: init
     phase: initialization
-    model: anthropic/claude-haiku-4-5
     thinking: off
   - id: research
     stage: research
@@ -23,7 +22,6 @@ steps:
     stage: specify
     phase: ideation
     role: product
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: requirements-analysis
     stage: clarify
@@ -31,7 +29,6 @@ steps:
     role: product
     review: true
     humanGate: true
-    model: anthropic/claude-haiku-4-5
     thinking: low
   - id: domain-design
     stage: plan
@@ -39,13 +36,11 @@ steps:
     role: architect
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: high
   - id: units-generation
     stage: tasks
     phase: inception
     role: architect
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: functional-design
     stage: testplan
@@ -53,20 +48,17 @@ steps:
     role: quality
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
   - id: delivery-planning
     stage: parallelize
     phase: construction
     role: delivery
-    model: anthropic/claude-haiku-4-5
     thinking: low
   - id: code-generation
     stage: implement
     phase: construction
     role: developer
     maxIterations: 3
-    model: anthropic/claude-sonnet-4-5
     thinking: high
     parallel:
       source: parallel-workstreams.md
@@ -77,7 +69,6 @@ steps:
     role: quality
     review: true
     humanGate: true
-    model: anthropic/claude-sonnet-4-5
     thinking: medium
     onComplete:
       branch:

@@ -1,5 +1,10 @@
 import { test, expect, describe } from 'bun:test'
-import { MODELS, routeModel, type SpeedMode } from '../src/lib/model-router'
+import { routeModel as routeWithTiers, type SpeedMode, type TierModels } from '../src/lib/model-router'
+
+// Tiers as the policy would hand them over; the tables only know haiku/sonnet/opus.
+const TIERS: TierModels = { small: 'test/small', medium: 'test/medium', large: 'test/large' }
+const MODELS = { haiku: TIERS.small, sonnet: TIERS.medium, opus: TIERS.large }
+const routeModel = (input: Parameters<typeof routeWithTiers>[0]) => routeWithTiers(input, undefined, TIERS)
 
 /**
  * Pure unit tests for the model router. No DB, no LLM, no config file — every

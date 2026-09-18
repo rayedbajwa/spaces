@@ -13,7 +13,8 @@ import {
 import type { PipelineStep, PipelineTemplate } from './pipeline-template'
 import { evaluateBranchExpression, readCodeReviewStatus, readDeliveryStatus, readVerificationStatus } from './pipeline-branch'
 import { loadPersona } from './persona-loader'
-import { MODELS, TIER_KEY, loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
+import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
+import { getTierModels } from './model-policy'
 import { isProviderConfigured, tierOfModel } from './default-model'
 import { compactHandoff } from './context-compactor'
 import { prepareResearchInputs } from './research-stage'
@@ -309,13 +310,13 @@ export class PipelineEngine {
     return async ({ stageIndex, stage }) => {
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
       const config = await loadRoutingConfig()
+      const tiers = await getTierModels()
       const attempt = step ? this.visitCount.get(step.id) ?? 0 : 0
       // A template may pin a model from a provider this deployment has no key
-      // for (the bundled templates pin Anthropic models). Keep the author's
-      // intent — the size tier — but on a provider we can actually call.
+      // for. Keep the author's intent — the size tier — on the provider in use.
       let explicitModel = step?.model
       if (explicitModel && !isProviderConfigured(explicitModel)) {
-        const substitute = MODELS[TIER_KEY[tierOfModel(explicitModel)]]
+        const substitute = tiers[tierOfModel(explicitModel)]
         if (step && !substituted.has(step.id)) {
           substituted.add(step.id)
           engineLog.warn('template pins a model whose provider has no credentials; using the equivalent tier instead', { stepId: step.id, pinned: explicitModel, model: substitute })
@@ -331,7 +332,7 @@ export class PipelineEngine {
         explicitThinking: step?.thinking as never,
         // promptSize would require pre-rendering the prompt; wired in the
         // beforeStagePrompt hook instead where the actual bytes are known.
-      }, config)
+      }, config, tiers)
       engineLog.debug('model chosen', {
         stage,
         stepId: step?.id,

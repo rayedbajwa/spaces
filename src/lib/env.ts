@@ -7,8 +7,6 @@
  * in the app (Organization → Integrations) and stored encrypted.
  */
 
-import { PROVIDER_ENV_KEYS, isProviderConfigured, providerOfModel } from './default-model'
-
 export interface EnvReport {
   ok: boolean
   errors: string[]
@@ -48,14 +46,10 @@ function collectWarnings(): string[] {
     w.push(`PORT is set to "${port}" — must be an integer; defaulting to 3000.`)
   }
 
-  // Default models must be callable: a DEFAULT_MODEL on a provider without a
-  // key makes every run fail at the first agent call.
-  for (const key of ['DEFAULT_MODEL', 'DEFAULT_MODEL_SMALL', 'DEFAULT_MODEL_LARGE']) {
-    const spec = process.env[key]?.trim()
-    if (!spec) continue
-    if (!spec.includes('/')) w.push(`${key}="${spec}" should be provider/model, e.g. anthropic/claude-sonnet-4-5 or openrouter/openrouter/auto.`)
-    else if (!isProviderConfigured(spec)) w.push(`${key}="${spec}" names a provider with no API key set (${PROVIDER_ENV_KEYS[providerOfModel(spec) as keyof typeof PROVIDER_ENV_KEYS]}).`)
-  }
+  // Models are routed automatically per provider (Organization → Models); the
+  // old DEFAULT_MODEL* variables are ignored.
+  const modelVars = ['DEFAULT_MODEL', 'DEFAULT_MODEL_SMALL', 'DEFAULT_MODEL_LARGE'].filter((k) => process.env[k])
+  if (modelVars.length) w.push(`${modelVars.join(', ')} are no longer read. Model routing is automatic per provider and tuned under Organization → Models; remove these from .env.`)
 
   return w
 }

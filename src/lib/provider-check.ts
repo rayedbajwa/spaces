@@ -1,5 +1,6 @@
 import process from 'node:process'
-import { PROVIDER_ENV_KEYS, configuredProviders, resolveTierModels, type ProviderId } from './default-model'
+import { PROVIDER_ENV_KEYS, configuredProviders, type ProviderId } from './default-model'
+import { warmModelRouting } from './model-policy'
 
 type Log = { warn: (msg: string, meta?: Record<string, unknown>) => void; info: (msg: string, meta?: Record<string, unknown>) => void }
 
@@ -34,8 +35,7 @@ const LOOKS_LIKE_PLACEHOLDER: Record<ProviderId, (key: string) => boolean> = {
  */
 export async function checkProviderKeys(log: Log): Promise<void> {
   const providers = configuredProviders()
-  const tiers = resolveTierModels()
-  log.info('default models', { provider: providers[0] ?? '(none)', small: tiers.small, medium: tiers.medium, large: tiers.large })
+  await warmModelRouting(log).catch((error) => log.warn('model routing could not be computed', { error: error instanceof Error ? error.message : String(error) }))
   if (providers.length === 0) {
     log.warn('No LLM provider key is set (ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY); every agent step will fail.')
     return

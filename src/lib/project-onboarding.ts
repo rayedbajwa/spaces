@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { defaultModel } from './default-model'
+import { defaultModel } from './model-policy'
 import { appendFile, chmod, cp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -635,7 +635,7 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
     try {
       brief = await summarizeCodebaseForMemory({
         cwd: repo.localPath,
-        model: options.model ?? defaultModel(),
+        model: options.model ?? await defaultModel(),
         inventory: inventory.markdown,
         projectName: `${project.name} / ${repo.githubRepo ?? repo.label}`,
       })
@@ -649,7 +649,7 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
     // tasks that were waiting on it can build and test there right away.
     const setupState = await readDevSetupState(repo.localPath)
     if (setupState.needed) {
-      await runDevSetup({ cwd: repo.localPath, model: options.model ?? defaultModel(), repoLabel: repo.label }).catch(() => undefined)
+      await runDevSetup({ cwd: repo.localPath, model: options.model ?? await defaultModel(), repoLabel: repo.label }).catch(() => undefined)
     }
   })().finally(() => refreshing.delete(key))
   refreshing.set(key, job)
