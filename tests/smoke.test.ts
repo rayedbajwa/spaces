@@ -1,5 +1,6 @@
 import { test, expect, describe, afterAll } from 'bun:test'
 import { closeDb, getDb } from '../src/lib/db'
+import { encryptSecret } from '../src/lib/crypto-vault'
 
 /**
  * HTTP smoke tests. We do NOT embed src/server.ts (it has top-level side
@@ -30,6 +31,28 @@ const suite = serverUp ? describe : describe.skip
 
 if (!serverUp) {
   test.skip(`smoke tests skipped: no server responding at ${BASE_URL}. Start one with \`bun run web\` in another terminal, then re-run \`bun test tests/smoke.test.ts\`.`, () => {})
+}
+
+// Creating a project requires a stored model provider key (the server answers
+// 409 no_provider_key otherwise). CI has no real key, and a dummy one would be
+// rejected by the provider's verification, so seed the row directly — the
+// server reloads keys on the provider_keys NOTIFY. Removed again in afterAll.
+let seededProviderKey = false
+if (serverUp) {
+  try {
+    const sql = getDb()
+    const [{ n }] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM provider_keys`
+    if (n === 0) {
+      await sql`INSERT INTO provider_keys (provider, key_enc, updated_at, last_verified_at, last_verify_status)
+                VALUES ('anthropic', ${encryptSecret('smoke-test-dummy-key-never-called')}, now(), now(), 'unknown')
+                ON CONFLICT (provider) DO NOTHING`
+      await sql`SELECT pg_notify('provider_keys', 'anthropic')`
+      seededProviderKey = true
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  } catch {
+    // No DB access: the create-project tests will report the 409 themselves.
+  }
 }
 
 // Tracks projects created by the suite so afterAll can guarantee cleanup even
@@ -189,6 +212,13 @@ suite('smoke: rerun on a nonexistent run → 404', () => {
 // Belt-and-suspenders cleanup: any project the suite created that survived
 // its own inline cleanup gets purged here. Also drops the db pool.
 afterAll(async () => {
+  if (seededProviderKey) {
+    try {
+      const sql = getDb()
+      await sql`DELETE FROM provider_keys WHERE provider = 'anthropic' AND last_verify_status = 'unknown'`
+      await sql`SELECT pg_notify('provider_keys', 'anthropic')`
+    } catch { /* teardown best effort */ }
+  }
   for (const projectId of createdProjectIds) {
     await cleanupProject(projectId)
   }
