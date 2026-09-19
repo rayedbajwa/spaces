@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { getGitHubToken } from './github'
+import { getGitHubActorToken } from './github-app-auth'
 
 /**
  * Delivery tracking for a feature: every pull request the implementation
@@ -48,7 +48,7 @@ export interface DeliverySnapshot {
 const PR_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g
 
 async function githubApi<T>(url: string): Promise<T> {
-  const token = await getGitHubToken()
+  const token = await getGitHubActorToken()
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'pi-speckit-pdlc' },
   })

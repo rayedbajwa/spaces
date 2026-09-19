@@ -105,4 +105,6 @@ to a team the caller is not a member of. `GET /api/projects`, `/api/board` and
 | `GET /api/oauth-apps` · `PUT/DELETE /api/oauth-apps/:provider` | Provider app credentials and setup state / paste or remove credentials (admin) |
 | `GET /api/oauth-apps/github/manifest[?org=name]` | Page that posts the GitHub App manifest to GitHub (admin) |
 | `GET /api/oauth-apps/github/manifest/callback` · `…/installed` | GitHub returns here after creating / installing the app |
-| `GET /api/board` · `GET /api/history` | Board columns / run history |
+| `GET /api/board` · `GET /api/history` | Board columns / run history (cards carry `usage`: tokens and cost across the project's runs) |
+| `GET /api/projects/:slug/usage` | Tokens and cost for a project: totals, by stage, by model, by run |
+| `GET /api/org/usage?days=30` | Organization spend in the window and all time, by project, plus the GitHub actor (`app` bot or `user`) |

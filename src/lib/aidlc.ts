@@ -208,6 +208,8 @@ export interface DryRunPlan {
 interface OutputSinks {
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
+  /** Every completed assistant message with its token usage and cost, tagged with the stage. */
+  onUsage?: (message: { provider: string; model: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
 }
 
 interface WaitState {
@@ -526,7 +528,10 @@ export class AIDLCFlow {
     }
   }
 
+  private activeStage?: StageName
+
   private async runStage(stage: StageName): Promise<string> {
+    this.activeStage = stage
     await this.ensureFeatureBranchForStage(stage)
     await this.maybeSwapSessionForStage(stage)
     // Code stages need a working dev environment: install, build, tests known to run.
@@ -778,6 +783,10 @@ export class AIDLCFlow {
         if (lastMessage?.stopReason === 'error' && lastMessage.errorMessage) {
           providerError = lastMessage.errorMessage.trim()
         }
+      }
+
+      if (event.type === 'message_end' && (event.message as { role?: string }).role === 'assistant') {
+        this.sinks.onUsage?.(event.message as unknown as Parameters<NonNullable<OutputSinks['onUsage']>>[0], this.activeStage)
       }
 
       if (!verbose) {

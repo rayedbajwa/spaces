@@ -40,6 +40,15 @@ owner/name**. GitHub repositories are cloned into `~/.aidlc/workspaces/<owner>/<
 (`AIDLC_WORKSPACE_ROOT`) with the token passed per git command, never written to
 the clone.
 
+## Tokens and cost
+
+Every model call a run makes is stored with its provider, model, stage,
+tokens (input, output, cache reads and writes) and cost. The agent output bar
+shows the running cost of the live run, board cards and the project hero show
+the project's total, the project overview has a *Tokens & cost* panel (by
+stage, by model, by run, refreshing while a run is live), and the organization
+overview shows spend over the last 30 days and by project.
+
 Nothing has to be selected up front:
 
 - With GitHub connected, every visible repository is indexed into the
