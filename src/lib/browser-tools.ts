@@ -7,8 +7,8 @@
  *
  * Browser resolution, in order: SPACES_BROWSER_PATH or
  * PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, a system Chromium/Chrome at a known
- * path (the Docker image installs Alpine's chromium), then Playwright's
- * `chrome` channel (a desktop Chrome install).
+ * path, Playwright's bundled Chromium (`playwright install chromium`, run by
+ * `make setup` and the Dockerfile), then Playwright's `chrome` channel.
  */
 
 import { existsSync } from 'node:fs'
@@ -71,9 +71,10 @@ class BrowserSession {
         const executablePath = resolveBrowserExecutable()
         const args = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
         try {
+          // Configured/system binary → Playwright's bundled Chromium (playwright install chromium) → desktop Chrome.
           const browser = executablePath
             ? await pw.chromium.launch({ headless: true, executablePath, args })
-            : await pw.chromium.launch({ headless: true, channel: 'chrome', args })
+            : await pw.chromium.launch({ headless: true, args }).catch(() => pw.chromium.launch({ headless: true, channel: 'chrome', args }))
           browserLog.info('browser launched', { executablePath: executablePath ?? 'chrome channel' })
           browser.on('disconnected', () => { BrowserSession.browser = undefined })
           return browser

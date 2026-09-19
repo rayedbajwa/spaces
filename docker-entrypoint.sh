@@ -13,6 +13,6 @@ if [ "$(id -u)" = "0" ]; then
   # chown over many cloned repositories would slow every restart.
   chown bun:bun "$DATA_DIR" "$DATA_DIR/home" "$DATA_DIR/aidlc" "$DATA_DIR/aidlc/workspaces" 2>/dev/null || true
   find "$DATA_DIR" -maxdepth 2 ! -user bun -exec chown bun:bun {} + 2>/dev/null || true
-  exec su-exec bun "$@"
+  exec gosu bun "$@"
 fi
 exec "$@"

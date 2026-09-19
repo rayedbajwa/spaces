@@ -200,7 +200,7 @@ running.
 Or let the Makefile do it:
 
 ```bash
-make setup        # .env with a fresh ENCRYPTION_KEY, bun install, Postgres, schema, frontend
+make setup        # .env with a fresh ENCRYPTION_KEY, bun install, Playwright Chromium, Postgres, schema, frontend
 make up           # web server + supervisor in the background (.run/*.log)
 make status       # processes, live workers, queue depth
 make e2e          # bring the stack up and run the end-to-end suite for every pipeline
@@ -421,8 +421,12 @@ wait), `browser_read` (text, HTML, URL, JavaScript eval, diagnostics),
 at unit tests for anything a user sees: start the app with `bash`, verify the
 flow in the browser, and cite screenshots (saved under `.aidlc/qa/` in the
 checkout) in verification and QA reports. Console errors and failed requests
-are surfaced with every read. The Docker image includes Chromium; locally a
-desktop Chrome or Chromium is used, or set `SPACES_BROWSER_PATH`.
+are surfaced with every read. The `playwright-browser` skill from the
+[pi-playwright](https://pi.dev/packages/pi-playwright) package is loaded into
+every session as well, for a CLI-first workflow (`pw.js open / snapshot /
+click / fill / screenshot`, saved auth state, console and network logs).
+Chromium comes from `playwright install chromium`, run by `make setup` and
+baked into the Docker image.
 
 ### Integrations as knowledge
 

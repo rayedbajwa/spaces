@@ -33,7 +33,7 @@ help: ## Show this help
 
 # ---- setup -------------------------------------------------------------------
 
-setup: env install db-up migrate build ## First-time setup: .env, deps, Postgres, schema, frontend build
+setup: env install browsers db-up migrate build ## First-time setup: .env, deps, browsers, Postgres, schema, frontend build
 	@echo "✓ setup complete — edit .env (ENCRYPTION_KEY), then: make up. Provider keys and integrations are set up in the app (Organization page)."
 
 env: ## Create .env from .env.example if missing
@@ -42,6 +42,9 @@ env: ## Create .env from .env.example if missing
 	  sed -i.bak "s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$$key|" .env && rm -f .env.bak; \
 	  echo "created .env with a fresh ENCRYPTION_KEY — set ANTHROPIC_API_KEY and OAuth credentials"; \
 	else echo ".env exists"; fi
+
+browsers: ## Playwright Chromium + pi-playwright skill wiring for the agents' browser tools (idempotent)
+	bun run scripts/setup-browsers.ts
 
 install: ## bun install
 	bun install
@@ -71,7 +74,7 @@ lint: typecheck ## Alias for typecheck
 $(RUN_DIR):
 	@mkdir -p $(RUN_DIR)
 
-up: $(RUN_DIR) db-up migrate server supervisor wait ## Start Postgres, web server and supervisor in the background
+up: $(RUN_DIR) db-up migrate browsers server supervisor wait ## Start Postgres, web server and supervisor in the background
 	@echo "✓ up — UI: $(BASE_URL)   logs: $(RUN_DIR)/server.log $(RUN_DIR)/supervisor.log"
 
 server: $(RUN_DIR) ## Start the web server in the background (skips if the port already answers)
