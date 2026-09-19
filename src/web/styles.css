@@ -2251,13 +2251,15 @@ textarea {
 .status-dot.partial { background: var(--amber); }
 
 .shell-body { flex: 1 1 auto; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; }
-.sidebar { display: flex; flex-direction: column; gap: 6px; padding: 6px 12px 12px 12px; min-width: 0; position: sticky; top: 0; align-self: start; height: calc(100vh - var(--strip-h)); overflow: hidden; }
-.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; }
-.nav-group { display: grid; gap: 2px; padding: 8px 0; }
+.sidebar { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 10px 12px; min-width: 0; position: sticky; top: 0; align-self: start; height: calc(100vh - var(--strip-h)); overflow: hidden; }
+/* The account block is always pinned at the bottom; the nav fits without a scrollbar and only pans invisibly on very short screens. */
+.sidebar-nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
+.sidebar-nav::-webkit-scrollbar { display: none; }
+.nav-group { display: grid; gap: 1px; padding: 6px 0; }
 .nav-group + .nav-group { border-top: 1px solid var(--border); }
 .nav-group-external .nav-item { color: var(--text-subtle); }
 .nav-item {
-  display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--r-md);
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border-radius: var(--r-md);
   border: 0; background: transparent; color: var(--text-muted); font-size: 13.5px; font-weight: 500; text-align: left; text-decoration: none; cursor: pointer;
   transition: background 0.1s ease, color 0.1s ease;
 }
@@ -2274,7 +2276,7 @@ textarea {
 .nav-ext svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .archived-nav { position: relative; }
 
-.team-switcher-wrap { position: relative; padding: 4px 0 6px; border-bottom: 1px solid var(--border); }
+.team-switcher-wrap { position: relative; padding: 2px 0 4px; border-bottom: 1px solid var(--border); }
 .team-switch {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--r-lg);
   border: 1px solid transparent; background: transparent; color: var(--text); text-align: left; cursor: pointer;
@@ -2291,7 +2293,7 @@ textarea {
 .team-switch-menu { left: 0; right: auto; top: calc(100% + 2px); min-width: 300px; }
 .sidebar-note { margin: 4px 0; padding: 6px 10px; border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; }
 
-.sidebar-account { position: relative; flex: 0 0 auto; margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); background: var(--bg-app); }
+.sidebar-account { position: relative; flex: 0 0 auto; margin-top: auto; padding-top: 6px; border-top: 1px solid var(--border); background: var(--bg-app); }
 .account-row {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--r-md);
   border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 13.5px; font-weight: 500;
@@ -2335,6 +2337,7 @@ textarea {
   .sidebar {
     position: fixed; top: var(--strip-h); left: 0; bottom: 0; width: min(300px, 86vw); z-index: 40; height: auto;
     background: var(--bg-app); border-right: 1px solid var(--border); transform: translateX(-102%); transition: transform 0.16s ease; box-shadow: var(--shadow-lg);
+    height: auto;
   }
   .sidebar.open { transform: none; }
   .main-panel { margin: 0 8px 8px; padding: 16px 14px 72px; border-radius: 12px; }

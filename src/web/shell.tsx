@@ -234,12 +234,13 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
         <div className="archived-list" role="menu">
           {cards === null && <span className="menu-label">Loading…</span>}
           {cards?.length === 0 && <span className="menu-label">No archived projects.</span>}
-          {cards?.map((card) => (
+          {cards?.slice(0, 6).map((card) => (
             <button key={card.projectNamespace} type="button" className="archived-item" role="menuitem" onClick={() => { setOpen(false); onOpen(card) }}>
               <span className="archived-item-title">{card.projectLabel}</span>
               <span className="archived-item-sub">{card.code ?? card.projectNamespace}{card.archivedAt ? ` · ${new Date(card.archivedAt).toLocaleDateString()}` : ''}</span>
             </button>
           ))}
+          {cards && cards.length > 6 && <span className="menu-label">{cards.length - 6} more under People → Overview</span>}
         </div>
       )}
     </div>
