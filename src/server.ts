@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, normalize, resolve as resolvePath, sep } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import packageMetadata from '../package.json'
 import { marked } from 'marked'
 import { ensureFrontendBuilt } from './build-web'
 import { buildContextBundle } from './lib/context-builder'
@@ -144,6 +145,7 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
+import { resolveVersionMetadata } from './lib/version-metadata'
 
 const serverLog = log.child({ mod: 'server' })
 
@@ -165,6 +167,7 @@ try {
   )
 }
 await ensureFrontendBuilt()
+const versionMetadata = resolveVersionMetadata({ packageMetadata })
 // Provider keys live in the database: import any left in the environment once,
 // then load the stored ones into this process and follow later changes.
 await importProviderKeysFromEnv().catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
@@ -235,6 +238,10 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/health') {
     return sendJson(200, { ok: true })
+  }
+
+  if (method === 'GET' && url.pathname === '/api/version') {
+    return sendJson(200, versionMetadata)
   }
 
   // Older project links used /p/<code>; send them to /spaces/<code>.
