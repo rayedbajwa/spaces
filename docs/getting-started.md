@@ -115,7 +115,12 @@ Onboarding then runs while you watch: clone remote repos → initialise the Spec
 Kit workspace → inventory and learn each repo → build project memory → suggest
 repositories and work areas → set up the development environments. When it is
 done you review the suggested repositories (Add & clone) and continue; the first
-run starts in real checkouts.
+run starts in real checkouts. When nothing registered or in the catalog fits,
+discovery proposes a **new repository** instead: a GitHub-safe name derived
+from the project, private by default. **Create on GitHub & attach** creates it
+through the connected account, clones it and makes it the primary repo, or
+**Create manually** opens GitHub's new-repository page prefilled so you can
+attach it afterwards.
 
 ## Follow a run
 

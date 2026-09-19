@@ -6,6 +6,8 @@ import { createConfiguredModelRuntime, findLatestFeatureDirAbsolute, parsePlanRe
 import { getDb } from './db'
 import { log } from './logger'
 import { getProject, listRepos, pickRunnableRepo, updateProjectSuggestions, type ProjectRow, type ProjectSuggestions } from './project-registry'
+import { getGitHubLogin } from './github'
+import { normalizeProposal, proposeRepository } from './repo-proposal'
 
 const sugLog = log.child({ mod: 'suggestions' })
 
@@ -73,9 +75,22 @@ export async function suggestRepositoriesAndWorkAreas(
     }
   }
 
+  // The connected GitHub login owns any repository discovery proposes to create.
+  const githubLogin = await getGitHubLogin().catch(() => undefined)
+
   if (catalog.length === 0 && registered.length === 0 && !planContext) {
-    sugLog.info('nothing to base suggestions on (no catalog, repos or plan)', { projectId })
-    return undefined
+    // Nothing to match against: still give the project a home to create.
+    const suggestions: ProjectSuggestions = {
+      generatedAt: new Date().toISOString(),
+      basis: options.basis,
+      repositories: [],
+      workAreas: [],
+      notes: githubLogin ? undefined : 'Connect GitHub under Integrations so the repository catalog syncs and the repository can be created from here.',
+      newRepository: proposeRepository(project, githubLogin),
+    }
+    await updateProjectSuggestions(projectId, suggestions)
+    sugLog.info('no catalog, repos or plan; proposed a new repository', { projectId, name: suggestions.newRepository?.name })
+    return suggestions
   }
 
   const prompt = `You help set up a software project in a delivery workspace. Suggest which repositories it should span and which work areas the work will touch. Answer with JSON only.
@@ -99,9 +114,10 @@ Return exactly this JSON shape (no prose):
   "workAreas": [
     { "name": "short name", "description": "what changes here and why (1–2 sentences)", "repositories": ["owner/name"], "paths": ["likely/dir or module"], "risks": "main risk or unknown (optional)" }
   ],
-  "notes": "anything the team should decide before implementation (optional)"
+  "notes": "anything the team should decide before implementation (optional)",
+  "newRepository": { "name": "github-safe-name", "description": "one sentence", "reason": "why a new repository is needed", "visibility": "private|public", "language": "main language/stack" }
 }
-Rules: only list repositories that exist in the catalog or are already registered (use their exact owner/name); prefer 1–5 repositories and 2–6 work areas; if the project clearly needs a repository that does not exist yet, describe it in notes instead of inventing a name.`
+Rules: only list repositories that exist in the catalog or are already registered (use their exact owner/name); prefer 1–5 repositories and 2–6 work areas. Set "newRepository" ONLY when no catalog or registered repository can hold this work (nothing matches, or the project clearly needs a new codebase) — then propose a short kebab-case name derived from the project; otherwise omit it or set it to null.`
 
   const modelRuntime = await createConfiguredModelRuntime()
   const { resolveCliModel } = await import('@earendil-works/pi-coding-agent')
@@ -153,6 +169,11 @@ Rules: only list repositories that exist in the catalog or are already registere
     })),
     notes: typeof parsed.notes === 'string' ? parsed.notes : undefined,
   }
+  // A home for the work: the model's proposal when it made one, otherwise a
+  // default when discovery matched nothing and nothing is registered.
+  const proposal = normalizeProposal((parsed as { newRepository?: unknown }).newRepository, githubLogin)
+  if (proposal) suggestions.newRepository = proposal
+  else if (suggestions.repositories.length === 0 && registered.length === 0) suggestions.newRepository = proposeRepository(project, githubLogin)
   await updateProjectSuggestions(projectId, suggestions)
   sugLog.info('suggestions generated', { projectId, basis: options.basis, repositories: suggestions.repositories.length, workAreas: suggestions.workAreas.length })
   return suggestions

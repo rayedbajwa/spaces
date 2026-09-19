@@ -178,3 +178,51 @@ export function scheduleRepoClone(repo: RepoRow): Promise<void> {
   inFlight.set(repo.repoId, job)
   return job
 }
+
+
+export class GitHubPermissionError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message)
+    this.name = 'GitHubPermissionError'
+  }
+}
+
+let cachedLogin: { login: string; at: number } | undefined
+
+/** Login of the connected GitHub account (cached for an hour). */
+export async function getGitHubLogin(): Promise<string> {
+  if (cachedLogin && Date.now() - cachedLogin.at < 60 * 60_000) return cachedLogin.login
+  const token = await getGitHubToken()
+  const { data } = await githubGet<{ login: string }>(token, 'https://api.github.com/user')
+  cachedLogin = { login: data.login, at: Date.now() }
+  return data.login
+}
+
+/**
+ * Create a repository through the connected account: under the user when
+ * `owner` is empty or the login itself, otherwise under that organization.
+ * Throws GitHubPermissionError when the token may not create repositories
+ * (GitHub Apps need the Administration permission; classic OAuth needs `repo`).
+ */
+export async function createGitHubRepository(input: { name: string; owner?: string; description?: string; private?: boolean }): Promise<GitHubRepoSummary> {
+  const token = await getGitHubToken()
+  const login = await getGitHubLogin().catch(() => undefined)
+  const owner = input.owner?.trim()
+  const url = owner && owner.toLowerCase() !== login?.toLowerCase() ? `https://api.github.com/orgs/${encodeURIComponent(owner)}/repos` : 'https://api.github.com/user/repos'
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'pi-speckit-pdlc', 'content-type': 'application/json' },
+    body: JSON.stringify({ name: input.name, description: input.description?.slice(0, 350) ?? '', private: input.private ?? true, auto_init: true }),
+  })
+  if (response.status === 401 || response.status === 403 || response.status === 404) {
+    const text = await response.text().catch(() => '')
+    throw new GitHubPermissionError(`GitHub did not allow creating ${owner ? `${owner}/` : ''}${input.name} with the connected account (${response.status}). A GitHub App needs the "Administration: write" repository permission for this; a classic OAuth app needs the repo scope. ${text.slice(0, 160)}`.trim(), response.status)
+  }
+  if (response.status === 422) {
+    const text = await response.text().catch(() => '')
+    throw new Error(`GitHub rejected the repository: ${/already exists/i.test(text) ? 'a repository with that name already exists — attach it instead.' : text.slice(0, 200)}`)
+  }
+  if (!response.ok) throw new Error(`GitHub API ${response.status}: ${(await response.text().catch(() => '')).slice(0, 200)}`)
+  const repo = (await response.json()) as { full_name: string; name: string; owner: { login: string }; description: string | null; private: boolean; default_branch?: string; updated_at?: string; html_url: string }
+  return { fullName: repo.full_name, name: repo.name, owner: repo.owner.login, description: repo.description ?? undefined, private: repo.private, defaultBranch: repo.default_branch, updatedAt: repo.updated_at, htmlUrl: repo.html_url }
+}
