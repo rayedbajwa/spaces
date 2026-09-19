@@ -468,8 +468,18 @@ export class AIDLCFlow {
       throw new Error('Missing review stage.')
     }
 
-    if (isApprovalAnswer(answer)) {
-      this.print(`\nApproved review gate for ${stage}. Continuing.\n`)
+    const approval = parseApprovalAnswer(answer)
+    if (approval.approved) {
+      if (approval.note) {
+        // Approved with notes: fold them into the stage before moving on.
+        this.print(`\nApproved review gate for ${stage} with notes; applying them before continuing.\n`)
+        const output = await this.streamPrompt(withSharedContext(buildApprovedWithNotesPrompt(stage, approval.note), this.options))
+        if (QUESTION_PATTERN.test(output)) {
+          return this.pause('clarification', stage)
+        }
+      } else {
+        this.print(`\nApproved review gate for ${stage}. Continuing.\n`)
+      }
       this.waitState = undefined
       await this.advanceToNextStep(stage)
       return this.advance()
@@ -1089,8 +1099,28 @@ function humanizeProviderError(raw: string): string {
   return trimmed
 }
 
+/**
+ * "approve", "approve: tighten the error copy", "ok — but rename the flag" …
+ * An approval may carry notes; they are applied to the stage before the run
+ * moves on, without another review round.
+ */
+export function parseApprovalAnswer(answer: string): { approved: boolean; note?: string } {
+  const match = /^(approve|approved|lgtm|continue|ok|okay|yes|y)\b[\s:,.;—–-]*([\s\S]*)$/i.exec(answer.trim())
+  if (!match) return { approved: false }
+  const note = match[2]?.trim()
+  return note ? { approved: true, note } : { approved: true }
+}
+
 function isApprovalAnswer(answer: string): boolean {
-  return /^(approve|approved|continue|ok|okay|yes|y)$/i.test(answer.trim())
+  return parseApprovalAnswer(answer).approved
+}
+
+function buildApprovedWithNotesPrompt(stage: StageName, note: string): string {
+  return `A human reviewer APPROVED ${STAGE_DEFINITIONS[stage].skill} with these notes:
+
+${note}
+
+Apply the notes to this stage's artifacts now (edit the files as needed), keep everything else as reviewed, and finish with a short summary of what you changed. The stage is already approved: do not ask questions and do not wait for another review.`
 }
 
 function buildReviewPrompt(stage: StageName): string {

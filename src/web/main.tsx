@@ -3810,7 +3810,7 @@ function AiAgentOutputBar({
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && answerDraft.trim()) { e.preventDefault(); onSendAnswer(answerDraft); setAnswerDraft('') } }}
-            placeholder={currentRun.pauseKind === 'review' ? 'Optional feedback, or approve to continue…' : 'Answer the agent, or press Continue if nothing was actually asked…'}
+            placeholder={currentRun.pauseKind === 'review' ? 'Optional notes — applied to this stage before the run moves on when you approve. Or describe changes to request another pass.' : 'Answer the agent, or press Continue if nothing was actually asked…'}
             style={{ minHeight: 60 }}
           />
           <div className="button-row" style={{ marginTop: 8 }}>
@@ -3818,14 +3818,15 @@ function AiAgentOutputBar({
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => { onSendAnswer('approve'); setAnswerDraft('') }}
-              >Approve and continue</button>
+                onClick={() => { onSendAnswer(answerDraft.trim() ? `approve: ${answerDraft.trim()}` : 'approve'); setAnswerDraft('') }}
+                title={answerDraft.trim() ? 'Approve; your notes are applied to this stage first, then the run continues' : 'Approve and continue to the next stage'}
+              >{answerDraft.trim() ? 'Approve with notes' : 'Approve and continue'}</button>
             )}
             {currentRun.pauseKind !== 'review' && (
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => { onSendAnswer('continue'); setAnswerDraft('') }}
+                onClick={() => { onSendAnswer(answerDraft.trim() ? `continue: ${answerDraft.trim()}` : 'continue'); setAnswerDraft('') }}
                 title="Send 'continue' — useful when the pause was a false-positive and no real question was asked."
               >Continue</button>
             )}

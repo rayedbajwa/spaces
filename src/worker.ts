@@ -34,9 +34,10 @@ import {
   requeueRunFromStage,
   resolveOpenGate,
   updateRunStatus,
+  appendReviewerNote,
 } from './lib/run-store'
 import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
-import type { FlowProgress, StageName } from './lib/aidlc'
+import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { applyProviderKeysToEnv, listenProviderKeys } from './lib/provider-keys'
@@ -324,8 +325,10 @@ async function handleAnswerJob(runId: string, answer: string): Promise<void> {
     await queueEvent(runId, 'gate_resolved', { gateId: gate?.gateId, kind: gate?.kind, response: answer, afterRestart: true })
     const stages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
     const currentIdx = run.currentStage ? stages.indexOf(run.currentStage) : -1
-    const approved = run.pauseKind === 'review' && /^(approve|approved|lgtm|yes|ok|continue)\b/i.test(answer.trim())
+    const approval = parseApprovalAnswer(answer)
+    const approved = run.pauseKind === 'review' && approval.approved
     const nextIdx = approved ? currentIdx + 1 : Math.max(0, currentIdx)
+    if (approved && approval.note) await appendReviewerNote(runId, run.currentStage ?? null, approval.note)
     if (approved && nextIdx >= stages.length) {
       await updateRunStatus(runId, { status: 'completed', currentStage: null, pauseKind: null, errorMessage: null })
       await queueEvent(runId, 'run_completed', { afterRestart: true })
