@@ -217,7 +217,6 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
   const [open, setOpen] = useState(false)
   const [cards, setCards] = useState<ArchivedCardSummary[] | null>(null)
   const ref = useRef<HTMLDivElement>(null)
-  useDismiss(open, () => setOpen(false), ref)
   const toggle = () => {
     const next = !open
     setOpen(next)
@@ -225,22 +224,20 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
   }
   return (
     <div className="archived-nav" ref={ref}>
-      <button type="button" className={`nav-item ${open ? 'active' : ''}`} onClick={toggle} aria-haspopup="menu" aria-expanded={open}>
+      <button type="button" className={`nav-item ${open ? 'active' : ''}`} onClick={toggle} aria-expanded={open}>
         <Icon>{I.archive}</Icon>
         <span className="nav-label">Archived</span>
         <span className="nav-count muted">{count}</span>
+        <span className={`nav-icon chev ${open ? 'open' : ''}`} aria-hidden="true">{I.chevron}</span>
       </button>
       {open && (
-        <div className="menu-popover card archived-popover side" role="menu">
-          <div className="menu-group-title">Archived projects</div>
+        <div className="archived-list" role="menu">
           {cards === null && <span className="menu-label">Loading…</span>}
           {cards?.length === 0 && <span className="menu-label">No archived projects.</span>}
           {cards?.map((card) => (
-            <button key={card.projectNamespace} type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); onOpen(card) }}>
-              <span className="menu-row-main">
-                <span className="menu-row-title">{card.projectLabel}</span>
-                <span className="menu-row-sub">{card.code ?? card.projectNamespace}{card.archivedAt ? ` · archived ${new Date(card.archivedAt).toLocaleDateString()}` : ''}</span>
-              </span>
+            <button key={card.projectNamespace} type="button" className="archived-item" role="menuitem" onClick={() => { setOpen(false); onOpen(card) }}>
+              <span className="archived-item-title">{card.projectLabel}</span>
+              <span className="archived-item-sub">{card.code ?? card.projectNamespace}{card.archivedAt ? ` · ${new Date(card.archivedAt).toLocaleDateString()}` : ''}</span>
             </button>
           ))}
         </div>
