@@ -620,6 +620,10 @@ CREATE TABLE IF NOT EXISTS run_usage (
   cost_usd           NUMERIC(12, 6) NOT NULL DEFAULT 0,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE run_usage ADD COLUMN IF NOT EXISTS response_id TEXT;
+ALTER TABLE run_usage ADD COLUMN IF NOT EXISTS response_model TEXT;
+-- sdk: priced from the SDK's price table; estimated: from the catalog price of the model that actually answered; provider: exact cost reported by the provider (OpenRouter generation API); none: unknown.
+ALTER TABLE run_usage ADD COLUMN IF NOT EXISTS cost_source TEXT NOT NULL DEFAULT 'sdk';
 CREATE INDEX IF NOT EXISTS run_usage_run_idx ON run_usage (run_id);
 CREATE INDEX IF NOT EXISTS run_usage_project_idx ON run_usage (project_namespace, created_at DESC);
 

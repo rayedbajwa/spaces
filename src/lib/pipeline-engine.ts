@@ -39,7 +39,7 @@ export interface PipelineEngineOptions extends FlowOptions {
 export interface PipelineEngineSinks {
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
-  onUsage?: (message: { provider: string; model: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
+  onUsage?: (message: { provider: string; model: string; responseId?: string; responseModel?: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
   onParallelProgress?: (stepId: string, event: ParallelSubAgentProgressEvent) => void
   onBranch?: (from: string, to: string, reason: string) => void
   onStageHandoff?: (handoff: { stepIndex: number; stepId: string; stage: string; model?: string; tail: string; summary?: string; summaryHash?: string }) => Promise<void> | void

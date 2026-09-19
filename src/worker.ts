@@ -42,7 +42,8 @@ import { checkProviderKeys } from './lib/provider-check'
 import { applyProviderKeysToEnv, listenProviderKeys } from './lib/provider-keys'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
-import { recordUsage, usageFromMessage } from './lib/run-usage'
+import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usageFromMessage } from './lib/run-usage'
+import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
 
 const workerLog = log.child({ mod: 'worker' })
@@ -212,9 +213,18 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   try {
     engine = new PipelineEngine(run.templateJson, options, {
       onUsage: (message, stage) => {
-        const record = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
-        if (!record) return
-        void recordUsage(record).catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+        const raw = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
+        if (!raw) return
+        const record = priceRecord(raw, priceCatalog)
+        void recordUsage(record)
+          .then(async (usageId) => {
+            // OpenRouter's routed models carry no static price: fetch the real cost and model, then let the UI refresh.
+            if (needsProviderCost(record)) {
+              const real = await enrichOpenRouterUsage(usageId, record.responseId!)
+              if (real) await queueEvent(runId, 'usage', { stage, provider: record.provider, model: real.model ?? record.model, costUsd: real.costUsd, priced: true })
+            }
+          })
+          .catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
         void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
       },
       stdout: (chunk) => {
@@ -654,6 +664,7 @@ async function main(): Promise<void> {
   // Non-fatal: warn loudly if the Anthropic key in this process's environment is a placeholder or rejected.
   await applyProviderKeysToEnv().catch(() => undefined)
   await listenProviderKeys().catch(() => undefined)
+  priceCatalog = await loadModelCatalog().catch(() => [])
   void checkProviderKeys(workerLog)
   timers.push(setInterval(() => {
     void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))
@@ -731,6 +742,9 @@ async function main(): Promise<void> {
 
   workerLog.info('subscribed to project_job queue; waiting for jobs')
 }
+
+/** Model prices for costing usage when the SDK reports none (OpenRouter's routed models). Loaded at boot, refreshed when keys change. */
+let priceCatalog: CatalogModel[] = []
 
 /** Periodic timers (heartbeat, polling floor, reapers); cleared first on shutdown so nothing queries a closing pool. */
 const timers: Array<ReturnType<typeof setInterval>> = []
