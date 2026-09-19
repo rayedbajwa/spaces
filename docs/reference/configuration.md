@@ -50,6 +50,7 @@ back to the same-size tier.
 | `SUPERVISOR_MAX_WORKERS` | `4` | Cap on per-project workers (each ~300–500 MB) |
 | `WORKER_IDLE_EXIT_SECONDS` | `300` | Idle time before a per-project worker exits |
 | `AIDLC_WORKSPACE_ROOT` | `~/.aidlc/workspaces` | Where GitHub repos are cloned (`<owner>/<name>`) |
+| `SPACES_BROWSER_PATH` | system Chromium/Chrome, else Playwright's `chrome` channel | Chromium binary for the agents' browser tools (the Docker image sets `/usr/bin/chromium-browser`) |
 | `AIDLC_GOVERNANCE_WORKSPACE` | `1` | `0` keeps specs inside the application repo instead of a governing workspace |
 | `AIDLC_GOVERNANCE_ROOT` | `<workspace root>/_governance` | Location of governing workspaces |
 | `AIDLC_WORKTREE_ROOT` | `<repo>/.aidlc-worktrees` | Where workstream worktrees are created |

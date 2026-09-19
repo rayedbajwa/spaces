@@ -15,7 +15,16 @@ Every session has the built-in Pi tools (`read`, `bash`, `edit`, `write`,
 
 - `web_fetch(url)` and `web_search(query)` for documentation and error messages;
 - `integration_search(source, query)` and `integration_get(source, id)` for
-  connected Jira, Confluence, Linear and GitHub, scoped per project.
+  connected Jira, Confluence, Linear and GitHub, scoped per project;
+- a real browser, `browser_open(url)`, `browser_act(action, selector, value)`,
+  `browser_read(what)`, `browser_screenshot(name)` and `browser_close()`,
+  backed by headless Chromium through Playwright. Implement and QA agents start
+  the app with `bash`, drive it like a user, read visible text, evaluate
+  JavaScript for assertions, and save screenshots under `.aidlc/qa/` in the
+  checkout as evidence for their reports. Console errors and failed requests
+  are reported with every read. The Docker image ships Chromium; on a
+  workstation a desktop Chrome or Chromium is used, or set
+  `SPACES_BROWSER_PATH` to a Chromium binary.
 
 The project assistant additionally has action tools — rerun a run, answer or
 approve a paused run, run a step, start implementation agents, retry a clone,

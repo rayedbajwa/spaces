@@ -59,6 +59,7 @@
     "@the-agency/pi-spec-kit": "^0.2.5",
     "marked": "^14.1.2",
     "pg-boss": "^12.31.0",
+    "playwright-core": "^1.63.0",
     "postgres": "^3.4.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
