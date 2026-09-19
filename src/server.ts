@@ -1677,7 +1677,10 @@ async function route(req: Request): Promise<Response> {
         tasks: projectArtifacts.tasked,
         verify: projectArtifacts.verifiedPass,
       }
-      if (alreadyDone[body.step]) {
+      // A verified (done) feature is finished work: running specify again starts
+      // the next feature in a new numbered directory, so it is never a duplicate.
+      const startsNextFeature = body.step === 'specify' && projectArtifacts.verifiedPass
+      if (alreadyDone[body.step] && !startsNextFeature) {
         return sendJson(409, {
           error: `${body.step} already produced its artifact for this project.`,
           hint: `Call again with {"force": true} to re-run anyway.`,
