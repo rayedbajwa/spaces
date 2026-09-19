@@ -1623,8 +1623,12 @@ function App() {
         setCurrentRun(null)
         return
       }
-      const result = (await raw.json()) as { ok: boolean; message: string; state?: string; runId?: string; error?: string }
-      if (raw.status >= 400) {
+      let result = (await raw.json()) as { ok: boolean; message: string; state?: string; runId?: string; error?: string; hint?: string }
+      if (raw.status === 409 && /already produced its artifact/.test(result.error ?? '') && window.confirm(`${result.error}\n\nRun ${step} again anyway? Its artifact will be regenerated.`)) {
+        const again = await fetch(`/api/projects/${namespace}/execute-step`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ step, ...extraBody, force: true }) })
+        result = (await again.json()) as typeof result
+        if (again.status >= 400) { setStatusMessage(`Could not execute ${step}: ${result.error ?? 'unknown error'}`); return }
+      } else if (raw.status >= 400) {
         setStatusMessage(`Could not execute ${step}: ${result.error ?? 'unknown error'}`)
         return
       }
