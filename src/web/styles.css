@@ -2220,7 +2220,8 @@ textarea {
    App shell: top strip + sidebar + rounded main panel
    ============================================================ */
 :root { --bg-panel: #0f0f12; --sidebar-w: 268px; --strip-h: 52px; }
-.app-shell { max-width: none; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
+/* The shell fills the viewport and never scrolls: the main panel is the scroll container, so the top strip, the sidebar and its account block stay put. */
+.app-shell { max-width: none; margin: 0; padding: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
 
 .topstrip {
   height: var(--strip-h); flex: 0 0 auto;
@@ -2251,7 +2252,7 @@ textarea {
 .status-dot.partial { background: var(--amber); }
 
 .shell-body { flex: 1 1 auto; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; }
-.sidebar { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 10px 12px; min-width: 0; position: sticky; top: 0; align-self: start; height: calc(100vh - var(--strip-h)); overflow: hidden; }
+.sidebar { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 10px 12px; min-width: 0; min-height: 0; overflow: hidden; }
 /* The account block is always pinned at the bottom; the nav fits without a scrollbar and only pans invisibly on very short screens. */
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
 .sidebar-nav::-webkit-scrollbar { display: none; }
@@ -2305,7 +2306,7 @@ textarea {
 .account-popover { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; min-width: 280px; }
 
 .main-panel {
-  min-width: 0; margin: 0 14px 14px 0; padding: 26px 32px 72px;
+  min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; margin: 0 14px 14px 0; padding: 26px 32px 72px;
   border: 1px solid var(--border); border-radius: 16px; background: var(--bg-panel);
   box-shadow: var(--shadow-sm);
 }
