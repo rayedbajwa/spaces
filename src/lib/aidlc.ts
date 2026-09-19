@@ -732,11 +732,36 @@ export class AIDLCFlow {
       throw new Error('Flow session has not been created yet.')
     }
 
+    // Transient provider failures (dropped connections, 429/5xx, overload) are
+    // retried with backoff instead of failing the whole run. The session keeps
+    // the partial turn, so after output was produced we nudge it to continue
+    // rather than re-sending the full prompt.
+    let combinedOutput = ''
+    for (let attempt = 1; ; attempt += 1) {
+      const { output, providerError } = await this.streamPromptOnce(attempt === 1 || !combinedOutput ? prompt : 'The previous request was interrupted by a temporary provider error. Continue exactly where you left off; do not repeat completed work.')
+      combinedOutput += output
+      if (!providerError) break
+      if (attempt >= PROVIDER_RETRY_DELAYS_MS.length + 1 || !isTransientProviderError(providerError)) {
+        throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
+      }
+      const delay = PROVIDER_RETRY_DELAYS_MS[attempt - 1]!
+      this.error(`\n[provider] ${humanizeProviderError(providerError)} — retrying in ${Math.round(delay / 1000)}s (attempt ${attempt + 1} of ${PROVIDER_RETRY_DELAYS_MS.length + 1})\n`)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+
+    if (combinedOutput && !combinedOutput.endsWith('\n')) {
+      this.print('\n')
+    }
+
+    return combinedOutput
+  }
+
+  private async streamPromptOnce(prompt: string): Promise<{ output: string; providerError?: string }> {
     let assistantOutput = ''
     let providerError: string | undefined
     const verbose = this.options.verbose === true
 
-    const unsubscribe = this.session.subscribe((event) => {
+    const unsubscribe = this.session!.subscribe((event) => {
       if (event.type === 'message_update') {
         if (event.assistantMessageEvent.type === 'text_delta') {
           assistantOutput += event.assistantMessageEvent.delta
@@ -769,20 +794,12 @@ export class AIDLCFlow {
     })
 
     try {
-      await this.session.prompt(prompt, { expandPromptTemplates: false })
+      await this.session!.prompt(prompt, { expandPromptTemplates: false })
     } finally {
       unsubscribe()
     }
 
-    if (providerError) {
-      throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
-    }
-
-    if (assistantOutput && !assistantOutput.endsWith('\n')) {
-      this.print('\n')
-    }
-
-    return assistantOutput
+    return { output: assistantOutput, providerError }
   }
 
   private print(text: string): void {
@@ -1028,6 +1045,19 @@ function resolveModelSelection(modelRuntime: ModelRuntime, options: FlowOptions)
  * return raw JSON in the error body — HTTP 429 with "monthly spend limit
  * exceeded" is technically a rate-limit shape but a very different meaning.
  */
+/** Backoff between retries of a stage prompt after a transient provider failure. */
+export const PROVIDER_RETRY_DELAYS_MS = [5_000, 20_000, 60_000]
+
+/**
+ * Errors worth retrying: network drops, timeouts, rate limits, overload and
+ * 5xx responses. Authentication, billing and invalid-request errors are not.
+ */
+export function isTransientProviderError(message: string): boolean {
+  const m = message.toLowerCase()
+  if (/invalid api key|authentication|unauthorized|401|403|insufficient credits|spend limit|billing|payment|invalid_request|not found|404/.test(m)) return false
+  return /connection error|connection (reset|closed|refused)|econnreset|econnrefused|etimedout|socket hang up|fetch failed|network|timeout|timed out|temporarily unavailable|overloaded|rate limit|too many requests|\b429\b|\b50[0234]\b|internal server error|bad gateway|service unavailable|gateway timeout|stream (ended|closed) unexpectedly|incomplete json|unexpected end/.test(m)
+}
+
 function humanizeProviderError(raw: string): string {
   const trimmed = raw.trim()
   const jsonStart = trimmed.indexOf('{')
