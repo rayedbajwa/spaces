@@ -4,6 +4,7 @@ import { marked } from 'marked'
 import { AuthRoot, navigate, useAuth } from './auth'
 import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
 import { NewRepoCard, type NewRepositoryProposal } from './new-repo'
+import { ProjectUsagePanel, UsageChip, formatUsd, type UsageSummary } from './usage'
 import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
@@ -73,6 +74,7 @@ type RunSnapshot = {
   stage?: string
   pauseKind?: PauseKind
   log: string
+  usage?: UsageSummary
   executiveSummary?: string
   timeline: TimelineEntry[]
   sessionFile?: string
@@ -121,6 +123,7 @@ type BoardCard = {
   currentAgent: string
   estimate: string
   gateReadiness: GateReadiness[]
+  usage?: UsageSummary
   automationState?: {
     state: 'idle' | 'running' | 'needs_approval' | 'needs_clarification' | 'error' | 'blocked' | 'completed'
     message: string
@@ -2061,6 +2064,7 @@ function App() {
                       <div><span>Agent</span><strong>{card.currentAgent}</strong></div>
                       <div><span>Estimate</span><strong>{card.estimate}</strong></div>
                       <div><span>Verify</span><strong>{card.verificationStatus}</strong></div>
+                      {card.usage && card.usage.calls > 0 && <div><span>Spend</span><strong>{formatUsd(card.usage.costUsd)}</strong></div>}
                     </div>
                     {card.automationState && card.automationState.state !== 'idle' && card.automationState.state !== 'completed' && (
                       <button
@@ -2126,6 +2130,7 @@ function App() {
                       {selectedCardFresh.latestRun ? <>run <strong>{selectedCardFresh.latestRun.status}</strong>{selectedCardFresh.latestRun.stage ? ` · ${selectedCardFresh.latestRun.stage}` : ''}</> : 'no runs yet'}
                     </span>
                     <span className={`chip verify ${selectedCardFresh.verificationStatus}`}>verify <strong>{selectedCardFresh.verificationStatus}</strong></span>
+                    <UsageChip usage={selectedCardFresh.usage} label="spend" />
                     {projectDetail && <span className="chip"><strong>{projectDetail.repos.filter((r) => r.label !== 'governance').length}</strong> repositor{projectDetail.repos.filter((r) => r.label !== 'governance').length === 1 ? 'y' : 'ies'}</span>}
                     {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
                       <button className={`chip attention chip-button`} onClick={() => setActiveProjectTab('assistant')} type="button">{selectedCardFresh.automationState.state.replace('_', ' ')} →</button>
@@ -2202,6 +2207,7 @@ function App() {
                   <div className="stat card"><span className="stat-label">Verification</span><strong className="stat-value stat-text">{selectedCardFresh.verificationStatus}</strong><span className="stat-sub">{selectedCardFresh.estimate}</span></div>
                   <div className="stat card"><span className="stat-label">Jobs</span><strong className="stat-value">{projectJobs.filter((j) => ['running', 'queued', 'claimed'].includes(j.displayStatus)).length}</strong><span className="stat-sub">{projectJobs.filter((j) => j.displayStatus === 'paused').length} paused · {projectJobs.length} recent</span></div>
                 </div>
+                <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
                 <section className="card panel slim-panel">
                   <h3>Summary</h3>
                   <div className="auto-memory-box compact-box">
@@ -3707,7 +3713,7 @@ function AiAgentOutputBar({
             <div className="dock-mini" onClick={() => setOpenChoice(true)} role="button" aria-expanded={false} tabIndex={0} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpenChoice(true) } }} title="Open the agent output">
               <span className={`dock-dot ${statusKey}`} aria-hidden="true" />
               <span className="dock-mini-title">Agent</span>
-              <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}</span>
+              <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}{currentRun?.usage?.calls ? ` · ${formatUsd(currentRun.usage.costUsd)}` : ''}</span>
               {needsInput && currentRun?.pauseKind !== 'user' && <span className="dock-pill-badge attention">{currentRun?.pauseKind === 'review' ? 'approval needed' : 'answer needed'}</span>}
               {failed && <span className="dock-pill-badge danger">{currentRun?.interrupted ? 'worker restarted' : 'agent failed'}</span>}
               {total > 0 && (
@@ -3727,6 +3733,7 @@ function AiAgentOutputBar({
               <h3 style={{ margin: 0 }}>
                 <span className={`dock-dot ${statusKey}`} aria-hidden="true" /> Agent output
                 <span className={`mini-badge ${statusKey}`}>{statusText}</span>
+                <UsageChip usage={currentRun?.usage} className="dock-usage" />
                 {total > 0 && <span className="mini-badge idle" title="Stages complete">{done}/{total} stages</span>}
                 {currentRun?.stage && <span className="mini-badge idle">{currentRun.stage}</span>}
                 {currentRun?.pauseKind && currentRun.pauseKind !== 'user' && <span className="mini-badge paused">{currentRun.pauseKind}</span>}

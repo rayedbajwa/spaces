@@ -17,6 +17,22 @@ Every commit message and PR title the pipeline writes follows
 period, header ≤ 72 characters. `implement` uses `feat`, `verify` uses `test`,
 `orchestrate` uses `chore`; the scope is the feature branch or workstream.
 
+## Identity: the app bot opens pull requests
+
+With a GitHub App set up through Organization → Integrations, every push,
+pull request, review comment and merge an agent performs uses a short-lived
+installation token, so it is attributed to `<app>[bot]` rather than to the
+person who connected GitHub. Agent shells receive the same identity through
+`GH_TOKEN` and git's `http.extraheader`, so `gh` and `git push` inside a run
+behave the same way. Reads (repository catalog, cloning) still use the user.
+
+Because the bot is a separate identity, a maintainer can approve the agent's
+pull requests, and branch protection on `main` (a pull request with one
+approval and green checks, stale reviews dismissed, no force pushes,
+administrators not included) means the agent can never merge on its own
+while the owner keeps direct access. The `deliver` stage asks before merging
+and then merges only once the protection rules are satisfied.
+
 ## What is committed to implementation repositories
 
 Planning stays in the governing workspace; each implementation repository

@@ -3,7 +3,7 @@ import { mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { getGitHubToken } from './github'
+import { getGitHubActorToken } from './github-app-auth'
 
 const execFileAsync = promisify(execFile)
 
@@ -41,12 +41,12 @@ async function git(cwd: string, args: string[], opts: { env?: NodeJS.ProcessEnv;
 }
 
 async function authHeader(): Promise<string> {
-  const token = await getGitHubToken()
+  const token = await getGitHubActorToken()
   return `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
 }
 
 async function githubApi<T>(method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown): Promise<T> {
-  const token = await getGitHubToken()
+  const token = await getGitHubActorToken()
   const response = await fetch(url, {
     method,
     headers: {

@@ -4,6 +4,7 @@ import { OrgKnowledgePanel } from './knowledge'
 import { IntegrationsPanel } from './integrations'
 import { PageHead } from './shell'
 import { ModelsSection } from './models'
+import { formatTokens, formatUsd, type UsageSummary } from './usage'
 
 /**
  * Organization page at /organization: the layer every team shares.
@@ -59,6 +60,7 @@ export function OrgPage() {
   const [org, setOrg] = useState<OrgMemory | null>(null)
   const [knowledge, setKnowledge] = useState<KnowledgeStatus | null>(null)
   const [promotions, setPromotions] = useState<PromotionProposal[] | null>(null)
+  const [usage, setUsage] = useState<{ days: number; window: UsageSummary; allTime: UsageSummary; byProject: Array<{ projectNamespace: string; summary: UsageSummary }> } | null>(null)
   // The section lives in the URL (?section=…) so the app sidebar can drive it.
   const sectionFromUrl = (): Section => {
     const wanted = new URLSearchParams(window.location.search).get('section')
@@ -77,12 +79,13 @@ export function OrgPage() {
 
   const load = useCallback(async () => {
     try {
-      const [o, k, p] = await Promise.all([
+      const [o, k, p, u] = await Promise.all([
         json<OrgMemory>('/api/org/memory'),
         json<KnowledgeStatus>('/api/org/knowledge/status').catch(() => null),
         json<PromotionProposal[]>('/api/org/promotions').catch(() => []),
+        json<{ days: number; window: UsageSummary; allTime: UsageSummary; byProject: Array<{ projectNamespace: string; summary: UsageSummary }> }>('/api/org/usage').catch(() => null),
       ])
-      setOrg(o); setKnowledge(k); setPromotions(p)
+      setOrg(o); setKnowledge(k); setPromotions(p); setUsage(u)
       document.title = `${o.name} · Organization · Spaces`
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -133,6 +136,7 @@ export function OrgPage() {
                 <Stat label="Projects" value={projectCount} sub="across all your teams" />
                 <Stat label="Knowledge" value={knowledge?.documents ?? '—'} sub={knowledge ? (knowledge.embeddings.available && knowledge.vectorSearch ? 'semantic + keyword search' : 'keyword search') : 'unavailable'} />
                 <Stat label="Promotions" value={pending.length} sub={pending.length ? 'waiting for a decision' : 'nothing pending'} />
+                <Stat label="Spend (30 days)" value={formatUsd(usage?.window.costUsd)} sub={usage ? `${formatTokens(usage.window.totalTokens)} tokens · ${formatUsd(usage.allTime.costUsd)} all time` : 'no model calls yet'} />
               </div>
               <section className="card panel team-section">
                 <div className="team-section-head">
@@ -153,6 +157,23 @@ export function OrgPage() {
                   {teams.length === 0 && <li className="panel-subtitle">You are not in a team yet.</li>}
                 </ul>
               </section>
+              {usage && usage.byProject.length > 0 && (
+                <section className="card panel team-section">
+                  <div className="team-section-head">
+                    <h3>Spend by project</h3>
+                    <span className="panel-subtitle">Last {usage.days} days · model calls made by runs</span>
+                  </div>
+                  <ul className="usage-project-list">
+                    {usage.byProject.map((p) => (
+                      <li key={p.projectNamespace}>
+                        <code>{p.projectNamespace}</code>
+                        <span className="text-subtle">{p.summary.calls} calls · {formatTokens(p.summary.totalTokens)} tok</span>
+                        <strong>{formatUsd(p.summary.costUsd)}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
               <section className="card panel team-section">
                 <div className="team-section-head">
                   <h3>Organization memory</h3>

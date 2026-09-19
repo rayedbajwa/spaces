@@ -145,6 +145,8 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
+import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
+import { describeGitHubActor } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
 
@@ -1198,6 +1200,16 @@ async function route(req: Request): Promise<Response> {
     const [, , , projectNamespace] = url.pathname.split('/')
     const snapshot = await readLatestRunSnapshot(projectNamespace)
     return sendJson(200, snapshot ? { ...snapshot, resumable: await isRunResumable(snapshot.runId) } : null)
+  }
+
+  // Tokens and cost: per project (totals, by stage, by model, by run) and organization-wide.
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/usage$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    return sendJson(200, await summarizeProjectUsage(projectNamespace))
+  }
+  if (method === 'GET' && url.pathname === '/api/org/usage') {
+    const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days') ?? '30') || 30))
+    return sendJson(200, { days, ...(await summarizeOrgUsage(days)), actor: await describeGitHubActor().catch(() => null) })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/qa$/.test(url.pathname)) {
@@ -2427,6 +2439,7 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
     queued: row.status === 'queued',
     rerunnable: row.status === 'error' || row.status === 'completed' || row.status === 'paused',
     retryCount: row.retryCount,
+    usage: await summarizeRunUsage(row.runId),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -2614,6 +2627,7 @@ async function listHistory(): Promise<HistoryResponse> {
 async function buildBoard(): Promise<BoardResponse> {
   const history = await listHistory()
   const cards: BoardCard[] = []
+  const usageByProject = await summarizeUsageByProject()
 
   for (const project of history.projects) {
     // A run in flight always speaks for the project. Otherwise the most recently
@@ -2667,6 +2681,7 @@ async function buildBoard(): Promise<BoardResponse> {
       latestRun,
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
+      usage: usageByProject.get(project.namespace) ?? EMPTY_USAGE,
     })
   }
 
@@ -3611,6 +3626,8 @@ interface RunSnapshot {
   /** True when POST /api/runs/:id/rerun is allowed for this run. */
   rerunnable?: boolean
   retryCount?: number
+  /** Tokens and cost recorded for this run so far. */
+  usage?: UsageSummary
   createdAt: string
   updatedAt: string
 }
@@ -3713,6 +3730,8 @@ interface BoardCard {
   currentAgent: string
   estimate: string
   gateReadiness: GateReadinessRecord[]
+  /** Tokens and cost across every run of the project. */
+  usage?: UsageSummary
   automationState?: AutomationStateRecord
   recommendedAction?: RecommendedActionRecord
   updatedAt: string

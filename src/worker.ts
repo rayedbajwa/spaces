@@ -42,6 +42,8 @@ import { checkProviderKeys } from './lib/provider-check'
 import { applyProviderKeysToEnv, listenProviderKeys } from './lib/provider-keys'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
+import { recordUsage, usageFromMessage } from './lib/run-usage'
+import { gitHubActorEnv } from './lib/github-app-auth'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -202,9 +204,19 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   // --feature"). Without this wrapping, the throw bubbles up to
   // handleProjectJob and only the JOB gets marked errored — the RUN stays
   // stuck at 'running' forever, showing "in progress" in the UI.
+  // Agent shells push and open pull requests as the GitHub App (bot) when one
+  // is installed, so branch protection applies to the agent and humans approve.
+  Object.assign(process.env, await gitHubActorEnv().catch(() => ({})))
+
   let engine: PipelineEngine
   try {
     engine = new PipelineEngine(run.templateJson, options, {
+      onUsage: (message, stage) => {
+        const record = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
+        if (!record) return
+        void recordUsage(record).catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+        void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
+      },
       stdout: (chunk) => {
         void queueEvent(runId, 'log', { stream: 'stdout', chunk })
       },

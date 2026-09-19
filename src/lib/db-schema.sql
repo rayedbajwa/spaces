@@ -605,6 +605,24 @@ CREATE TABLE IF NOT EXISTS oauth_apps (
 -- install url, sealed private key; Slack manifest source, …).
 ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Token usage and cost per model call, rolled up per run / project / organization.
+CREATE TABLE IF NOT EXISTS run_usage (
+  usage_id           BIGSERIAL PRIMARY KEY,
+  run_id             UUID NOT NULL,
+  project_namespace  TEXT NOT NULL,
+  stage              TEXT,
+  provider           TEXT NOT NULL,
+  model              TEXT NOT NULL,
+  input_tokens       BIGINT NOT NULL DEFAULT 0,
+  output_tokens      BIGINT NOT NULL DEFAULT 0,
+  cache_read_tokens  BIGINT NOT NULL DEFAULT 0,
+  cache_write_tokens BIGINT NOT NULL DEFAULT 0,
+  cost_usd           NUMERIC(12, 6) NOT NULL DEFAULT 0,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS run_usage_run_idx ON run_usage (run_id);
+CREATE INDEX IF NOT EXISTS run_usage_project_idx ON run_usage (project_namespace, created_at DESC);
+
 -- Organization model-routing policy (preference, provider order, premium, pins).
 ALTER TABLE org_memory ADD COLUMN IF NOT EXISTS model_policy_json JSONB NOT NULL DEFAULT '{}'::jsonb;
 

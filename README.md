@@ -460,6 +460,29 @@ dependencies and CI themselves and re-check, asking for approval only before
 irreversible or costly actions. The project assistant follows the same rule
 and can open PRs, rerun or approve runs and run steps once you say yes.
 
+### Who pushes and who approves
+
+When GitHub is set up as a GitHub App (the one-click flow), agents push
+branches, open pull requests, comment and merge **as the app bot**
+(`<app>[bot]`) using short-lived installation tokens, while reads such as
+the repository catalog still use the connected user. Pull requests therefore
+have a bot author, so a human can approve them and branch protection applies
+to the agent. Recommended protection on `main`: require a pull request with
+one approval, require the CI checks, dismiss stale reviews, no force pushes.
+Leave "include administrators" off so the repository owner keeps direct
+access; the bot is never an administrator. With a classic OAuth App the agent
+acts as the connected user instead, and GitHub will not let that user approve
+their own pull requests.
+
+### Tokens and cost
+
+Every model call a run makes is recorded with its tokens (input, output,
+cache reads and writes) and cost from the model's price table. Costs show
+live in the agent output bar, on the board card, in the project hero and in a
+*Tokens & cost* panel on the project overview (by stage, by model, by run);
+the organization overview shows spend for the last 30 days and by project.
+`GET /api/projects/:slug/usage` and `GET /api/org/usage` expose the numbers.
+
 ### Implementation harness: tasks → PR + CI → code review → QA
 
 In the feature template the code stages form a loop: `implement` executes the
