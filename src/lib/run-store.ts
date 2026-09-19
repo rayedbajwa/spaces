@@ -297,7 +297,13 @@ export async function listAllRuns(limit = 100): Promise<RunRow[]> {
   `
 }
 
+/**
+ * The run the project page should follow: a live one (running, paused,
+ * queued) wins over anything finished, so a completed ad-hoc task run does
+ * not hide the pipeline run that is still executing; otherwise the newest.
+ */
 export async function getLatestRunForProject(projectNamespace: string): Promise<RunRow | undefined> {
-  const [row] = await listRunsForProject(projectNamespace, 1)
-  return row
+  const rows = await listRunsForProject(projectNamespace, 25)
+  const live = rows.find((r) => r.status === 'running' || r.status === 'paused' || r.status === 'queued')
+  return live ?? rows[0]
 }
