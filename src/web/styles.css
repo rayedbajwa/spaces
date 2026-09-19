@@ -2176,8 +2176,8 @@ textarea {
 .project-tabs .tab-button:hover { background: var(--bg-hover); }
 .project-tabs .tab-button.active { background: var(--accent-soft); border-color: rgba(94, 106, 210, 0.35); color: var(--text-strong); }
 .project-page .project-page-tabs { position: static; }
-/* The main panel scrolls with 26px top padding: pull the sticky tabs up to its edge and fill the gap. */
-.project-page .project-tabs { position: sticky; top: -26px; z-index: 5; margin-top: 0; box-shadow: 0 -26px 0 0 var(--bg-panel); }
+/* Tabs stick just under the top strip while the page scrolls. */
+.project-page .project-tabs { position: sticky; top: var(--strip-h); z-index: 5; }
 .project-overview { display: grid; gap: 14px; }
 @media (min-width: 1100px) {
   .project-overview { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
@@ -2221,10 +2221,11 @@ textarea {
    App shell: top strip + sidebar + rounded main panel
    ============================================================ */
 :root { --bg-panel: #0f0f12; --sidebar-w: 268px; --strip-h: 52px; }
-/* The shell fills the viewport and never scrolls: the main panel is the scroll container, so the top strip, the sidebar and its account block stay put. */
-.app-shell { max-width: none; margin: 0; padding: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+/* The page scrolls normally. The top strip and the sidebar are sticky, so the brand, the navigation and the account block stay in place. */
+.app-shell { max-width: none; margin: 0; padding: 0; min-height: 100vh; display: flex; flex-direction: column; }
 
 .topstrip {
+  position: sticky; top: 0; z-index: 30; background: var(--bg-app);
   height: var(--strip-h); flex: 0 0 auto;
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   padding: 0 16px 0 14px;
@@ -2253,7 +2254,7 @@ textarea {
 .status-dot.partial { background: var(--amber); }
 
 .shell-body { flex: 1 1 auto; display: grid; grid-template-columns: var(--sidebar-w) minmax(0, 1fr); min-height: 0; }
-.sidebar { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 10px 12px; min-width: 0; min-height: 0; overflow: hidden; }
+.sidebar { display: flex; flex-direction: column; gap: 4px; padding: 4px 12px 10px 12px; min-width: 0; position: sticky; top: var(--strip-h); align-self: start; height: calc(100vh - var(--strip-h)); overflow: hidden; }
 /* The account block is always pinned at the bottom; the nav fits without a scrollbar and only pans invisibly on very short screens. */
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: none; }
 .sidebar-nav::-webkit-scrollbar { display: none; }
@@ -2307,7 +2308,7 @@ textarea {
 .account-popover { left: 0; right: auto; bottom: calc(100% + 6px); top: auto; min-width: 280px; }
 
 .main-panel {
-  min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; margin: 0 14px 14px 0; padding: 26px 32px 72px;
+  min-width: 0; min-height: calc(100vh - var(--strip-h) - 14px); margin: 0 14px 14px 0; padding: 26px 32px 72px;
   border: 1px solid var(--border); border-radius: 16px; background: var(--bg-panel);
   box-shadow: var(--shadow-sm);
 }
