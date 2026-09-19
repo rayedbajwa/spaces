@@ -31,7 +31,9 @@ ENV PORT=3000
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
 # su-exec lets the entrypoint fix the /data volume's ownership and then drop to bun.
-RUN apk add --no-cache git ca-certificates openssh-client su-exec
+# chromium (+ fonts) backs the agents' browser tools (Playwright drives it headless).
+RUN apk add --no-cache git ca-certificates openssh-client su-exec chromium nss freetype harfbuzz ttf-freefont
+ENV SPACES_BROWSER_PATH=/usr/bin/chromium-browser
 
 # Durable state lives under /data (mount a volume there): cloned repos and
 # governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).

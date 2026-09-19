@@ -17,6 +17,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
 import { buildKnowledgeTools } from './integration-sources'
+import { buildBrowserTools } from './browser-tools'
 import { readVerificationStatus } from './pipeline-branch'
 import {
   commentOnPullRequest,
@@ -351,7 +352,8 @@ export class AIDLCFlow {
       tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
       // Connected integrations (Jira/Linear/Confluence/GitHub) as on-demand knowledge tools.
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
-      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => [])), ...buildWebTools()],
+      // Plus a real browser so implement/QA stages can run the app and verify what users see.
+      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
       sessionManager,
     })
 
@@ -1725,7 +1727,7 @@ export async function runAIDLCParallelSubAgents(options: {
           model: modelSelection.model,
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-          customTools: [...knowledgeTools, ...buildWebTools()],
+          customTools: [...knowledgeTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 

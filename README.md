@@ -412,6 +412,18 @@ project brief per repo → the result is stored as the project's auto-summary
 memory and fed to every later stage. Multi-repo projects get a repository map
 so plans and workstreams can name the repo they touch.
 
+### A browser for implement and QA agents
+
+Every stage session has browser tools backed by headless Chromium
+(Playwright): `browser_open`, `browser_act` (click, type, press, select,
+wait), `browser_read` (text, HTML, URL, JavaScript eval, diagnostics),
+`browser_screenshot` and `browser_close`. Agents are instructed not to stop
+at unit tests for anything a user sees: start the app with `bash`, verify the
+flow in the browser, and cite screenshots (saved under `.aidlc/qa/` in the
+checkout) in verification and QA reports. Console errors and failed requests
+are surfaced with every read. The Docker image includes Chromium; locally a
+desktop Chrome or Chromium is used, or set `SPACES_BROWSER_PATH`.
+
 ### Integrations as knowledge
 
 Connected Jira, Confluence, Linear and GitHub are exposed to agents as two
