@@ -3,6 +3,7 @@ import { planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChan
 import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
 import { PROVIDER_ENV_KEYS } from './default-model'
 import { mkdir, readFile } from 'node:fs/promises'
+import * as fs from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import process from 'node:process'
@@ -18,6 +19,7 @@ import {
 import { log } from './logger'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
+import { createAgentResourceLoader } from './agent-resources'
 import { readVerificationStatus } from './pipeline-branch'
 import {
   commentOnPullRequest,
@@ -354,6 +356,8 @@ export class AIDLCFlow {
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
       // Plus a real browser so implement/QA stages can run the app and verify what users see.
       customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
+      // Default resources plus the skills Spaces bundles (playwright-browser).
+      resourceLoader: await createAgentResourceLoader(this.options.cwd),
       sessionManager,
     })
 
@@ -611,6 +615,11 @@ export class AIDLCFlow {
       this.print(`\n[setup] Dev environment ${state.status} (${DEV_SETUP_FILE}, ${Math.round(state.ageDays ?? 0)}d old) — skipping setup for the primary repo.\n`)
     } else {
       await ensureIgnored(this.options.cwd, '.aidlc/').catch(() => undefined)
+      // The playwright-browser skill writes snapshots and console logs next to the checkout,
+      // and reads .playwright/cli.config.json: default it to headless bundled Chromium.
+      await ensureIgnored(this.options.cwd, '.playwright-cli/').catch(() => undefined)
+      await ensureIgnored(this.options.cwd, '.playwright/').catch(() => undefined)
+      await ensurePlaywrightCliConfig(this.options.cwd).catch(() => undefined)
       this.print(`\n[setup] Preparing the development environment before ${stage} (${state.exists ? `previous status ${state.status ?? 'unknown'}` : 'no setup record yet'})…\n`)
       try {
         await this.streamPrompt(withSharedContext(buildDevSetupPrompt(), { sharedContextPrompt: this.options.sharedContextPrompt }))
@@ -1001,6 +1010,19 @@ function compareFeatureBranchesDescending(a: string, b: string): number {
   return b.localeCompare(a)
 }
 
+/**
+ * Default config for the Playwright CLI used by the playwright-browser skill:
+ * headless bundled Chromium (the CLI would otherwise look for desktop Chrome).
+ * Written once per checkout; an existing file is left alone.
+ */
+export async function ensurePlaywrightCliConfig(cwd: string): Promise<void> {
+  const dir = path.join(cwd, '.playwright')
+  const file = path.join(dir, 'cli.config.json')
+  try { await fs.access(file); return } catch { /* create */ }
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(file, `${JSON.stringify({ browser: { browserName: 'chromium', isolated: true, launchOptions: { headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] } } }, null, 2)}\n`)
+}
+
 export function resolveSpeckitRoot(): string {
   const packageJsonPath = require.resolve('@the-agency/pi-spec-kit/package.json')
   return path.dirname(packageJsonPath)
@@ -1375,6 +1397,7 @@ export async function runAIDLCMergeOrchestrator(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+    resourceLoader: await createAgentResourceLoader(cwd),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1449,6 +1472,7 @@ export async function runAIDLCSpecificTask(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+    resourceLoader: await createAgentResourceLoader(cwd),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1524,6 +1548,7 @@ export async function runAIDLCSpecificWorkstream(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
+    resourceLoader: await createAgentResourceLoader(cwd),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1728,6 +1753,7 @@ export async function runAIDLCParallelSubAgents(options: {
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
           customTools: [...knowledgeTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
+          resourceLoader: await createAgentResourceLoader(workstreamCwd),
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 
@@ -2115,6 +2141,7 @@ export async function runDevSetup(options: {
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
     customTools: buildWebTools(),
+    resourceLoader: await createAgentResourceLoader(cwd),
     sessionManager: SessionManager.inMemory(cwd),
   })
   let output = ''

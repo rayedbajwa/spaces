@@ -22,9 +22,16 @@ Every session has the built-in Pi tools (`read`, `bash`, `edit`, `write`,
   the app with `bash`, drive it like a user, read visible text, evaluate
   JavaScript for assertions, and save screenshots under `.aidlc/qa/` in the
   checkout as evidence for their reports. Console errors and failed requests
-  are reported with every read. The Docker image ships Chromium; on a
-  workstation a desktop Chrome or Chromium is used, or set
-  `SPACES_BROWSER_PATH` to a Chromium binary.
+  are reported with every read;
+- the `playwright-browser` skill from the [pi-playwright](https://pi.dev/packages/pi-playwright)
+  package, loaded into every session: a CLI-first workflow over
+  `@playwright/cli` (`pw.js open / snapshot / click / fill / screenshot / pdf`,
+  saved auth state, console and network logs) that agents invoke through
+  `bash`, with artifacts under `/tmp/pi-playwright/<session>/`.
+
+Both need a Chromium: `make setup` runs `playwright install chromium` (also
+`bun run setup:browsers`), and the Docker image ships it. `SPACES_BROWSER_PATH`
+points the built-in tools at another Chromium binary.
 
 The project assistant additionally has action tools — rerun a run, answer or
 approve a paused run, run a step, start implementation agents, retry a clone,

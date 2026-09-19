@@ -4,6 +4,9 @@
 
 - [Bun](https://bun.sh) 1.4+
 - Docker (for Postgres)
+- A Chromium for the agents' browser tools: `make setup` (or `bun run
+  setup:browsers`) runs `playwright install chromium`; the Docker image
+  already contains it
 - An Anthropic API key
 - Optional: OAuth apps for GitHub, Atlassian (Jira + Confluence), Linear, Slack
 

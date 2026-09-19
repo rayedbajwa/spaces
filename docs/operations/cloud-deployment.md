@@ -31,8 +31,10 @@ flowchart LR
 
 ## The container image
 
-The repository ships a multi-stage `Dockerfile` (Bun 1.4 on Alpine) that
-bundles the frontend and runs as the non-root `bun` user (the entrypoint
+The repository ships a multi-stage `Dockerfile` (Bun 1.4 on Debian, which
+Playwright's Chromium needs) that bundles the frontend, installs Chromium and
+its libraries for the agents' browser tools, and runs as the non-root `bun`
+user (the entrypoint
 starts as root only to fix the ownership of a freshly mounted `/data`
 volume, then drops privileges). The image includes `git` (agents clone,
 branch, commit and push), sets `HOME=/data/home` and

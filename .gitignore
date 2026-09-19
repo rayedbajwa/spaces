@@ -47,3 +47,5 @@ e2e-report.md
 .run/
 # mkdocs build output
 site/
+# Playwright CLI session artifacts (agents' browser skill)
+.playwright-cli/

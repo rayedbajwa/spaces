@@ -10,30 +10,30 @@
 # ==============================================================================
 
 # ---- Stage 1: install dependencies -------------------------------------------
-FROM oven/bun:1.4-alpine AS deps
+FROM oven/bun:1.4 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 
 # ---- Stage 2: build the frontend ---------------------------------------------
-FROM oven/bun:1.4-alpine AS build
+FROM oven/bun:1.4 AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN bun run build:web
 
 # ---- Stage 3: runtime --------------------------------------------------------
-FROM oven/bun:1.4-alpine AS runtime
+FROM oven/bun:1.4 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
-# su-exec lets the entrypoint fix the /data volume's ownership and then drop to bun.
-# chromium (+ fonts) backs the agents' browser tools (Playwright drives it headless).
-RUN apk add --no-cache git ca-certificates openssh-client su-exec chromium nss freetype harfbuzz ttf-freefont
-ENV SPACES_BROWSER_PATH=/usr/bin/chromium-browser
+# Debian (not Alpine): Playwright's bundled Chromium needs glibc. gosu lets the
+# entrypoint fix the /data volume's ownership and then drop to bun.
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client gosu \
+    && rm -rf /var/lib/apt/lists/*
 
 # Durable state lives under /data (mount a volume there): cloned repos and
 # governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).
@@ -50,7 +50,13 @@ COPY package.json tsconfig.json ./
 COPY src ./src
 COPY data ./data
 COPY schemas ./schemas
+COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Agents' browser: Playwright's Chromium (+ its system libraries) and the
+# pi-playwright skill wiring, installed to a path every user can read.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN SPACES_BROWSER_DEPS=1 bun run scripts/setup-browsers.ts && chmod -R a+rX /ms-playwright && rm -rf /var/lib/apt/lists/*
 
 EXPOSE 3000
 
