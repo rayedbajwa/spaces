@@ -9,21 +9,7 @@ import { marked } from 'marked'
 import { ensureFrontendBuilt } from './build-web'
 import { buildContextBundle } from './lib/context-builder'
 import { createPromotionProposal, decidePromotionProposal, listPromotionProposals } from './lib/org-governance'
-import {
-  normalizeThinkingLevel,
-  QUESTION_PATTERN,
-  resolveCwd,
-  runAIDLCAssistantChat,
-  runAIDLCMergeOrchestrator,
-  runAIDLCParallelSubAgents,
-  runAIDLCSpecificTask,
-  runAIDLCSpecificWorkstream,
-  STAGE_DEFINITIONS,
-  type FlowOptions,
-  type ParallelSubAgentResult,
-  type PauseKind,
-  type StageName,
-} from './lib/aidlc'
+import { normalizeThinkingLevel, QUESTION_PATTERN, resolveCwd, runAIDLCAssistantChat, runAIDLCMergeOrchestrator, runAIDLCParallelSubAgents, runAIDLCSpecificTask, runAIDLCSpecificWorkstream, STAGE_DEFINITIONS, type FlowOptions, type ParallelSubAgentResult, type PauseKind, type StageName, parseApprovalAnswer } from './lib/aidlc'
 import { PipelineEngine } from './lib/pipeline-engine'
 import { getTemplate, listTemplates } from './lib/pipeline-loader'
 import type { PipelineTemplate } from './lib/pipeline-template'
@@ -94,20 +80,7 @@ import {
   type TeamRole,
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
-import {
-  createRun as dbCreateRun,
-  getLatestRunForProject as dbGetLatestRunForProject,
-  getRun as dbGetRun,
-  listAllRuns as dbListAllRuns,
-  listEvents as dbListEvents,
-  requeueRunFromStage as dbRequeueRunFromStage,
-  listRunsForProject as dbListRunsForProject,
-  appendEvent as dbAppendEvent,
-  resolveOpenGate as dbResolveOpenGate,
-  updateRunStatus as dbUpdateRunStatus,
-  type EventRow,
-  type RunRow,
-} from './lib/run-store'
+import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote } from './lib/run-store'
 import {
   addRepo as projAddRepo,
   createProject as projCreate,
@@ -1958,8 +1931,10 @@ async function route(req: Request): Promise<Response> {
       // paused stage (or the next one, for an approved review) on any worker.
       const stages = (row.templateJson?.steps ?? []).map((s) => s.stage as StageName)
       const currentIdx = row.currentStage ? stages.indexOf(row.currentStage) : -1
-      const approved = row.pauseKind === 'review' && /^(approve|approved|lgtm|yes|ok|continue)\b/i.test(answer)
+      const approval = parseApprovalAnswer(answer)
+      const approved = row.pauseKind === 'review' && approval.approved
       const nextIdx = approved ? currentIdx + 1 : Math.max(0, currentIdx)
+      if (approved && approval.note) await appendReviewerNote(runId, row.currentStage ?? null, approval.note)
       const gate = await dbResolveOpenGate(runId, answer)
       await dbAppendEvent({ runId, kind: 'gate_resolved', payload: { gateId: gate?.gateId, kind: gate?.kind, response: answer, afterRestart: true } })
       if (approved && nextIdx >= stages.length) {

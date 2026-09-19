@@ -212,6 +212,17 @@ export async function incrementRetryAndRequeue(runId: string): Promise<number> {
  * worker restart interrupted. `note` is kept in error_message so the UI can
  * explain why the run is queued again; the worker clears it when it starts.
  */
+/** Remember an approval note so a restarted run still applies it (options_json.reviewerNotes). */
+export async function appendReviewerNote(runId: string, stage: string | null, note: string): Promise<void> {
+  const sql = getDb()
+  const entry = { stage, note, at: new Date().toISOString() }
+  await sql`
+    UPDATE pipeline_runs
+       SET options_json = jsonb_set(options_json, '{reviewerNotes}', coalesce(options_json->'reviewerNotes', '[]'::jsonb) || ${sql.json(entry as never)}::jsonb, true)
+     WHERE run_id = ${runId}
+  `
+}
+
 export async function requeueRunFromStage(runId: string, fromStage: StageName | null, note: string | null): Promise<number> {
   const sql = getDb()
   const [row] = await sql<Array<{ retryCount: number }>>`

@@ -28,6 +28,8 @@ export interface PipelineEngineOptions extends FlowOptions {
    * Pipeline step `model:` fields always override this.
    */
   speedMode?: SpeedMode
+  /** Approval notes given at review gates (applied on restart when the live engine was gone). */
+  reviewerNotes?: Array<{ stage: string | null; note: string; at: string }>
   /**
    * Handoffs captured by earlier attempts of this run (from run_thread_entries).
    * Seeded on a rerun/resume so the stage that restarts still sees what the
@@ -204,6 +206,13 @@ export class PipelineEngine {
       // Cross-stage memory FIRST — it's context the model needs to reason with.
       const handoffs = this.renderHandoffs()
       if (handoffs) parts.push(handoffs)
+
+      // Notes a reviewer attached to an approval: the previous stage was
+      // approved on the condition that these are applied, so do that first.
+      const notes = (this.options.reviewerNotes ?? []).filter((n) => !n.stage || this.stepsByStage.has(n.stage as StageName) || true)
+      if (notes.length) {
+        parts.push(`# Reviewer notes to apply first\n\nA reviewer approved earlier stages with these notes. Apply each one to the relevant artifacts before doing this stage's work, and mention what you changed.\n\n${notes.map((n) => `- (${n.stage ?? 'run'}, ${n.at}) ${n.note}`).join('\n')}`)
+      }
 
       if (step.role) {
         const persona = await loadPersona(step.role)
