@@ -209,7 +209,7 @@ interface OutputSinks {
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
   /** Every completed assistant message with its token usage and cost, tagged with the stage. */
-  onUsage?: (message: { provider: string; model: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
+  onUsage?: (message: { provider: string; model: string; responseId?: string; responseModel?: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
 }
 
 interface WaitState {

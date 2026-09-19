@@ -22,6 +22,8 @@ export interface CatalogModel {
   /** USD per million tokens. */
   inputCost: number
   outputCost: number
+  cacheReadCost: number
+  cacheWriteCost: number
   /** 3:1 input:output blend — a typical agent turn reads far more than it writes. */
   blendedCost: number
   contextWindow: number
@@ -65,7 +67,7 @@ export function sizeHintOf(id: string): SizeHint {
   return undefined
 }
 
-export function describeCatalogModel(model: { provider: string; id: string; name: string; reasoning: boolean; cost: { input: number; output: number }; contextWindow: number; maxTokens: number; input?: string[] }): CatalogModel {
+export function describeCatalogModel(model: { provider: string; id: string; name: string; reasoning: boolean; cost: { input: number; output: number; cacheRead?: number; cacheWrite?: number }; contextWindow: number; maxTokens: number; input?: string[] }): CatalogModel {
   const spec = `${model.provider}/${model.id}`
   const excluded = EXCLUDE_PATTERNS.find(([re]) => re.test(model.id))?.[1]
     ?? (model.input && !model.input.includes('text') ? 'no text input' : undefined)
@@ -78,6 +80,8 @@ export function describeCatalogModel(model: { provider: string; id: string; name
     reasoning: model.reasoning,
     inputCost: model.cost.input,
     outputCost: model.cost.output,
+    cacheReadCost: model.cost.cacheRead ?? model.cost.input * 0.1,
+    cacheWriteCost: model.cost.cacheWrite ?? model.cost.input * 1.25,
     blendedCost: (3 * model.cost.input + model.cost.output) / 4,
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
