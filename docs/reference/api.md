@@ -11,6 +11,7 @@ All `/api/*` routes except the ones marked public require a session cookie
 | Method & path | Purpose |
 |---|---|
 | `GET /api/auth/status` | public: `{ authEnabled, needsBootstrap, githubLogin }` |
+| `GET /api/version` | public: package name, version, and startup-resolved commit metadata |
 | `POST /api/auth/register` | public: `{ email, password, name?, inviteToken? }`; first user bootstraps the default team, otherwise an invite (or `OPEN_REGISTRATION=1`) is required. Sets the session cookie |
 | `POST /api/auth/login` · `POST /api/auth/logout` | public: `{ email, password, inviteToken? }` / clear session |
 | `GET /api/oauth/github/authorize?mode=login[&invite=token]` | public: GitHub sign-in (same OAuth app as the integration) |

@@ -1,0 +1,47 @@
+import { execFileSync } from 'node:child_process'
+
+export type VersionMetadata = {
+  name: string
+  version: string
+  commit: string
+}
+
+type PackageMetadata = {
+  name?: unknown
+  version?: unknown
+}
+
+type VersionMetadataOptions = {
+  packageMetadata: PackageMetadata
+  env?: Record<string, string | undefined>
+  resolveGitRevision?: () => string
+}
+
+function resolveGitRevision(): string {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch {
+    return ''
+  }
+}
+
+export function resolveVersionMetadata({ packageMetadata, env = process.env, resolveGitRevision: resolveGit = resolveGitRevision }: VersionMetadataOptions): VersionMetadata {
+  const configuredCommit = env.GIT_COMMIT?.trim()
+  let commit = configuredCommit ?? ''
+  if (!commit) {
+    try {
+      commit = resolveGit().trim()
+    } catch {
+      commit = ''
+    }
+  }
+
+  return {
+    name: String(packageMetadata.name ?? ''),
+    version: String(packageMetadata.version ?? ''),
+    commit: commit || 'unknown',
+  }
+}
