@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { getGitHubToken } from './github'
@@ -59,7 +60,7 @@ async function githubApi<T>(url: string): Promise<T> {
 export async function collectPullRequestLinks(featureDirAbs: string): Promise<Array<{ githubRepo: string; number: number; source: string }>> {
   const found = new Map<string, { githubRepo: string; number: number; source: string }>()
   const files: string[] = []
-  for (const name of ['merge-orchestrator.md', 'verification-report.md', 'delivery-report.md', 'delivery-status.md', 'tasks.md']) files.push(path.join(featureDirAbs, name))
+  for (const name of ['merge-orchestrator.md', 'verification-report.md', 'delivery-report.md', 'delivery-status.md', 'tasks.md', 'code-review.md', 'parallel-workstreams.md']) files.push(path.join(featureDirAbs, name))
   try {
     for (const entry of await readdir(path.join(featureDirAbs, 'subagents'))) if (entry.endsWith('.md')) files.push(path.join(featureDirAbs, 'subagents', entry))
   } catch { /* no subagent reports */ }
@@ -72,6 +73,43 @@ export async function collectPullRequestLinks(featureDirAbs: string): Promise<Ar
     }
   }
   return [...found.values()]
+}
+
+/** A repository the feature may have opened pull requests in. */
+export interface DeliveryRepoHint { githubRepo?: string | null; localPath?: string | null }
+
+const BRANCH_MENTION = /\b(?:feat|feature|fix|chore|refactor|docs|hotfix|release)\/[\w./-]+/g
+
+function currentBranch(localPath: string): string | undefined {
+  try {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: localPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return branch && branch !== 'HEAD' && !/^(main|master|develop)$/.test(branch) ? branch : undefined
+  } catch { return undefined }
+}
+
+/**
+ * Pull requests found by head branch on GitHub — the checkout's current
+ * feature branch and every branch name the reports mention — so a PR the
+ * implement stage opened is tracked even when no report pasted its link.
+ */
+export async function discoverPullRequestsByBranch(featureDirAbs: string, repos: DeliveryRepoHint[]): Promise<Array<{ githubRepo: string; number: number; source: string }>> {
+  const found: Array<{ githubRepo: string; number: number; source: string }> = []
+  const mentioned = new Set<string>()
+  for (const name of ['parallel-workstreams.md', 'merge-orchestrator.md', 'tasks.md', 'code-review.md', 'verification-report.md']) {
+    try { for (const m of (await readFile(path.join(featureDirAbs, name), 'utf8')).matchAll(BRANCH_MENTION)) mentioned.add(m[0].replace(/[).,;:`'"]+$/, '')) } catch { /* optional */ }
+  }
+  for (const repo of repos) {
+    if (!repo.githubRepo) continue
+    const owner = repo.githubRepo.split('/')[0]!
+    const branches = new Set<string>(mentioned)
+    const head = repo.localPath ? currentBranch(repo.localPath) : undefined
+    if (head) branches.add(head)
+    for (const branch of branches) {
+      const pulls = await githubApi<Array<{ number: number }>>(`https://api.github.com/repos/${repo.githubRepo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=5`).catch(() => [])
+      for (const pr of pulls) found.push({ githubRepo: repo.githubRepo, number: pr.number, source: `branch ${branch}` })
+    }
+  }
+  return found
 }
 
 interface GitHubPull {
@@ -143,8 +181,13 @@ function orderByStack(prs: TrackedPullRequest[]): TrackedPullRequest[] {
  * Gather every PR for the feature, inspect it on GitHub, order by stack, write
  * `<feature>/delivery-status.md`, and return the snapshot.
  */
-export async function refreshDeliveryStatus(featureDirAbs: string): Promise<DeliverySnapshot> {
+export async function refreshDeliveryStatus(featureDirAbs: string, repos: DeliveryRepoHint[] = []): Promise<DeliverySnapshot> {
   const links = await collectPullRequestLinks(featureDirAbs)
+  const seen = new Set(links.map((l) => `${l.githubRepo}#${l.number}`))
+  for (const link of await discoverPullRequestsByBranch(featureDirAbs, repos).catch(() => [])) {
+    const key = `${link.githubRepo}#${link.number}`
+    if (!seen.has(key)) { seen.add(key); links.push(link) }
+  }
   const inspected: TrackedPullRequest[] = []
   const errors: string[] = []
   for (const link of links) {

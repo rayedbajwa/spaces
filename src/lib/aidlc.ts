@@ -536,7 +536,7 @@ export class AIDLCFlow {
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       if (featureDirAbs) {
         try {
-          const snapshot = await refreshDeliveryStatus(featureDirAbs)
+          const snapshot = await refreshDeliveryStatus(featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })))
           this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
         } catch (error) {
           this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
