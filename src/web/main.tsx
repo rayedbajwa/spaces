@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { marked } from 'marked'
 import { AuthRoot, navigate, useAuth } from './auth'
 import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
+import { NewRepoCard, type NewRepositoryProposal } from './new-repo'
 import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
@@ -303,6 +304,7 @@ type ProjectDetailRecord = {
     repositories: Array<{ fullName: string; reason: string; confidence: string; role: string; registered: boolean }>
     workAreas: Array<{ name: string; description: string; repositories: string[]; paths: string[]; risks?: string }>
     notes?: string
+    newRepository?: NewRepositoryProposal
   } | null
 }
 
@@ -1254,7 +1256,7 @@ function App() {
       try {
         const payload = await getJson<{ suggestions: WizardSuggestions | null }>(`/api/projects/${project.projectId}/suggestions`)
         const suggestions = payload.suggestions
-        if (suggestions && (suggestions.repositories.some((r) => !r.registered) || suggestions.workAreas.length > 0)) {
+        if (suggestions && (suggestions.repositories.some((r) => !r.registered) || suggestions.workAreas.length > 0 || suggestions.newRepository)) {
           await new Promise<void>((resolve) => setOnboardingReview({ projectId: project.projectId, suggestions, adding: [], resolve }))
           setOnboardingReview(null)
         }
@@ -1892,7 +1894,7 @@ function App() {
             </div>
           </div>
           <ol className="welcome-steps">
-            <li><strong>Describe</strong><span>Name the project and its first feature. Repositories are optional; the plan names them from your GitHub catalog.</span></li>
+            <li><strong>Describe</strong><span>Name the project and its first feature. Repositories are optional; the plan names them from your GitHub catalog, and if nothing matches, discovery proposes a new one to create.</span></li>
             <li><strong>Onboard</strong><span>Repos are cloned and learned, memory and the governing workspace are built, dev environments set up.</span></li>
             <li><strong>Run</strong><span>Specify → plan → tasks → implement → review → deliver, with approval gates you control.</span></li>
           </ol>
@@ -2213,6 +2215,14 @@ function App() {
                     <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
                   </div>
                   <h3>Repositories</h3>
+                  {projectDetail?.suggestionsJson?.newRepository && !projectDetail.repos.some((r) => r.kind === 'github' && r.githubRepo?.split('/')[1]?.toLowerCase() === projectDetail.suggestionsJson!.newRepository!.name.toLowerCase()) && (
+                    <NewRepoCard
+                      projectId={projectDetail.projectId}
+                      proposal={projectDetail.suggestionsJson.newRepository}
+                      onCreated={async (fullName) => { setStatusMessage(`Created ${fullName} on GitHub — cloning in the background.`); await refreshProjectRepos() }}
+                      onAttachExisting={(fullName) => setRepoForm((c) => ({ ...c, open: true, kind: 'github', githubRepo: fullName, label: fullName.split('/').pop() ?? fullName }))}
+                    />
+                  )}
                   {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
                     <div className="repo-row" style={{ borderColor: 'rgba(94, 106, 210, 0.45)' }}>
                       <div className="repo-row-main">
@@ -3171,7 +3181,7 @@ function App() {
                 <h2>New project</h2>
                 <p className="panel-subtitle">
                   {wizard.step === 1 && 'Name your project and describe what it does.'}
-                  {wizard.step === 2 && 'Repositories are optional. Specs and memory live in a governing workspace; the plan names the code repositories from your GitHub catalog and they are cloned on demand.'}
+                  {wizard.step === 2 && 'Repositories are optional. Specs and memory live in a governing workspace; the plan names the code repositories from your GitHub catalog and they are cloned on demand. If nothing matches, discovery proposes a new repository to create.'}
                   {wizard.step === 3 && 'Optionally connect external systems now. You can add more later.'}
                   {wizard.step === 4 && 'Review, then optionally kick off the first AIDLC run.'}
                 </p>
@@ -3387,6 +3397,14 @@ function App() {
                     <p className="panel-subtitle" style={{ margin: '4px 0 8px' }}>
                       Based on {onboardingReview.suggestions.basis === 'plan' ? 'the plan' : 'your description and GitHub catalog'}. Add the repositories the work needs now, or continue and let the plan add them later.
                     </p>
+                    {onboardingReview.suggestions.newRepository && (
+                      <NewRepoCard
+                        compact
+                        projectId={onboardingReview.projectId}
+                        proposal={onboardingReview.suggestions.newRepository}
+                        onCreated={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Created during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
+                      />
+                    )}
                     {onboardingReview.suggestions.repositories.length > 0 && (
                       <div className="repo-list">
                         {onboardingReview.suggestions.repositories.map((r) => (

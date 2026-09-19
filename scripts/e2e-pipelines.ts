@@ -32,8 +32,18 @@ const MODEL = (() => { const m = process.env.E2E_MODEL ?? 'anthropic/claude-haik
 const KEEP = process.env.E2E_KEEP === '1'
 /** Session cookie for instances with sign-in enabled, e.g. "spaces_session=…". */
 const COOKIE = process.env.E2E_COOKIE
-/** "local" (default): a throwaway fixture repo on this machine; "none": governance workspace only (remote servers). */
+/**
+ * "local" (default): a throwaway fixture repo on this machine; "none": governance
+ * workspace only (remote servers); "github:owner/name": a real GitHub repository
+ * (GitHub must be connected; branches and pull requests are created for real).
+ */
 const REPO_MODE = process.env.E2E_REPO ?? 'local'
+const GITHUB_REPO = REPO_MODE.startsWith('github:') ? REPO_MODE.slice('github:'.length) : undefined
+/** Override the feature and the run inputs (defaults describe the fixture greeting service). */
+const FEATURE_OVERRIDE = process.env.E2E_FEATURE?.trim()
+const CONSTITUTION = process.env.E2E_CONSTITUTION?.trim() || 'Keep the service tiny, typed and tested. Prefer clarity over cleverness.'
+const PLAN_CONTEXT = process.env.E2E_PLAN_CONTEXT?.trim() || 'Single TypeScript module with bun tests; no external services.'
+const PROJECT_NAME = process.env.E2E_PROJECT_NAME?.trim()
 const ROOT = path.join(homedir(), '.aidlc', 'e2e')
 const REPORT = process.env.E2E_REPORT ?? path.join(process.cwd(), 'e2e-report.md')
 
@@ -135,17 +145,20 @@ async function deleteProject(projectId: string): Promise<void> {
   await api('DELETE', `/api/projects/${projectId}`, { confirm: `delete ${(detail.code ?? detail.slug).toLowerCase()}` })
 }
 
-const FEATURE = 'Add a farewell(name) function next to greet() that returns "Goodbye, <name>!" and rejects empty names, with unit tests and a README example.'
+const FEATURE = FEATURE_OVERRIDE || 'Add a farewell(name) function next to greet() that returns "Goodbye, <name>!" and rejects empty names, with unit tests and a README example.'
 
 async function runTemplate(template: string): Promise<Result> {
   const started = Date.now()
   const result: Result = { template, status: 'setup-failed', stages: [], stageRecords: [], artifacts: [], answers: 0, durationMs: 0 }
   try {
-    const repoPath = REPO_MODE === 'none' ? undefined : await makeFixtureRepo(template)
+    const repoPath = REPO_MODE === 'none' || GITHUB_REPO ? undefined : await makeFixtureRepo(template)
+    const repos = GITHUB_REPO
+      ? [{ label: GITHUB_REPO.split('/')[1]!, kind: 'github', githubRepo: GITHUB_REPO, isPrimary: true }]
+      : repoPath ? [{ label: 'app', kind: 'local', localPath: repoPath, isPrimary: false }] : []
     const project = await api<{ projectId: string; slug: string; name: string }>('POST', '/api/projects', {
-      name: `E2E ${template}`,
-      description: `End-to-end test project for the ${template} pipeline. Small TypeScript greeting service with bun tests.`,
-      repos: repoPath ? [{ label: 'app', kind: 'local', localPath: repoPath, isPrimary: false }] : [],
+      name: PROJECT_NAME ?? `E2E ${template}`,
+      description: GITHUB_REPO ? `End-to-end run of the ${template} pipeline against github.com/${GITHUB_REPO}.` : `End-to-end test project for the ${template} pipeline. Small TypeScript greeting service with bun tests.`,
+      repos,
       model: MODEL,
       feature: FEATURE,
     })
@@ -153,7 +166,7 @@ async function runTemplate(template: string): Promise<Result> {
     result.slug = project.slug
 
     // Onboarding (clone/init/sync/learn/memory/suggest/setup) — wait, cap 12 min.
-    const onboardingDeadline = Date.now() + 12 * 60_000
+    const onboardingDeadline = Date.now() + Math.max(1, Number(process.env.E2E_ONBOARDING_MIN ?? '12') || 12) * 60_000
     let onboarding = await api<{ status: string; steps: Array<{ id: string; status: string; detail?: string }>; error?: string }>('GET', `/api/projects/${project.projectId}/onboarding`)
     while ((onboarding.status === 'running' || onboarding.status === 'idle') && Date.now() < onboardingDeadline) {
       await sleep(5_000)
@@ -167,8 +180,8 @@ async function runTemplate(template: string): Promise<Result> {
       projectId: project.projectId,
       pipeline: template,
       feature: FEATURE,
-      constitution: 'Keep the service tiny, typed and tested. Prefer clarity over cleverness.',
-      planContext: 'Single TypeScript module with bun tests; no external services.',
+      constitution: CONSTITUTION,
+      planContext: PLAN_CONTEXT,
       checklistDomain: 'api',
       model: MODEL,
       thinking: 'low',

@@ -47,7 +47,12 @@ Nothing has to be selected up front:
   refreshed on connect and every six hours.
 - **Onboarding suggests** repositories and *work areas* from the description,
   the first feature and the catalog; the wizard lets you add them before the
-  first run.
+  first run. If nothing matches, it **proposes a new repository** (name,
+  description, visibility) that can be created through the connected GitHub
+  account and attached in one step, or created by hand from a prefilled GitHub
+  link. Creating repositories needs the GitHub App's *Administration* permission
+  or a classic OAuth app with the `repo` scope; without it the manual path is
+  offered.
 - The **plan stage names** the repositories a feature touches in a
   `## Repositories` section; unregistered ones are added, cloned, learned and
   set up automatically after the plan completes.

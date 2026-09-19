@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import type { NewRepositoryProposal } from './repo-proposal'
 import { getDb } from './db'
 
 export type IntegrationKind = 'github' | 'jira' | 'confluence'
@@ -26,6 +27,8 @@ export interface ProjectSuggestions {
   repositories: Array<{ fullName: string; reason: string; confidence: 'high' | 'medium' | 'low' | string; role: string; registered: boolean }>
   workAreas: Array<{ name: string; description: string; repositories: string[]; paths: string[]; risks?: string }>
   notes?: string
+  /** Proposed when nothing registered or in the catalog fits: create this repository during discovery. */
+  newRepository?: NewRepositoryProposal
 }
 
 export interface ProjectRow {
