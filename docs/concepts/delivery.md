@@ -26,6 +26,15 @@ person who connected GitHub. Agent shells receive the same identity through
 `GH_TOKEN` and git's `http.extraheader`, so `gh` and `git push` inside a run
 behave the same way. Reads (repository catalog, cloning) still use the user.
 
+The app asks for repository contents, pull requests, issues and **workflows**
+(read and write), plus metadata, checks and actions (read). Workflows matters:
+GitHub refuses any push that touches `.github/workflows` from an app without
+it, so a run asked to wire its tests into CI cannot deliver the change at all.
+An app created before that permission was requested keeps working for
+everything else; Organization → Integrations says which permissions are
+missing and links to the app's page on GitHub, where adding them raises a
+request to accept on the installation.
+
 Because the bot is a separate identity, a maintainer can approve the agent's
 pull requests, and branch protection on `main` (a pull request with one
 approval and green checks, stale reviews dismissed, no force pushes,

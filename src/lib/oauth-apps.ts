@@ -67,6 +67,10 @@ export interface OAuthAppSummary {
   setup: OAuthAppSetup
   /** False when the provider no longer knows this app (deleted on their side); undefined when it cannot be checked. */
   availableAtProvider?: boolean
+  /** Permissions the app is missing that agents need (GitHub only). */
+  missingPermissions?: string[]
+  /** Where to grant them. */
+  permissionsUrl?: string
 }
 
 export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear']
@@ -149,6 +153,12 @@ export async function listOAuthApps(orgId: string, origin: string): Promise<OAut
       setup: describeSetup(provider, origin, { ...(stored?.config ?? {}), source: stored?.config?.source ?? (stored ? 'manual' : undefined) }),
       availableAtProvider: provider === 'github' && creds
         ? await import('./github-app-auth').then((m) => m.githubAppAlive(orgId)).catch(() => undefined)
+        : undefined,
+      missingPermissions: provider === 'github' && creds
+        ? await import('./github-app-auth').then((m) => m.missingAppPermissions(orgId)).catch(() => [])
+        : undefined,
+      permissionsUrl: provider === 'github' && stored?.config?.appSlug
+        ? `https://github.com/settings/apps/${stored.config.appSlug}/permissions`
         : undefined,
     })
   }

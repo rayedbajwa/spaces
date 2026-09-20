@@ -211,9 +211,23 @@ export async function commitAll(cwd: string, message: string): Promise<boolean> 
   return true
 }
 
+/** GitHub refuses a push touching .github/workflows unless the app has the Workflows permission. */
+export function explainPushFailure(message: string): string {
+  if (/refusing to allow (a|an) (GitHub App|OAuth App|integration) to (create or update|update) workflow/i.test(message)) {
+    return 'GitHub refused the push because it changes files under .github/workflows and the GitHub App does not have the Workflows permission. Add it to the app on GitHub (Settings → Developer settings → GitHub Apps → Permissions → Workflows: Read and write), then accept the permission request on the installation. Until then, keep workflow changes out of the branch.'
+  }
+  return message
+}
+
 export async function pushBranch(orgId: string, cwd: string, branch: string): Promise<void> {
   const header = await authHeader(orgId)
-  await git(cwd, ['-c', `http.extraheader=${header}`, 'push', '-u', 'origin', `${branch}:${branch}`], { timeoutMs: 10 * 60_000 })
+  try {
+    await git(cwd, ['-c', `http.extraheader=${header}`, 'push', '-u', 'origin', `${branch}:${branch}`], { timeoutMs: 10 * 60_000 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const explained = explainPushFailure(message)
+    throw explained === message ? error : new Error(explained)
+  }
 }
 
 export async function hasCommitsAhead(cwd: string, base: string, head: string): Promise<boolean> {
