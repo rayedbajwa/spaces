@@ -239,6 +239,12 @@ async function route(req: Request): Promise<Response> {
   const isApi = url.pathname.startsWith('/api/')
   let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
 
+  // An account that belongs to no team has no tenant: nothing beyond its own
+  // session, team creation and invites is visible until it joins or creates one.
+  if (auth && auth.teams.length === 0 && isApi && !/^\/api\/(auth|me|teams|invites)(\/|$)/.test(url.pathname)) {
+    return sendJson(403, { error: 'You are not in a team yet. Create one or accept an invite first.', code: 'no_team' })
+  }
+
   if (method === 'GET' && url.pathname === '/api/auth/status') {
     return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: await defaultModel(), modelsReady: configuredProviders().length > 0 })
   }
@@ -330,7 +336,17 @@ async function route(req: Request): Promise<Response> {
   }
   const requireProjectRole = (project: { teamId?: string | null } | undefined, needed: TeamRole, message: string) => {
     if (!auth || !project?.teamId) return null
-    return roleAtLeast(teamRole(project.teamId) ?? 'viewer', needed) ? null : sendJson(403, { error: message })
+    const role = teamRole(project.teamId)
+    // Not a member of the owning team at all: nothing about the project is visible.
+    if (!role) return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
+    return roleAtLeast(role, needed) ? null : sendJson(403, { error: message })
+  }
+  /** Runs are reachable only through their project's team. */
+  const requireRunAccess = async (row: RunRow, needed: TeamRole, message: string) => {
+    if (!auth) return null
+    const project = row.projectId ? await projGet(row.projectId) : await import('./lib/project-registry').then((m) => m.getProjectBySlug(row.projectNamespace))
+    if (!project) return sendJson(403, { error: 'This run belongs to a project you cannot access.' })
+    return requireProjectRole(project, needed, message)
   }
 
   if (method === 'GET' && url.pathname === '/api/teams' && auth) {
@@ -617,7 +633,8 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/history') {
     const history = await listHistory()
-    if (!auth?.activeTeam) return sendJson(200, history)
+    if (!auth) return sendJson(200, history)
+    if (!auth.activeTeam) return sendJson(200, { ...history, projects: [], runs: [] })
     // Team scope: only this team's projects and their runs.
     const slugs = new Set((await projList(auth.activeTeam.teamId)).map((p) => p.slug))
     return sendJson(200, {
@@ -631,6 +648,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/projects') {
     // Scoped to the active team ("space"); unscoped only when auth is disabled.
+    if (auth && !auth.activeTeam) return sendJson(200, [])
     return sendJson(200, await projList(auth?.activeTeam?.teamId))
   }
 
@@ -1169,12 +1187,12 @@ async function route(req: Request): Promise<Response> {
   if (method === 'GET' && url.pathname === '/api/board') {
     const board = await buildBoard()
     // Archived projects leave the board unless ?archived=1 asks for them (marked as such).
-    const projects = await projList(auth?.activeTeam?.teamId)
+    const projects = auth && !auth.activeTeam ? [] : await projList(auth?.activeTeam?.teamId)
     const archivedBySlug = new Map(projects.filter((p) => p.archivedAt).map((p) => [p.slug, p.archivedAt!]))
     const pausedBySlug = new Map(projects.filter((p) => p.pausedAt).map((p) => [p.slug, p.pausedAt!]))
     const codeBySlug = new Map(projects.filter((p) => p.code).map((p) => [p.slug, p.code!]))
     const showArchived = url.searchParams.get('archived') === '1'
-    const slugs = auth?.activeTeam ? new Set(projects.map((p) => p.slug)) : undefined
+    const slugs = auth ? new Set(projects.map((p) => p.slug)) : undefined
     const columns = board.columns.map((c) => ({
       ...c,
       cards: c.cards
@@ -1868,6 +1886,7 @@ async function route(req: Request): Promise<Response> {
     if (!row) {
       return sendJson(404, { error: 'Run not found.' })
     }
+    const denied = await requireRunAccess(row, 'viewer', 'You cannot view this run.'); if (denied) return denied
 
     if (action === 'events') {
       return attachDbEventStream(req, runId)
@@ -1962,6 +1981,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(404, { error: 'Run not found.' })
     }
 
+    const deniedAnswer = await requireRunAccess(row, 'member', 'Only team members can answer or approve runs.'); if (deniedAnswer) return deniedAnswer
     if (row.status !== 'paused') {
       return sendJson(409, { error: 'Run is not waiting for input.' })
     }
@@ -2008,6 +2028,7 @@ async function route(req: Request): Promise<Response> {
     const action = parts[4] as 'pause' | 'resume' | 'cancel'
     const row = await dbGetRun(runId)
     if (!row) return sendJson(404, { error: 'Run not found.' })
+    const deniedControl = await requireRunAccess(row, 'member', 'Only team members can control runs.'); if (deniedControl) return deniedControl
     const { getDb } = await import('./lib/db')
     const sql = getDb()
     const by = auth?.user.email ?? 'local'
@@ -2051,6 +2072,7 @@ async function route(req: Request): Promise<Response> {
     const runId = url.pathname.split('/')[3]!
     const row = await dbGetRun(runId)
     if (!row) return sendJson(404, { error: 'Run not found.' })
+    const deniedRerun = await requireRunAccess(row, 'member', 'Only team members can rerun runs.'); if (deniedRerun) return deniedRerun
     if (row.status === 'running' || row.status === 'queued') {
       return sendJson(409, { error: 'Run is already in progress.' })
     }
