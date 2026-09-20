@@ -8,7 +8,7 @@ async function fileExists(file: string): Promise<boolean> {
   try { await access(file); return true } catch { return false }
 }
 import { assertEnvOrExit } from './lib/env'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 
 assertEnvOrExit('worker')
 import { acquireWarmSession, reapIdleAgents } from './lib/agent-pool'
@@ -804,6 +804,8 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0)
 }
 
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => workerLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 

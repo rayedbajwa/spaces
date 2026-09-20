@@ -835,7 +835,7 @@ export class AIDLCFlow {
     })
 
     try {
-      await this.session!.prompt(prompt, { expandPromptTemplates: false })
+      await this.session!.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
     } finally {
       unsubscribe()
     }
@@ -1307,7 +1307,7 @@ ${options.operationsContext ? `## Live operations snapshot\n${options.operations
   )
 
   try {
-    await session.prompt(prompt, { expandPromptTemplates: false })
+    await session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
     if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
     return output.trim()
   } finally {
@@ -1383,7 +1383,7 @@ Write the brief with exactly these sections:
 ## Risks, gaps & open questions
 
 Rules: be concrete (name real files, commands, and modules), keep it under 600 words, no preamble, output only the Markdown brief.`,
-      { expandPromptTemplates: false },
+      { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
   } finally {
     unsubscribe()
@@ -1452,7 +1452,7 @@ export async function runAIDLCMergeOrchestrator(options: {
         `You are the merge and verification orchestrator for the active feature.\n\nYour job:\n1. Read parallel-workstreams.md, test-plan.md, and all sub-agent reports.\n2. Reconcile integration issues across completed workstreams.\n3. Make any safe edits needed to align code/tests across workstreams.\n4. Write ${outputFile} with merge status, reconciliations, conflicts, and verification readiness.\n5. If project checks can be run safely, run them and record the results in the report.`,
         { sharedContextPrompt: options.sharedContextPrompt },
       ),
-      { expandPromptTemplates: false },
+      { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
     if (providerError) throw new Error(`LLM provider error: ${providerError}`)
 
@@ -1531,7 +1531,7 @@ export async function runAIDLCSpecificTask(options: {
         `You are executing one task only.\n\nTask ID: ${options.taskId}\nTask line: ${taskLine}\n\nYour job:\n1. Implement this task in the repository.\n2. Update or add tests where appropriate.\n3. Write a task execution report to ${outputFile} summarizing files changed, tests, risks, and follow-ups.\n4. Do not drift into unrelated tasks.`,
         { sharedContextPrompt: options.sharedContextPrompt },
       ),
-      { expandPromptTemplates: false },
+      { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
     if (providerError) throw new Error(`LLM provider error: ${providerError}`)
 
@@ -1604,7 +1604,7 @@ export async function runAIDLCSpecificWorkstream(options: {
         `You are executing one approved implementation workstream only.\n\nWorkstream: ${workstream.title}\n\nTasks:\n${workstream.tasks}\n\nScoped Files:\n${workstream.scopedFiles}\n\nQA Focus:\n${workstream.qaFocus}\n\nYour job:\n1. Implement only this workstream.\n2. Add/update tests needed for this workstream.\n3. Write a workstream report to ${outputFile}.\n4. Do not modify unrelated workstreams.`,
         { sharedContextPrompt: options.sharedContextPrompt },
       ),
-      { expandPromptTemplates: false },
+      { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
 
     return {
@@ -1845,7 +1845,7 @@ export async function runAIDLCParallelSubAgents(options: {
         try {
           let thrown: string | undefined
           try {
-            await session.prompt(prompt, { expandPromptTemplates: false })
+            await session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
           } catch (err) {
             thrown = err instanceof Error ? err.message : String(err)
           }
@@ -2205,7 +2205,7 @@ export async function runDevSetup(options: {
     }
   })
   try {
-    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false })
+    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
   } finally {
     unsubscribe()
     session.dispose()
