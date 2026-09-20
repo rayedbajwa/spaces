@@ -323,8 +323,7 @@ async function route(req: Request): Promise<Response> {
   // ---- Teams ("spaces"): each owns projects, memory and knowledge defaults ----
 
   const teamRole = (teamId: string): TeamRole | undefined => auth?.teams.find((t) => t.teamId === teamId)?.role
-  const isOrgAdmin = () => !auth || auth.teams.some((t) => roleAtLeast(t.role, 'admin'))
-  const requireOrgAdmin = (message: string) => (isOrgAdmin() ? null : sendJson(403, { error: message }))
+  const requireOrgAdmin = (message: string) => (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin')) ? sendJson(403, { error: message }) : null)
 
   if (method === 'GET' && url.pathname === '/api/teams' && auth) {
     return sendJson(200, { teams: auth.teams, activeTeam: auth.activeTeam ?? null })
