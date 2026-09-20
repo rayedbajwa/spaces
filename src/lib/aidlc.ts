@@ -62,6 +62,9 @@ export const STAGE_DEFINITIONS = {
 
 export const DEFAULT_STAGES: StageName[] = ['init', 'research', 'specify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze']
 export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan', 'implement', 'orchestrate', 'review', 'verify', 'deliver']
+/** Stages that write code into the implementation checkouts. */
+const CODE_STAGES: StageName[] = ['implement', 'orchestrate', 'review', 'verify']
+
 export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'review', 'verify', 'checklist', 'taskstoissues', 'deliver']
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -107,6 +110,11 @@ export interface FlowOptions {
   cwd: string
   /** Organization whose provider keys, integrations and GitHub identity the run uses. Derived from projectId when omitted. */
   orgId?: string
+  /**
+   * Allow the specify stage to open a new feature even though the last one is
+   * unfinished. Off by default: a half-built feature is continued instead.
+   */
+  allowNewFeature?: boolean
   feature?: string
   constitution?: string
   planContext?: string
@@ -404,6 +412,21 @@ export class AIDLCFlow {
         this.print(`\n[paused] Project paused by a user before stage ${stage}. Resume the project to continue from here.\n`)
         return this.pause('user', stage)
       }
+      // Never open a second feature while the last one is unfinished: the new
+      // spec would sit in a fresh directory with no plan or tasks, the code
+      // written for the old feature would be orphaned, and implement would
+      // block on artifacts that belong to work nobody finished.
+      if (stage === 'specify' && !this.options.allowNewFeature) {
+        const { findUnfinishedFeature } = await import('./run-resume')
+        const unfinished = await findUnfinishedFeature(this.options.cwd).catch(() => undefined)
+        if (unfinished) {
+          const progress = unfinished.tasks ? `, ${unfinished.tasks.done} of ${unfinished.tasks.total} tasks done` : ''
+          this.print(`\n[guard] Skipping specify: feature ${unfinished.name} is unfinished (${unfinished.artifacts.join(', ')}${progress}). The run continues that feature instead of starting another one.\n`)
+          this.stageIndex += 1
+          continue
+        }
+      }
+
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
       this.sinks.onStageStart?.({ stage, index: this.stageIndex, total: this.stages.length })
 
@@ -599,6 +622,9 @@ export class AIDLCFlow {
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
+    // Whatever the stage wrote into the implementation checkouts is committed on
+    // the feature branch, so it is attributable and survives an interruption.
+    this.commitStageWork(stage)
 
     // Notify PipelineEngine so it can capture handoff for downstream stages.
     if (this.options.afterStageComplete) {
@@ -753,6 +779,7 @@ export class AIDLCFlow {
     const currentBranch = getCurrentGitBranch(this.options.cwd)
     if (currentBranch && isFeatureBranchName(currentBranch)) {
       this.activeFeatureBranch = currentBranch
+      this.alignRepoTargetsToFeatureBranch(currentBranch, stage)
       return
     }
 
@@ -767,6 +794,60 @@ export class AIDLCFlow {
     checkoutBranch(this.options.cwd, candidateBranch)
     this.activeFeatureBranch = candidateBranch
     this.print(`Auto-checked out feature branch ${candidateBranch} for ${stage}.\n`)
+    this.alignRepoTargetsToFeatureBranch(candidateBranch, stage)
+  }
+
+  /**
+   * Put every implementation checkout on the feature's branch.
+   *
+   * Only the governing workspace used to be branched, so code written by the
+   * implement stage landed on the default branch of the repository it edited:
+   * unattributable, impossible to open a pull request from, and easy to lose
+   * when a later run starts a different feature. Uncommitted work travels with
+   * the checkout, so switching is safe; a switch that git refuses is reported
+   * and the checkout is left exactly as it was.
+   */
+  private alignRepoTargetsToFeatureBranch(branch: string, stage: StageName): void {
+    for (const target of this.options.repoTargets ?? []) {
+      if (!target.localPath) continue
+      const current = getCurrentGitBranch(target.localPath)
+      if (current === branch) continue
+      try {
+        if (branchExists(target.localPath, branch)) checkoutBranch(target.localPath, branch)
+        else createBranch(target.localPath, branch)
+        const moved = hasUncommittedChanges(target.localPath) ? ' (carrying its uncommitted changes)' : ''
+        this.print(`[branch] ${target.label}: now on ${branch} for ${stage}${moved}.\n`)
+      } catch (error) {
+        this.print(`[branch] ${target.label}: could not switch to ${branch} (${error instanceof Error ? error.message.split('\n')[0] : String(error)}); left on ${current ?? 'its current branch'}.\n`)
+      }
+    }
+  }
+
+  /**
+   * Commit whatever a code stage produced in the implementation checkouts.
+   *
+   * Work left uncommitted belongs to no branch and no task: the orchestrate
+   * stage cannot reconcile it, delivery cannot open a pull request for it, and
+   * an interrupted run leaves it loose in the checkout where the next run may
+   * write over it. One commit per stage keeps it attributable and recoverable.
+   * Nothing is pushed here — publishing stays with the delivery stage.
+   */
+  private commitStageWork(stage: StageName): void {
+    if (!CODE_STAGES.includes(stage)) return
+    for (const target of this.options.repoTargets ?? []) {
+      if (!target.localPath || !hasUncommittedChanges(target.localPath)) continue
+      const branch = getCurrentGitBranch(target.localPath)
+      if (!branch || !isFeatureBranchName(branch)) {
+        this.print(`[commit] ${target.label}: changes left uncommitted — the checkout is on ${branch ?? 'no branch'}, not a feature branch.\n`)
+        continue
+      }
+      try {
+        commitAllChanges(target.localPath, `chore(${branch}): ${stage} work in progress`)
+        this.print(`[commit] ${target.label}: committed the ${stage} changes on ${branch}.\n`)
+      } catch (error) {
+        this.print(`[commit] ${target.label}: could not commit the ${stage} changes (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
+      }
+    }
   }
 
   private captureActiveFeatureBranch(): void {
@@ -997,8 +1078,33 @@ function branchExists(cwd: string, branch: string): boolean {
 
 function checkoutBranch(cwd: string, branch: string): void {
   execFileSync('git', ['-C', cwd, 'checkout', branch], {
-    stdio: ['ignore', 'ignore', 'ignore'],
+    stdio: ['ignore', 'ignore', 'pipe'],
   })
+}
+
+/** Create the branch at the current HEAD and switch to it, keeping uncommitted work. */
+function createBranch(cwd: string, branch: string): void {
+  execFileSync('git', ['-C', cwd, 'checkout', '-b', branch], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  })
+}
+
+function hasUncommittedChanges(cwd: string): boolean {
+  try {
+    const status = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return status.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Stage and commit everything in the checkout (no push). */
+function commitAllChanges(cwd: string, message: string): void {
+  execFileSync('git', ['-C', cwd, 'add', '-A'], { stdio: ['ignore', 'ignore', 'pipe'] })
+  execFileSync('git', ['-C', cwd, 'commit', '-m', message], { stdio: ['ignore', 'ignore', 'pipe'] })
 }
 
 function inferLatestFeatureBranch(cwd: string): string | null {

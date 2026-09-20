@@ -1879,6 +1879,9 @@ async function route(req: Request): Promise<Response> {
         persistSession: true,
         nonInteractive: false,
         verbose: false,
+        // "force" is how the caller says they meant it: it is also what allows
+        // specify to open a new feature while the last one is unfinished.
+        ...(body.force ? { allowNewFeature: true } : {}),
         // Stage-specific inputs required by validateStageInputs. The endpoint
         // above rejects requests missing these when the step needs them.
         ...(body.feature ? { feature: body.feature } : {}),
@@ -3503,6 +3506,7 @@ function toFlowOptions(body: CreateRunRequest): FlowOptions {
     persistSession: body.persistSession === true,
     nonInteractive: false,
     verbose: body.verbose === true,
+    allowNewFeature: body.allowNewFeature === true,
   }
 }
 
@@ -4049,6 +4053,8 @@ interface CreateRunRequest {
   persistSession?: boolean
   dryRun?: boolean
   verbose?: boolean
+  /** Start a new feature even though the last one is unfinished (otherwise that one is continued). */
+  allowNewFeature?: boolean
 }
 
 interface AnswerRunRequest {

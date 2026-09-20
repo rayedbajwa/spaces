@@ -166,30 +166,61 @@ export function buildResumeNote(point: ResumePoint): string {
  * instruction to read it first. When the latest feature has passed
  * verification, starting the next one is legitimate and nothing is added.
  */
+export interface UnfinishedFeature {
+  /** Directory name, e.g. "003-project-responsibilities". */
+  name: string
+  /** Absolute path of the feature directory. */
+  dir: string
+  /** Documents it already has. */
+  artifacts: string[]
+  tasks?: TaskProgress
+  /** True when a verification report exists but did not pass. */
+  verificationFailed: boolean
+}
+
+/**
+ * The project's latest feature when it is still unfinished, i.e. it has
+ * documents but has not passed verification. A feature that verified
+ * successfully is finished work and the next one may start.
+ */
+export async function findUnfinishedFeature(projectPath: string): Promise<UnfinishedFeature | undefined> {
+  const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)
+  if (!featureDir) return undefined
+
+  const artifacts: string[] = []
+  for (const file of ['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'code-review.md', 'verification-report.md']) {
+    if (await nonEmpty(path.join(featureDir, file))) artifacts.push(file)
+  }
+  if (artifacts.length === 0) return undefined
+
+  const verification = await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '')
+  const verified = /(^|\n)#{0,3}\s*(overall\s+)?(status|result)\s*[:|-]?\s*\**\s*pass/i.test(verification)
+  if (verified) return undefined
+
+  const tasks = await readFile(path.join(featureDir, 'tasks.md'), 'utf8')
+    .then((t) => parseTaskProgress(t))
+    .catch(() => undefined)
+
+  return {
+    name: path.basename(featureDir),
+    dir: featureDir,
+    artifacts,
+    tasks: tasks?.total ? tasks : undefined,
+    verificationFailed: verification.trim().length > 0,
+  }
+}
+
 export async function describeWorkInProgress(projectPath: string, stage: StageName): Promise<string> {
   if (stage !== 'init' && stage !== 'specify') return ''
 
   const initialized = await exists(path.join(projectPath, '.specify'))
-  const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)
-  const featureName = featureDir ? path.basename(featureDir) : undefined
+  const unfinished = await findUnfinishedFeature(projectPath)
+  const featureName = unfinished?.name
+  const present = unfinished?.artifacts ?? []
+  const tasks = unfinished?.tasks
+  const verification = unfinished?.verificationFailed ? 'present' : ''
 
-  const present: string[] = []
-  if (featureDir) {
-    for (const file of ['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'code-review.md', 'verification-report.md']) {
-      if (await nonEmpty(path.join(featureDir, file))) present.push(file)
-    }
-  }
-
-  const verification = featureDir
-    ? await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '')
-    : ''
-  // A feature that verified successfully is finished work; the next one may start.
-  const verified = /(^|\n)#{0,3}\s*(overall\s+)?(status|result)\s*[:|-]?\s*\**\s*pass/i.test(verification)
-  const tasks = featureDir
-    ? await readFile(path.join(featureDir, 'tasks.md'), 'utf8').then((t) => parseTaskProgress(t)).catch(() => undefined)
-    : undefined
-
-  const featureUnfinished = Boolean(featureDir && present.length > 0 && !verified)
+  const featureUnfinished = Boolean(unfinished)
   if (!initialized && !featureUnfinished) return ''
 
   const lines: string[] = ['## Work already in progress — continue it, do not start over', '']
