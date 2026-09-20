@@ -100,7 +100,7 @@ describe('crypto-vault: getKey guards on ENCRYPTION_KEY', () => {
     delete process.env.ENCRYPTION_KEY
     try {
       const { encryptSecret } = await freshModule()
-      expect(() => encryptSecret('hi')).toThrow(/ENCRYPTION_KEY/)
+      expect(() => encryptSecret('hi')).toThrow(/Secret storage is not configured/)
     } finally {
       // Restore so other tests still work.
       if (originalKey !== undefined) process.env.ENCRYPTION_KEY = originalKey
@@ -113,7 +113,7 @@ describe('crypto-vault: getKey guards on ENCRYPTION_KEY', () => {
     process.env.ENCRYPTION_KEY = 'short'
     try {
       const { encryptSecret } = await freshModule()
-      expect(() => encryptSecret('hi')).toThrow(/ENCRYPTION_KEY/)
+      expect(() => encryptSecret('hi')).toThrow(/Secret storage is not configured/)
     } finally {
       if (saved !== undefined) process.env.ENCRYPTION_KEY = saved
       else process.env.ENCRYPTION_KEY = TEST_KEY

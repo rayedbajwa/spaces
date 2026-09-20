@@ -16,7 +16,7 @@ import type { PipelineTemplate } from './lib/pipeline-template'
 import { closeDb, getDb } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
-import { beginAuthorization, consumeState, exchangeCode, resolveProvider } from './lib/oauth'
+import { beginAuthorization, consumeState, exchangeCode, resolveGitHubLoginProvider, resolveProvider } from './lib/oauth'
 import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, recordGitHubInstallation, saveGitHubAppFromManifest, saveOAuthApp } from './lib/oauth-apps'
 import { consumeManifestState, convertGitHubAppManifest, githubAppManifestPage } from './lib/github-app'
 import { withExpiry } from './lib/integration-token'
@@ -120,7 +120,7 @@ import {
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
-import { describeGitHubActor } from './lib/github-app-auth'
+import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
 
@@ -283,7 +283,10 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
     const statusOrg = await getDefaultOrgId()
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider(statusOrg, 'github')), defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
+    // Sign-in belongs to the deployment, not to a tenant: any organization with a
+    // working GitHub App can provide it, and a deleted app offers none.
+    const githubLogin = Boolean(await resolveGitHubLoginProvider().catch(() => undefined))
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin, defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
@@ -1593,6 +1596,7 @@ async function route(req: Request): Promise<Response> {
     try {
       const app = await convertGitHubAppManifest(code)
       await saveGitHubAppFromManifest(manifestState.orgId, app, auth?.user.userId ?? null)
+      forgetGitHubAppState(manifestState.orgId)
       serverLog.info('github app created from manifest', { slug: app.slug, owner: app.owner?.login, by: auth?.user.email ?? 'local' })
       return back('setup=github')
     } catch (error) {
@@ -1613,12 +1617,14 @@ async function route(req: Request): Promise<Response> {
     const denied = requireOrgAdmin('Only team owners or admins can manage app credentials.'); if (denied) return denied
     if (method === 'DELETE') {
       await deleteOAuthApp(await orgIdOf(), provider)
+      if (provider === 'github') forgetGitHubAppState(await orgIdOf())
       serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
       return sendJson(200, { ok: true, apps: await listOAuthApps(await orgIdOf(), origin) })
     }
     const body = await readJson<{ clientId?: string; clientSecret?: string }>(req)
     try {
       await saveOAuthApp(await orgIdOf(), provider, { clientId: body.clientId ?? '', clientSecret: body.clientSecret, updatedBy: auth?.user.userId ?? null })
+      if (provider === 'github') forgetGitHubAppState(await orgIdOf())
     } catch (error) {
       return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
     }
@@ -1644,14 +1650,28 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
-    // Sign-in with GitHub uses the default organization's app (there is no caller yet); everything else the caller's.
-    const authorizeOrg = provider === 'github' && url.searchParams.get('mode') === 'login' ? await getDefaultOrgId() : await orgIdOf()
-    const cfg = await resolveProvider(authorizeOrg, provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.` })
-    const callbackUrl = `${origin}/api/oauth/${provider}/callback`
-    // projectId is legacy: keep it optional in state so old links don't 500.
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
     const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
+    // Signing in identifies a person to the whole deployment, so it uses any
+    // working GitHub App rather than the caller's organization (there is no
+    // caller yet). Connecting an integration always uses the caller's own app.
+    const login = loginMode ? await resolveGitHubLoginProvider().catch(() => undefined) : undefined
+    const authorizeOrg = login?.orgId ?? (await orgIdOf())
+    const cfg = login?.cfg ?? await resolveProvider(authorizeOrg, provider)
+    if (!cfg) {
+      const message = loginMode
+        ? 'Signing in with GitHub is not available: this deployment has no working GitHub App. Sign in with your email and password, then create the app under Organization → Integrations.'
+        : `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.`
+      return loginMode
+        ? sendHtml(409, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>GitHub sign-in unavailable</h1><p>${message}</p><p><a href="/">Back to sign in</a></p></body></html>`)
+        : sendJson(400, { error: message })
+    }
+    // A GitHub App deleted on GitHub would send the browser to a GitHub 404; say so instead.
+    if (!loginMode && provider === 'github' && (await githubAppAlive(authorizeOrg).catch(() => undefined)) === false) {
+      return sendJson(409, { error: 'This GitHub App no longer exists on GitHub. Create it again under Organization → Integrations.', code: 'github_app_missing' })
+    }
+    const callbackUrl = `${origin}/api/oauth/${provider}/callback`
+    // projectId is legacy: keep it optional in state so old links don't 500.
     if (!loginMode) {
       const denied = requireOrgAdmin('Only team owners or admins can connect organization integrations.'); if (denied) return denied
     }

@@ -179,6 +179,31 @@ export async function resolveProvider(orgId: string, provider: string): Promise<
 }
 
 /**
+ * Credentials for "Continue with GitHub", which is how the deployment
+ * identifies people and therefore belongs to no tenant. Any organization that
+ * has set up a working GitHub App can provide them — the default organization
+ * first — so sign-in keeps working no matter which one did the setup, and a
+ * deployment whose only app was deleted on GitHub reports no sign-in rather
+ * than sending people to a GitHub 404.
+ */
+export async function resolveGitHubLoginProvider(): Promise<{ cfg: OAuthProviderConfig; orgId: string } | undefined> {
+  const { getDefaultOrgId, listOrganizations } = await import('./orgs')
+  const { githubAppAlive } = await import('./github-app-auth')
+  const defaultOrgId = await getDefaultOrgId().catch(() => undefined)
+  const orgIds = [
+    ...(defaultOrgId ? [defaultOrgId] : []),
+    ...(await listOrganizations().catch(() => [])).map((o) => o.orgId).filter((id) => id !== defaultOrgId),
+  ]
+  for (const orgId of orgIds) {
+    const cfg = await resolveProvider(orgId, 'github')
+    if (!cfg) continue
+    if ((await githubAppAlive(orgId).catch(() => undefined)) === false) continue
+    return { cfg, orgId }
+  }
+  return undefined
+}
+
+/**
  * Refresh an OAuth access token (Atlassian tokens expire hourly; Linear tokens
  * do not expire but may be revoked). Returns the new token response.
  */

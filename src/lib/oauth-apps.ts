@@ -65,6 +65,8 @@ export interface OAuthAppSummary {
   updatedAt: string | null
   updatedByName: string | null
   setup: OAuthAppSetup
+  /** False when the provider no longer knows this app (deleted on their side); undefined when it cannot be checked. */
+  availableAtProvider?: boolean
 }
 
 export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear']
@@ -145,6 +147,9 @@ export async function listOAuthApps(orgId: string, origin: string): Promise<OAut
       updatedByName: stored?.updatedByName ?? null,
       // Rows saved before setup tracking existed were pasted in by hand.
       setup: describeSetup(provider, origin, { ...(stored?.config ?? {}), source: stored?.config?.source ?? (stored ? 'manual' : undefined) }),
+      availableAtProvider: provider === 'github' && creds
+        ? await import('./github-app-auth').then((m) => m.githubAppAlive(orgId)).catch(() => undefined)
+        : undefined,
     })
   }
   return out

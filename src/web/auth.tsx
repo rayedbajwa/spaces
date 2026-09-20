@@ -143,7 +143,7 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
         )}
         {inviteToken && inviteError && <p className="error-text">{inviteError}</p>}
         {!needsBootstrap && !inviteToken && mode === 'register' && (
-          <p className="panel-subtitle">Registration is by invitation unless the server sets OPEN_REGISTRATION=1. A new account starts its own organization: keys, integrations, knowledge and projects are never shared with another one.</p>
+          <p className="panel-subtitle">New accounts usually need an invitation. If this site is open to sign-ups, your account starts its own organization: model keys, integrations, knowledge and projects are never shared with another one.</p>
         )}
 
         <form onSubmit={(e) => { e.preventDefault(); void submit() }}>

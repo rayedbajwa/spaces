@@ -94,7 +94,7 @@ function ProviderKeysCard({ canEdit, onChanged }: { canEdit: boolean; onChanged:
                 {k.configured
                   ? `${k.lastVerifyStatus === 'ok' ? 'verified' : `verification: ${k.lastVerifyStatus ?? 'unknown'}${k.lastVerifyError ? ` — ${k.lastVerifyError}` : ''}`}${k.lastVerifiedAt ? ` ${new Date(k.lastVerifiedAt).toLocaleString()}` : ''}${k.updatedByName ? ` · set by ${k.updatedByName}` : ''}`
                   : 'no key'}
-                {k.envLeftover ? ' · a value is still in .env and is ignored' : ''}
+                {k.envLeftover ? ' · a key left in the server configuration is ignored; keys are managed here' : ''}
               </span>
             </div>
             {canEdit && editing !== k.provider && (
