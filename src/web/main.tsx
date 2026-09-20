@@ -593,19 +593,34 @@ function App() {
     try {
       const data = await getJson<ProjectResponsibilities>(`/api/projects/${projectId}/responsibilities`)
       setResponsibilities(data)
-      if (me?.activeTeam?.teamId) {
-        const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
-        setResponsibilityMembers(team.members)
-      }
     } catch {
       setResponsibilities(null)
-      setResponsibilityMembers([])
+    }
+    // Team membership is only needed for the editor; a failure to load it must
+    // not hide the read-only responsibility status.
+    if (me?.activeTeam?.teamId) {
+      try {
+        const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
+        setResponsibilityMembers(team.members)
+      } catch {
+        setResponsibilityMembers([])
+      }
     }
   }
 
-  function startResponsibilityEdit(item: ResponsibilityView) {
+  async function startResponsibilityEdit(item: ResponsibilityView) {
     setEditingResponsibility(item.responsibilityId)
     setResponsibilityDraft(item.assignments.filter((assignment) => assignment.active).sort((a, b) => a.ordinal - b.ordinal).map((assignment) => assignment.userId))
+    // The member list may not have been available when the project first opened
+    // (for example on a direct /spaces/<code> visit before /api/me resolved).
+    if (responsibilityMembers.length === 0 && me?.activeTeam?.teamId) {
+      try {
+        const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
+        setResponsibilityMembers(team.members)
+      } catch {
+        // the editor still renders; saving a draft remains possible
+      }
+    }
   }
 
   function moveResponsibilityAssignee(userId: string, direction: -1 | 1) {

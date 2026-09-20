@@ -73,10 +73,6 @@ export function normalizeResponsibilityName(name: string): string {
   return name.trim().replace(/\s+/g, ' ').toLowerCase()
 }
 
-function standardByKey(key: string) {
-  return STANDARD_RESPONSIBILITIES.find((item) => item.key === key)
-}
-
 async function audit(tx: any, input: {
   projectId: string
   responsibilityId?: string
@@ -158,8 +154,74 @@ export async function seedProjectResponsibilities(projectId: string, createdBy?:
   await sql.begin((tx) => seedProjectResponsibilitiesInTransaction(tx, projectId, createdBy, actorUserId))
 }
 
+/**
+ * Deactivate active assignments whose user is no longer an active member of the
+ * project's owning team. Used when a project is moved between teams so that no
+ * ineligible assignment survives the move. A no-team (legacy) project has no
+ * eligibility boundary, so nothing is reconciled until it is adopted.
+ *
+ * This is idempotent: once the ineligible rows are inactive there is nothing to
+ * update and no audit event is written on a repeated call.
+ */
+async function reconcileIneligibleAssignmentsInTransaction(tx: any, projectId: string, actorUserId?: string): Promise<void> {
+  const [project] = await tx<Array<{ teamId: string | null }>>`SELECT team_id AS "teamId" FROM projects WHERE project_id = ${projectId} FOR UPDATE`
+  if (!project) throw new ResponsibilityError('not_found', 'Project not found.')
+  if (!project.teamId) return
+
+  const affected = await tx<Array<{ projectId: string; responsibilityId: string; userIds: string[] }>>`
+    SELECT r.project_id AS "projectId", r.responsibility_id AS "responsibilityId",
+           array_agg(a.user_id::text ORDER BY a.ordinal, a.user_id) AS "userIds"
+      FROM responsibility_assignments a
+      JOIN project_responsibilities r ON r.responsibility_id = a.responsibility_id
+     WHERE r.project_id = ${projectId}
+       AND a.is_active
+       AND NOT EXISTS (
+         SELECT 1 FROM team_members m
+          WHERE m.team_id = ${project.teamId} AND m.user_id = a.user_id
+       )
+     GROUP BY r.project_id, r.responsibility_id
+  `
+  if (!affected.length) return
+
+  await tx`
+    UPDATE responsibility_assignments a
+       SET is_active = false, updated_at = now(), assigned_by = ${actorUserId ?? null}
+      FROM project_responsibilities r
+     WHERE a.responsibility_id = r.responsibility_id
+       AND r.project_id = ${projectId}
+       AND a.is_active
+       AND NOT EXISTS (
+         SELECT 1 FROM team_members m
+          WHERE m.team_id = ${project.teamId} AND m.user_id = a.user_id
+       )
+  `
+  for (const item of affected) {
+    await audit(tx, {
+      projectId: item.projectId,
+      responsibilityId: item.responsibilityId,
+      actorUserId,
+      action: 'reconcile-ineligible',
+      before: { userIds: item.userIds },
+      after: { userIds: [] },
+    })
+  }
+}
+
+/** Deactivate assignments that are no longer eligible under the owning team. */
+export async function reconcileProjectAssignments(projectId: string, actorUserId?: string): Promise<void> {
+  const sql = getDb()
+  await sql.begin((tx) => reconcileIneligibleAssignmentsInTransaction(tx, projectId, actorUserId))
+}
+
 export async function migrateProjectResponsibilities(projectId: string, actorUserId?: string): Promise<{ repairNeeded: boolean; responsibilities: ResponsibilityView[] }> {
-  await seedProjectResponsibilities(projectId, undefined, actorUserId)
+  const sql = getDb()
+  // Reconcile ineligible assignments first so a moved project does not keep
+  // assigning work to people outside its current team, then seed any missing
+  // standard definitions and an eligible Owner in the same transaction.
+  await sql.begin(async (tx) => {
+    await reconcileIneligibleAssignmentsInTransaction(tx, projectId, actorUserId)
+    await seedProjectResponsibilitiesInTransaction(tx, projectId, undefined, actorUserId)
+  })
   const responsibilities = await listResponsibilities(projectId)
   const owner = responsibilities.find((item) => item.standardKey === 'owner')
   return { repairNeeded: !owner?.resolution.assignees.length, responsibilities }
@@ -248,7 +310,7 @@ export async function responsibilityContextForStage(projectId: string, stage: st
 export async function createCustomResponsibility(projectId: string, name: string, actorUserId: string): Promise<ResponsibilityView> {
   const normalizedName = normalizeResponsibilityName(name)
   if (!normalizedName) throw new ResponsibilityError('invalid', 'Responsibility name is required.')
-  if (standardByKey(normalizedName)) throw new ResponsibilityError('invalid', 'That name is reserved for a standard responsibility.')
+  if (STANDARD_RESPONSIBILITIES.some((item) => normalizeResponsibilityName(item.name) === normalizedName || item.key === normalizedName)) throw new ResponsibilityError('invalid', 'That name is reserved for a standard responsibility.')
   const sql = getDb()
   const id = randomUUID()
   try {
