@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { NewRepositoryProposal } from './repo-proposal'
 import { getDb } from './db'
+import { seedProjectResponsibilitiesInTransaction } from './project-responsibilities'
 
 export type IntegrationKind = 'github' | 'jira' | 'confluence'
 export type IntegrationStatus = 'not_connected' | 'pending' | 'connected' | 'error'
@@ -139,14 +140,19 @@ export async function createProject(input: {
   slug?: string
   /** Owning team ("space"). */
   teamId?: string | null
+  /** Authenticated creator, preferred as initial project Owner when eligible. */
+  createdBy?: string | null
 }): Promise<ProjectRow> {
   const sql = getDb()
   const projectId = randomUUID()
   const slug = input.slug ?? generateSlug(input.name)
-  await sql`
-    INSERT INTO projects (project_id, name, slug, description, team_id)
-    VALUES (${projectId}, ${input.name}, ${slug}, ${input.description ?? null}, ${input.teamId ?? null})
-  `
+  await sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO projects (project_id, name, slug, description, team_id)
+      VALUES (${projectId}, ${input.name}, ${slug}, ${input.description ?? null}, ${input.teamId ?? null})
+    `
+    await seedProjectResponsibilitiesInTransaction(tx, projectId, input.createdBy ?? undefined, input.createdBy ?? undefined)
+  })
   return (await assignProjectCode(projectId)) ?? (await getProject(projectId))!
 }
 

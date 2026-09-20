@@ -50,6 +50,15 @@ flowchart LR
   D -- merged --> E((end))
 ```
 
+## Responsibility context
+
+For mapped stages, the pipeline injects a project responsibility contact as
+advisory context: Product Owner (specify/review), Lead Engineer
+(plan/implement), Designer (design), QA (verify), and Release Manager
+(deliver). Explicit assignments are preferred over the labeled Owner fallback;
+an unresolved project asks for repair instead of selecting a person. This
+context does not modify the template's human gates or team-role authorization.
+
 ## Development-environment setup
 
 Before `implement`, `orchestrate`, `review` and `verify` (and before parallel

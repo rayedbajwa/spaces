@@ -20,6 +20,7 @@ import { loadProviderKeys } from './provider-keys'
 import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { compactHandoff } from './context-compactor'
 import { prepareResearchInputs } from './research-stage'
+import { responsibilityContextForStage } from './project-responsibilities'
 import { log } from './logger'
 
 export interface PipelineEngineOptions extends FlowOptions {
@@ -221,6 +222,17 @@ export class PipelineEngine {
       if (step.role) {
         const persona = await loadPersona(step.role)
         if (persona) parts.push(`# Active role: ${step.role}\n\n${persona.trim()}`)
+      }
+
+      // Accountability contacts guide the agent but never alter existing team
+      // authorization or the human-gate decision path.
+      if (this.options.projectId) {
+        try {
+          parts.push(await responsibilityContextForStage(this.options.projectId, String(step.stage)))
+        } catch {
+          // Legacy projects may not have responsibility tables until repaired;
+          // a missing advisory note must not stop a pipeline stage.
+        }
       }
 
       // Research: bring in the repositories the feature needs and what is

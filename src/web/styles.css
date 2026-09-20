@@ -1344,6 +1344,9 @@ textarea {
 .repo-row-error .error-text { margin: 0; flex: 1 1 200px; }
 .mini-badge.success { background: rgba(76, 183, 130, 0.14); color: var(--green); border-color: rgba(76, 183, 130, 0.28); }
 .mini-badge.pending { background: rgba(245, 158, 11, 0.14); color: #f59e0b; border-color: rgba(245, 158, 11, 0.28); }
+.responsibility-editor { margin-top: 6px; padding: 10px; border-left: 3px solid var(--accent); background: var(--surface-2, rgba(255, 255, 255, 0.03)); }
+.responsibility-editor-row { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 4px 0; }
+.responsibility-editor .muted { color: var(--text-muted); font-size: 12px; }
 
 /* ---- Authentication, teams ---- */
 .auth-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }

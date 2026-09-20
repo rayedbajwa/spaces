@@ -50,6 +50,16 @@ every tier is OpenRouter's own auto-router. Templates may still pin a model
 and thinking level per step; a pin from a provider without a key falls back to
 the same-size tier.
 
+## Advisory project responsibilities
+
+When a project has responsibility assignments, stage prompts include an advisory
+contact: Product Owner for specify/review, Lead Engineer for plan/implement,
+Designer for design, QA for verify, and Release Manager for delivery. Explicit
+assignments take precedence; an unassigned non-Owner role is labeled as an
+**Owner fallback**. If no valid Owner exists, agents receive a repair-needed
+note rather than a guessed contact. These contacts never grant access, approve
+a gate, or change the existing human review process.
+
 ## The agent output dock
 
 On a project page the live agent output is docked at the bottom of the

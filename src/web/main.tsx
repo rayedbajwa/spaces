@@ -292,6 +292,18 @@ type DeletionPreview = {
   repos: Array<{ label: string; kind: string; localPath: string | null; githubRepo: string | null; action: 'delete-clone' | 'delete-workspace' | 'keep-shared' | 'keep-local' | 'none' }>
 }
 
+type ResponsibilityView = {
+  responsibilityId: string
+  name: string
+  standardKey?: string | null
+  active: boolean
+  assignments: Array<{ userId: string; name: string; email: string; active: boolean; primary: boolean; ordinal: number }>
+  resolution: { status: 'explicit' | 'owner-fallback' | 'unresolved'; repairNeeded: boolean; assignees: Array<{ userId: string; name: string; email: string; primary: boolean }> }
+}
+
+type ProjectResponsibilities = { projectId: string; repairNeeded: boolean; responsibilities: ResponsibilityView[] }
+type ResponsibilityMember = { userId: string; name: string; email: string; role: string }
+
 type ProjectDetailRecord = {
   projectId: string
   slug: string
@@ -519,6 +531,11 @@ function App() {
   const [projectAgents, setProjectAgents] = useState<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>([])
   const [inspectedRun, setInspectedRun] = useState<RunSnapshot | null>(null)
   const [projectDetail, setProjectDetail] = useState<ProjectDetailRecord | null>(null)
+  const [responsibilities, setResponsibilities] = useState<ProjectResponsibilities | null>(null)
+  const [responsibilityMembers, setResponsibilityMembers] = useState<ResponsibilityMember[]>([])
+  const [editingResponsibility, setEditingResponsibility] = useState<string | null>(null)
+  const [responsibilityDraft, setResponsibilityDraft] = useState<string[]>([])
+  const [responsibilitiesBusy, setResponsibilitiesBusy] = useState(false)
   // Delete-project flow: preview of what goes, then a typed "delete" confirmation.
   const [deletion, setDeletion] = useState<{ open: boolean; loading: boolean; preview: DeletionPreview | null; confirm: string; busy: boolean; error: string }>({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })
   const [githubRepos, setGithubRepos] = useState<GitHubRepoOption[] | null>(null)
@@ -568,6 +585,64 @@ function App() {
       const payload = await getJson<{ repositories: PlanRepo[] }>(`/api/projects/${namespace}/plan-repos`)
       setPlanRepos(payload.repositories ?? [])
     } catch { setPlanRepos([]) }
+  }
+
+  async function loadResponsibilities(projectId: string) {
+    try {
+      const data = await getJson<ProjectResponsibilities>(`/api/projects/${projectId}/responsibilities`)
+      setResponsibilities(data)
+      if (me?.activeTeam?.teamId) {
+        const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
+        setResponsibilityMembers(team.members)
+      }
+    } catch {
+      setResponsibilities(null)
+      setResponsibilityMembers([])
+    }
+  }
+
+  function startResponsibilityEdit(item: ResponsibilityView) {
+    setEditingResponsibility(item.responsibilityId)
+    setResponsibilityDraft(item.assignments.filter((assignment) => assignment.active).sort((a, b) => a.ordinal - b.ordinal).map((assignment) => assignment.userId))
+  }
+
+  function moveResponsibilityAssignee(userId: string, direction: -1 | 1) {
+    setResponsibilityDraft((current) => {
+      const from = current.indexOf(userId)
+      const to = from + direction
+      if (from < 0 || to < 0 || to >= current.length) return current
+      const next = [...current]
+      ;[next[from], next[to]] = [next[to]!, next[from]!]
+      return next
+    })
+  }
+
+  async function saveResponsibilityAssignments(item: ResponsibilityView) {
+    if (!projectDetail) return
+    setResponsibilitiesBusy(true)
+    try {
+      const updated = await putJson<ResponsibilityView>(`/api/projects/${projectDetail.projectId}/responsibilities/${item.responsibilityId}/assignments`, { userIds: responsibilityDraft })
+      setResponsibilities((current) => current ? { ...current, responsibilities: current.responsibilities.map((entry) => entry.responsibilityId === updated.responsibilityId ? updated : entry) } : current)
+      setEditingResponsibility(null)
+      setStatusMessage(`${item.name} assignments saved.`)
+    } catch (error) {
+      setStatusMessage(`Could not save ${item.name}: ${toMessage(error)}`)
+    } finally {
+      setResponsibilitiesBusy(false)
+    }
+  }
+
+  async function repairResponsibilities() {
+    if (!projectDetail) return
+    setResponsibilitiesBusy(true)
+    try {
+      setResponsibilities(await postJson<ProjectResponsibilities>(`/api/projects/${projectDetail.projectId}/responsibilities/migrate`, {}))
+      setStatusMessage('Project responsibilities repaired.')
+    } catch (error) {
+      setStatusMessage(`Could not repair responsibilities: ${toMessage(error)}`)
+    } finally {
+      setResponsibilitiesBusy(false)
+    }
   }
 
   async function refreshProjectRepos() {
@@ -885,6 +960,7 @@ function App() {
       if (proj) {
         const detail = await getJson<ProjectDetailRecord>(`/api/projects/${proj.projectId}`)
         setProjectDetail(detail)
+        void loadResponsibilities(detail.projectId)
         void loadProjectKnowledge(detail.projectId)
         void loadProjectWorker(detail.projectId)
         void loadPlanRepos(namespace)
@@ -2212,6 +2288,36 @@ function App() {
                   <div className="stat card"><span className="stat-label">Jobs</span><strong className="stat-value">{projectJobs.filter((j) => ['running', 'queued', 'claimed'].includes(j.displayStatus)).length}</strong><span className="stat-sub">{projectJobs.filter((j) => j.displayStatus === 'paused').length} paused · {projectJobs.length} recent</span></div>
                 </div>
                 <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
+                <section className="card panel slim-panel">
+                  <div className="panel-heading-row">
+                    <div><h3>Responsibilities</h3><p className="panel-subtitle">Project accountability is separate from team access roles.</p></div>
+                    {responsibilities?.repairNeeded && (me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin') && <button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void repairResponsibilities()}>{responsibilitiesBusy ? 'Repairing…' : 'Repair Owner assignments'}</button>}
+                  </div>
+                  {responsibilities?.responsibilities.map((item) => {
+                    const resolution = item.resolution
+                    const canManageResponsibilities = me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'
+                    const editing = editingResponsibility === item.responsibilityId
+                    return <div key={item.responsibilityId} className="repo-row">
+                      <div className="repo-row-main"><strong>{item.name}</strong><span className={`mini-badge ${resolution.status === 'unresolved' ? 'error' : resolution.status === 'owner-fallback' ? 'pending' : 'success'}`}>{resolution.status === 'owner-fallback' ? 'Owner fallback' : resolution.status}</span>{canManageResponsibilities && !editing && <button className="text-button" type="button" onClick={() => startResponsibilityEdit(item)}>Edit</button>}</div>
+                      {resolution.repairNeeded && <span className="error-text">Owner assignment needs repair.</span>}
+                      {!resolution.repairNeeded && resolution.assignees.length === 0 && <span className="repo-row-source">Unassigned</span>}
+                      {resolution.assignees.map((person) => <span key={person.userId} className="repo-row-source">{person.name}{person.primary ? ' · primary' : ''}</span>)}
+                      {editing && <div className="responsibility-editor" aria-label={`Edit ${item.name} assignments`}>
+                        <p className="panel-subtitle">Select active team members. Listed order controls primary and backups.</p>
+                        {responsibilityMembers.map((member) => {
+                          const selected = responsibilityDraft.includes(member.userId)
+                          const position = responsibilityDraft.indexOf(member.userId)
+                          return <div className="responsibility-editor-row" key={member.userId}>
+                            <label className="toggle"><input type="checkbox" checked={selected} onChange={() => setResponsibilityDraft((current) => selected ? current.filter((id) => id !== member.userId) : [...current, member.userId])} />{member.name} <span className="muted">{member.email}</span></label>
+                            {selected && <span><button className="text-button" type="button" disabled={position === 0} onClick={() => moveResponsibilityAssignee(member.userId, -1)}>↑</button><button className="text-button" type="button" disabled={position === responsibilityDraft.length - 1} onClick={() => moveResponsibilityAssignee(member.userId, 1)}>↓</button>{position === 0 && <span className="repo-row-source">primary</span>}</span>}
+                          </div>
+                        })}
+                        <div className="button-row"><button className="primary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void saveResponsibilityAssignments(item)}>Save assignments</button><button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => setEditingResponsibility(null)}>Cancel</button></div>
+                      </div>}
+                    </div>
+                  })}
+                  {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
+                </section>
                 <section className="card panel slim-panel">
                   <h3>Summary</h3>
                   <div className="auto-memory-box compact-box">
@@ -4119,6 +4225,18 @@ async function getJson<T>(url: string): Promise<T> {
   if (!response.ok && typeof data === 'object' && data && 'error' in data) {
     throw new Error(data.error)
   }
+  return data as T
+}
+
+async function putJson<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (response.status === 401) window.dispatchEvent(new Event('spaces:unauthenticated'))
+  const data = (await response.json()) as T | { error: string }
+  if (!response.ok && typeof data === 'object' && data && 'error' in data) throw new Error(data.error)
   return data as T
 }
 
