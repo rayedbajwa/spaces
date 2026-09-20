@@ -121,6 +121,7 @@ import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
 import { readTaskProgress } from './lib/run-resume'
+import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
@@ -179,6 +180,15 @@ void (async () => {
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
+// A worker killed mid-flight leaves its job claimed for ever, which blocks the
+// whole project. Workers sweep for those, but a project whose worker never
+// spawned has nobody to sweep for it, so the server sweeps too.
+{
+  const sweep = () => reapAbandonedJobs()
+    .catch((error) => serverLog.warn('abandoned job sweep failed', { error: error instanceof Error ? error.message : String(error) }))
+  void sweep()
+  setInterval(() => { void sweep() }, 60_000)
+}
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
@@ -1827,16 +1837,33 @@ async function route(req: Request): Promise<Response> {
       }
     }
 
-    // Guard 2: don't stack on top of an in-flight job for this project.
+    // Guard 2: don't stack on top of in-flight work for this project. The
+    // refusal names what is in the way — a run that is executing, one queued
+    // behind a busy worker, or one waiting for a human — because "1 job queued
+    // or running" tells nobody what to do about it.
     const sql = getDb()
-    const [inflight] = await sql<Array<{ n: number }>>`
-      SELECT COUNT(*)::int AS n FROM project_jobs
-       WHERE project_id = ${project.projectId} AND status IN ('queued','claimed','running')
+    const inflight = await sql<Array<{ jobId: string; status: string; kind: string; createdAt: string; claimedBy: string | null; runId: string | null; runStatus: string | null; runStage: string | null; pauseKind: string | null }>>`
+      SELECT j.job_id AS "jobId", j.status, j.kind, j.created_at AS "createdAt", j.claimed_by AS "claimedBy",
+             j.run_id AS "runId", r.status AS "runStatus", r.current_stage AS "runStage", r.pause_kind AS "pauseKind"
+        FROM project_jobs j
+        LEFT JOIN pipeline_runs r ON r.run_id = j.run_id
+       WHERE j.project_id = ${project.projectId} AND j.status IN ('queued','claimed','running')
+       ORDER BY j.created_at ASC
     `
-    if ((inflight?.n ?? 0) > 0 && !body.force) {
+    if (inflight.length > 0 && !body.force) {
+      const blocking = inflight[0]!
+      const waitingMinutes = Math.round((Date.now() - Date.parse(blocking.createdAt)) / 60_000)
+      const age = waitingMinutes >= 1 ? ` for ${waitingMinutes} minute${waitingMinutes === 1 ? '' : 's'}` : ''
+      const error = blocking.runStatus === 'paused' && blocking.pauseKind && blocking.pauseKind !== 'user'
+        ? `This project's run is waiting for you on ${blocking.runStage ?? 'a stage'}. Answer or approve it, then run ${body.step}.`
+        : blocking.status === 'queued'
+          ? `A ${blocking.kind.replace('_', ' ')} has been queued${age} and is waiting for a free worker. It starts on its own; ${body.step} can run once it finishes.`
+          : `A ${blocking.kind.replace('_', ' ')} is running${blocking.runStage ? ` (stage ${blocking.runStage})` : ''}${age}. Wait for it to finish, or cancel the run first.`
       return sendJson(409, {
-        error: `Project already has ${inflight.n} job(s) queued or running.`,
-        hint: 'Wait for the current job to finish, or pass {"force": true} to enqueue anyway.',
+        error,
+        code: 'project_busy',
+        inFlight: inflight.map((job) => ({ jobId: job.jobId, kind: job.kind, status: job.status, runId: job.runId, runStatus: job.runStatus, stage: job.runStage, pauseKind: job.pauseKind, since: job.createdAt })),
+        hint: 'Cancel the run from the project page to clear it, or send {"force": true} to queue this step behind it.',
       })
     }
 
