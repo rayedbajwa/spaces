@@ -2132,7 +2132,12 @@ function App() {
               </div>
               {columnStep && dragging && !eligible && (
                 <p className="empty-state" style={{ fontSize: 11, opacity: 0.6, margin: 0, padding: '4px 6px 8px' }}>
-                  Not the next step for {draggedCard!.projectLabel}
+                  {draggedCard!.recommendedAction ? `Next for ${draggedCard!.projectLabel} is ${draggedCard!.recommendedAction.label.replace(/^Run /, '')}` : `Nothing to run for ${draggedCard!.projectLabel}`}
+                </p>
+              )}
+              {columnStep && dragging && eligible && (
+                <p className="empty-state" style={{ fontSize: 11, opacity: 0.8, margin: 0, padding: '4px 6px 8px' }}>
+                  Drop to run {draggedCard!.recommendedAction!.label.replace(/^Run /, '')}
                 </p>
               )}
               <div className="board-stack">

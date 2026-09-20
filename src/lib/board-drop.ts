@@ -44,13 +44,79 @@ export function stepForColumn(lane: BoardStatus): string | null {
 }
 
 /**
- * Card is eligible to drop into `targetLane` iff the lane's producing step
- * matches the card's recommendedAction. Returns false when the card has no
+ * Every step that moves a card into a lane.
+ *
+ * A lane is a phase, not a single step: getting a project into "Implementing"
+ * can mean running the test plan or the workstream split before implement
+ * itself. Dropping a card there runs whichever of those comes next, so a
+ * project is never stuck because its next step has no lane of its own — while
+ * a lane still refuses a card whose next step belongs to an earlier phase, so
+ * nothing is skipped.
+ */
+export function stepsForColumn(lane: BoardStatus): string[] {
+  switch (lane) {
+    case 'initialized':  return ['init']
+    case 'specified':    return ['specify']
+    case 'planned':      return ['plan']
+    case 'tasked':       return ['tasks']
+    case 'implementing': return ['testplan', 'parallelize', 'implement']
+    case 'done':         return ['verify', 'deliver']
+    case 'backlog':      return []
+    default:             return []
+  }
+}
+
+/**
+ * Card is eligible to drop into `targetLane` when the card's next step is one
+ * of the steps that lead into that lane. Returns false when the card has no
  * recommended action (nothing to trigger).
  */
 export function isEligibleDrop(card: DropCandidateCard | null, targetLane: BoardStatus): boolean {
   if (!card) return false
   const rec = card.recommendedAction
   if (!rec) return false
-  return stepForColumn(targetLane) === rec.step
+  return stepsForColumn(targetLane).includes(rec.step)
+}
+
+/** What the board knows about a project's artifacts when placing its card. */
+export interface LaneEvidence {
+  initialized: boolean
+  specified: boolean
+  planned: boolean
+  tasked: boolean
+  verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
+  /** Documents the later stages leave behind: a review, a merge report, a verification report. */
+  implementationArtifacts?: boolean
+  /** Tasks ticked off in tasks.md. */
+  tasksDone?: number
+  /** The stage a run is on right now, when one is running or paused. */
+  activeStage?: string | null
+}
+
+const IMPLEMENTATION_STAGES = ['implement', 'orchestrate', 'review', 'verify', 'deliver']
+
+/**
+ * The lane a project belongs in.
+ *
+ * Placement follows what the project has produced, never the status of a run
+ * process. That matters because a finished run records no current stage: a
+ * project that implemented and verified would otherwise fall back to the lane
+ * its last artifact named — "Tasked" — and look stuck. Implementation counts
+ * as started once any task is ticked off or any later document exists, and a
+ * project is done only when verification actually passed.
+ */
+export function laneForProject(evidence: LaneEvidence): BoardStatus {
+  if (evidence.verificationStatus === 'pass') return 'done'
+
+  const implementing = Boolean(evidence.implementationArtifacts)
+    || (evidence.tasksDone ?? 0) > 0
+    || evidence.verificationStatus !== 'missing'
+    || Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
+  if (evidence.tasked && implementing) return 'implementing'
+
+  if (evidence.tasked) return 'tasked'
+  if (evidence.planned) return 'planned'
+  if (evidence.specified) return 'specified'
+  if (evidence.initialized) return 'initialized'
+  return 'backlog'
 }

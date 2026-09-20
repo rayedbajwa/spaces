@@ -122,6 +122,7 @@ import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
 import { readTaskProgress } from './lib/run-resume'
+import { laneForProject } from './lib/board-drop'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
@@ -2895,26 +2896,22 @@ async function buildBoard(): Promise<BoardResponse> {
     const latestRun = active[0] ?? [...projectRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     const artifacts = await collectProjectArtifacts(project.namespace, project.path)
 
-    // Board derivations that used to blend legacy filesystem state (kanban override,
-    // automation status, agent-in-progress, per-project estimate cache) are simplified
-    // to DB-only signals after the Phase 4A legacy cleanup.
-    // Board lane = highest artifact milestone the project has reached, NOT the run
-    // process status. A brand-new project with no artifacts stays at 'backlog' even
-    // if a run errored or is queued. Progression: backlog → initialized → specified
-    // → planned → tasked → implementing → done.
-    let status: BoardStatus = 'backlog'
-    if (artifacts.initialized) status = 'initialized'
-    if (artifacts.specified) status = 'specified'
-    if (artifacts.planned) status = 'planned'
-    if (artifacts.tasked) status = 'tasked'
-    // 'implementing' lane is reserved for actual implementation/QA activity —
-    // the run is (or was) at implement, orchestrate, or verify. Merely having
-    // tasks.md doesn't count; users see 'tasked' until code work begins.
-    if (artifacts.tasked && latestRun && ['running', 'paused', 'completed'].includes(latestRun.status)
-        && latestRun.stage && ['implement', 'orchestrate', 'verify'].includes(latestRun.stage)) {
-      status = 'implementing'
-    }
-    if (artifacts.verifiedPass) status = 'done'
+    // The lane follows what the project has produced, not the state of a run
+    // process: a finished run records no current stage, so keying on that left a
+    // project that had implemented and verified sitting in "Tasked".
+    const tasks = await readTaskProgress(project.path).catch(() => undefined)
+    const hasLaterArtifact = artifacts.links.some((link) =>
+      ['Orchestrate', 'Verify'].includes(link.stepLabel) || /code-review\.md$|delivery-status\.md$/.test(link.relativePath))
+    const status = laneForProject({
+      initialized: artifacts.initialized,
+      specified: artifacts.specified,
+      planned: artifacts.planned,
+      tasked: artifacts.tasked,
+      verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
+      implementationArtifacts: hasLaterArtifact,
+      tasksDone: tasks?.done ?? 0,
+      activeStage: latestRun && ['running', 'paused'].includes(latestRun.status) ? latestRun.stage ?? null : null,
+    })
 
     cards.push({
       projectNamespace: project.namespace,
