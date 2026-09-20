@@ -180,6 +180,20 @@ void (async () => {
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
+// The workspace volume fills with clones, dependencies and worktrees that
+// nothing reclaims, and a full volume kills runs mid-stage. Sweep at boot and
+// hourly, and say how much room is left.
+{
+  const housekeeping = async () => {
+    const { diskUsage, ensureDiskSpace, formatBytes } = await import('./lib/disk-housekeeping')
+    const { workspaceRoot } = await import('./lib/github')
+    const root = workspaceRoot()
+    const usage = (await ensureDiskSpace(root)) ?? (await diskUsage(root))
+    if (usage) serverLog.info('workspace volume', { free: formatBytes(usage.freeBytes), total: formatBytes(usage.totalBytes), used: `${Math.round((1 - usage.freeRatio) * 100)}%` })
+  }
+  void housekeeping().catch((error) => serverLog.warn('workspace housekeeping failed', { error: error instanceof Error ? error.message : String(error) }))
+  setInterval(() => { void housekeeping().catch(() => undefined) }, 60 * 60_000)
+}
 // A worker killed mid-flight leaves its job claimed for ever, which blocks the
 // whole project. Workers sweep for those, but a project whose worker never
 // spawned has nobody to sweep for it, so the server sweeps too.
