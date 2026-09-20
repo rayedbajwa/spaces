@@ -170,6 +170,11 @@ void (async () => {
       FROM organizations o ORDER BY o.created_at ASC
   `
   for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, appCredentials: row.oauthApps, githubApp: row.githubApp ?? undefined, knowledgeSources: row.knowledgeSources })
+  if (!authDisabled()) {
+    serverLog.info(resolveGitHubLoginProvider()
+      ? 'sign in with GitHub is available for this deployment'
+      : 'sign in with GitHub is not set up; people sign in with email and password')
+  }
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
@@ -284,9 +289,8 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
     const statusOrg = await getDefaultOrgId()
-    // Sign-in belongs to the deployment, not to a tenant: any organization with a
-    // working GitHub App can provide it, and a deleted app offers none.
-    const githubLogin = Boolean(await resolveGitHubLoginProvider().catch(() => undefined))
+    // Sign-in belongs to the deployment, not to a tenant: it has its own GitHub app.
+    const githubLogin = Boolean(resolveGitHubLoginProvider())
     return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin, defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
   }
 
@@ -1653,22 +1657,20 @@ async function route(req: Request): Promise<Response> {
     const provider = url.pathname.split('/')[3]!
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
     const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
-    // Signing in identifies a person to the whole deployment, so it uses any
-    // working GitHub App rather than the caller's organization (there is no
-    // caller yet). Connecting an integration always uses the caller's own app.
-    const login = loginMode ? await resolveGitHubLoginProvider().catch(() => undefined) : undefined
-    const authorizeOrg = login?.orgId ?? (await orgIdOf())
-    const cfg = login?.cfg ?? await resolveProvider(authorizeOrg, provider)
+    // Signing in uses the deployment's own GitHub app and never an organization's
+    // integration credentials; connecting an integration always uses the caller's own.
+    const cfg = loginMode ? resolveGitHubLoginProvider() : await resolveProvider(await orgIdOf(), provider)
+    const authorizeOrg = loginMode ? undefined : await orgIdOf()
     if (!cfg) {
       const message = loginMode
-        ? 'Signing in with GitHub is not available: this deployment has no working GitHub App. Sign in with your email and password, then create the app under Organization → Integrations.'
+        ? 'Signing in with GitHub is not set up for this site. Sign in with your email and password instead.'
         : `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.`
       return loginMode
         ? sendHtml(409, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>GitHub sign-in unavailable</h1><p>${message}</p><p><a href="/">Back to sign in</a></p></body></html>`)
         : sendJson(400, { error: message })
     }
     // A GitHub App deleted on GitHub would send the browser to a GitHub 404; say so instead.
-    if (!loginMode && provider === 'github' && (await githubAppAlive(authorizeOrg).catch(() => undefined)) === false) {
+    if (authorizeOrg && provider === 'github' && (await githubAppAlive(authorizeOrg).catch(() => undefined)) === false) {
       return sendJson(409, { error: 'This GitHub App no longer exists on GitHub. Create it again under Organization → Integrations.', code: 'github_app_missing' })
     }
     const callbackUrl = `${origin}/api/oauth/${provider}/callback`
@@ -1691,10 +1693,12 @@ async function route(req: Request): Promise<Response> {
     if (!code || !state) return sendJson(400, { error: 'Missing code or state.' })
     const pending = consumeState(state)
     if (!pending || pending.provider !== provider) return sendJson(400, { error: 'Invalid or expired OAuth state.' })
-    // The state pins the organization the flow started in, so the token lands with that tenant.
+    // A sign-in comes back to the deployment's own app; an integration comes back
+    // to the organization pinned in the state, so its token lands with that tenant.
+    const signingIn = provider === 'github' && pending.projectId.startsWith('__login__')
     const callbackOrg = pending.orgId ?? (await getDefaultOrgId())
-    const cfg = await resolveProvider(callbackOrg, provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" no longer has app credentials.` })
+    const cfg = signingIn ? resolveGitHubLoginProvider() : await resolveProvider(callbackOrg, provider)
+    if (!cfg) return sendJson(400, { error: signingIn ? 'Signing in with GitHub is not set up for this site.' : `Provider "${provider}" no longer has app credentials.` })
 
     const callbackUrl = `${origin}/api/oauth/${provider}/callback`
     try {

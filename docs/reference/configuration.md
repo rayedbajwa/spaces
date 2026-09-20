@@ -63,9 +63,15 @@ back to the same-size tier.
 | `AUTH_DISABLED` | unset | `1` turns sign-in off (single-user local use); every route is open |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user and invitees can |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
+| `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |
+| `GITHUB_SIGNIN_CLIENT_ID` | unset | Client id of the GitHub OAuth app used for "Continue with GitHub" |
+| `GITHUB_SIGNIN_CLIENT_SECRET` | unset | Its client secret; both are needed or the button is not offered |
 
 Sessions are HttpOnly cookies (30 days; `Secure` when served over HTTPS).
-GitHub sign-in reuses the GitHub OAuth app configured below.
+Signing in identifies a person to the whole deployment, so it uses its own
+GitHub OAuth app from the two variables above, never an organization's
+integration credentials. Register the app on GitHub with the callback
+`<your origin>/api/oauth/github/callback`.
 
 ## Integrations (OAuth)
 

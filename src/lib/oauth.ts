@@ -179,28 +179,21 @@ export async function resolveProvider(orgId: string, provider: string): Promise<
 }
 
 /**
- * Credentials for "Continue with GitHub", which is how the deployment
- * identifies people and therefore belongs to no tenant. Any organization that
- * has set up a working GitHub App can provide them — the default organization
- * first — so sign-in keeps working no matter which one did the setup, and a
- * deployment whose only app was deleted on GitHub reports no sign-in rather
- * than sending people to a GitHub 404.
+ * Credentials for "Continue with GitHub".
+ *
+ * Signing in identifies a person to the whole deployment, so it is never an
+ * organization's data: it uses one GitHub OAuth app configured for the
+ * deployment itself, through GITHUB_SIGNIN_CLIENT_ID and
+ * GITHUB_SIGNIN_CLIENT_SECRET. No organization's integration app is ever used
+ * for sign-in — without these the button is simply not offered, and people
+ * sign in with email and password.
  */
-export async function resolveGitHubLoginProvider(): Promise<{ cfg: OAuthProviderConfig; orgId: string } | undefined> {
-  const { getDefaultOrgId, listOrganizations } = await import('./orgs')
-  const { githubAppAlive } = await import('./github-app-auth')
-  const defaultOrgId = await getDefaultOrgId().catch(() => undefined)
-  const orgIds = [
-    ...(defaultOrgId ? [defaultOrgId] : []),
-    ...(await listOrganizations().catch(() => [])).map((o) => o.orgId).filter((id) => id !== defaultOrgId),
-  ]
-  for (const orgId of orgIds) {
-    const cfg = await resolveProvider(orgId, 'github')
-    if (!cfg) continue
-    if ((await githubAppAlive(orgId).catch(() => undefined)) === false) continue
-    return { cfg, orgId }
-  }
-  return undefined
+export function resolveGitHubLoginProvider(): OAuthProviderConfig | undefined {
+  const clientId = process.env.GITHUB_SIGNIN_CLIENT_ID?.trim()
+  const clientSecret = process.env.GITHUB_SIGNIN_CLIENT_SECRET?.trim()
+  if (!clientId || !clientSecret) return undefined
+  const { label: _label, kinds: _kinds, consoleUrl: _console, notes: _notes, ...rest } = PROVIDER_TEMPLATES.github
+  return { ...rest, clientId, clientSecret }
 }
 
 /**

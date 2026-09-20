@@ -44,11 +44,13 @@ top of the sidebar.
 ## Accounts and sign-in
 
 - **Email and password** (argon2id hashing) or **Continue with GitHub**.
-  Signing in identifies a person to the whole deployment, so it is not tenant
-  state: it uses any organization's working GitHub App (the default
-  organization's first), and the token is used once for identity and never
-  stored. When the app behind it has been deleted on GitHub, the button
-  disappears instead of leading to a GitHub error page.
+  Signing in identifies a person to the whole deployment, so it never uses an
+  organization's integration credentials: it uses one GitHub OAuth app
+  configured for the deployment itself, and the token is used once for identity
+  and never stored. Without that app the button is not offered. Whoever signs
+  in is matched to an existing account by GitHub login first and by verified
+  email second, so a member lands in their own account and organization rather
+  than starting a new one.
 - Sessions are HttpOnly cookies valid for 30 days; only a hash of the token is
   stored.
 - The **first account** created becomes the owner of the default organization

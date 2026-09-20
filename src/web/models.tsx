@@ -119,6 +119,79 @@ function ProviderKeysCard({ canEdit, onChanged }: { canEdit: boolean; onChanged:
   )
 }
 
+/**
+ * OpenRouter routes every request itself, so three tier cards would all read
+ * "openrouter/auto". The choice that actually exists is automatic or naming
+ * models yourself, so that is all this shows.
+ */
+function OpenRouterRouting({ routing, canEdit, busy, onSave }: {
+  routing: Routing
+  canEdit: boolean
+  busy: boolean
+  onSave: (patch: Partial<Routing['policy']>) => Promise<void>
+}) {
+  const overrides = routing.policy.overrides
+  const pinned = (['small', 'medium', 'large'] as Tier[]).filter((t) => overrides[t]?.trim())
+  const [manual, setManual] = useState(pinned.length > 0)
+  const [draft, setDraft] = useState<Record<Tier, string>>({
+    small: overrides.small ?? '',
+    medium: overrides.medium ?? '',
+    large: overrides.large ?? '',
+  })
+
+  const choose = async (next: boolean) => {
+    setManual(next)
+    if (!next && pinned.length > 0) {
+      setDraft({ small: '', medium: '', large: '' })
+      await onSave({ overrides: {} })
+    }
+  }
+
+  return (
+    <div className="routing-openrouter">
+      <div className="segmented" role="tablist">
+        <button type="button" role="tab" aria-selected={!manual} className={!manual ? 'active' : ''} disabled={busy || !canEdit} onClick={() => void choose(false)}>Automatic</button>
+        <button type="button" role="tab" aria-selected={manual} className={manual ? 'active' : ''} disabled={busy || !canEdit} onClick={() => void choose(true)}>Chosen by me</button>
+      </div>
+      {!manual ? (
+        <p className="panel-subtitle" style={{ marginTop: 10 }}>OpenRouter picks the model for every request from its own catalog, balancing price and availability. Nothing to tune.</p>
+      ) : (
+        <>
+          <p className="panel-subtitle" style={{ marginTop: 10 }}>Name the model for each size. Leave one empty to let OpenRouter pick it.</p>
+          <form
+            className="openrouter-pins"
+            onSubmit={(e) => {
+              e.preventDefault()
+              const next: Partial<Record<Tier, string>> = {}
+              for (const tier of ['small', 'medium', 'large'] as Tier[]) {
+                const value = draft[tier].trim()
+                if (value) next[tier] = value
+              }
+              void onSave({ overrides: next })
+            }}
+          >
+            {(['small', 'medium', 'large'] as Tier[]).map((tier) => (
+              <label key={tier}>
+                <span className="stat-label">{tier}</span>
+                <input
+                  value={draft[tier]}
+                  disabled={busy || !canEdit}
+                  onChange={(e) => setDraft({ ...draft, [tier]: e.target.value })}
+                  placeholder="openrouter/anthropic/claude-sonnet-5"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <span className="text-subtle">{TIER_HINT[tier]}</span>
+              </label>
+            ))}
+            {canEdit && <button type="submit" className="primary-button" disabled={busy}>{busy ? 'Saving…' : 'Save models'}</button>}
+          </form>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function ModelsSection({ canEdit }: { canEdit: boolean }) {
   const [routing, setRouting] = useState<Routing | null>(null)
   const [error, setError] = useState('')
@@ -150,7 +223,7 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
       <section className="card panel team-section">
         <div className="team-section-head">
           <h3>Model routing</h3>
-          <span className="panel-subtitle">No model is hard-coded. For the provider in use, Spaces scores the catalog by price, generation and size, and fills three tiers.</span>
+          <span className="panel-subtitle">{isOpenRouter ? 'OpenRouter routes every request itself. Let it choose, or name the models you want.' : 'No model is hard-coded. For the provider in use, Spaces scores the catalog by price, generation and size, and fills three tiers.'}</span>
         </div>
         {error && <p className="error-text">{error}</p>}
         {notice && <p className="team-flash team-flash-ok">{notice}</p>}
@@ -162,6 +235,9 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
           <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} disabled={busy} onClick={() => void load(true)}>Recompute</button>
         </div>
 
+        {isOpenRouter ? (
+          <OpenRouterRouting routing={routing} canEdit={canEdit} busy={busy} onSave={save} />
+        ) : (
         <div className="tier-grid">
           {(['small', 'medium', 'large'] as Tier[]).map((tier) => (
             <div key={tier} className={`tier-card ${tier}`}>
@@ -178,8 +254,7 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
             </div>
           ))}
         </div>
-
-        {isOpenRouter && <p className="panel-subtitle" style={{ marginTop: 10 }}>OpenRouter chooses the model for every request from its own catalog. Nothing else to tune here; switch the provider order below to route yourself.</p>}
+        )}
       </section>
 
       {canEdit && (
