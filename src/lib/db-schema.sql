@@ -889,3 +889,58 @@ BEGIN
 
   INSERT INTO tenancy_repairs (name, details) VALUES ('move-app-credentials-to-owner', jsonb_build_object('appsMoved', moved));
 END $$;
+
+-- Project responsibilities: human accountability, separate from team access roles.
+CREATE TABLE IF NOT EXISTS project_responsibilities (
+  responsibility_id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('standard','custom')),
+  standard_key TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (length(trim(name)) > 0),
+  CHECK ((kind = 'standard' AND standard_key IS NOT NULL) OR (kind = 'custom' AND standard_key IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS project_responsibilities_active_name_idx
+  ON project_responsibilities (project_id, normalized_name) WHERE is_active;
+CREATE UNIQUE INDEX IF NOT EXISTS project_responsibilities_standard_key_idx
+  ON project_responsibilities (project_id, standard_key) WHERE standard_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS project_responsibilities_project_idx
+  ON project_responsibilities (project_id, display_order, responsibility_id);
+
+CREATE TABLE IF NOT EXISTS responsibility_assignments (
+  assignment_id UUID PRIMARY KEY,
+  responsibility_id UUID NOT NULL REFERENCES project_responsibilities(responsibility_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL DEFAULT 0 CHECK (ordinal >= 0),
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  assigned_by UUID REFERENCES users(user_id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS responsibility_assignments_active_unique_idx
+  ON responsibility_assignments (responsibility_id, user_id) WHERE is_active;
+CREATE INDEX IF NOT EXISTS responsibility_assignments_order_idx
+  ON responsibility_assignments (responsibility_id, ordinal, user_id);
+
+CREATE TABLE IF NOT EXISTS responsibility_audit (
+  audit_id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  responsibility_id UUID REFERENCES project_responsibilities(responsibility_id) ON DELETE SET NULL,
+  actor_user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  before_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  after_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS responsibility_audit_project_idx
+  ON responsibility_audit (project_id, created_at DESC);
+
+DROP TRIGGER IF EXISTS project_responsibilities_touch ON project_responsibilities;
+CREATE TRIGGER project_responsibilities_touch
+  BEFORE UPDATE ON project_responsibilities
+  FOR EACH ROW EXECUTE FUNCTION touch_project();

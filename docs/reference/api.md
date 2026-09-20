@@ -54,6 +54,9 @@ own session, team creation and invites.
 | `GET /api/projects/:id/onboarding` · `POST …/onboarding` | Onboarding progress / restart |
 | `GET /api/projects/:id/suggestions` · `POST …/suggestions` | Suggested repositories & work areas / regenerate (`{ basis: 'project' | 'plan' }`) |
 | `POST /api/projects/:id/export` | Export memory, knowledge and manifest into the governing workspace |
+| `GET /api/projects/:id/responsibilities` | Read the six project accountability responsibilities and their `explicit`, `owner-fallback`, or `unresolved` resolution state; owning-team members only |
+| `PUT /api/projects/:id/responsibilities/:responsibilityId/assignments` | Replace ordered assignees with `{ userIds: string[] }`; owning-team owners/admins only; rejects invalid members and empty Owner assignments |
+| `POST /api/projects/:id/responsibilities/migrate` | Idempotently seed/repair standard responsibilities; owning-team owners/admins only |
 
 ## Repositories
 

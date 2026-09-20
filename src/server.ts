@@ -37,6 +37,7 @@ import { importQueueSnapshot, queueKnowledgeImport, recoverInterruptedImports } 
 import { listImportCatalog, validateSourceConfig, type CatalogIntegration } from './lib/knowledge-connectors'
 import { confirmPhraseFor, deleteProjectCompletely, previewProjectDeletion, ProjectBusyError, ProjectNotArchivedError } from './lib/project-delete'
 import { cancelProjectWork } from './lib/project-cancel'
+import { ResponsibilityError, migrateProjectResponsibilities, replaceAssignments } from './lib/project-responsibilities'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import {
@@ -471,7 +472,7 @@ async function route(req: Request): Promise<Response> {
     if (method === 'DELETE' && /^\/members\/[0-9a-f-]{36}$/.test(rest)) {
       const userId = rest.split('/')[2]!
       if (userId !== auth.user.userId) { const denied = requireRole('admin'); if (denied) return denied }
-      try { await removeMember(teamId, userId) } catch (error) { return sendJson(409, { error: error instanceof Error ? error.message : String(error) }) }
+      try { await removeMember(teamId, userId, auth.user.userId) } catch (error) { return sendJson(409, { error: error instanceof Error ? error.message : String(error) }) }
       return sendJson(200, { members: await listMembers(teamId) })
     }
     if (method === 'GET' && rest === '/invites') {
@@ -751,7 +752,7 @@ async function route(req: Request): Promise<Response> {
     if (auth && !auth.activeTeam) return sendJson(400, { error: 'Create or join a team before creating a project.' })
     // Onboarding and every stage need a model: refuse rather than create a project that cannot run.
     if ((await configuredProvidersFor(await orgIdOf())).length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
-    const project = await projCreate({ name: body.name.trim(), description: body.description?.trim(), teamId: auth?.activeTeam?.teamId ?? null })
+    const project = await projCreate({ name: body.name.trim(), description: body.description?.trim(), teamId: auth?.activeTeam?.teamId ?? null, createdBy: auth?.user.userId ?? null })
     for (const r of body.repos ?? []) {
       await projAddRepo({ projectId: project.projectId, ...r })
     }
@@ -769,6 +770,48 @@ async function route(req: Request): Promise<Response> {
     void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel(await orgIdOf()), feature: body.feature?.trim() || undefined })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
+  }
+
+  // Project responsibilities: accountability data is visible to owning-team members;
+  // mutations and repair are restricted to team owners/admins.
+  if (/^\/api\/projects\/[0-9a-f-]{36}\/responsibilities(?:\/.*)?$/.test(url.pathname)) {
+    const parts = url.pathname.split('/')
+    const projectId = parts[3]!
+    const project = await projGet(projectId)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    // A project with no owning team has no eligibility boundary. Refuse rather
+    // than exposing accountability data to every authenticated account (FR-019).
+    if (!authDisabled() && !project.teamId) return sendJson(403, { error: 'This project has no owning team; adopt it into a team before managing responsibilities.' })
+    const denied = requireProjectRole(project, method === 'GET' ? 'member' : 'admin', method === 'GET' ? 'Only team members can view project responsibilities.' : 'Only team owners or admins can manage project responsibilities.')
+    if (denied) return denied
+    try {
+      if (method === 'GET' && parts.length === 5) {
+        // Accessing responsibility state triggers an idempotent repair: missing
+        // standard definitions are seeded and an eligible Owner selected (FR-002).
+        const result = await migrateProjectResponsibilities(projectId, auth?.user.userId)
+        return sendJson(200, { projectId, repairNeeded: result.repairNeeded, responsibilities: result.responsibilities })
+      }
+      if (method === 'POST' && parts.length === 6 && parts[4] === 'responsibilities' && parts[5] === 'migrate') {
+        const result = await migrateProjectResponsibilities(projectId, auth?.user.userId)
+        return sendJson(200, { projectId, ...result })
+      }
+      if (method === 'PUT' && parts.length === 7 && parts[4] === 'responsibilities' && parts[6] === 'assignments') {
+        const responsibilityId = parts[5]!
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(responsibilityId)) return sendJson(400, { error: 'responsibilityId must be a UUID string.' })
+        const body = await readJson<{ userIds?: unknown }>(req)
+        if (!Array.isArray(body.userIds) || body.userIds.some((id) => typeof id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))) return sendJson(400, { error: 'userIds must be an array of UUID strings.' })
+        const updated = await replaceAssignments(projectId, responsibilityId, body.userIds, auth?.user.userId)
+        return sendJson(200, updated)
+      }
+      return sendJson(404, { error: 'Unknown responsibility endpoint.' })
+    } catch (error) {
+      if (error instanceof ResponsibilityError) {
+        const status = error.code === 'not_found' ? 404 : error.code === 'conflict' ? 409 : error.code === 'ineligible' || error.code === 'invalid' ? 400 : 500
+        return sendJson(status, { error: error.message, code: error.code })
+      }
+      if (error instanceof SyntaxError) return sendJson(400, { error: 'Request body must be valid JSON.' })
+      throw error
+    }
   }
 
   if (method === 'GET' && /^\/api\/projects\/[0-9a-f-]{36}\/onboarding$/.test(url.pathname)) {
