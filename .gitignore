@@ -49,3 +49,6 @@ e2e-report.md
 site/
 # Playwright CLI session artifacts (agents' browser skill)
 .playwright-cli/
+
+# Browser test screenshots
+/test-results/
