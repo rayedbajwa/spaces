@@ -323,6 +323,8 @@ async function route(req: Request): Promise<Response> {
   // ---- Teams ("spaces"): each owns projects, memory and knowledge defaults ----
 
   const teamRole = (teamId: string): TeamRole | undefined => auth?.teams.find((t) => t.teamId === teamId)?.role
+  const isOrgAdmin = () => !auth || auth.teams.some((t) => roleAtLeast(t.role, 'admin'))
+  const requireOrgAdmin = (message: string) => (isOrgAdmin() ? null : sendJson(403, { error: message }))
 
   if (method === 'GET' && url.pathname === '/api/teams' && auth) {
     return sendJson(200, { teams: auth.teams, activeTeam: auth.activeTeam ?? null })
@@ -412,7 +414,7 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, await getOrgMemory())
   }
   if (method === 'PUT' && url.pathname === '/api/org/memory') {
-    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can edit organization memory.' })
+    const denied = requireOrgAdmin('Only team owners or admins can edit organization memory.'); if (denied) return denied
     const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
     await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
     return sendJson(200, await getOrgMemory())
@@ -421,13 +423,14 @@ async function route(req: Request): Promise<Response> {
   // ---- LLM provider keys (organization-level, encrypted) ----
 
   if (method === 'GET' && url.pathname === '/api/org/provider-keys') {
+    const denied = requireOrgAdmin('Only team owners or admins can view provider keys.'); if (denied) return denied
     return sendJson(200, { keys: await listProviderKeys() })
   }
   if (/^\/api\/org\/provider-keys\/[a-z]+(\/verify)?$/.test(url.pathname) && (method === 'PUT' || method === 'DELETE' || method === 'POST')) {
     const parts = url.pathname.split('/')
     const provider = parts[4]!
     if (!isProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
-    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can manage provider keys.' })
+    const denied = requireOrgAdmin('Only team owners or admins can manage provider keys.'); if (denied) return denied
     try {
       if (method === 'DELETE') {
         await deleteProviderKey(provider)
@@ -457,7 +460,7 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, routing)
   }
   if (method === 'PUT' && url.pathname === '/api/org/models') {
-    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can change model routing.' })
+    const denied = requireOrgAdmin('Only team owners or admins can change model routing.'); if (denied) return denied
     const body = await readJson<Partial<ModelPolicy>>(req)
     await updateModelPolicy(body)
     const routing = await getTierRouting(true)
@@ -596,11 +599,15 @@ async function route(req: Request): Promise<Response> {
     const match = /^\/api\/projects\/([^/]+)(\/|$)/.exec(url.pathname)
     if (match) {
       const idOrSlug = decodeURIComponent(match[1]!)
+      const writeAllowedPath = /^\/api\/projects\/[^/]+\/chat(\/|$)/.test(url.pathname)
       const project = /^[0-9a-f-]{36}$/.test(idOrSlug)
         ? await projGet(idOrSlug)
         : await import('./lib/project-registry').then((m) => m.getProjectBySlug(idOrSlug))
       if (project?.teamId && !auth.teams.some((t) => t.teamId === project.teamId)) {
         return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
+      }
+      if (method !== 'GET' && !writeAllowedPath && project?.teamId && !roleAtLeast(teamRole(project.teamId) ?? 'viewer', 'member')) {
+        return sendJson(403, { error: 'Only team members can modify this project.' })
       }
     }
   }
@@ -834,6 +841,7 @@ async function route(req: Request): Promise<Response> {
     const repoId = url.pathname.split('/')[5]!
     const repo = await projGetRepo(repoId)
     if (!repo) return sendJson(404, { error: 'Repo not found.' })
+    if (repo.projectId !== projectId) return sendJson(404, { error: 'Repo not found in this project.' })
     if (!repo.localPath) return sendJson(409, { error: 'Repository has no local checkout yet; clone it first.' })
     void refreshRepositoryKnowledge(projectId, repoId).catch(() => undefined)
     return sendJson(202, { ok: true, repoId, status: 'learning' })
@@ -842,9 +850,11 @@ async function route(req: Request): Promise<Response> {
   // Edit a registered repo (label, path, owner/name, primary). Changing the
   // GitHub owner/name re-queues a clone.
   if (method === 'PATCH' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/[0-9a-f-]{36}$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
     const repoId = url.pathname.split('/')[5]!
     const existing = await projGetRepo(repoId)
     if (!existing) return sendJson(404, { error: 'Repo not found.' })
+    if (existing.projectId !== projectId) return sendJson(404, { error: 'Repo not found in this project.' })
     const body = await readJson<{ label?: string; localPath?: string; githubRepo?: string; isPrimary?: boolean }>(req)
     const updated = await projUpdateRepo(repoId, {
       label: body.label?.trim() || undefined,
@@ -893,9 +903,11 @@ async function route(req: Request): Promise<Response> {
   // (Re)clone a GitHub repo into the local workspace. Idempotent: an in-flight
   // clone is shared, a finished clone is fetched rather than re-cloned.
   if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/[0-9a-f-]{36}\/clone$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
     const repoId = url.pathname.split('/')[5]!
     const repo = await projGetRepo(repoId)
     if (!repo) return sendJson(404, { error: 'Repo not found.' })
+    if (repo.projectId !== projectId) return sendJson(404, { error: 'Repo not found in this project.' })
     if (repo.kind !== 'github' || !repo.githubRepo) return sendJson(400, { error: 'Only GitHub repos can be cloned.' })
     void scheduleRepoClone(repo).then(() => refreshRepositoryKnowledge(repo.projectId, repo.repoId)).catch(() => undefined)
     const refreshed = await projGetRepo(repoId)
@@ -1076,6 +1088,8 @@ async function route(req: Request): Promise<Response> {
     const projectId = url.pathname.split('/')[3]!
     const repoId = url.pathname.split('/').pop()!
     const existing = await projGetRepo(repoId)
+    if (!existing) return sendJson(404, { error: 'Repo not found.' })
+    if (existing.projectId !== projectId) return sendJson(404, { error: 'Repo not found in this project.' })
     await projRemoveRepo(repoId)
     // Keep agents' picture consistent: drop the repo's brief, recompose memory,
     // and prune it from the project's knowledge scope.
@@ -1104,7 +1118,11 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'DELETE' && /^\/api\/projects\/[0-9a-f-]{36}\/integrations\/[0-9a-f-]{36}$/.test(url.pathname)) {
+    const projectId = url.pathname.split('/')[3]!
     const integrationId = url.pathname.split('/').pop()!
+    const detail = await projGetDetail(projectId)
+    if (!detail) return sendJson(404, { error: 'Project not found.' })
+    if (!detail.integrations.some((i) => i.integrationId === integrationId)) return sendJson(404, { error: 'Integration not found in this project.' })
     await projRemoveIntegration(integrationId)
     return sendJson(204, {})
   }
@@ -1444,6 +1462,7 @@ async function route(req: Request): Promise<Response> {
   // ---- OAuth app credentials (organization-level, required before connecting) ----
 
   if (method === 'GET' && url.pathname === '/api/oauth-apps') {
+    const denied = requireOrgAdmin('Only team owners or admins can view app credentials.'); if (denied) return denied
     return sendJson(200, await listOAuthApps(origin))
   }
 
@@ -1453,7 +1472,7 @@ async function route(req: Request): Promise<Response> {
   // credentials. Installing the app then lands on /installed, which starts
   // the ordinary authorize flow to obtain the user token.
   if (method === 'GET' && url.pathname === '/api/oauth-apps/github/manifest') {
-    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can create the GitHub App.' })
+    const denied = requireOrgAdmin('Only team owners or admins can create the GitHub App.'); if (denied) return denied
     const organization = url.searchParams.get('org')?.trim() || undefined
     if (organization && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)) return sendJson(400, { error: 'That is not a valid GitHub organization name.' })
     const { html } = githubAppManifestPage(origin, { organization })
@@ -1483,7 +1502,7 @@ async function route(req: Request): Promise<Response> {
   if ((method === 'PUT' || method === 'DELETE') && /^\/api\/oauth-apps\/[a-z]+$/.test(url.pathname)) {
     const provider = url.pathname.split('/').pop()!
     if (!isOAuthProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
-    if (auth && !auth.teams.some((t) => roleAtLeast(t.role, 'admin'))) return sendJson(403, { error: 'Only team owners or admins can manage app credentials.' })
+    const denied = requireOrgAdmin('Only team owners or admins can manage app credentials.'); if (denied) return denied
     if (method === 'DELETE') {
       await deleteOAuthApp(provider)
       serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
@@ -1502,10 +1521,12 @@ async function route(req: Request): Promise<Response> {
   // ---- App-level integrations ----
 
   if (method === 'GET' && url.pathname === '/api/integrations') {
+    const denied = requireOrgAdmin('Only team owners or admins can view app integrations.'); if (denied) return denied
     return sendJson(200, await listAppIntegrations())
   }
 
   if (method === 'DELETE' && /^\/api\/integrations\/[a-z]+$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can disconnect app integrations.'); if (denied) return denied
     const kind = url.pathname.split('/').pop() as AppIntegrationKind
     await disconnectAppIntegration(kind)
     return sendJson(200, { ok: true })
@@ -1521,6 +1542,9 @@ async function route(req: Request): Promise<Response> {
     // projectId is legacy: keep it optional in state so old links don't 500.
     // mode=login (GitHub only) signs a user in instead of storing an app-level token.
     const loginMode = provider === 'github' && url.searchParams.get('mode') === 'login'
+    if (!loginMode) {
+      const denied = requireOrgAdmin('Only team owners or admins can connect organization integrations.'); if (denied) return denied
+    }
     const projectIdOrEmpty = loginMode ? `__login__:${url.searchParams.get('invite') ?? ''}` : (url.searchParams.get('projectId') ?? '')
     // Optional same-tab flows (GitHub App install) come back to a page in the app instead of a "close this window" notice.
     const wantedReturn = url.searchParams.get('return') ?? ''
@@ -1575,6 +1599,8 @@ async function route(req: Request): Promise<Response> {
       }
 
       // Atlassian OAuth grants access to both Jira and Confluence — record both slots.
+      const denied = requireOrgAdmin('Only team owners or admins can connect organization integrations.')
+      if (denied) return denied
       const kinds: AppIntegrationKind[] = provider === 'atlassian' ? ['jira', 'confluence'] : [provider as AppIntegrationKind]
       // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
       const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
