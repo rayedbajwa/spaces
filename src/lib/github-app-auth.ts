@@ -65,8 +65,31 @@ export async function getInstallationToken(orgId: string): Promise<InstallationT
   return task
 }
 
-const appAliveCache = new Map<string, { at: number; alive: boolean }>()
+interface AppState {
+  alive: boolean
+  /** Repository permissions GitHub reports for the app, e.g. { contents: 'write' }. */
+  permissions: Record<string, string>
+  slug?: string
+}
+
+const appStateCache = new Map<string, { at: number; state: AppState }>()
 const APP_ALIVE_TTL_MS = 10 * 60_000
+
+/** Permissions an agent needs; without `workflows` GitHub rejects any push touching .github/workflows. */
+export const REQUIRED_APP_PERMISSIONS: Record<string, string> = {
+  contents: 'write',
+  pull_requests: 'write',
+  workflows: 'write',
+}
+
+/** The permissions the stored app is missing, by their names on GitHub. */
+export async function missingAppPermissions(orgId: string): Promise<string[]> {
+  const state = await inspectGitHubApp(orgId)
+  if (!state?.alive) return []
+  return Object.entries(REQUIRED_APP_PERMISSIONS)
+    .filter(([name, level]) => state.permissions[name] !== level && !(level === 'read' && state.permissions[name] === 'write'))
+    .map(([name]) => name)
+}
 
 /**
  * Whether the stored GitHub App still exists on GitHub.
@@ -79,8 +102,13 @@ const APP_ALIVE_TTL_MS = 10 * 60_000
  * the app as usable.
  */
 export async function githubAppAlive(orgId: string): Promise<boolean | undefined> {
-  const cached = appAliveCache.get(orgId)
-  if (cached && Date.now() - cached.at < APP_ALIVE_TTL_MS) return cached.alive
+  return (await inspectGitHubApp(orgId))?.alive
+}
+
+/** Ask GitHub about the stored app: whether it still exists and what it may do. */
+export async function inspectGitHubApp(orgId: string): Promise<AppState | undefined> {
+  const cached = appStateCache.get(orgId)
+  if (cached && Date.now() - cached.at < APP_ALIVE_TTL_MS) return cached.state
   const config = await getOAuthAppConfig(orgId, 'github').catch(() => ({} as Awaited<ReturnType<typeof getOAuthAppConfig>>))
   if (!config.appId || !config.pemEnc) return undefined
   let pem: string
@@ -92,16 +120,23 @@ export async function githubAppAlive(orgId: string): Promise<boolean | undefined
   if (!response) return undefined
   if (response.status === 404 || response.status === 401) {
     authLog.warn('the stored GitHub App no longer exists on GitHub; it must be created again', { orgId, status: response.status })
-    appAliveCache.set(orgId, { at: Date.now(), alive: false })
-    return false
+    const state: AppState = { alive: false, permissions: {} }
+    appStateCache.set(orgId, { at: Date.now(), state })
+    return state
   }
-  appAliveCache.set(orgId, { at: Date.now(), alive: response.ok })
-  return response.ok
+  const data = response.ok ? ((await response.json().catch(() => ({}))) as { slug?: string; permissions?: Record<string, string> }) : {}
+  const state: AppState = { alive: response.ok, permissions: data.permissions ?? {}, slug: data.slug }
+  appStateCache.set(orgId, { at: Date.now(), state })
+  if (response.ok) {
+    const missing = Object.entries(REQUIRED_APP_PERMISSIONS).filter(([name, level]) => state.permissions[name] !== level && !(level === 'read' && state.permissions[name] === 'write')).map(([name]) => name)
+    if (missing.length) authLog.warn('the GitHub App is missing permissions agents need', { orgId, app: state.slug, missing })
+  }
+  return state
 }
 
 /** Forget the cached answer after the app is re-created or removed. */
 export function forgetGitHubAppState(orgId: string): void {
-  appAliveCache.delete(orgId)
+  appStateCache.delete(orgId)
   cached.delete(orgId)
 }
 

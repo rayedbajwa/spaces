@@ -50,6 +50,9 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
     // the public internet (localhost), so the block is left out entirely.
     // Repository permissions only — GitHub's manifest validator rejects the
     // account/organization ones ("resource is not included in the list").
+    // `workflows: write` matters: without it GitHub refuses any push that
+    // touches .github/workflows, so an agent asked to wire its tests into CI
+    // cannot deliver the change at all.
     default_permissions: {
       contents: 'write',
       pull_requests: 'write',
@@ -57,6 +60,7 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
       metadata: 'read',
       checks: 'read',
       actions: 'read',
+      workflows: 'write',
     },
     default_events: [],
   }

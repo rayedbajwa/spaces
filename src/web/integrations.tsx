@@ -39,6 +39,9 @@ interface OAuthApp {
   }
   /** False when the provider no longer knows this app (deleted on their side). */
   availableAtProvider?: boolean
+  /** Permissions the app is missing that agents need. */
+  missingPermissions?: string[]
+  permissionsUrl?: string
 }
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
@@ -136,6 +139,14 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
               {app.availableAtProvider === false && (
                 <p className="error-text" style={{ margin: '0 0 8px' }}>
                   This app no longer exists on {app.label.split(' ')[0]}, so connecting and signing in with it fail. Create it again below.
+                </p>
+              )}
+              {app.availableAtProvider !== false && app.missingPermissions && app.missingPermissions.length > 0 && (
+                <p className="error-text" style={{ margin: '0 0 8px' }}>
+                  This app cannot {app.missingPermissions.includes('workflows') ? 'change workflow files, so a run that wires its tests into CI is refused' : 'do everything agents need'}.
+                  {' '}Add {app.missingPermissions.map((name) => name.replace('_', ' ')).join(', ')} (read and write)
+                  {app.permissionsUrl ? <> on <a href={app.permissionsUrl} target="_blank" rel="noreferrer">the app's permissions page</a></> : ' on GitHub'}
+                  , then accept the request on the installation.
                 </p>
               )}
 
