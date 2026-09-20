@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import { stepForColumn, isEligibleDrop, type BoardStatus, type DropCandidateCard } from '../src/lib/board-drop'
+import { stepForColumn, isEligibleDrop, laneForProject, type BoardStatus, type DropCandidateCard } from '../src/lib/board-drop'
 
 /**
  * Unit tests for the board's drag-and-drop eligibility rules. These are pure
@@ -89,5 +89,59 @@ describe('isEligibleDrop', () => {
       const acceptingLanes = lanes.filter((lane) => isEligibleDrop(c, lane))
       expect(acceptingLanes.length).toBe(1)
     }
+  })
+})
+
+describe('laneForProject', () => {
+  const base = { initialized: true, specified: true, planned: true, tasked: true, verificationStatus: 'missing' as const }
+
+  test('a project that implemented and verified is not left in Tasked', () => {
+    // The run finished, so it reports no current stage — the case that stranded cards.
+    expect(laneForProject({ ...base, verificationStatus: 'fail', activeStage: null })).toBe('implementing')
+    expect(laneForProject({ ...base, implementationArtifacts: true, activeStage: null })).toBe('implementing')
+    expect(laneForProject({ ...base, tasksDone: 3, activeStage: null })).toBe('implementing')
+  })
+
+  test('tasks written but no work started stays in Tasked', () => {
+    expect(laneForProject({ ...base, tasksDone: 0 })).toBe('tasked')
+  })
+
+  test('done only when verification passed', () => {
+    expect(laneForProject({ ...base, verificationStatus: 'pass' })).toBe('done')
+    expect(laneForProject({ ...base, verificationStatus: 'partial' })).toBe('implementing')
+  })
+
+  test('a run in flight on a code stage counts as implementing', () => {
+    expect(laneForProject({ ...base, activeStage: 'implement' })).toBe('implementing')
+    expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('implementing')
+    expect(laneForProject({ ...base, activeStage: 'plan' })).toBe('tasked')
+  })
+
+  test('earlier milestones still place their cards', () => {
+    expect(laneForProject({ initialized: false, specified: false, planned: false, tasked: false, verificationStatus: 'missing' })).toBe('backlog')
+    expect(laneForProject({ ...base, tasked: false, planned: false, specified: false })).toBe('initialized')
+    expect(laneForProject({ ...base, tasked: false, planned: false })).toBe('specified')
+    expect(laneForProject({ ...base, tasked: false })).toBe('planned')
+  })
+})
+
+describe('a lane is a phase, not one step', () => {
+  const card = (step: string): DropCandidateCard => ({ recommendedAction: { step, label: `Run ${step}`, tab: 'specs', reason: 'next' } })
+
+  test('the steps that lead into Implementing all land there', () => {
+    for (const step of ['testplan', 'parallelize', 'implement']) {
+      expect(isEligibleDrop(card(step), 'implementing')).toBe(true)
+    }
+  })
+
+  test('verify and deliver both lead to Done', () => {
+    expect(isEligibleDrop(card('verify'), 'done')).toBe(true)
+    expect(isEligibleDrop(card('deliver'), 'done')).toBe(true)
+  })
+
+  test('a card whose next step is earlier still cannot skip ahead', () => {
+    expect(isEligibleDrop(card('plan'), 'implementing')).toBe(false)
+    expect(isEligibleDrop(card('implement'), 'done')).toBe(false)
+    expect(isEligibleDrop(card('specify'), 'done')).toBe(false)
   })
 })
