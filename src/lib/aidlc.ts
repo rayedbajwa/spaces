@@ -20,6 +20,7 @@ import { log } from './logger'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
+import { standingAgentInstructions } from './agent-environment'
 import { readVerificationStatus } from './pipeline-branch'
 import {
   commentOnPullRequest,
@@ -338,6 +339,32 @@ export class AIDLCFlow {
     return this.sessionFile
   }
 
+  /**
+   * Instructions that hold for the whole run, appended to the agent's system
+   * prompt the way Pi does it: what this machine provides (a database, a free
+   * port, a headless browser) and, for a flow that reports results, what makes
+   * that evidence trustworthy. Repeating them on every stage prompt would push
+   * them into the conversation the agent is reasoning about instead.
+   */
+  private async standingInstructions(): Promise<string[]> {
+    const { describeAgentEnvironment, evidenceRules, renderAgentEnvironment } = await import('./agent-environment')
+    const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
+    if (!machine) return []
+    const reportsEvidence = this.stages.some((stage) => EVIDENCE_STAGES.includes(stage))
+    return [renderAgentEnvironment(machine), reportsEvidence ? evidenceRules(machine) : '']
+  }
+
+  /** Point every checkout at the assigned database, port and key before code stages run. */
+  private async prepareCheckouts(): Promise<void> {
+    const { describeAgentEnvironment, prepareCheckoutEnvironment } = await import('./agent-environment')
+    const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
+    if (!machine) return
+    for (const target of [{ localPath: this.options.cwd }, ...(this.options.repoTargets ?? [])]) {
+      const applied = await prepareCheckoutEnvironment(target.localPath, machine).catch(() => [])
+      if (applied.length) this.print(`[env] ${path.basename(target.localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
+    }
+  }
+
   /** Organization the run belongs to (explicit, else through the project, else the default). */
   orgId(): Promise<string> {
     this.orgIdPromise ??= resolveRunnerOrg(this.options)
@@ -382,8 +409,10 @@ export class AIDLCFlow {
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
       // Plus a real browser so implement/QA stages can run the app and verify what users see.
       customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
-      // Default resources plus the skills Spaces bundles (playwright-browser).
-      resourceLoader: await createAgentResourceLoader(this.options.cwd),
+      // Default resources plus the skills Spaces bundles (playwright-browser), and
+      // the standing instructions for this run: what the machine provides and how
+      // evidence must hold up.
+      resourceLoader: await createAgentResourceLoader(this.options.cwd, { appendSystemPrompt: await this.standingInstructions() }),
       sessionManager,
     })
 
@@ -621,25 +650,11 @@ export class AIDLCFlow {
     const { describeWorkInProgress } = await import('./run-resume')
     const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
     if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
-    // Stages that build and verify are told what the machine offers — a database,
-    // a free port, a headless browser — so they run the checks instead of skipping them,
-    // and each checkout is pointed at that database before the stage starts so a
-    // migration cannot land on the application's own.
-    let environment = ''
-    let evidence = ''
-    if (CODE_STAGES.includes(stage)) {
-      const { describeAgentEnvironment, evidenceRules, prepareCheckoutEnvironment, renderAgentEnvironment } = await import('./agent-environment')
-      const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
-      if (machine) {
-        environment = renderAgentEnvironment(machine)
-        evidence = EVIDENCE_STAGES.includes(stage) ? evidenceRules(machine) : ''
-        for (const target of [{ localPath: this.options.cwd }, ...(this.options.repoTargets ?? [])]) {
-          const applied = await prepareCheckoutEnvironment(target.localPath, machine).catch(() => [])
-          if (applied.length) this.print(`[env] ${path.basename(target.localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
-        }
-      }
-    }
-    const prompt = [inProgress, environment, evidence, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // What the machine provides is a standing instruction on the session, not part
+    // of the prompt. Each checkout is still pointed at the assigned database before
+    // a code stage runs, so a migration cannot land on the application's own.
+    if (CODE_STAGES.includes(stage)) await this.prepareCheckouts()
+    const prompt = [inProgress, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
@@ -1567,7 +1582,7 @@ export async function runAIDLCMergeOrchestrator(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1646,7 +1661,7 @@ export async function runAIDLCSpecificTask(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1726,7 +1741,7 @@ export async function runAIDLCSpecificWorkstream(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1935,7 +1950,7 @@ export async function runAIDLCParallelSubAgents(options: {
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
           customTools: [...knowledgeTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
-          resourceLoader: await createAgentResourceLoader(workstreamCwd),
+          resourceLoader: await createAgentResourceLoader(workstreamCwd, { appendSystemPrompt: await standingAgentInstructions(workstreamCwd, { label: workstream.title }) }),
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 
@@ -2283,9 +2298,8 @@ export async function readDevSetupState(cwd: string): Promise<DevSetupState> {
   }
 }
 
-export function buildDevSetupPrompt(options: { repoLabel?: string; environment?: string } = {}): string {
-  return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests.
-${options.environment ? `\n${options.environment}\n` : ''}
+export function buildDevSetupPrompt(options: { repoLabel?: string } = {}): string {
+  return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests. What this machine provides, and the rules for evidence, are in your instructions.
 
 Do this:
 1. Review README.md, CONTRIBUTING.md, docs/, the package/build manifests (package.json, go.mod, pyproject.toml, Cargo.toml, Makefile, Dockerfile, docker-compose*), and CI config (.github/workflows) to learn how the project is installed, built, tested and linted.
@@ -2320,14 +2334,18 @@ export async function runDevSetup(options: {
   const cwd = resolveCwd(options.cwd)
   await ensureIgnored(cwd, '.aidlc/').catch(() => undefined)
   const orgId = await resolveRunnerOrg(options)
-  // Tell the agent what this machine offers — a database, a free port, a browser —
-  // so it verifies the work instead of skipping tests it assumes it cannot run.
+  // What this machine offers — a database, a free port, a browser — becomes a
+  // standing instruction on the session, and the assigned values are written into
+  // the checkout so its own tooling picks them up.
   const { describeAgentEnvironment, evidenceRules, prepareCheckoutEnvironment, renderAgentEnvironment } = await import('./agent-environment')
   const machine = await describeAgentEnvironment({ label: options.repoLabel ?? path.basename(cwd) }).catch(() => undefined)
   const applied = machine ? await prepareCheckoutEnvironment(cwd, machine).catch(() => []) : []
-  const environment = machine
-    ? [renderAgentEnvironment(machine), applied.length ? `\n${applied.join(', ')} ${applied.length === 1 ? 'has' : 'have'} already been written into this checkout's \`.env\` for you.` : '', evidenceRules(machine)].filter(Boolean).join('\n')
-    : ''
+  const standingInstructions = machine
+    ? [
+        [renderAgentEnvironment(machine), applied.length ? `\n${applied.join(', ')} ${applied.length === 1 ? 'has' : 'have'} already been written into this checkout's \`.env\` for you.` : ''].filter(Boolean).join('\n'),
+        evidenceRules(machine),
+      ]
+    : []
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
@@ -2337,7 +2355,7 @@ export async function runDevSetup(options: {
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
     customTools: buildWebTools(),
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: standingInstructions }),
     sessionManager: SessionManager.inMemory(cwd),
   })
   let output = ''
@@ -2353,7 +2371,7 @@ export async function runDevSetup(options: {
     }
   })
   try {
-    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel, environment }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
+    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
   } finally {
     unsubscribe()
     session.dispose()

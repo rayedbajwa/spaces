@@ -27,9 +27,23 @@ export function bundledSkillPaths(): string[] {
   return paths
 }
 
-/** A loaded resource loader for a session working in `cwd`. */
-export async function createAgentResourceLoader(cwd: string): Promise<DefaultResourceLoader> {
-  const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir(), additionalSkillPaths: bundledSkillPaths() })
+/**
+ * A loaded resource loader for a session working in `cwd`.
+ *
+ * `appendSystemPrompt` carries the instructions that hold for the whole
+ * session — what the machine provides, and the rules for evidence — the way
+ * Pi itself does it, instead of repeating them on top of every stage prompt.
+ * They then apply to every turn, survive compaction, and stay out of the
+ * conversation the agent is reasoning about.
+ */
+export async function createAgentResourceLoader(cwd: string, options: { appendSystemPrompt?: string[] } = {}): Promise<DefaultResourceLoader> {
+  const appendSystemPrompt = (options.appendSystemPrompt ?? []).map((text) => text.trim()).filter(Boolean)
+  const loader = new DefaultResourceLoader({
+    cwd,
+    agentDir: getAgentDir(),
+    additionalSkillPaths: bundledSkillPaths(),
+    ...(appendSystemPrompt.length ? { appendSystemPrompt } : {}),
+  })
   await loader.reload()
   return loader
 }

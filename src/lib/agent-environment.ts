@@ -250,3 +250,18 @@ export function evidenceRules(env: AgentEnvironment): string {
     '- Refresh the delivery record in the same cycle so it describes this run, not an earlier one.',
   ].join('\n')
 }
+
+/**
+ * The standing instructions for a session working in `cwd`: what the machine
+ * provides, and — for work whose output others rely on — what makes its
+ * evidence trustworthy. Passed to the resource loader as
+ * `appendSystemPrompt`, so they hold for every turn instead of being repeated
+ * on top of each prompt.
+ */
+export async function standingAgentInstructions(cwd: string, options: { label?: string; evidence?: boolean } = {}): Promise<string[]> {
+  const { basename } = await import('node:path')
+  const machine = await describeAgentEnvironment({ label: options.label ?? basename(cwd) }).catch(() => undefined)
+  if (!machine) return []
+  await prepareCheckoutEnvironment(cwd, machine).catch(() => [])
+  return [renderAgentEnvironment(machine), options.evidence === false ? '' : evidenceRules(machine)].filter(Boolean)
+}
