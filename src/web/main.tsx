@@ -75,6 +75,8 @@ type RunSnapshot = {
   pauseKind?: PauseKind
   log: string
   usage?: UsageSummary
+  /** Checked-off tasks of the feature being implemented. */
+  tasks?: { done: number; total: number; remaining: number }
   executiveSummary?: string
   timeline: TimelineEntry[]
   sessionFile?: string
@@ -3772,6 +3774,17 @@ function AiAgentOutputBar({
                   ? (currentRun?.interrupted ? `The worker restarted during ${currentRun.stage ?? 'the run'}; retry continues from that stage.` : `Failed${currentRun?.stage ? ` at ${currentRun.stage}` : ''}: ${currentRun?.error?.split('\n')[0]?.slice(0, 160) ?? 'no error detail recorded'}`)
                   : currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
               </p>
+              {currentRun?.tasks && currentRun.tasks.total > 0 && (
+                <div className="dock-tasks" title={`${currentRun.tasks.done} of ${currentRun.tasks.total} tasks ticked off in tasks.md`}>
+                  <div className="dock-tasks-bar" aria-hidden="true">
+                    <span style={{ width: `${Math.round((currentRun.tasks.done / currentRun.tasks.total) * 100)}%` }} />
+                  </div>
+                  <span className="text-subtle">
+                    {currentRun.tasks.done} of {currentRun.tasks.total} tasks done
+                    {currentRun.status === 'running' && currentRun.tasks.remaining > 0 ? ` · ${currentRun.tasks.remaining} to go` : ''}
+                  </span>
+                </div>
+              )}
               {total > 0 && (
                 <ol className="dock-progress" aria-label="Stage progress">
                   {stages.map((stage, i) => (

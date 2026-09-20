@@ -38,6 +38,7 @@ import {
 } from './lib/run-store'
 import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
+import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -127,10 +128,28 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
 
   // Rerun/resume: start at the requested stage when it exists in this template.
   const templateStages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
-  const startStage = fromStage && templateStages.includes(fromStage) ? fromStage : undefined
+  const requested = fromStage && templateStages.includes(fromStage) ? fromStage : undefined
+  // A run that has run before picks up from what exists on disk rather than from
+  // the top: stages whose artifacts are already written are not redone, and a
+  // half-finished task list continues where it stopped. A run starting for the
+  // first time always begins at the first stage — the artifacts it would find
+  // belong to the previous feature, not to this one.
+  const isResume = Boolean(requested || run.currentStage || run.retryCount > 0)
+  const resumePoint = isResume
+    ? await resolveResumePoint({ projectPath: run.projectPath, stages: templateStages, recorded: requested ?? run.currentStage })
+        .catch((error) => {
+          workerLog.warn('resume point could not be read; starting from the requested stage', { runId, error: error instanceof Error ? error.message : String(error) })
+          return { stage: requested, completed: [], reason: 'progress on disk could not be read' } as Awaited<ReturnType<typeof resolveResumePoint>>
+        })
+    : { stage: undefined, completed: [], reason: 'new run' } as Awaited<ReturnType<typeof resolveResumePoint>>
+  const startStage = resumePoint.stage ?? requested
+  if (startStage && startStage !== requested) {
+    workerLog.info('resuming from existing progress', { runId, requested: requested ?? null, startStage, reason: resumePoint.reason })
+  }
 
   await claimRunForWorker(runId, getWorkerId())
   await updateRunStatus(runId, { status: 'running', currentStage: startStage ?? templateStages[0], errorMessage: null })
+  if (startStage) await queueEvent(runId, 'resumed', { stage: startStage, completed: resumePoint.completed, reason: resumePoint.reason, tasks: resumePoint.taskProgress ? { done: resumePoint.taskProgress.done, total: resumePoint.taskProgress.total } : undefined })
 
   // Read speed mode from the project's orchestrator config (persisted in
   // project_orchestrators.config_json.speed_mode). Falls through to 'balanced'
@@ -162,8 +181,13 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     await queueEvent(runId, 'context_restored', { sessionFile: resumeSessionFile ?? null, priorHandoffStages: priorHandoffs.map((h) => h.stage) })
   }
 
+  // The agent is told what is already finished, so it continues the work instead of repeating it.
+  const resumeNote = startStage ? buildResumeNote(resumePoint) : ''
+  const sharedContextPrompt = [run.optionsJson?.sharedContextPrompt, resumeNote].filter((part) => part && String(part).trim()).join('\n\n') || undefined
+
   const options = {
     ...run.optionsJson,
+    ...(sharedContextPrompt ? { sharedContextPrompt } : {}),
     ...(startStage ? { startStage } : {}),
     ...(speedMode ? { speedMode } : {}),
     // Project paused (by NOTIFY here, or in the database): stop before the next stage.
