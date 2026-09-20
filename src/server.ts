@@ -631,7 +631,9 @@ async function route(req: Request): Promise<Response> {
       const sourceId = sourceMatch[1]!
       const sub = sourceMatch[2] ?? ''
       const source = await getKnowledgeSource(sourceId)
-      if (!source || !visible(source.teamId)) return sendJson(404, { error: 'Knowledge source not found.' })
+      // An organization-level source has no team, so team membership alone would
+      // make it readable from any tenant that knows its id.
+      if (!source || source.orgId !== knowledgeOrg || !visible(source.teamId)) return sendJson(404, { error: 'Knowledge source not found.' })
 
       if (method === 'GET' && sub === '') return sendJson(200, { source, documents: await listKnowledgeDocuments(sourceId, Number(url.searchParams.get('limit') ?? '100')) })
       if (method === 'PATCH' && sub === '') {

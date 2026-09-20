@@ -3,7 +3,10 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getDb } from './db'
 import { resolveKnowledgeScope, SOURCE_LABEL, type KnowledgeSource } from './integration-sources'
+import { log } from './logger'
 import { getProject } from './project-registry'
+
+const contextLog = log.child({ mod: 'context-builder' })
 
 /**
  * Organization and team memory: the two shared layers above a project (AIDLC
@@ -12,7 +15,17 @@ import { getProject } from './project-registry'
  */
 async function loadSharedMemoryLayers(projectId?: string): Promise<{ orgName: string; orgMemory: string; teamName?: string; teamMemory: string }> {
   const sql = getDb()
-  const [org] = await sql<Array<{ name: string; manualText: string }>>`SELECT name, manual_text AS "manualText" FROM org_memory WHERE singleton`.catch(() => [])
+  // Organization memory is per tenant. This used to read the single row the
+  // table had before tenancy, which has not existed since — and the failure was
+  // swallowed, so every agent ran with no organization memory at all.
+  const { getDefaultOrgId, orgIdForProject } = await import('./orgs')
+  const orgId = projectId ? await orgIdForProject(projectId) : await getDefaultOrgId()
+  const [org] = await sql<Array<{ name: string; manualText: string }>>`
+    SELECT name, manual_text AS "manualText" FROM org_memory WHERE org_id = ${orgId}
+  `.catch((error) => {
+    contextLog.warn('organization memory could not be read', { orgId, error: error instanceof Error ? error.message : String(error) })
+    return []
+  })
   let teamName: string | undefined
   let teamMemory = ''
   if (projectId) {
@@ -20,7 +33,10 @@ async function loadSharedMemoryLayers(projectId?: string): Promise<{ orgName: st
     if (project?.teamId) {
       const [team] = await sql<Array<{ name: string; manualText: string | null }>>`
         SELECT t.name, m.manual_text AS "manualText" FROM teams t LEFT JOIN team_memory m ON m.team_id = t.team_id WHERE t.team_id = ${project.teamId}
-      `.catch(() => [])
+      `.catch((error) => {
+        contextLog.warn('team memory could not be read', { teamId: project.teamId, error: error instanceof Error ? error.message : String(error) })
+        return []
+      })
       teamName = team?.name
       teamMemory = team?.manualText ?? ''
     }
