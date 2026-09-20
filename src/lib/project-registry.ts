@@ -436,6 +436,14 @@ export async function listIntegrations(projectId: string): Promise<IntegrationRo
   `
 }
 
+export async function getIntegration(integrationId: string): Promise<IntegrationRow | undefined> {
+  const sql = getDb()
+  const [row] = await sql<IntegrationRow[]>`
+    SELECT ${sql.unsafe(INTEGRATION_COLS)} FROM project_integrations WHERE integration_id = ${integrationId}
+  `
+  return row
+}
+
 export async function upsertIntegration(input: {
   projectId: string
   kind: IntegrationKind
