@@ -76,6 +76,24 @@ team, and only that team's members can read or act on it. Roles apply inside
 one organization: owners and admins administer the organization their active
 team belongs to, never another.
 
+## Project responsibilities
+
+Project responsibilities are accountability labels, not access roles. Every
+new or repaired project has six standard responsibilities: **Owner**, **Product
+Owner**, **Lead Engineer**, **Designer**, **QA**, and **Release Manager**. One
+person may hold several responsibilities, and a responsibility may have
+multiple ordered assignees; the first active assignee is primary.
+
+Only owners and admins of the owning team can change assignments. Team members
+can read them; viewers and users outside the owning team cannot read or change
+responsibility data. Assigning
+a project responsibility never grants project access or changes a team role.
+If a non-Owner responsibility has no active explicit assignment, its resolution
+uses active project Owners and is labeled **Owner fallback**. If no active Owner
+exists, the project remains readable but is marked **repair needed** and no user
+is guessed. Existing custom responsibility records are preserved, but creating
+or editing custom responsibilities is deferred from the standard increment.
+
 ## Invites
 
 Owners and admins invite by email and role. The server returns a link

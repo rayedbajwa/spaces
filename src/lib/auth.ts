@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import process from 'node:process'
 import { getDb } from './db'
+import { deactivateAssignmentsForMember } from './project-responsibilities'
 import { createOrganization, getDefaultOrgId, getOrganization, renameOrganization, type OrganizationRow } from './orgs'
 
 /**
@@ -314,13 +315,14 @@ export async function setMemberRole(teamId: string, userId: string, role: TeamRo
   await sql`UPDATE team_members SET role = ${role} WHERE team_id = ${teamId} AND user_id = ${userId}`
 }
 
-export async function removeMember(teamId: string, userId: string): Promise<void> {
+export async function removeMember(teamId: string, userId: string, actorUserId?: string): Promise<void> {
   const sql = getDb()
   const current = await getMembership(teamId, userId)
   if (current === 'owner') {
     const [owners] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM team_members WHERE team_id = ${teamId} AND role = 'owner' AND user_id <> ${userId}`
     if (!owners?.n) throw new Error('A team needs at least one owner; transfer ownership first.')
   }
+  await deactivateAssignmentsForMember(teamId, userId, actorUserId)
   await sql`DELETE FROM team_members WHERE team_id = ${teamId} AND user_id = ${userId}`
 }
 
