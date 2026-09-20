@@ -837,3 +837,55 @@ BEGIN
 
   INSERT INTO tenancy_repairs (name, details) VALUES ('split-legacy-organizations', jsonb_build_object('organizationsCreated', created));
 END $$;
+
+-- ============================================================================
+-- Second one-time repair: app credentials follow the person who set them up.
+-- Splitting the legacy organization moves teams, but rows like a GitHub App
+-- stay with the old organization even when the person who created it now
+-- belongs to another one — so their install looks lost. Each app moves to its
+-- creator's organization (or, for GitHub, to the organization of the account
+-- that owns it on GitHub), together with the integrations it powers, and only
+-- when the destination has nothing for that provider.
+-- ============================================================================
+DO $$
+DECLARE
+  app     RECORD;
+  target  UUID;
+  n_orgs  INT;
+  moved   INT := 0;
+BEGIN
+  IF EXISTS (SELECT 1 FROM tenancy_repairs WHERE name = 'move-app-credentials-to-owner') THEN RETURN; END IF;
+
+  FOR app IN SELECT provider, org_id, updated_by, config_json FROM oauth_apps LOOP
+    target := NULL;
+    -- The account that saved the credentials, when it belongs to exactly one organization.
+    IF app.updated_by IS NOT NULL THEN
+      SELECT count(DISTINCT t.org_id), MIN(t.org_id::text)::uuid INTO n_orgs, target
+        FROM team_members m JOIN teams t ON t.team_id = m.team_id
+       WHERE m.user_id = app.updated_by;
+      IF n_orgs <> 1 THEN target := NULL; END IF;
+    END IF;
+    -- Otherwise, for GitHub, the account that owns the app on GitHub.
+    IF target IS NULL AND app.provider = 'github' AND COALESCE(app.config_json->>'ownerLogin', '') <> '' THEN
+      SELECT count(DISTINCT t.org_id), MIN(t.org_id::text)::uuid INTO n_orgs, target
+        FROM users u
+        JOIN team_members m ON m.user_id = u.user_id
+        JOIN teams t ON t.team_id = m.team_id
+       WHERE lower(u.github_login) = lower(app.config_json->>'ownerLogin');
+      IF n_orgs <> 1 THEN target := NULL; END IF;
+    END IF;
+
+    CONTINUE WHEN target IS NULL OR target = app.org_id;
+    CONTINUE WHEN EXISTS (SELECT 1 FROM oauth_apps b WHERE b.org_id = target AND b.provider = app.provider);
+
+    UPDATE oauth_apps SET org_id = target WHERE org_id = app.org_id AND provider = app.provider;
+    -- The connections this app powers move with it (Atlassian covers Jira and Confluence).
+    UPDATE app_integrations i SET org_id = target
+     WHERE i.org_id = app.org_id
+       AND i.kind = ANY (CASE app.provider WHEN 'atlassian' THEN ARRAY['jira', 'confluence'] ELSE ARRAY[app.provider] END)
+       AND NOT EXISTS (SELECT 1 FROM app_integrations j WHERE j.org_id = target AND j.kind = i.kind);
+    moved := moved + 1;
+  END LOOP;
+
+  INSERT INTO tenancy_repairs (name, details) VALUES ('move-app-credentials-to-owner', jsonb_build_object('appsMoved', moved));
+END $$;
