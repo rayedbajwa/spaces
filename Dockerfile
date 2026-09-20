@@ -30,10 +30,34 @@ ENV PORT=3000
 
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
-# Debian (not Alpine): Playwright's bundled Chromium needs glibc. gosu lets the
-# entrypoint fix the /data volume's ownership and then drop to bun.
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates openssh-client gosu \
+# postgresql-client gives agents psql and pg_isready so a checkout's database
+# tests can be prepared and checked without a container. Debian (not Alpine):
+# Playwright's bundled Chromium needs glibc. gosu lets the entrypoint fix the
+# /data volume's ownership and then drop to bun.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates openssh-client gosu curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
+
+# Docker client and Compose plugin, without a daemon: a container cannot run
+# one, but agents check for `docker` before deciding what they can verify, and
+# a deployment that points DOCKER_HOST at a real engine (or mounts its socket)
+# gets working containers. Set DOCKER_CLI_VERSION="" to leave both out.
+ARG DOCKER_CLI_VERSION=27.3.1
+ARG DOCKER_COMPOSE_VERSION=2.29.7
+RUN set -eux; \
+    if [ -n "$DOCKER_CLI_VERSION" ]; then \
+      arch="$(dpkg --print-architecture)"; \
+      case "$arch" in amd64) docker_arch=x86_64; compose_arch=x86_64 ;; arm64) docker_arch=aarch64; compose_arch=aarch64 ;; *) docker_arch=""; esac; \
+      if [ -n "$docker_arch" ]; then \
+        curl -fsSL "https://download.docker.com/linux/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz; \
+        tar -xzf /tmp/docker.tgz -C /tmp; \
+        install -m 0755 /tmp/docker/docker /usr/local/bin/docker; \
+        mkdir -p /usr/local/lib/docker/cli-plugins; \
+        curl -fsSL "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${compose_arch}" -o /usr/local/lib/docker/cli-plugins/docker-compose; \
+        chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose; \
+        rm -rf /tmp/docker /tmp/docker.tgz; \
+      fi; \
+    fi
 
 # Durable state lives under /data (mount a volume there): cloned repos and
 # governing workspaces (AIDLC_WORKSPACE_ROOT) and Pi agent sessions (HOME/.pi).

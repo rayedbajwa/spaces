@@ -618,7 +618,11 @@ export class AIDLCFlow {
     const { describeWorkInProgress } = await import('./run-resume')
     const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
     if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
-    const prompt = [inProgress, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // Stages that build and verify are told what the machine offers — a database,
+    // a free port, a headless browser — so they run the checks instead of skipping them.
+    const { agentEnvironmentSection } = await import('./agent-environment')
+    const environment = CODE_STAGES.includes(stage) ? await agentEnvironmentSection(path.basename(this.options.cwd)).catch(() => '') : ''
+    const prompt = [inProgress, environment, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
@@ -2262,13 +2266,14 @@ export async function readDevSetupState(cwd: string): Promise<DevSetupState> {
   }
 }
 
-export function buildDevSetupPrompt(options: { repoLabel?: string } = {}): string {
+export function buildDevSetupPrompt(options: { repoLabel?: string; environment?: string } = {}): string {
   return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests.
+${options.environment ? `\n${options.environment}\n` : ''}
 
 Do this:
 1. Review README.md, CONTRIBUTING.md, docs/, the package/build manifests (package.json, go.mod, pyproject.toml, Cargo.toml, Makefile, Dockerfile, docker-compose*), and CI config (.github/workflows) to learn how the project is installed, built, tested and linted.
 2. Install dependencies with the project's own tool (bun/npm/pnpm/yarn, go, uv/pip, cargo, …). Use the lockfile when there is one.
-3. Environment: if a .env.example (or similar) exists and .env does not, copy it and fill only safe local defaults. Never invent or paste real secrets; list required-but-missing variables instead. Note external services the tests need (database, docker) and whether they are available here.
+3. Environment: if a .env.example (or similar) exists and .env does not, copy it and fill only safe local defaults. Never invent or paste real secrets; list required-but-missing variables instead. Use the database, port and browser this machine provides (above) rather than starting your own; a test that needs something genuinely absent is skipped with the reason, not reported as a failure.
 4. Build once, run the test suite once, and run the linter/typechecker if there is one. Capture exact commands and pass/fail counts. Fix only trivial local setup problems (a missing directory, a wrong Node version note); do NOT change application source code.
 5. Add \`.aidlc/\` to .git/info/exclude if not present (never edit the tracked .gitignore).
 6. Write ${DEV_SETUP_FILE} (create the directory) — under 400 words — starting with the exact line \`Dev Setup Status: READY\`, \`Dev Setup Status: PARTIAL\` (environment works but some tests/services unavailable) or \`Dev Setup Status: BLOCKED\` (cannot install/build). Then sections:
@@ -2298,6 +2303,10 @@ export async function runDevSetup(options: {
   const cwd = resolveCwd(options.cwd)
   await ensureIgnored(cwd, '.aidlc/').catch(() => undefined)
   const orgId = await resolveRunnerOrg(options)
+  // Tell the agent what this machine offers — a database, a free port, a browser —
+  // so it verifies the work instead of skipping tests it assumes it cannot run.
+  const { agentEnvironmentSection } = await import('./agent-environment')
+  const environment = await agentEnvironmentSection(options.repoLabel ?? path.basename(cwd)).catch(() => '')
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
@@ -2323,7 +2332,7 @@ export async function runDevSetup(options: {
     }
   })
   try {
-    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
+    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel, environment }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
   } finally {
     unsubscribe()
     session.dispose()

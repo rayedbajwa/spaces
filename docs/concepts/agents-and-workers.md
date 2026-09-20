@@ -50,6 +50,30 @@ every tier is OpenRouter's own auto-router. Templates may still pin a model
 and thinking level per step; a pin from a provider without a key falls back to
 the same-size tier.
 
+## What an agent's machine offers
+
+Before an agent installs, builds or tests a checkout it is told what the
+machine it runs on actually provides, so it verifies the work instead of
+skipping checks it assumes are impossible:
+
+- **Docker**, only when a daemon answers. The image ships the client and the
+  Compose plugin, but a container cannot run a daemon: point `DOCKER_HOST` at
+  an engine, or mount `/var/run/docker.sock`, to make containers usable. When
+  no daemon answers, the agent is told to use the database below instead.
+- **A Postgres database for the checkout**, created on demand and named after
+  it. The agent puts it in the checkout's `.env` and runs the project's own
+  migration step, so tests that need a database run rather than skip. Set
+  `AGENT_DATABASE_URL` to create those databases on a different server.
+- **`psql`**, for projects whose scripts expect it.
+- **A free port**, because the port serving Spaces is taken. The agent starts
+  anything under test on that port and points smoke tests at it.
+- **A headless Chromium**, already installed, so Playwright and the browser
+  tools run without downloading anything.
+
+The same description is written into `.aidlc/dev-setup.md` for the stages that
+follow, and a test that genuinely cannot run is recorded as skipped with its
+reason rather than as a failure.
+
 ## The agent output dock
 
 On a project page the live agent output is docked at the bottom of the
