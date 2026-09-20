@@ -213,6 +213,12 @@ export interface DryRunPlan {
 interface OutputSinks {
   stdout?: (chunk: string) => void
   stderr?: (chunk: string) => void
+  /**
+   * Called as each stage begins. A flow only reports progress when it pauses or
+   * finishes, so without this the recorded stage lags behind the one actually
+   * running whenever stages follow each other without a gate.
+   */
+  onStageStart?: (ctx: { stage: StageName; index: number; total: number }) => void
   /** Every completed assistant message with its token usage and cost, tagged with the stage. */
   onUsage?: (message: { provider: string; model: string; responseId?: string; responseModel?: string; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } } }, stage?: StageName) => void
 }
@@ -399,6 +405,7 @@ export class AIDLCFlow {
         return this.pause('user', stage)
       }
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
+      this.sinks.onStageStart?.({ stage, index: this.stageIndex, total: this.stages.length })
 
       const output = await this.runStage(stage)
       if (QUESTION_PATTERN.test(output)) {
