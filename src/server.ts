@@ -157,18 +157,19 @@ void checkProviderKeys(serverLog)
 // can be checked from its logs without reading the database by hand.
 void (async () => {
   const sql = getDb()
-  const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; oauthApps: number; knowledgeSources: number; users: number }>>`
+  const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; oauthApps: number; githubApp: string | null; knowledgeSources: number; users: number }>>`
     SELECT o.slug, o.name,
            (SELECT count(*)::int FROM teams t WHERE t.org_id = o.org_id) AS teams,
            (SELECT count(*)::int FROM projects p JOIN teams t ON t.team_id = p.team_id WHERE t.org_id = o.org_id) AS projects,
            (SELECT count(*)::int FROM provider_keys k WHERE k.org_id = o.org_id) AS keys,
            (SELECT count(*)::int FROM app_integrations a WHERE a.org_id = o.org_id AND a.status = 'connected') AS integrations,
            (SELECT count(*)::int FROM oauth_apps a WHERE a.org_id = o.org_id) AS "oauthApps",
+           (SELECT a.config_json->>'appSlug' FROM oauth_apps a WHERE a.org_id = o.org_id AND a.provider = 'github') AS "githubApp",
            (SELECT count(*)::int FROM knowledge_sources s WHERE s.org_id = o.org_id) AS "knowledgeSources",
            (SELECT count(DISTINCT m.user_id)::int FROM team_members m JOIN teams t ON t.team_id = m.team_id WHERE t.org_id = o.org_id) AS users
       FROM organizations o ORDER BY o.created_at ASC
   `
-  for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, appCredentials: row.oauthApps, knowledgeSources: row.knowledgeSources })
+  for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, appCredentials: row.oauthApps, githubApp: row.githubApp ?? undefined, knowledgeSources: row.knowledgeSources })
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
