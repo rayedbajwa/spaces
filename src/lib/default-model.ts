@@ -39,6 +39,18 @@ export function providerOfModel(spec: string): string | undefined {
  * key by environment (OAuth-backed ones, custom models.json entries) return true
  * so the Pi runtime can make the call.
  */
+/** Providers present in an organization's key map. */
+export function configuredProvidersFromKeys(keys: Partial<Record<ProviderId, string>>): ProviderId[] {
+  return (Object.keys(PROVIDER_ENV_KEYS) as ProviderId[]).filter((p) => Boolean(trimmed(keys[p])))
+}
+
+/** True when the key map holds credentials for the model's provider (unknown providers pass). */
+export function isProviderConfiguredWith(spec: string, keys: Partial<Record<ProviderId, string>>): boolean {
+  const provider = providerOfModel(spec)
+  if (!provider || !(provider in PROVIDER_ENV_KEYS)) return true
+  return Boolean(trimmed(keys[provider as ProviderId]))
+}
+
 export function isProviderConfigured(spec: string, env: Env = process.env): boolean {
   const provider = providerOfModel(spec)
   if (!provider || !(provider in PROVIDER_ENV_KEYS)) return true

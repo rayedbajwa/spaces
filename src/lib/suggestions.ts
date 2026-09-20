@@ -8,6 +8,7 @@ import { log } from './logger'
 import { getProject, listRepos, pickRunnableRepo, updateProjectSuggestions, type ProjectRow, type ProjectSuggestions } from './project-registry'
 import { getGitHubLogin } from './github'
 import { normalizeProposal, proposeRepository } from './repo-proposal'
+import { orgIdForProject } from './orgs'
 
 const sugLog = log.child({ mod: 'suggestions' })
 
@@ -21,11 +22,11 @@ const sugLog = log.child({ mod: 'suggestions' })
 
 interface CatalogRow { fullName: string; description: string | null; language: string | null; topics: string[] | null; usecase: string | null }
 
-async function catalogForPrompt(limit = 120): Promise<CatalogRow[]> {
+async function catalogForPrompt(orgId: string, limit = 120): Promise<CatalogRow[]> {
   const sql = getDb()
   return await sql<CatalogRow[]>`
     SELECT full_name AS "fullName", description, language, topics, usecase
-      FROM github_repo_index ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
+      FROM github_repo_index WHERE org_id = ${orgId} ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
   `
 }
 
@@ -57,7 +58,8 @@ export async function suggestRepositoriesAndWorkAreas(
   if (!project) return undefined
   const repos = await listRepos(projectId)
   const registered = repos.filter((r) => r.label !== 'governance')
-  const catalog = await catalogForPrompt().catch(() => [] as CatalogRow[])
+  const orgId = await orgIdForProject(projectId)
+  const catalog = await catalogForPrompt(orgId).catch(() => [] as CatalogRow[])
 
   let planContext = ''
   if (options.basis === 'plan') {
@@ -76,7 +78,7 @@ export async function suggestRepositoriesAndWorkAreas(
   }
 
   // The connected GitHub login owns any repository discovery proposes to create.
-  const githubLogin = await getGitHubLogin().catch(() => undefined)
+  const githubLogin = await getGitHubLogin(orgId).catch(() => undefined)
 
   if (catalog.length === 0 && registered.length === 0 && !planContext) {
     // Nothing to match against: still give the project a home to create.
@@ -119,9 +121,9 @@ Return exactly this JSON shape (no prose):
 }
 Rules: only list repositories that exist in the catalog or are already registered (use their exact owner/name); prefer 1–5 repositories and 2–6 work areas. Set "newRepository" ONLY when no catalog or registered repository can hold this work (nothing matches, or the project clearly needs a new codebase) — then propose a short kebab-case name derived from the project; otherwise omit it or set it to null.`
 
-  const modelRuntime = await createConfiguredModelRuntime()
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const { resolveCliModel } = await import('@earendil-works/pi-coding-agent')
-  const modelSpec = options.model ?? await defaultModel()
+  const modelSpec = options.model ?? await defaultModel(orgId)
   const resolved = resolveCliModel({ cliModel: modelSpec, modelRuntime })
   if (resolved.error) throw new Error(resolved.error)
   const cwd = pickRunnableRepo(repos)?.localPath ?? process.cwd()

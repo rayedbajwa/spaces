@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import process from 'node:process'
 import { getDb } from './db'
+import { createOrganization, getDefaultOrgId, getOrganization, renameOrganization, type OrganizationRow } from './orgs'
 
 /**
  * Authentication, teams ("spaces") and invites.
@@ -32,6 +33,8 @@ export interface UserRow {
 
 export interface TeamRow {
   teamId: string
+  /** Organization (tenant) the team belongs to. */
+  orgId: string
   name: string
   slug: string
   /** Prefix of this team's project codes (PLAT in PLAT-12); set on the first project. */
@@ -72,6 +75,8 @@ export interface AuthContext {
   sessionId: string
   teams: TeamMembership[]
   activeTeam?: TeamMembership
+  /** Organization of the active team (or the first team): the tenant every organization-level route is scoped to. */
+  orgId?: string
 }
 
 export const SESSION_COOKIE = 'spaces_session'
@@ -92,7 +97,7 @@ const USER_COLS = `
   created_at AS "createdAt", last_login_at AS "lastLoginAt"
 `
 const TEAM_COLS = `
-  t.team_id AS "teamId", t.name, t.slug, t.code_prefix AS "codePrefix", t.created_by AS "createdBy", t.created_at AS "createdAt", t.knowledge_json AS "knowledgeJson"
+  t.team_id AS "teamId", t.org_id AS "orgId", t.name, t.slug, t.code_prefix AS "codePrefix", t.created_by AS "createdBy", t.created_at AS "createdAt", t.knowledge_json AS "knowledgeJson"
 `
 
 function hashToken(token: string): string {
@@ -234,7 +239,7 @@ export async function authenticate(req: Request): Promise<AuthContext | undefine
   const teams = await listTeamsForUser(user.userId)
   const activeTeam = teams.find((t) => t.teamId === session.activeTeamId) ?? teams[0]
   if (activeTeam && activeTeam.teamId !== session.activeTeamId) await setActiveTeam(session.sessionId, activeTeam.teamId)
-  return { user, sessionId: session.sessionId, teams, activeTeam }
+  return { user, sessionId: session.sessionId, teams, activeTeam, orgId: activeTeam?.orgId ?? teams[0]?.orgId }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +270,7 @@ export async function getMembership(teamId: string, userId: string): Promise<Tea
   return row?.role
 }
 
-export async function createTeam(input: { name: string; createdBy: string }): Promise<TeamRow> {
+export async function createTeam(input: { name: string; createdBy: string; orgId: string }): Promise<TeamRow> {
   const sql = getDb()
   const base = slugifyName(input.name)
   let slug = base
@@ -276,7 +281,7 @@ export async function createTeam(input: { name: string; createdBy: string }): Pr
   }
   const teamId = randomUUID()
   await sql.begin(async (tx) => {
-    await tx`INSERT INTO teams (team_id, name, slug, created_by) VALUES (${teamId}, ${input.name.trim()}, ${slug}, ${input.createdBy})`
+    await tx`INSERT INTO teams (team_id, org_id, name, slug, created_by) VALUES (${teamId}, ${input.orgId}, ${input.name.trim()}, ${slug}, ${input.createdBy})`
     await tx`INSERT INTO team_members (team_id, user_id, role) VALUES (${teamId}, ${input.createdBy}, 'owner')`
     await tx`INSERT INTO team_memory (team_id) VALUES (${teamId}) ON CONFLICT DO NOTHING`
   })
@@ -387,35 +392,55 @@ export async function acceptInvite(token: string, user: UserRow): Promise<TeamRo
 // Bootstrap: first user → owner of the default team → adopts legacy projects
 // ---------------------------------------------------------------------------
 
-export async function bootstrapFirstUser(user: UserRow): Promise<TeamRow> {
+/**
+ * A brand-new account that was not invited gets its own organization and a
+ * first team in it — the tenant nothing else is shared with. The very first
+ * account of a deployment also adopts any legacy team-less projects.
+ */
+export async function bootstrapOrganization(user: UserRow, options: { organizationName?: string; adoptLegacy?: boolean } = {}): Promise<{ org: OrganizationRow; team: TeamRow }> {
   const sql = getDb()
-  const team = await createTeam({ name: process.env.DEFAULT_TEAM_NAME?.trim() || 'Default team', createdBy: user.userId })
-  await sql`UPDATE projects SET team_id = ${team.teamId} WHERE team_id IS NULL`
-  await sql`UPDATE project_source_snapshots SET team_id = ${team.teamId} WHERE team_id IS NULL AND project_id IS NULL`
-  return team
+  const name = options.organizationName?.trim() || `${user.name.split(' ')[0] || user.email.split('@')[0]}'s organization`
+  const org = options.adoptLegacy
+    ? await getOrganization(await getDefaultOrgId()).then((o) => o ?? createOrganization({ name, createdBy: user.userId }))
+    : await createOrganization({ name, createdBy: user.userId })
+  if (options.adoptLegacy && org.name === 'Organization' && options.organizationName?.trim()) await renameOrganization(org.orgId, options.organizationName.trim())
+  const team = await createTeam({ name: process.env.DEFAULT_TEAM_NAME?.trim() || 'Default team', createdBy: user.userId, orgId: org.orgId })
+  if (options.adoptLegacy) {
+    await sql`UPDATE projects SET team_id = ${team.teamId} WHERE team_id IS NULL`
+    await sql`UPDATE project_source_snapshots SET team_id = ${team.teamId} WHERE team_id IS NULL AND project_id IS NULL`
+  }
+  return { org, team }
+}
+
+/** @deprecated use bootstrapOrganization */
+export async function bootstrapFirstUser(user: UserRow): Promise<TeamRow> {
+  return (await bootstrapOrganization(user, { adoptLegacy: true })).team
 }
 
 // ---------------------------------------------------------------------------
 // Org / team memory (shared context layers)
 // ---------------------------------------------------------------------------
 
-export async function getOrgMemory(): Promise<{ name: string; manualText: string; updatedAt: string }> {
+export async function getOrgMemory(orgId: string): Promise<{ name: string; manualText: string; updatedAt: string }> {
   const sql = getDb()
   const [row] = await sql<Array<{ name: string; manualText: string; updatedAt: string }>>`
-    SELECT name, manual_text AS "manualText", updated_at AS "updatedAt" FROM org_memory WHERE singleton
+    SELECT name, manual_text AS "manualText", updated_at AS "updatedAt" FROM org_memory WHERE org_id = ${orgId}
   `
-  return row ?? { name: 'Organization', manualText: '', updatedAt: new Date().toISOString() }
+  if (row) return row
+  const org = await getOrganization(orgId)
+  return { name: org?.name ?? 'Organization', manualText: '', updatedAt: new Date().toISOString() }
 }
 
-export async function updateOrgMemory(patch: { name?: string; manualText?: string }): Promise<void> {
+export async function updateOrgMemory(orgId: string, patch: { name?: string; manualText?: string }): Promise<void> {
   const sql = getDb()
   await sql`
-    INSERT INTO org_memory (singleton, name, manual_text) VALUES (true, ${patch.name ?? 'Organization'}, ${patch.manualText ?? ''})
-    ON CONFLICT (singleton) DO UPDATE SET
+    INSERT INTO org_memory (org_id, name, manual_text) VALUES (${orgId}, ${patch.name ?? 'Organization'}, ${patch.manualText ?? ''})
+    ON CONFLICT (org_id) DO UPDATE SET
       name = COALESCE(${patch.name ?? null}, org_memory.name),
       manual_text = COALESCE(${patch.manualText ?? null}, org_memory.manual_text),
       updated_at = now()
   `
+  if (patch.name?.trim()) await sql`UPDATE organizations SET name = ${patch.name.trim()} WHERE org_id = ${orgId}`
 }
 
 export async function getTeamMemory(teamId: string): Promise<{ manualText: string; updatedAt: string }> {

@@ -40,7 +40,8 @@ import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } fro
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
-import { applyProviderKeysToEnv, listenProviderKeys } from './lib/provider-keys'
+import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
+import { getDefaultOrgId, orgIdForProject } from './lib/orgs'
 import { exportProjectState, reconcilePlanRepositories } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usageFromMessage } from './lib/run-usage'
@@ -208,7 +209,8 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   // stuck at 'running' forever, showing "in progress" in the UI.
   // Agent shells push and open pull requests as the GitHub App (bot) when one
   // is installed, so branch protection applies to the agent and humans approve.
-  Object.assign(process.env, await gitHubActorEnv().catch(() => ({})))
+  const runOrgId = run.projectId ? await orgIdForProject(run.projectId) : await getDefaultOrgId()
+  Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
 
   let engine: PipelineEngine
   try {
@@ -221,7 +223,7 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
           .then(async (usageId) => {
             // OpenRouter's routed models carry no static price: fetch the real cost and model, then let the UI refresh.
             if (needsProviderCost(record)) {
-              const real = await enrichOpenRouterUsage(usageId, record.responseId!)
+              const real = await enrichOpenRouterUsage(usageId, record.responseId!, (await loadProviderKeys(runOrgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>))).openrouter)
               if (real) await queueEvent(runId, 'usage', { stage, provider: record.provider, model: real.model ?? record.model, costUsd: real.costUsd, priced: true })
             }
           })
@@ -665,7 +667,8 @@ async function main(): Promise<void> {
   await heartbeatWorker(workerId, heartbeatMeta())
   if (WORKER_PROJECT_ID) workerLog.info('per-project worker', { projectId: WORKER_PROJECT_ID, idleExitSeconds: WORKER_IDLE_EXIT_SECONDS })
   // Non-fatal: warn loudly if the Anthropic key in this process's environment is a placeholder or rejected.
-  await applyProviderKeysToEnv().catch(() => undefined)
+  // Provider keys are read per organization, never from this process's environment.
+  scrubProviderKeysFromEnv()
   await listenProviderKeys().catch(() => undefined)
   priceCatalog = await loadModelCatalog().catch(() => [])
   void checkProviderKeys(workerLog)

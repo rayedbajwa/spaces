@@ -67,10 +67,13 @@ async function drain(): Promise<void> {
   if (draining) return
   draining = true
   try {
+    const touchedOrgs = new Set<string>()
     while (queued.length > 0) {
       const sourceId = queued.shift()!
       active = sourceId
       try {
+        const row = await getKnowledgeSource(sourceId).catch(() => undefined)
+        if (row?.orgId) touchedOrgs.add(row.orgId)
         await importKnowledgeSource(sourceId)
       } catch (error) {
         importLog.error('import crashed', error instanceof Error ? error : new Error(String(error)))
@@ -78,9 +81,11 @@ async function drain(): Promise<void> {
         active = undefined
       }
     }
-    // Documents indexed while no embedding key was set get their vectors now.
-    const backfill = await embedPendingDocuments(50).catch(() => ({ documents: 0, chunks: 0 }))
-    if (backfill.documents > 0) importLog.info('back-filled embeddings', backfill)
+    // Documents indexed while no embedding key was set get their vectors now, per organization.
+    for (const orgId of touchedOrgs) {
+      const backfill = await embedPendingDocuments(orgId, 50).catch(() => ({ documents: 0, chunks: 0 }))
+      if (backfill.documents > 0) importLog.info('back-filled embeddings', { orgId, ...backfill })
+    }
   } finally {
     draining = false
   }

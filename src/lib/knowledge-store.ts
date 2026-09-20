@@ -16,6 +16,7 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import { chunkText } from './chunker'
+import { envWithProviderKeys } from './provider-keys'
 import { getDb, vectorSearchAvailable } from './db'
 import { EMBEDDING_DIMENSIONS, embedQuery, embedTexts, embeddingModel, embeddingsAvailable, toVectorLiteral } from './embeddings'
 import { log } from './logger'
@@ -37,6 +38,7 @@ export const KNOWLEDGE_KIND_LABEL: Record<KnowledgeSourceKind, string> = {
 export type SyncStatus = 'running' | 'ok' | 'error'
 
 export interface KnowledgeSourceRow {
+  orgId: string
   sourceId: string
   teamId: string | null
   teamName: string | null
@@ -85,6 +87,8 @@ export interface KnowledgeDocumentInput {
 
 /** Which sources a caller may see: organization-wide ones plus these teams (or everything). */
 export interface KnowledgeScope {
+  /** Organization the search runs in; sources of other organizations are never visible. */
+  orgId: string
   teamIds: string[] | 'all'
   sourceIds?: string[]
 }
@@ -105,7 +109,7 @@ export interface KnowledgeHit {
 }
 
 const SOURCE_COLS = `
-  s.source_id AS "sourceId", s.team_id AS "teamId", t.name AS "teamName", s.kind, s.label,
+  s.source_id AS "sourceId", s.org_id AS "orgId", s.team_id AS "teamId", t.name AS "teamName", s.kind, s.label,
   s.config_json AS "config", s.enabled, s.sync_interval_minutes AS "syncIntervalMinutes", s.cursor_json AS "cursor",
   s.sync_requested_at AS "syncRequestedAt", s.last_sync_started_at AS "lastSyncStartedAt", s.last_sync_finished_at AS "lastSyncFinishedAt",
   s.last_sync_status AS "lastSyncStatus", s.last_sync_error AS "lastSyncError", s.last_sync_stats AS "lastSyncStats",
@@ -124,7 +128,7 @@ export async function listKnowledgeSources(scope: KnowledgeScope): Promise<Knowl
   return sql<KnowledgeSourceRow[]>`
     SELECT ${sql.unsafe(SOURCE_COLS)}
     FROM knowledge_sources s LEFT JOIN teams t ON t.team_id = s.team_id
-    WHERE ${teamFilter}
+    WHERE s.org_id = ${scope.orgId} AND ${teamFilter}
     ORDER BY s.team_id NULLS FIRST, s.created_at ASC
   `
 }
@@ -138,6 +142,7 @@ export async function getKnowledgeSource(sourceId: string): Promise<KnowledgeSou
 }
 
 export async function createKnowledgeSource(input: {
+  orgId: string
   kind: KnowledgeSourceKind
   label: string
   config?: Record<string, unknown>
@@ -148,8 +153,8 @@ export async function createKnowledgeSource(input: {
   const sql = getDb()
   const sourceId = randomUUID()
   await sql`
-    INSERT INTO knowledge_sources (source_id, team_id, kind, label, config_json, sync_interval_minutes, created_by, sync_requested_at)
-    VALUES (${sourceId}, ${input.teamId ?? null}, ${input.kind}, ${input.label.trim()}, ${sql.json((input.config ?? {}) as never)},
+    INSERT INTO knowledge_sources (source_id, org_id, team_id, kind, label, config_json, sync_interval_minutes, created_by, sync_requested_at)
+    VALUES (${sourceId}, ${input.orgId}, ${input.teamId ?? null}, ${input.kind}, ${input.label.trim()}, ${sql.json((input.config ?? {}) as never)},
             ${clampInterval(input.syncIntervalMinutes)}, ${input.createdBy ?? null}, ${input.kind === 'manual' ? null : sql`now()`})
   `
   return (await getKnowledgeSource(sourceId))!
@@ -229,13 +234,14 @@ export interface IndexResult {
  * Upsert one document: skip when its content is unchanged and already indexed,
  * otherwise re-chunk, (re-)embed and replace its chunks in one transaction.
  */
-export async function indexKnowledgeDocument(source: { sourceId: string; teamId: string | null }, doc: KnowledgeDocumentInput): Promise<IndexResult> {
+export async function indexKnowledgeDocument(source: { sourceId: string; teamId: string | null; orgId: string }, doc: KnowledgeDocumentInput): Promise<IndexResult> {
   const sql = getDb()
   const title = doc.title.trim() || doc.externalId
   const content = doc.content.replace(/\r\n?/g, '\n').trim()
   if (!content) return { outcome: 'empty', chunks: 0, embedded: false }
   const hash = sha1(`${title}\n${content}`)
-  const wantEmbeddings = embeddingsAvailable() && (await vectorSearchAvailable())
+  const env = await envWithProviderKeys(source.orgId)
+  const wantEmbeddings = embeddingsAvailable(env) && (await vectorSearchAvailable())
 
   const [existing] = await sql<Array<{ documentId: string; contentHash: string; embeddingStatus: string }>>`
     SELECT document_id AS "documentId", content_hash AS "contentHash", embedding_status AS "embeddingStatus"
@@ -254,7 +260,7 @@ export async function indexKnowledgeDocument(source: { sourceId: string; teamId:
   let embeddingError: string | undefined
   if (wantEmbeddings && chunks.length > 0) {
     try {
-      vectors = await embedTexts(chunks.map((c) => c.text))
+      vectors = await embedTexts(chunks.map((c) => c.text), env)
     } catch (error) {
       embeddingError = error instanceof Error ? error.message : String(error)
       storeLog.warn('embedding failed; document indexed for full-text search only', { externalId: doc.externalId, error: embeddingError })
@@ -305,13 +311,14 @@ export async function deleteMissingDocuments(sourceId: string, keepExternalIds: 
  * failure at the time). Runs from the sync loop so enabling embeddings later
  * back-fills the index without a full resync.
  */
-export async function embedPendingDocuments(limit = 25): Promise<{ documents: number; chunks: number }> {
-  if (!embeddingsAvailable() || !(await vectorSearchAvailable())) return { documents: 0, chunks: 0 }
+export async function embedPendingDocuments(orgId: string, limit = 25): Promise<{ documents: number; chunks: number }> {
+  const env = await envWithProviderKeys(orgId)
+  if (!embeddingsAvailable(env) || !(await vectorSearchAvailable())) return { documents: 0, chunks: 0 }
   const sql = getDb()
   const docs = await sql<Array<{ documentId: string }>>`
-    SELECT document_id AS "documentId" FROM knowledge_documents
-    WHERE embedding_status IN ('pending', 'skipped', 'error')
-    ORDER BY fetched_at DESC LIMIT ${limit}
+    SELECT d.document_id AS "documentId" FROM knowledge_documents d JOIN knowledge_sources s ON s.source_id = d.source_id
+    WHERE s.org_id = ${orgId} AND d.embedding_status IN ('pending', 'skipped', 'error')
+    ORDER BY d.fetched_at DESC LIMIT ${limit}
   `
   let chunkTotal = 0
   let done = 0
@@ -320,10 +327,10 @@ export async function embedPendingDocuments(limit = 25): Promise<{ documents: nu
       SELECT chunk_id AS "chunkId", content FROM knowledge_chunks WHERE document_id = ${documentId} AND embedding IS NULL ORDER BY chunk_index
     `
     try {
-      const vectors = await embedTexts(chunks.map((c) => c.content))
+      const vectors = await embedTexts(chunks.map((c) => c.content), env)
       await sql.begin(async (tx) => {
         for (let i = 0; i < chunks.length; i++) {
-          await tx`UPDATE knowledge_chunks SET embedding = ${toVectorLiteral(vectors[i]!)}::vector, embedding_model = ${embeddingModel()} WHERE chunk_id = ${chunks[i]!.chunkId}`
+          await tx`UPDATE knowledge_chunks SET embedding = ${toVectorLiteral(vectors[i]!)}::vector, embedding_model = ${embeddingModel(env)} WHERE chunk_id = ${chunks[i]!.chunkId}`
         }
         await tx`UPDATE knowledge_documents SET embedding_status = 'done', embedding_error = NULL, indexed_at = now() WHERE document_id = ${documentId}`
       })
@@ -376,11 +383,12 @@ export async function searchOrgKnowledge(options: {
   const candidates = limit * 4
   const teamFilter = options.scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${options.scope.teamIds}::uuid[]))`
   const sourceFilter = options.scope.sourceIds?.length ? sql`c.source_id = ANY(${options.scope.sourceIds}::uuid[])` : sql`TRUE`
+  const orgFilter = sql`c.source_id IN (SELECT source_id FROM knowledge_sources WHERE org_id = ${options.scope.orgId})`
 
   const textSearch = async (q: string) => (await sql<Array<{ chunkId: number }>>`
     SELECT c.chunk_id AS "chunkId"
     FROM knowledge_chunks c, websearch_to_tsquery('english', ${q}) q
-    WHERE c.content_tsv @@ q AND ${teamFilter} AND ${sourceFilter}
+    WHERE c.content_tsv @@ q AND ${orgFilter} AND ${teamFilter} AND ${sourceFilter}
     ORDER BY ts_rank_cd(c.content_tsv, q) DESC, c.chunk_id ASC
     LIMIT ${candidates}
   `).map((r) => Number(r.chunkId))
@@ -394,13 +402,14 @@ export async function searchOrgKnowledge(options: {
 
   let vectorIds: number[] = []
   let mode: 'hybrid' | 'text' = 'text'
-  if (embeddingsAvailable() && (await vectorSearchAvailable())) {
+  const searchEnv = await envWithProviderKeys(options.scope.orgId)
+  if (embeddingsAvailable(searchEnv) && (await vectorSearchAvailable())) {
     try {
-      const literal = toVectorLiteral(await embedQuery(query))
+      const literal = toVectorLiteral(await embedQuery(query, searchEnv))
       vectorIds = (await sql<Array<{ chunkId: number }>>`
         SELECT c.chunk_id AS "chunkId"
         FROM knowledge_chunks c
-        WHERE c.embedding IS NOT NULL AND ${teamFilter} AND ${sourceFilter}
+        WHERE c.embedding IS NOT NULL AND ${orgFilter} AND ${teamFilter} AND ${sourceFilter}
         ORDER BY c.embedding <=> ${literal}::vector
         LIMIT ${candidates}
       `).map((r) => Number(r.chunkId))
@@ -466,16 +475,18 @@ export interface KnowledgeStatus {
 export async function getKnowledgeStatus(scope: KnowledgeScope): Promise<KnowledgeStatus> {
   const sql = getDb()
   const teamFilter = scope.teamIds === 'all' ? sql`TRUE` : sql`(s.team_id IS NULL OR s.team_id = ANY(${scope.teamIds}::uuid[]))`
+  // Chunks carry no org column; restrict them to the organization's sources.
+  const orgSources = sql`(SELECT source_id FROM knowledge_sources WHERE org_id = ${scope.orgId})`
   const vector = await vectorSearchAvailable()
   const [row] = await sql<Array<{ sources: number; enabledSources: number; documents: number; chunks: number; embeddedChunks: number; pendingEmbeddings: number; lastSyncAt: string | null }>>`
     SELECT count(DISTINCT s.source_id)::int AS "sources",
            count(DISTINCT s.source_id) FILTER (WHERE s.enabled)::int AS "enabledSources",
-           (SELECT count(*)::int FROM knowledge_documents d JOIN knowledge_sources s2 ON s2.source_id = d.source_id WHERE ${scope.teamIds === 'all' ? sql`TRUE` : sql`(s2.team_id IS NULL OR s2.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "documents",
-           (SELECT count(*)::int FROM knowledge_chunks c WHERE ${scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "chunks",
-           ${vector ? sql`(SELECT count(*)::int FROM knowledge_chunks c WHERE c.embedding IS NOT NULL AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${scope.teamIds}::uuid[]))`})` : sql`0`} AS "embeddedChunks",
-           (SELECT count(*)::int FROM knowledge_documents d JOIN knowledge_sources s3 ON s3.source_id = d.source_id WHERE d.embedding_status <> 'done' AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(s3.team_id IS NULL OR s3.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "pendingEmbeddings",
+           (SELECT count(*)::int FROM knowledge_documents d JOIN knowledge_sources s2 ON s2.source_id = d.source_id WHERE s2.org_id = ${scope.orgId} AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(s2.team_id IS NULL OR s2.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "documents",
+           (SELECT count(*)::int FROM knowledge_chunks c WHERE c.source_id IN ${orgSources} AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "chunks",
+           ${vector ? sql`(SELECT count(*)::int FROM knowledge_chunks c WHERE c.source_id IN ${orgSources} AND c.embedding IS NOT NULL AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${scope.teamIds}::uuid[]))`})` : sql`0`} AS "embeddedChunks",
+           (SELECT count(*)::int FROM knowledge_documents d JOIN knowledge_sources s3 ON s3.source_id = d.source_id WHERE s3.org_id = ${scope.orgId} AND d.embedding_status <> 'done' AND ${scope.teamIds === 'all' ? sql`TRUE` : sql`(s3.team_id IS NULL OR s3.team_id = ANY(${scope.teamIds}::uuid[]))`}) AS "pendingEmbeddings",
            max(s.last_sync_finished_at) AS "lastSyncAt"
-    FROM knowledge_sources s WHERE ${teamFilter}
+    FROM knowledge_sources s WHERE s.org_id = ${scope.orgId} AND ${teamFilter}
   `
   return {
     sources: row?.sources ?? 0,
@@ -484,7 +495,7 @@ export async function getKnowledgeStatus(scope: KnowledgeScope): Promise<Knowled
     chunks: row?.chunks ?? 0,
     embeddedChunks: row?.embeddedChunks ?? 0,
     pendingEmbeddings: row?.pendingEmbeddings ?? 0,
-    embeddings: { available: embeddingsAvailable(), model: embeddingModel(), dimensions: EMBEDDING_DIMENSIONS },
+    embeddings: { available: embeddingsAvailable(await envWithProviderKeys(scope.orgId)), model: embeddingModel(), dimensions: EMBEDDING_DIMENSIONS },
     vectorSearch: vector,
     lastSyncAt: row?.lastSyncAt ?? null,
   }
@@ -494,7 +505,7 @@ export async function getKnowledgeStatus(scope: KnowledgeScope): Promise<Knowled
 export async function hasOrgKnowledge(scope: KnowledgeScope): Promise<boolean> {
   const sql = getDb()
   const teamFilter = scope.teamIds === 'all' ? sql`TRUE` : sql`(c.team_id IS NULL OR c.team_id = ANY(${scope.teamIds}::uuid[]))`
-  const [row] = await sql<Array<{ ok: boolean }>>`SELECT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE ${teamFilter}) AS ok`.catch(() => [])
+  const [row] = await sql<Array<{ ok: boolean }>>`SELECT EXISTS (SELECT 1 FROM knowledge_chunks c WHERE c.source_id IN (SELECT source_id FROM knowledge_sources WHERE org_id = ${scope.orgId}) AND ${teamFilter}) AS ok`.catch(() => [])
   return Boolean(row?.ok)
 }
 

@@ -396,7 +396,6 @@ CREATE TABLE IF NOT EXISTS org_memory (
   manual_text  TEXT NOT NULL DEFAULT '',
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-INSERT INTO org_memory (singleton) VALUES (true) ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS team_memory (
   team_id      UUID PRIMARY KEY REFERENCES teams(team_id) ON DELETE CASCADE,
@@ -640,3 +639,99 @@ CREATE TABLE IF NOT EXISTS provider_keys (
   last_verify_status  TEXT,
   last_verify_error   TEXT
 );
+
+-- ============================================================================
+-- Organizations: the tenant boundary. Every team belongs to one organization;
+-- organization-level state (memory + model policy, provider keys, OAuth apps,
+-- integrations, knowledge sources, promotions, repository catalog) is scoped
+-- by org_id. Deployments from before tenancy are migrated onto one default
+-- organization, keeping their data intact.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS organizations (
+  org_id      UUID PRIMARY KEY,
+  name        TEXT NOT NULL,
+  slug        TEXT NOT NULL UNIQUE,
+  created_by  UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE teams              ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+ALTER TABLE org_memory         ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE provider_keys      ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE oauth_apps         ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE app_integrations   ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE github_repo_index  ADD COLUMN IF NOT EXISTS org_id UUID;
+ALTER TABLE knowledge_sources  ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+
+-- Migrate pre-tenancy rows onto one default organization.
+DO $$
+DECLARE def UUID;
+BEGIN
+  IF EXISTS (SELECT 1 FROM teams WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM org_memory WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM provider_keys WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM oauth_apps WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM app_integrations WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM github_repo_index WHERE org_id IS NULL)
+     OR EXISTS (SELECT 1 FROM knowledge_sources WHERE org_id IS NULL) THEN
+    SELECT org_id INTO def FROM organizations WHERE slug = 'default' LIMIT 1;
+    IF def IS NULL THEN
+      def := gen_random_uuid();
+      INSERT INTO organizations (org_id, name, slug)
+      VALUES (def, coalesce((SELECT name FROM org_memory ORDER BY updated_at DESC LIMIT 1), 'Organization'), 'default');
+    END IF;
+    UPDATE teams SET org_id = def WHERE org_id IS NULL;
+    UPDATE org_memory SET org_id = def WHERE org_id IS NULL;
+    UPDATE provider_keys SET org_id = def WHERE org_id IS NULL;
+    UPDATE oauth_apps SET org_id = def WHERE org_id IS NULL;
+    UPDATE app_integrations SET org_id = def WHERE org_id IS NULL;
+    UPDATE github_repo_index SET org_id = def WHERE org_id IS NULL;
+    UPDATE knowledge_sources SET org_id = def WHERE org_id IS NULL;
+  END IF;
+END $$;
+
+-- org_memory: one row per organization (was a singleton).
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'org_memory' AND column_name = 'singleton') THEN
+    ALTER TABLE org_memory DROP CONSTRAINT IF EXISTS org_memory_pkey;
+    ALTER TABLE org_memory DROP COLUMN singleton;
+    DELETE FROM org_memory WHERE org_id IS NULL;
+    ALTER TABLE org_memory ALTER COLUMN org_id SET NOT NULL;
+    ALTER TABLE org_memory ADD PRIMARY KEY (org_id);
+  END IF;
+END $$;
+
+-- Per-organization primary keys for tables that were keyed by provider/kind/name alone.
+DO $$
+DECLARE t RECORD;
+BEGIN
+  FOR t IN SELECT * FROM (VALUES ('provider_keys', 'provider'), ('oauth_apps', 'provider'), ('app_integrations', 'kind'), ('github_repo_index', 'full_name')) AS v(tbl, col) LOOP
+    IF (SELECT count(*) FROM information_schema.key_column_usage k
+         JOIN information_schema.table_constraints c ON c.constraint_name = k.constraint_name AND c.table_name = k.table_name
+        WHERE c.table_name = t.tbl AND c.constraint_type = 'PRIMARY KEY') = 1 THEN
+      EXECUTE format('DELETE FROM %I WHERE org_id IS NULL', t.tbl);
+      EXECUTE format('ALTER TABLE %I ALTER COLUMN org_id SET NOT NULL', t.tbl);
+      EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', t.tbl, t.tbl || '_pkey');
+      EXECUTE format('ALTER TABLE %I ADD PRIMARY KEY (org_id, %I)', t.tbl, t.col);
+    END IF;
+  END LOOP;
+END $$;
+CREATE INDEX IF NOT EXISTS teams_org_idx ON teams (org_id);
+CREATE INDEX IF NOT EXISTS knowledge_sources_org_idx ON knowledge_sources (org_id);
+
+-- Deleting an organization deletes everything that belongs to it: rows left
+-- behind would otherwise be readable by a later organization reusing an id and
+-- would keep encrypted keys alive with no owner.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['org_memory', 'provider_keys', 'oauth_apps', 'app_integrations', 'github_repo_index'] LOOP
+    EXECUTE format('DELETE FROM %I WHERE org_id NOT IN (SELECT org_id FROM organizations)', t);
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.table_constraints c
+       WHERE c.table_name = t AND c.constraint_type = 'FOREIGN KEY' AND c.constraint_name = t || '_org_id_fkey'
+    ) THEN
+      EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (org_id) REFERENCES organizations(org_id) ON DELETE CASCADE', t, t || '_org_id_fkey');
+    END IF;
+  END LOOP;
+END $$;

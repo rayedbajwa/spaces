@@ -7,6 +7,7 @@ import { readDevSetupState, resolveSpeckitRoot, runDevSetup, summarizeCodebaseFo
 import { getDb } from './db'
 import { getProject, getRepo } from './project-registry'
 import { suggestRepositoriesAndWorkAreas } from './suggestions'
+import { orgIdForProject } from './orgs'
 
 const execFileAsync = promisify(execFile)
 import { buildContextBundle, upsertProjectMemory } from './context-builder'
@@ -226,6 +227,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
   const briefs = await Promise.all(inventories.map(async ({ repo, inventory }) => {
     try {
       const brief = await summarizeCodebaseForMemory({
+        projectId: project.projectId,
         cwd: repo.localPath,
         model: options.model,
         inventory: inventory.markdown,
@@ -294,7 +296,7 @@ async function runOnboarding(project: ProjectRow, snapshot: OnboardingSnapshot, 
       setupResults.push(`${repoName(repo)}: ${state.status} (recent)`)
     } else {
       try {
-        const result = await runDevSetup({ cwd: repo.localPath, model: options.model, repoLabel: repo.label })
+        const result = await runDevSetup({ cwd: repo.localPath, projectId: project.projectId, model: options.model, repoLabel: repo.label })
         setupResults.push(`${repoName(repo)}: ${result.status}`)
       } catch (error) {
         setupErrors.push(`${repoName(repo)}: ${error instanceof Error ? error.message : String(error)}`)
@@ -634,8 +636,9 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
     let error: string | undefined
     try {
       brief = await summarizeCodebaseForMemory({
+        projectId: project.projectId,
         cwd: repo.localPath,
-        model: options.model ?? await defaultModel(),
+        model: options.model ?? await defaultModel(await orgIdForProject(project.projectId)),
         inventory: inventory.markdown,
         projectName: `${project.name} / ${repo.githubRepo ?? repo.label}`,
       })
@@ -649,7 +652,7 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
     // tasks that were waiting on it can build and test there right away.
     const setupState = await readDevSetupState(repo.localPath)
     if (setupState.needed) {
-      await runDevSetup({ cwd: repo.localPath, model: options.model ?? await defaultModel(), repoLabel: repo.label }).catch(() => undefined)
+      await runDevSetup({ cwd: repo.localPath, projectId: project.projectId, model: options.model ?? await defaultModel(await orgIdForProject(project.projectId)), repoLabel: repo.label }).catch(() => undefined)
     }
   })().finally(() => refreshing.delete(key))
   refreshing.set(key, job)

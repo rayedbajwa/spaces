@@ -16,7 +16,8 @@
  */
 
 import { getDb } from './db'
-import { configuredProviders, type ProviderId } from './default-model'
+import { type ProviderId } from './default-model'
+import { configuredProvidersFor } from './provider-keys'
 import { log } from './logger'
 import { loadModelCatalog, type CatalogModel } from './model-catalog'
 
@@ -72,17 +73,20 @@ export const OPENROUTER_AUTO = 'openrouter/openrouter/auto'
 // Policy storage
 // ---------------------------------------------------------------------------
 
-export async function getModelPolicy(): Promise<ModelPolicy> {
-  const [row] = await getDb()<Array<{ policy: Partial<ModelPolicy> | null }>>`SELECT model_policy_json AS policy FROM org_memory WHERE singleton`.catch(() => [])
+export async function getModelPolicy(orgId: string): Promise<ModelPolicy> {
+  const [row] = await getDb()<Array<{ policy: Partial<ModelPolicy> | null }>>`SELECT model_policy_json AS policy FROM org_memory WHERE org_id = ${orgId}`.catch(() => [])
   return normalizePolicy(row?.policy ?? {})
 }
 
-export async function updateModelPolicy(patch: Partial<ModelPolicy>): Promise<ModelPolicy> {
-  const current = await getModelPolicy()
+export async function updateModelPolicy(orgId: string, patch: Partial<ModelPolicy>): Promise<ModelPolicy> {
+  const current = await getModelPolicy(orgId)
   const next = normalizePolicy({ ...current, ...patch, overrides: { ...(patch.overrides ?? current.overrides) } })
   const sql = getDb()
-  await sql`UPDATE org_memory SET model_policy_json = ${sql.json(next as never)}, updated_at = now() WHERE singleton`
-  invalidateTierModels()
+  await sql`
+    INSERT INTO org_memory (org_id, model_policy_json) VALUES (${orgId}, ${sql.json(next as never)})
+    ON CONFLICT (org_id) DO UPDATE SET model_policy_json = EXCLUDED.model_policy_json, updated_at = now()
+  `
+  invalidateTierModels(orgId)
   return next
 }
 
@@ -218,35 +222,37 @@ function scoreModels(models: CatalogModel[]): ScoredModel[] {
 // Resolution + cache
 // ---------------------------------------------------------------------------
 
-let routingCache: { at: number; value: TierRouting } | undefined
+const routingCache = new Map<string, { at: number; value: TierRouting }>()
 const CACHE_MS = 5 * 60_000
 
-export function invalidateTierModels(): void {
-  routingCache = undefined
+export function invalidateTierModels(orgId?: string): void {
+  if (orgId) routingCache.delete(orgId)
+  else routingCache.clear()
 }
 
-export async function getTierRouting(force = false): Promise<TierRouting> {
-  if (!force && routingCache && Date.now() - routingCache.at < CACHE_MS) return routingCache.value
-  const [catalog, policy] = await Promise.all([loadModelCatalog(), getModelPolicy()])
-  const value = computeTierRouting(catalog, policy, configuredProviders())
-  routingCache = { at: Date.now(), value }
+export async function getTierRouting(orgId: string, force = false): Promise<TierRouting> {
+  const cached = routingCache.get(orgId)
+  if (!force && cached && Date.now() - cached.at < CACHE_MS) return cached.value
+  const [catalog, policy, configured] = await Promise.all([loadModelCatalog(), getModelPolicy(orgId), configuredProvidersFor(orgId)])
+  const value = computeTierRouting(catalog, policy, configured)
+  routingCache.set(orgId, { at: Date.now(), value })
   return value
 }
 
-export async function getTierModels(): Promise<TierModels> {
-  return (await getTierRouting()).tiers
+export async function getTierModels(orgId: string): Promise<TierModels> {
+  return (await getTierRouting(orgId)).tiers
 }
 
 /** The model used when a run, sub-agent or onboarding job names none: the medium tier. */
-export async function defaultModel(): Promise<string> {
-  const tiers = await getTierModels()
+export async function defaultModel(orgId: string): Promise<string> {
+  const tiers = await getTierModels(orgId)
   return tiers.medium || tiers.small || tiers.large
 }
 
 /** Compute once at boot so the first request does not pay for it, and log the outcome. */
-export async function warmModelRouting(logger: { info: (m: string, meta?: Record<string, unknown>) => void; warn: (m: string, meta?: Record<string, unknown>) => void } = policyLog): Promise<TierRouting> {
-  const routing = await getTierRouting(true)
-  if (!routing.provider) logger.warn('No LLM provider key is set; runs cannot start until one is added.')
-  else logger.info('model routing', { provider: routing.provider, preference: routing.policy.preference, ...routing.tiers })
+export async function warmModelRouting(orgId: string, logger: { info: (m: string, meta?: Record<string, unknown>) => void; warn: (m: string, meta?: Record<string, unknown>) => void } = policyLog): Promise<TierRouting> {
+  const routing = await getTierRouting(orgId, true)
+  if (!routing.provider) logger.warn('No LLM provider key is set for this organization; its runs cannot start until one is added.', { orgId })
+  else logger.info('model routing', { orgId, provider: routing.provider, preference: routing.policy.preference, ...routing.tiers })
   return routing
 }

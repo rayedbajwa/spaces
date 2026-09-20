@@ -25,9 +25,9 @@ const COLS = `
   updated_at AS "updatedAt"
 `
 
-export async function listAppIntegrations(): Promise<Array<AppIntegrationRow & { credentialsOk: boolean }>> {
+export async function listAppIntegrations(orgId: string): Promise<Array<AppIntegrationRow & { credentialsOk: boolean }>> {
   const sql = getDb()
-  const rows = await sql<Array<AppIntegrationRow & { credentialsJson: unknown }>>`SELECT ${sql.unsafe(COLS)}, credentials_json AS "credentialsJson" FROM app_integrations ORDER BY kind`
+  const rows = await sql<Array<AppIntegrationRow & { credentialsJson: unknown }>>`SELECT ${sql.unsafe(COLS)}, credentials_json AS "credentialsJson" FROM app_integrations WHERE org_id = ${orgId} ORDER BY kind`
   // "connected" is only real if the stored token still decrypts with this
   // process's ENCRYPTION_KEY and carries an access_token; otherwise the UI must
   // ask for a reconnect instead of every call failing later.
@@ -48,13 +48,14 @@ export class IntegrationCredentialsError extends Error {
   }
 }
 
-export async function getAppIntegration(kind: AppIntegrationKind): Promise<AppIntegrationRow | undefined> {
+export async function getAppIntegration(orgId: string, kind: AppIntegrationKind): Promise<AppIntegrationRow | undefined> {
   const sql = getDb()
-  const [row] = await sql<AppIntegrationRow[]>`SELECT ${sql.unsafe(COLS)} FROM app_integrations WHERE kind = ${kind}`
+  const [row] = await sql<AppIntegrationRow[]>`SELECT ${sql.unsafe(COLS)} FROM app_integrations WHERE org_id = ${orgId} AND kind = ${kind}`
   return row
 }
 
 export async function upsertAppIntegration(input: {
+  orgId: string
   kind: AppIntegrationKind
   status?: AppIntegrationStatus
   displayName?: string
@@ -64,13 +65,13 @@ export async function upsertAppIntegration(input: {
   const sql = getDb()
   const sealed = input.credentials ? sealCredentials(input.credentials) : null
   const [row] = await sql<AppIntegrationRow[]>`
-    INSERT INTO app_integrations (kind, status, display_name, config_json, credentials_json)
+    INSERT INTO app_integrations (org_id, kind, status, display_name, config_json, credentials_json)
     VALUES (
-      ${input.kind}, ${input.status ?? 'not_connected'}, ${input.displayName ?? null},
+      ${input.orgId}, ${input.kind}, ${input.status ?? 'not_connected'}, ${input.displayName ?? null},
       ${sql.json((input.config ?? {}) as never)},
       ${sealed ? sql.json(sealed as never) : null}
     )
-    ON CONFLICT (kind) DO UPDATE SET
+    ON CONFLICT (org_id, kind) DO UPDATE SET
       status = EXCLUDED.status,
       display_name = COALESCE(EXCLUDED.display_name, app_integrations.display_name),
       config_json = app_integrations.config_json || EXCLUDED.config_json,
@@ -80,19 +81,19 @@ export async function upsertAppIntegration(input: {
   return row
 }
 
-export async function disconnectAppIntegration(kind: AppIntegrationKind): Promise<void> {
+export async function disconnectAppIntegration(orgId: string, kind: AppIntegrationKind): Promise<void> {
   const sql = getDb()
   await sql`
     UPDATE app_integrations
        SET status = 'not_connected', credentials_json = NULL, last_sync_error = NULL
-     WHERE kind = ${kind}
+     WHERE org_id = ${orgId} AND kind = ${kind}
   `
 }
 
-export async function getAppIntegrationCredentials(kind: AppIntegrationKind): Promise<Record<string, unknown> | undefined> {
+export async function getAppIntegrationCredentials(orgId: string, kind: AppIntegrationKind): Promise<Record<string, unknown> | undefined> {
   const sql = getDb()
   const [row] = await sql<Array<{ credentialsJson: unknown }>>`
-    SELECT credentials_json AS "credentialsJson" FROM app_integrations WHERE kind = ${kind}
+    SELECT credentials_json AS "credentialsJson" FROM app_integrations WHERE org_id = ${orgId} AND kind = ${kind}
   `
   return row?.credentialsJson ? unsealCredentials(row.credentialsJson) : undefined
 }

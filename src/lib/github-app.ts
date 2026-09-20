@@ -23,12 +23,12 @@ export interface GitHubAppManifestResult {
   owner?: { login: string; type?: string }
 }
 
-const pendingStates = new Map<string, number>()
+const pendingStates = new Map<string, { at: number; orgId: string }>()
 const STATE_TTL_MS = 15 * 60_000
 
 function pruneStates(): void {
   const now = Date.now()
-  for (const [state, at] of pendingStates) if (now - at > STATE_TTL_MS) pendingStates.delete(state)
+  for (const [state, entry] of pendingStates) if (now - entry.at > STATE_TTL_MS) pendingStates.delete(state)
 }
 
 /** The manifest GitHub creates the app from. Permissions match what runs need. */
@@ -63,10 +63,10 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
 }
 
 /** HTML page that auto-submits the manifest to GitHub (the flow requires a browser POST). */
-export function githubAppManifestPage(origin: string, options: { organization?: string; name?: string } = {}): { html: string; state: string } {
+export function githubAppManifestPage(origin: string, options: { organization?: string; name?: string; orgId: string }): { html: string; state: string } {
   pruneStates()
   const state = randomBytes(16).toString('hex')
-  pendingStates.set(state, Date.now())
+  pendingStates.set(state, { at: Date.now(), orgId: options.orgId })
   const manifest = JSON.stringify(buildGitHubAppManifest(origin, { name: options.name }))
   const target = options.organization
     ? `https://github.com/organizations/${encodeURIComponent(options.organization)}/settings/apps/new?state=${state}`
@@ -79,11 +79,13 @@ export function githubAppManifestPage(origin: string, options: { organization?: 
   return { html, state }
 }
 
-export function consumeManifestState(state: string | null): boolean {
+/** The organization that started this manifest flow, or undefined when the state is unknown or expired. */
+export function consumeManifestState(state: string | null): { orgId: string } | undefined {
   pruneStates()
-  if (!state || !pendingStates.has(state)) return false
-  pendingStates.delete(state)
-  return true
+  const entry = state ? pendingStates.get(state) : undefined
+  if (!entry) return undefined
+  pendingStates.delete(state!)
+  return { orgId: entry.orgId }
 }
 
 /** Exchange the temporary code GitHub returns for the new app's credentials. */

@@ -40,13 +40,13 @@ async function git(cwd: string, args: string[], opts: { env?: NodeJS.ProcessEnv;
   return stdout.trim()
 }
 
-async function authHeader(): Promise<string> {
-  const token = await getGitHubActorToken()
+async function authHeader(orgId: string): Promise<string> {
+  const token = await getGitHubActorToken(orgId)
   return `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
 }
 
-async function githubApi<T>(method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown): Promise<T> {
-  const token = await getGitHubActorToken()
+async function githubApi<T>(orgId: string, method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown): Promise<T> {
+  const token = await getGitHubActorToken(orgId)
   const response = await fetch(url, {
     method,
     headers: {
@@ -73,14 +73,14 @@ export async function currentBranch(cwd: string): Promise<string> {
   return git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
 }
 
-export async function defaultBranch(cwd: string, githubRepo: string): Promise<string> {
+export async function defaultBranch(orgId: string, cwd: string, githubRepo: string): Promise<string> {
   try {
     const ref = await git(cwd, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])
     if (ref) return ref.replace(/^origin\//, '')
   } catch {
     // fall through to the API
   }
-  const repo = await githubApi<{ default_branch: string }>('GET', `https://api.github.com/repos/${githubRepo}`)
+  const repo = await githubApi<{ default_branch: string }>(orgId, 'GET', `https://api.github.com/repos/${githubRepo}`)
   return repo.default_branch
 }
 
@@ -211,8 +211,8 @@ export async function commitAll(cwd: string, message: string): Promise<boolean> 
   return true
 }
 
-export async function pushBranch(cwd: string, branch: string): Promise<void> {
-  const header = await authHeader()
+export async function pushBranch(orgId: string, cwd: string, branch: string): Promise<void> {
+  const header = await authHeader(orgId)
   await git(cwd, ['-c', `http.extraheader=${header}`, 'push', '-u', 'origin', `${branch}:${branch}`], { timeoutMs: 10 * 60_000 })
 }
 
@@ -233,9 +233,9 @@ interface GitHubPull {
   body?: string | null
 }
 
-export async function findOpenPullRequest(githubRepo: string, head: string): Promise<GitHubPull | undefined> {
+export async function findOpenPullRequest(orgId: string, githubRepo: string, head: string): Promise<GitHubPull | undefined> {
   const owner = githubRepo.split('/')[0]
-  const pulls = await githubApi<GitHubPull[]>('GET', `https://api.github.com/repos/${githubRepo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}&per_page=5`)
+  const pulls = await githubApi<GitHubPull[]>(orgId, 'GET', `https://api.github.com/repos/${githubRepo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}&per_page=5`)
   return pulls[0]
 }
 
@@ -244,6 +244,7 @@ export async function findOpenPullRequest(githubRepo: string, head: string): Pro
  * (title/body/base). Idempotent across stage completions.
  */
 export async function openOrUpdatePullRequest(options: {
+  orgId: string
   githubRepo: string
   head: string
   base: string
@@ -251,16 +252,16 @@ export async function openOrUpdatePullRequest(options: {
   body: string
   draft?: boolean
 }): Promise<PullRequestRef> {
-  const existing = await findOpenPullRequest(options.githubRepo, options.head)
+  const existing = await findOpenPullRequest(options.orgId, options.githubRepo, options.head)
   if (existing) {
-    const updated = await githubApi<GitHubPull>('PATCH', `https://api.github.com/repos/${options.githubRepo}/pulls/${existing.number}`, {
+    const updated = await githubApi<GitHubPull>(options.orgId, 'PATCH', `https://api.github.com/repos/${options.githubRepo}/pulls/${existing.number}`, {
       title: options.title,
       body: options.body,
       ...(existing.base.ref !== options.base ? { base: options.base } : {}),
     })
     return { number: updated.number, url: updated.html_url, head: updated.head.ref, base: updated.base.ref, created: false }
   }
-  const created = await githubApi<GitHubPull>('POST', `https://api.github.com/repos/${options.githubRepo}/pulls`, {
+  const created = await githubApi<GitHubPull>(options.orgId, 'POST', `https://api.github.com/repos/${options.githubRepo}/pulls`, {
     title: options.title,
     head: options.head,
     base: options.base,
@@ -270,8 +271,8 @@ export async function openOrUpdatePullRequest(options: {
   return { number: created.number, url: created.html_url, head: created.head.ref, base: created.base.ref, created: true }
 }
 
-export async function commentOnPullRequest(githubRepo: string, number: number, body: string): Promise<void> {
-  await githubApi('POST', `https://api.github.com/repos/${githubRepo}/issues/${number}/comments`, { body })
+export async function commentOnPullRequest(orgId: string, githubRepo: string, number: number, body: string): Promise<void> {
+  await githubApi(orgId, 'POST', `https://api.github.com/repos/${githubRepo}/issues/${number}/comments`, { body })
 }
 
 /**
@@ -279,6 +280,7 @@ export async function commentOnPullRequest(githubRepo: string, number: number, b
  * open/update its PR. Returns undefined when there is nothing to publish.
  */
 export async function publishBranchAsPullRequest(options: {
+  orgId: string
   cwd: string
   githubRepo: string
   branch: string
@@ -300,8 +302,9 @@ export async function publishBranchAsPullRequest(options: {
   if (!(await hasCommitsAhead(options.cwd, `origin/${options.base}`, options.branch)) && !(await hasCommitsAhead(options.cwd, options.base, options.branch))) {
     return undefined
   }
-  await pushBranch(options.cwd, options.branch)
+  await pushBranch(options.orgId, options.cwd, options.branch)
   return openOrUpdatePullRequest({
+    orgId: options.orgId,
     githubRepo: options.githubRepo,
     head: options.branch,
     base: options.base,

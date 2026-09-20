@@ -20,14 +20,14 @@ import { beginAuthorization, consumeState, exchangeCode, resolveProvider } from 
 import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, recordGitHubInstallation, saveGitHubAppFromManifest, saveOAuthApp } from './lib/oauth-apps'
 import { consumeManifestState, convertGitHubAppManifest, githubAppManifestPage } from './lib/github-app'
 import { withExpiry } from './lib/integration-token'
-import { applyProviderKeysToEnv, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey } from './lib/provider-keys'
+import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey, scrubProviderKeysFromEnv } from './lib/provider-keys'
+import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkProviderKeys } from './lib/provider-check'
 import { defaultModel, getModelPolicy, getTierRouting, updateModelPolicy, warmModelRouting, type ModelPolicy } from './lib/model-policy'
-import { configuredProviders } from './lib/default-model'
 import {
   createKnowledgeSource, deleteKnowledgeDocument, deleteKnowledgeSource, getKnowledgeSource, getKnowledgeStatus,
   indexKnowledgeDocument, KNOWLEDGE_SOURCE_KINDS, listKnowledgeDocuments, listKnowledgeSources, resetKnowledgeSourceCursor,
@@ -43,7 +43,6 @@ import {
   acceptInvite,
   authDisabled,
   authenticate,
-  bootstrapFirstUser,
   clearSessionCookie,
   countUsers,
   createInvite,
@@ -75,6 +74,7 @@ import {
   updateTeamKnowledge,
   updateTeamMemory,
   verifyPassword,
+  bootstrapOrganization,
   type AuthContext,
   type InviteRole,
   type TeamRole,
@@ -147,12 +147,14 @@ await ensureFrontendBuilt()
 const versionMetadata = resolveVersionMetadata({ packageMetadata })
 // Provider keys live in the database: import any left in the environment once,
 // then load the stored ones into this process and follow later changes.
-await importProviderKeysFromEnv().catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
-await applyProviderKeysToEnv().catch((error) => serverLog.warn('provider keys could not be loaded', { error: error instanceof Error ? error.message : String(error) }))
-await listenProviderKeys(() => { void warmModelRouting(serverLog).catch(() => undefined) }).catch(() => undefined)
+// Provider keys live in the database, per organization: keys left in the
+// environment are imported once into the default organization and scrubbed so
+// no tenant inherits them from the process. Routing is warmed per organization.
+const bootOrgId = await getDefaultOrgId()
+await importProviderKeysFromEnv(bootOrgId).catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
+scrubProviderKeysFromEnv()
+await listenProviderKeys((orgId) => { void warmModelRouting(orgId, serverLog).catch(() => undefined) }).catch(() => undefined)
 void checkProviderKeys(serverLog)
-// Decide the tier models for the configured provider once, before serving.
-await warmModelRouting(serverLog).catch((error) => serverLog.warn('model routing could not be computed', { error: error instanceof Error ? error.message : String(error) }))
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
@@ -160,9 +162,13 @@ void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned proj
 void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked interrupted knowledge imports as failed', { count: n }) }).catch(() => undefined)
 // Keep the GitHub repository catalog fresh (on boot when connected, then every 6h).
 {
-  const syncCatalog = () => syncGitHubRepoCatalog().catch((error) => {
-    if (!(error instanceof GitHubNotConnectedError)) serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) })
-  })
+  const syncCatalog = async () => {
+    for (const org of await listOrganizations().catch(() => [])) {
+      await syncGitHubRepoCatalog(org.orgId).catch((error) => {
+        if (!(error instanceof GitHubNotConnectedError)) serverLog.warn('GitHub catalog sync failed', { org: org.slug, error: error instanceof Error ? error.message : String(error) })
+      })
+    }
+  }
   void syncCatalog()
   setInterval(() => { void syncCatalog() }, 6 * 60 * 60_000)
 }
@@ -244,13 +250,16 @@ async function route(req: Request): Promise<Response> {
   if (auth && auth.teams.length === 0 && isApi && !/^\/api\/(auth|me|teams|invites)(\/|$)/.test(url.pathname)) {
     return sendJson(403, { error: 'You are not in a team yet. Create one or accept an invite first.', code: 'no_team' })
   }
+  /** The caller's organization (tenant): the active team's, or the default one when sign-in is disabled. */
+  const orgIdOf = async (): Promise<string> => auth?.orgId ?? (await getDefaultOrgId())
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider('github')), defaultModel: await defaultModel(), modelsReady: configuredProviders().length > 0 })
+    const statusOrg = await getDefaultOrgId()
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin: Boolean(await resolveProvider(statusOrg, 'github')), defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
-    const body = await readJson<{ email?: string; password?: string; name?: string; inviteToken?: string }>(req)
+    const body = await readJson<{ email?: string; password?: string; name?: string; inviteToken?: string; organizationName?: string }>(req)
     const email = body.email?.trim()
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(400, { error: 'A valid email is required.' })
     if (!body.password || body.password.length < 10) return sendJson(400, { error: 'Password must be at least 10 characters.' })
@@ -267,8 +276,9 @@ async function route(req: Request): Promise<Response> {
     }
     const user = await createUser({ email, name: body.name?.trim() || email.split('@')[0]!, password: body.password })
     let teamId: string | undefined
-    if (first) teamId = (await bootstrapFirstUser(user)).teamId
     if (invite) teamId = (await acceptInvite(body.inviteToken!, user)).teamId
+    // Without an invite the account starts its own organization (the first one adopts anything from before tenancy).
+    else teamId = (await bootstrapOrganization(user, { organizationName: body.organizationName, adoptLegacy: first })).team.teamId
     const { token } = await createSession(user.userId, req, teamId)
     return new Response(JSON.stringify({ ok: true, user, bootstrapped: first }), { status: 201, headers: { 'content-type': 'application/json', 'set-cookie': sessionCookie(token, req) } })
   }
@@ -304,9 +314,11 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/me') {
-    const modelsReady = configuredProviders().length > 0
-    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: await defaultModel(), modelsReady })
-    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, org: await getOrgMemory(), defaultModel: await defaultModel(), modelsReady })
+    const meOrg = await orgIdOf()
+    const modelsReady = (await configuredProvidersFor(meOrg)).length > 0
+    const organization = await getOrganization(meOrg).catch(() => undefined)
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady })
   }
 
   if (method === 'POST' && url.pathname === '/api/me/team' && auth) {
@@ -332,7 +344,7 @@ async function route(req: Request): Promise<Response> {
   const teamRole = (teamId: string): TeamRole | undefined => auth?.teams.find((t) => t.teamId === teamId)?.role
   const requireOrgAdmin = (message: string) => {
     if (authDisabled()) return null
-    return !auth || !auth.teams.some((t) => roleAtLeast(t.role, 'admin')) ? sendJson(403, { error: message }) : null
+    return !auth || !auth.teams.some((t) => t.orgId === auth.orgId && roleAtLeast(t.role, 'admin')) ? sendJson(403, { error: message }) : null
   }
   const requireProjectRole = (project: { teamId?: string | null } | undefined, needed: TeamRole, message: string) => {
     if (!auth || !project?.teamId) return null
@@ -356,7 +368,9 @@ async function route(req: Request): Promise<Response> {
   if (method === 'POST' && url.pathname === '/api/teams' && auth) {
     const body = await readJson<{ name?: string }>(req)
     if (!body.name?.trim()) return sendJson(400, { error: 'Team name is required.' })
-    const team = await createTeam({ name: body.name, createdBy: auth.user.userId })
+    // A new team joins the caller's organization; an account without one starts its own.
+    const orgId = auth.orgId ?? (await createOrganization({ name: `${auth.user.name.split(' ')[0] || auth.user.email.split('@')[0]}'s organization`, createdBy: auth.user.userId })).orgId
+    const team = await createTeam({ name: body.name, createdBy: auth.user.userId, orgId })
     await setActiveTeam(auth.sessionId, team.teamId)
     return sendJson(201, { team, teams: await listTeamsForUser(auth.user.userId) })
   }
@@ -434,59 +448,60 @@ async function route(req: Request): Promise<Response> {
   // ---- Organization: memory shared by every team (owners/admins edit) ----
 
   if (method === 'GET' && url.pathname === '/api/org/memory') {
-    return sendJson(200, await getOrgMemory())
+    return sendJson(200, await getOrgMemory(await orgIdOf()))
   }
   if (method === 'PUT' && url.pathname === '/api/org/memory') {
     const denied = requireOrgAdmin('Only team owners or admins can edit organization memory.'); if (denied) return denied
     const body = await readJson<{ name?: string; text?: string; manualText?: string }>(req)
-    await updateOrgMemory({ name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
-    return sendJson(200, await getOrgMemory())
+    await updateOrgMemory(await orgIdOf(), { name: body.name?.trim() || undefined, manualText: body.manualText ?? body.text })
+    return sendJson(200, await getOrgMemory(await orgIdOf()))
   }
 
   // ---- LLM provider keys (organization-level, encrypted) ----
 
   if (method === 'GET' && url.pathname === '/api/org/provider-keys') {
     const denied = requireOrgAdmin('Only team owners or admins can view provider keys.'); if (denied) return denied
-    return sendJson(200, { keys: await listProviderKeys() })
+    return sendJson(200, { keys: await listProviderKeys(await orgIdOf()) })
   }
   if (/^\/api\/org\/provider-keys\/[a-z]+(\/verify)?$/.test(url.pathname) && (method === 'PUT' || method === 'DELETE' || method === 'POST')) {
     const parts = url.pathname.split('/')
     const provider = parts[4]!
     if (!isProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
     const denied = requireOrgAdmin('Only team owners or admins can manage provider keys.'); if (denied) return denied
+    const orgId = await orgIdOf()
     try {
       if (method === 'DELETE') {
-        await deleteProviderKey(provider)
+        await deleteProviderKey(orgId, provider)
         serverLog.info('provider key removed', { provider, by: auth?.user.email ?? 'local' })
       } else if (method === 'POST' && parts[5] === 'verify') {
-        const result = await reverifyProviderKey(provider)
-        return sendJson(200, { result, keys: await listProviderKeys() })
+        const result = await reverifyProviderKey(orgId, provider)
+        return sendJson(200, { result, keys: await listProviderKeys(orgId) })
       } else if (method === 'PUT') {
         const body = await readJson<{ key?: string }>(req)
-        const result = await saveProviderKey(provider, body.key ?? '', auth?.user.userId ?? null)
+        const result = await saveProviderKey(orgId, provider, body.key ?? '', auth?.user.userId ?? null)
         serverLog.info('provider key saved', { provider, by: auth?.user.email ?? 'local', status: result.status })
-        await warmModelRouting(serverLog).catch(() => undefined)
-        return sendJson(200, { result, keys: await listProviderKeys(), routing: await getTierRouting(true) })
+        await warmModelRouting(orgId, serverLog).catch(() => undefined)
+        return sendJson(200, { result, keys: await listProviderKeys(orgId), routing: await getTierRouting(orgId, true) })
       } else {
         return sendJson(405, { error: 'Method not allowed.' })
       }
     } catch (error) {
       return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
     }
-    return sendJson(200, { keys: await listProviderKeys(), routing: await getTierRouting(true) })
+    return sendJson(200, { keys: await listProviderKeys(orgId), routing: await getTierRouting(orgId, true) })
   }
 
   // ---- Organization model routing: automatic per provider, tuned by policy ----
 
   if (method === 'GET' && url.pathname === '/api/org/models') {
-    const routing = await getTierRouting(url.searchParams.get('refresh') === '1')
+    const routing = await getTierRouting(await orgIdOf(), url.searchParams.get('refresh') === '1')
     return sendJson(200, routing)
   }
   if (method === 'PUT' && url.pathname === '/api/org/models') {
     const denied = requireOrgAdmin('Only team owners or admins can change model routing.'); if (denied) return denied
     const body = await readJson<Partial<ModelPolicy>>(req)
-    await updateModelPolicy(body)
-    const routing = await getTierRouting(true)
+    await updateModelPolicy(await orgIdOf(), body)
+    const routing = await getTierRouting(await orgIdOf(), true)
     serverLog.info('model policy updated', { by: auth?.user.email ?? 'local', preference: routing.policy.preference, provider: routing.provider, ...routing.tiers })
     return sendJson(200, routing)
   }
@@ -498,9 +513,10 @@ async function route(req: Request): Promise<Response> {
 
   if (url.pathname === '/api/org/knowledge' || url.pathname.startsWith('/api/org/knowledge/')) {
     const rest = url.pathname.slice('/api/org/knowledge'.length)
-    const myTeamIds: string[] | 'all' = auth ? auth.teams.map((t) => t.teamId) : 'all'
-    const scope = { teamIds: myTeamIds }
-    const canEditOrg = !auth || auth.teams.some((t) => roleAtLeast(t.role, 'admin'))
+    const knowledgeOrg = await orgIdOf()
+    const myTeamIds: string[] | 'all' = auth ? auth.teams.filter((t) => t.orgId === knowledgeOrg).map((t) => t.teamId) : 'all'
+    const scope = { orgId: knowledgeOrg, teamIds: myTeamIds }
+    const canEditOrg = !auth || auth.teams.some((t) => t.orgId === knowledgeOrg && roleAtLeast(t.role, 'admin'))
     const canEditScope = (teamId: string | null) => !auth || (teamId ? roleAtLeast(teamRole(teamId) ?? 'viewer', 'admin') : canEditOrg)
     const visible = (teamId: string | null) => myTeamIds === 'all' || teamId === null || myTeamIds.includes(teamId)
     const forbidden = () => sendJson(403, { error: 'Only team owners or admins can change the knowledge base.' })
@@ -512,7 +528,7 @@ async function route(req: Request): Promise<Response> {
       const integration = url.searchParams.get('integration') as CatalogIntegration | null
       if (!integration || !['confluence', 'jira', 'linear', 'github'].includes(integration)) return sendJson(400, { error: 'integration must be confluence, jira, linear or github.' })
       try {
-        return sendJson(200, { integration, entries: await listImportCatalog(integration) })
+        return sendJson(200, { integration, entries: await listImportCatalog(knowledgeOrg, integration) })
       } catch (error) {
         if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message, entries: [] })
         return sendJson(502, { error: error instanceof Error ? error.message : String(error), entries: [] })
@@ -533,7 +549,7 @@ async function route(req: Request): Promise<Response> {
       const problem = validateSourceConfig(body.kind, config)
       if (problem) return sendJson(400, { error: problem })
       if (!body.label?.trim()) return sendJson(400, { error: 'label is required.' })
-      const source = await createKnowledgeSource({ kind: body.kind, label: body.label, config, teamId, createdBy: auth?.user.userId ?? null })
+      const source = await createKnowledgeSource({ orgId: knowledgeOrg, kind: body.kind, label: body.label, config, teamId, createdBy: auth?.user.userId ?? null })
       if (source.kind !== 'manual') queueKnowledgeImport(source.sourceId)
       return sendJson(201, { source })
     }
@@ -545,8 +561,8 @@ async function route(req: Request): Promise<Response> {
       if (teamId && auth && !auth.teams.some((t) => t.teamId === teamId)) return sendJson(403, { error: 'You are not a member of that team.' })
       if (!canEditScope(teamId)) return forbidden()
       if (!body.title?.trim() || !body.content?.trim()) return sendJson(400, { error: 'title and content are required.' })
-      const existing = (await listKnowledgeSources({ teamIds: teamId ? [teamId] : [] })).find((s) => s.kind === 'manual' && s.teamId === teamId)
-      const source = existing ?? await createKnowledgeSource({ kind: 'manual', label: 'Notes', teamId, createdBy: auth?.user.userId ?? null })
+      const existing = (await listKnowledgeSources({ orgId: knowledgeOrg, teamIds: teamId ? [teamId] : [] })).find((s) => s.kind === 'manual' && s.teamId === teamId)
+      const source = existing ?? await createKnowledgeSource({ orgId: knowledgeOrg, kind: 'manual', label: 'Notes', teamId, createdBy: auth?.user.userId ?? null })
       const result = await indexKnowledgeDocument(source, { externalId: `note:${crypto.randomUUID()}`, title: body.title, content: body.content, url: body.url?.trim() || undefined, metadata: { addedBy: auth?.user.email ?? 'local' } })
       return sendJson(201, { source: await getKnowledgeSource(source.sourceId), result })
     }
@@ -556,7 +572,7 @@ async function route(req: Request): Promise<Response> {
       if (!query) return sendJson(400, { error: 'q is required.' })
       const limit = Number(url.searchParams.get('limit') ?? '8')
       const sourceIds = (url.searchParams.get('sources') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
-      const result = await searchOrgKnowledge({ query, scope: { teamIds: myTeamIds, sourceIds: sourceIds.length ? sourceIds : undefined }, limit, perDocument: url.searchParams.get('perDocument') !== '0' })
+      const result = await searchOrgKnowledge({ query, scope: { orgId: knowledgeOrg, teamIds: myTeamIds, sourceIds: sourceIds.length ? sourceIds : undefined }, limit, perDocument: url.searchParams.get('perDocument') !== '0' })
       return sendJson(200, result)
     }
 
@@ -666,7 +682,7 @@ async function route(req: Request): Promise<Response> {
     if (!body.name?.trim()) return sendJson(400, { error: 'name is required' })
     if (auth && !auth.activeTeam) return sendJson(400, { error: 'Create or join a team before creating a project.' })
     // Onboarding and every stage need a model: refuse rather than create a project that cannot run.
-    if (configuredProviders().length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
+    if ((await configuredProvidersFor(await orgIdOf())).length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
     const project = await projCreate({ name: body.name.trim(), description: body.description?.trim(), teamId: auth?.activeTeam?.teamId ?? null })
     for (const r of body.repos ?? []) {
       await projAddRepo({ projectId: project.projectId, ...r })
@@ -682,7 +698,7 @@ async function route(req: Request): Promise<Response> {
     if (governanceEnabled()) {
       await ensureGovernanceWorkspace(project).catch((error) => serverLog.warn('governance workspace creation failed', { slug: project.slug, error: error instanceof Error ? error.message : String(error) }))
     }
-    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel(), feature: body.feature?.trim() || undefined })
+    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel(await orgIdOf()), feature: body.feature?.trim() || undefined })
     const detail = await projGetDetail(project.projectId)
     return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId) })
   }
@@ -699,9 +715,9 @@ async function route(req: Request): Promise<Response> {
     if (!project) return sendJson(404, { error: 'Project not found.' })
     const denied = requireProjectRole(project, 'member', 'Only team members can re-run onboarding.'); if (denied) return denied
     if (project.archivedAt) return sendJson(409, { error: 'This project is archived. Unarchive it before re-running onboarding.' })
-    if (configuredProviders().length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
+    if ((await configuredProvidersFor(await orgIdOf())).length === 0) return sendJson(409, { error: 'No model provider key is set. Add an Anthropic, OpenAI or OpenRouter key under Organization → Models first.', code: 'no_provider_key' })
     const body = await readJson<{ model?: string }>(req)
-    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel() })
+    void startProjectOnboarding(project, { model: body.model?.trim() || await defaultModel(await orgIdOf()) })
     return sendJson(202, getOnboardingSnapshot(projectId))
   }
 
@@ -847,7 +863,7 @@ async function route(req: Request): Promise<Response> {
     if (!name) return sendJson(400, { error: 'A repository name is required (letters, digits, "-", "_" and ".").' })
     const manualUrl = newRepoUrl({ name, owner: body.owner?.trim() || undefined, description: body.description ?? project.description ?? '', visibility: body.visibility === 'public' ? 'public' : 'private' })
     try {
-      const created = await createGitHubRepository({ name, owner: body.owner, description: body.description ?? project.description, private: body.visibility !== 'public' })
+      const created = await createGitHubRepository(await orgIdForProject(projectId), { name, owner: body.owner, description: body.description ?? project.description, private: body.visibility !== 'public' })
       const existing = await import('./lib/project-registry').then((m) => m.listRepos(projectId))
       const isPrimary = !existing.some((r) => r.label !== 'governance')
       const repo = await projAddRepo({ projectId, label: created.name, kind: 'github', githubRepo: created.fullName, isPrimary })
@@ -970,7 +986,7 @@ async function route(req: Request): Promise<Response> {
   // ---- Integrations as knowledge (Jira / Linear / Confluence / GitHub) ----
 
   if (method === 'GET' && url.pathname === '/api/knowledge/sources') {
-    return sendJson(200, { sources: await listConnectedKnowledgeSources() })
+    return sendJson(200, { sources: await listConnectedKnowledgeSources(await orgIdOf()) })
   }
 
   // Per-project knowledge scope: which integrations/repos this project's agents may query.
@@ -979,8 +995,9 @@ async function route(req: Request): Promise<Response> {
     const project = await projGet(projectId)
     if (!project) return sendJson(404, { error: 'Project not found.' })
     const { resolveKnowledgeScope } = await import('./lib/integration-sources')
-    const scope = await resolveKnowledgeScope(projectId)
-    const connected = await listConnectedKnowledgeSources()
+    const projectOrg = await orgIdForProject(projectId)
+    const scope = await resolveKnowledgeScope(projectOrg, projectId)
+    const connected = await listConnectedKnowledgeSources(projectOrg)
     const repos = (await import('./lib/project-registry').then((m) => m.listRepos(projectId)))
       .map((r) => r.githubRepo).filter((r): r is string => Boolean(r))
     return sendJson(200, { config: project.knowledgeJson ?? {}, effective: scope, connected, registeredRepos: repos })
@@ -1017,7 +1034,7 @@ async function route(req: Request): Promise<Response> {
     if (!source || !['jira', 'linear', 'confluence', 'github'].includes(source)) return sendJson(400, { error: 'source must be jira, linear, confluence or github.' })
     if (!query) return sendJson(400, { error: 'q is required.' })
     try {
-      return sendJson(200, { hits: await searchKnowledge({ source, query, limit, repos }) })
+      return sendJson(200, { hits: await searchKnowledge(await orgIdOf(), { source, query, limit, repos }) })
     } catch (error) {
       if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message, hits: [] })
       return sendJson(502, { error: error instanceof Error ? error.message : String(error), hits: [] })
@@ -1031,7 +1048,7 @@ async function route(req: Request): Promise<Response> {
     if (!source || !['jira', 'linear', 'confluence', 'github'].includes(source)) return sendJson(400, { error: 'source must be jira, linear, confluence or github.' })
     if (!id) return sendJson(400, { error: 'id is required.' })
     try {
-      return sendJson(200, await getKnowledgeItem({ source, id, repos }))
+      return sendJson(200, await getKnowledgeItem(await orgIdOf(), { source, id, repos }))
     } catch (error) {
       if (error instanceof KnowledgeSourceNotConnectedError) return sendJson(409, { error: error.message })
       return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
@@ -1050,7 +1067,7 @@ async function route(req: Request): Promise<Response> {
     const repos = (await import('./lib/project-registry').then((m) => m.listRepos(projectId)))
       .map((r) => r.githubRepo).filter((r): r is string => Boolean(r))
     try {
-      const doc = await getKnowledgeItem({ source: body.source, id: body.id.trim(), repos })
+      const doc = await getKnowledgeItem(await orgIdForProject(projectId), { source: body.source, id: body.id.trim(), repos })
       await saveKnowledgeSnapshot(projectId, doc, body.scope)
       return sendJson(201, doc)
     } catch (error) {
@@ -1084,12 +1101,12 @@ async function route(req: Request): Promise<Response> {
 
   // Synced GitHub repository catalog (name, language, topics, README use case).
   if (method === 'GET' && url.pathname === '/api/github/catalog') {
-    return sendJson(200, { repositories: await listRepoCatalog(Number(url.searchParams.get('limit') ?? '200')) })
+    return sendJson(200, { repositories: await listRepoCatalog(await orgIdOf(), Number(url.searchParams.get('limit') ?? '200')) })
   }
 
   if (method === 'POST' && url.pathname === '/api/github/catalog/sync') {
     try {
-      return sendJson(200, await syncGitHubRepoCatalog())
+      return sendJson(200, await syncGitHubRepoCatalog(await orgIdOf()))
     } catch (error) {
       if (error instanceof GitHubNotConnectedError) return sendJson(409, { error: error.message })
       return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
@@ -1112,7 +1129,7 @@ async function route(req: Request): Promise<Response> {
   // Repos visible to the connected GitHub account — powers the wizard autocomplete.
   if (method === 'GET' && url.pathname === '/api/github/repos') {
     try {
-      const repos = await listGitHubRepos()
+      const repos = await listGitHubRepos(await orgIdOf())
       return sendJson(200, { workspaceRoot: workspaceRoot(), repos })
     } catch (error) {
       if (error instanceof GitHubNotConnectedError) return sendJson(409, { error: error.message, repos: [] })
@@ -1209,14 +1226,15 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/org/promotions') {
-    return sendJson(200, await listPromotionProposals())
+    return sendJson(200, await listPromotionProposals(await orgIdOf()))
   }
 
   if (method === 'POST' && /^\/api\/org\/promotions\/[^/]+\/decision$/.test(url.pathname)) {
     const parts = url.pathname.split('/').filter(Boolean)
     const proposalId = parts[3]
     const body = await readJson<{ decision: 'approved' | 'rejected'; notes?: string }>(req)
-    return sendJson(200, await decidePromotionProposal({ proposalId, decision: body.decision, notes: body.notes }))
+    const denied = requireOrgAdmin('Only team owners or admins can decide promotions.'); if (denied) return denied
+    return sendJson(200, await decidePromotionProposal({ orgId: await orgIdOf(), proposalId, decision: body.decision, notes: body.notes }))
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/context$/.test(url.pathname)) {
@@ -1241,7 +1259,8 @@ async function route(req: Request): Promise<Response> {
   }
   if (method === 'GET' && url.pathname === '/api/org/usage') {
     const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days') ?? '30') || 30))
-    return sendJson(200, { days, ...(await summarizeOrgUsage(days)), actor: await describeGitHubActor().catch(() => null) })
+    const usageOrg = await orgIdOf()
+    return sendJson(200, { days, ...(await summarizeOrgUsage(usageOrg, days)), actor: await describeGitHubActor(usageOrg).catch(() => null) })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/qa$/.test(url.pathname)) {
@@ -1269,7 +1288,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: 'Cannot run individual tasks before a test plan exists. Run the `testplan` stage first.' })
     }
     const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
-    const result = await runAIDLCSpecificTask({ cwd: projectMeta.path, taskId, sharedContextPrompt: contextBundle.promptBundle })
+    const result = await runAIDLCSpecificTask({ cwd: projectMeta.path, orgId: await orgIdForProjectSlug(projectNamespace), taskId, sharedContextPrompt: contextBundle.promptBundle })
     return sendJson(200, result)
   }
 
@@ -1288,6 +1307,7 @@ async function route(req: Request): Promise<Response> {
     const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
     const result = await runAIDLCSpecificWorkstream({
       cwd: projectMeta.path,
+      orgId: await orgIdForProjectSlug(projectNamespace),
       taskId: body.taskId,
       workstreamTitle: body.workstreamTitle,
       sharedContextPrompt: contextBundle.promptBundle,
@@ -1359,6 +1379,7 @@ async function route(req: Request): Promise<Response> {
     const [, , , projectNamespace] = url.pathname.split('/')
     const body = await readJson<{ title: string; content: string; targetFile?: string }>(req)
     return sendJson(200, await createPromotionProposal({
+      orgId: await orgIdForProjectSlug(projectNamespace),
       projectNamespace,
       title: body.title,
       content: body.content,
@@ -1390,6 +1411,7 @@ async function route(req: Request): Promise<Response> {
     try {
       const answer = await runAIDLCAssistantChat({
         cwd: projectMeta.path,
+        orgId: await orgIdForProjectSlug(projectNamespace),
         message: body.message,
         sharedContextPrompt: contextBundle.promptBundle,
         operationsContext: ops.markdown,
@@ -1504,7 +1526,7 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/api/oauth-apps') {
     const denied = requireOrgAdmin('Only team owners or admins can view app credentials.'); if (denied) return denied
-    return sendJson(200, await listOAuthApps(origin))
+    return sendJson(200, await listOAuthApps(await orgIdOf(), origin))
   }
 
   // GitHub App, created for the user through the manifest flow: this page
@@ -1516,16 +1538,17 @@ async function route(req: Request): Promise<Response> {
     const denied = requireOrgAdmin('Only team owners or admins can create the GitHub App.'); if (denied) return denied
     const organization = url.searchParams.get('org')?.trim() || undefined
     if (organization && !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(organization)) return sendJson(400, { error: 'That is not a valid GitHub organization name.' })
-    const { html } = githubAppManifestPage(origin, { organization })
+    const { html } = githubAppManifestPage(origin, { organization, orgId: await orgIdOf() })
     return sendHtml(200, html)
   }
   if (method === 'GET' && url.pathname === '/api/oauth-apps/github/manifest/callback') {
     const back = (query: string) => new Response(null, { status: 302, headers: { location: `/organization?section=integrations&${query}` } })
     const code = url.searchParams.get('code')
-    if (!code || !consumeManifestState(url.searchParams.get('state'))) return back(`error=${encodeURIComponent('The GitHub App setup link expired or was already used. Start again from Integrations.')}`)
+    const manifestState = consumeManifestState(url.searchParams.get('state'))
+    if (!code || !manifestState) return back(`error=${encodeURIComponent('The GitHub App setup link expired or was already used. Start again from Integrations.')}`)
     try {
       const app = await convertGitHubAppManifest(code)
-      await saveGitHubAppFromManifest(app, auth?.user.userId ?? null)
+      await saveGitHubAppFromManifest(manifestState.orgId, app, auth?.user.userId ?? null)
       serverLog.info('github app created from manifest', { slug: app.slug, owner: app.owner?.login, by: auth?.user.email ?? 'local' })
       return back('setup=github')
     } catch (error) {
@@ -1535,9 +1558,9 @@ async function route(req: Request): Promise<Response> {
   }
   if (method === 'GET' && url.pathname === '/api/oauth-apps/github/installed') {
     const installationId = Number(url.searchParams.get('installation_id'))
-    if (Number.isFinite(installationId) && installationId > 0) await recordGitHubInstallation(installationId).catch(() => undefined)
+    if (Number.isFinite(installationId) && installationId > 0) await recordGitHubInstallation(await orgIdOf(), installationId).catch(() => undefined)
     const returnTo = '/organization?section=integrations&connected=github'
-    if (!(await resolveProvider('github'))) return new Response(null, { status: 302, headers: { location: returnTo.replace('connected=github', `error=${encodeURIComponent('GitHub has no app credentials in Spaces; create the GitHub App first.')}`) } })
+    if (!(await resolveProvider(await orgIdOf(), 'github'))) return new Response(null, { status: 302, headers: { location: returnTo.replace('connected=github', `error=${encodeURIComponent('GitHub has no app credentials in Spaces; create the GitHub App first.')}`) } })
     return new Response(null, { status: 302, headers: { location: `/api/oauth/github/authorize?return=${encodeURIComponent(returnTo)}` } })
   }
   if ((method === 'PUT' || method === 'DELETE') && /^\/api\/oauth-apps\/[a-z]+$/.test(url.pathname)) {
@@ -1545,31 +1568,31 @@ async function route(req: Request): Promise<Response> {
     if (!isOAuthProviderId(provider)) return sendJson(404, { error: `Unknown provider "${provider}".` })
     const denied = requireOrgAdmin('Only team owners or admins can manage app credentials.'); if (denied) return denied
     if (method === 'DELETE') {
-      await deleteOAuthApp(provider)
+      await deleteOAuthApp(await orgIdOf(), provider)
       serverLog.info('oauth app credentials removed', { provider, by: auth?.user.email ?? 'local' })
-      return sendJson(200, { ok: true, apps: await listOAuthApps(origin) })
+      return sendJson(200, { ok: true, apps: await listOAuthApps(await orgIdOf(), origin) })
     }
     const body = await readJson<{ clientId?: string; clientSecret?: string }>(req)
     try {
-      await saveOAuthApp(provider, { clientId: body.clientId ?? '', clientSecret: body.clientSecret, updatedBy: auth?.user.userId ?? null })
+      await saveOAuthApp(await orgIdOf(), provider, { clientId: body.clientId ?? '', clientSecret: body.clientSecret, updatedBy: auth?.user.userId ?? null })
     } catch (error) {
       return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
     }
     serverLog.info('oauth app credentials saved', { provider, by: auth?.user.email ?? 'local' })
-    return sendJson(200, { ok: true, apps: await listOAuthApps(origin) })
+    return sendJson(200, { ok: true, apps: await listOAuthApps(await orgIdOf(), origin) })
   }
 
   // ---- App-level integrations ----
 
   if (method === 'GET' && url.pathname === '/api/integrations') {
     const denied = requireOrgAdmin('Only team owners or admins can view app integrations.'); if (denied) return denied
-    return sendJson(200, await listAppIntegrations())
+    return sendJson(200, await listAppIntegrations(await orgIdOf()))
   }
 
   if (method === 'DELETE' && /^\/api\/integrations\/[a-z]+$/.test(url.pathname)) {
     const denied = requireOrgAdmin('Only team owners or admins can disconnect app integrations.'); if (denied) return denied
     const kind = url.pathname.split('/').pop() as AppIntegrationKind
-    await disconnectAppIntegration(kind)
+    await disconnectAppIntegration(await orgIdOf(), kind)
     return sendJson(200, { ok: true })
   }
 
@@ -1577,7 +1600,9 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
-    const cfg = await resolveProvider(provider)
+    // Sign-in with GitHub uses the default organization's app (there is no caller yet); everything else the caller's.
+    const authorizeOrg = provider === 'github' && url.searchParams.get('mode') === 'login' ? await getDefaultOrgId() : await orgIdOf()
+    const cfg = await resolveProvider(authorizeOrg, provider)
     if (!cfg) return sendJson(400, { error: `Provider "${provider}" has no app credentials yet. Set it up under Organization → Integrations.` })
     const callbackUrl = `${origin}/api/oauth/${provider}/callback`
     // projectId is legacy: keep it optional in state so old links don't 500.
@@ -1590,19 +1615,21 @@ async function route(req: Request): Promise<Response> {
     // Optional same-tab flows (GitHub App install) come back to a page in the app instead of a "close this window" notice.
     const wantedReturn = url.searchParams.get('return') ?? ''
     const returnTo = wantedReturn.startsWith('/') && !wantedReturn.startsWith('//') ? wantedReturn : undefined
-    const { redirectUrl } = beginAuthorization(cfg, projectIdOrEmpty, callbackUrl, returnTo)
+    const { redirectUrl } = beginAuthorization(cfg, projectIdOrEmpty, callbackUrl, returnTo, authorizeOrg)
     return new Response(null, { status: 302, headers: { location: redirectUrl } })
   }
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/callback$/.test(url.pathname)) {
     const provider = url.pathname.split('/')[3]!
-    const cfg = await resolveProvider(provider)
-    if (!cfg) return sendJson(400, { error: `Provider "${provider}" no longer has app credentials.` })
     const code = url.searchParams.get('code')
     const state = url.searchParams.get('state')
     if (!code || !state) return sendJson(400, { error: 'Missing code or state.' })
     const pending = consumeState(state)
     if (!pending || pending.provider !== provider) return sendJson(400, { error: 'Invalid or expired OAuth state.' })
+    // The state pins the organization the flow started in, so the token lands with that tenant.
+    const callbackOrg = pending.orgId ?? (await getDefaultOrgId())
+    const cfg = await resolveProvider(callbackOrg, provider)
+    if (!cfg) return sendJson(400, { error: `Provider "${provider}" no longer has app credentials.` })
 
     const callbackUrl = `${origin}/api/oauth/${provider}/callback`
     try {
@@ -1633,8 +1660,8 @@ async function route(req: Request): Promise<Response> {
           await linkGitHub(user.userId, ghUser.login, ghUser.avatar_url)
         }
         let teamId: string | undefined
-        if (first) teamId = (await bootstrapFirstUser(user)).teamId
         if (invite) { try { teamId = (await acceptInvite(inviteToken!, user)).teamId } catch { /* shown on the invite page later */ } }
+        else if ((await listTeamsForUser(user.userId)).length === 0) teamId = (await bootstrapOrganization(user, { adoptLegacy: first })).team.teamId
         const { token: session } = await createSession(user.userId, req, teamId)
         return new Response(null, { status: 302, headers: { location: '/', 'set-cookie': sessionCookie(session, req) } })
       }
@@ -1644,12 +1671,12 @@ async function route(req: Request): Promise<Response> {
       // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
       const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
       for (const kind of kinds) {
-        await upsertAppIntegration({ kind, status: 'connected', credentials })
+        await upsertAppIntegration({ orgId: callbackOrg, kind, status: 'connected', credentials })
       }
       // GitHub connected → index every visible repository (name, language,
       // topics, README use case) so plans can name repos without upfront selection.
       if (provider === 'github') {
-        void syncGitHubRepoCatalog().catch((error) => serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) }))
+        void syncGitHubRepoCatalog(callbackOrg).catch((error) => serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) }))
       }
       if (pending.returnTo) return new Response(null, { status: 302, headers: { location: pending.returnTo } })
       return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><p><a href="/organization?section=integrations">Back to Spaces</a></p><script>window.close()</script></body></html>`)
@@ -1761,7 +1788,7 @@ async function route(req: Request): Promise<Response> {
     // otherwise the deployment default (DEFAULT_MODEL / first configured provider).
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : await defaultModel()
+    const model = inheritedModel && inheritedModel.trim() ? inheritedModel.trim() : await defaultModel(await orgIdForProject(project.projectId))
 
     const row = await dbCreateRun({
       projectNamespace: project.slug,
@@ -1923,7 +1950,7 @@ async function route(req: Request): Promise<Response> {
     // the deployment default. Never leave it to Pi's global default provider.
     const latest = await dbGetLatestRunForProject(project.slug)
     const inheritedModel = latest?.optionsJson?.model
-    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : await defaultModel())
+    const resolvedModel = body.model?.trim() || (inheritedModel?.trim() ? inheritedModel.trim() : await defaultModel(await orgIdForProject(project.projectId)))
     const baseOptions = toFlowOptions(body)
     const options: FlowOptions = {
       ...baseOptions,
@@ -2377,9 +2404,11 @@ function buildAssistantActionTools(projectNamespace: string, projectId: string |
             const repo = p.repoId ? repos.find((r) => r.repoId === p.repoId) : (repos.find((r) => r.isPrimary && r.githubRepo) ?? repos.find((r) => r.githubRepo))
             if (!repo?.githubRepo || !repo.localPath) return result('Failed: no GitHub-hosted repository with a local checkout on this project.', { error: true })
             const branch = await gitCurrentBranch(repo.localPath)
-            const base = await gitDefaultBranch(repo.localPath, repo.githubRepo)
+            const actionOrg = await orgIdForProject(projectId)
+            const base = await gitDefaultBranch(actionOrg, repo.localPath, repo.githubRepo)
             if (branch === base) return result(`Failed: the checkout is on the default branch (${base}); create or check out a feature branch first.`, { error: true })
             const ref = await publishBranchAsPullRequest({
+              orgId: actionOrg,
               cwd: repo.localPath,
               githubRepo: repo.githubRepo,
               branch,
@@ -3135,7 +3164,7 @@ async function resolveSubagentModel(projectNamespace: string, requested?: string
   if (requested?.trim()) return requested.trim()
   const latest = await dbGetLatestRunForProject(projectNamespace)
   const inherited = latest?.optionsJson?.model
-  return inherited?.trim() ? inherited.trim() : await defaultModel()
+  return inherited?.trim() ? inherited.trim() : await defaultModel(await orgIdForProjectSlug(projectNamespace))
 }
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */

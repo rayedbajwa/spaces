@@ -51,12 +51,13 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
     imported into an organization knowledge base with semantic search.
     See [Integrations as knowledge](concepts/integrations-and-knowledge.md).
 
--   **Self-serve, organization-wide setup**
+-   **Self-serve setup, isolated per organization**
 
     Provider keys, OAuth app credentials, model routing, memory, the knowledge
     base and teams are managed on the organization page; each team has a page
-    for members, invites, memory and knowledge defaults. See
-    [Organization, teams & access](concepts/organization-teams-and-access.md).
+    for members, invites, memory and knowledge defaults. An organization is the
+    tenant boundary: two of them share nothing. See
+    [Organizations, teams & access](concepts/organization-teams-and-access.md).
 
 -   **Automatic model routing**
 

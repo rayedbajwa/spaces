@@ -179,10 +179,12 @@ export async function summarizeUsageByProject(): Promise<Map<string, UsageSummar
   return new Map(rows.map((r) => [r.projectNamespace, toSummary(r)]))
 }
 
-export async function summarizeOrgUsage(days = 30): Promise<{ window: UsageSummary; allTime: UsageSummary; byProject: Array<{ projectNamespace: string; summary: UsageSummary }> }> {
+export async function summarizeOrgUsage(orgId: string, days = 30): Promise<{ window: UsageSummary; allTime: UsageSummary; byProject: Array<{ projectNamespace: string; summary: UsageSummary }> }> {
   const sql = getDb()
-  const [window] = await sql<SumRow[]>`SELECT ${sql.unsafe(SUM)} FROM run_usage WHERE created_at > now() - make_interval(days => ${days})`.catch(() => [] as SumRow[])
-  const [allTime] = await sql<SumRow[]>`SELECT ${sql.unsafe(SUM)} FROM run_usage`.catch(() => [] as SumRow[])
-  const byProject = await sql<Array<SumRow & { projectNamespace: string }>>`SELECT project_namespace AS "projectNamespace", ${sql.unsafe(SUM)} FROM run_usage WHERE created_at > now() - make_interval(days => ${days}) GROUP BY 1 ORDER BY "costUsd" DESC LIMIT 20`.catch(() => [])
+  // Usage belongs to the organization of the project that ran it (through the project's team).
+  const inOrg = sql`project_namespace IN (SELECT p.slug FROM projects p JOIN teams t ON t.team_id = p.team_id WHERE t.org_id = ${orgId})`
+  const [window] = await sql<SumRow[]>`SELECT ${sql.unsafe(SUM)} FROM run_usage WHERE ${inOrg} AND created_at > now() - make_interval(days => ${days})`.catch(() => [] as SumRow[])
+  const [allTime] = await sql<SumRow[]>`SELECT ${sql.unsafe(SUM)} FROM run_usage WHERE ${inOrg}`.catch(() => [] as SumRow[])
+  const byProject = await sql<Array<SumRow & { projectNamespace: string }>>`SELECT project_namespace AS "projectNamespace", ${sql.unsafe(SUM)} FROM run_usage WHERE ${inOrg} AND created_at > now() - make_interval(days => ${days}) GROUP BY 1 ORDER BY "costUsd" DESC LIMIT 20`.catch(() => [])
   return { window: toSummary(window), allTime: toSummary(allTime), byProject: byProject.map((r) => ({ projectNamespace: r.projectNamespace, summary: toSummary(r) })) }
 }
