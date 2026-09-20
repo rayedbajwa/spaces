@@ -90,7 +90,35 @@ export async function vectorSearchAvailable(): Promise<boolean> {
   return vectorSchemaReady
 }
 
+let closing = false
+
+/** True once the pool is being closed, so late queries are expected to fail. */
+export function dbClosing(): boolean {
+  return closing
+}
+
+/** The error postgres.js raises for a query issued after the pool closed. */
+export function isConnectionEnded(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code
+  return code === 'CONNECTION_ENDED'
+}
+
+/**
+ * Shutting down is racy by nature: heartbeats, event drains and listeners can
+ * have a query in flight when the pool ends, and postgres.js rejects those with
+ * CONNECTION_ENDED. Processes call `ignoreShutdownDbErrors` so that noise never
+ * reaches the log as a crash, while any other failure still does.
+ */
+export function ignoreShutdownDbErrors(onOther?: (reason: unknown) => void): void {
+  process.on('unhandledRejection', (reason) => {
+    if (closing && isConnectionEnded(reason)) return
+    if (onOther) onOther(reason)
+    else throw reason
+  })
+}
+
 export async function closeDb(): Promise<void> {
+  closing = true
   if (client) {
     await client.end({ timeout: 5 })
     client = undefined

@@ -4,7 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { assertEnvOrExit } from './lib/env'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { getOrchestrator } from './lib/dispatcher'
 import { log } from './lib/logger'
 import { listLiveWorkers, pruneDeadWorkers } from './lib/worker-registry'
@@ -51,7 +51,17 @@ interface ManagedWorker {
 
 const managed = new Map<string, ManagedWorker>() // projectId → worker
 const lastExitAt = new Map<string, number>() // projectId → ms, for backoff
+const waitingSince = new Map<string, number>() // projectId → ms it first waited for a slot
+const rotatedAt = new Map<string, number>() // projectId → ms its worker was last rotated out
 let shuttingDown = false
+
+/** A project waiting this long for a slot takes one from a worker that is holding it without running anything. */
+const STARVATION_MS = 60_000
+/** Never rotate the same project's worker out more often than this. */
+const ROTATE_COOLDOWN_MS = 5 * 60_000
+/** How often the same waiting project is reported, so a full fleet does not flood the log. */
+const WAIT_LOG_MS = 60_000
+const lastWaitLogAt = new Map<string, number>()
 
 async function projectsWithWork(): Promise<Array<{ projectId: string; slug: string; queued: number; inFlight: number }>> {
   const sql = getDb()
@@ -62,6 +72,9 @@ async function projectsWithWork(): Promise<Array<{ projectId: string; slug: stri
       FROM project_jobs j
       JOIN projects p ON p.project_id = j.project_id
      WHERE j.status IN ('queued','claimed','running')
+       -- An archived project must not hold a worker slot; archiving is how a
+       -- stuck project is taken out of the way.
+       AND p.archived_at IS NULL
      GROUP BY p.project_id, p.slug
      ORDER BY MIN(j.created_at)
   `
@@ -107,9 +120,35 @@ async function reconcile(): Promise<void> {
       const foreign = live.find((w) => w.projectId === project.projectId && w.state !== 'stale' && !managed.has(project.projectId))
       if (foreign) continue
       if (managed.size >= MAX_WORKERS) {
-        supLog.warn('worker cap reached; project waits', { slug: project.slug, cap: MAX_WORKERS })
+        const since = waitingSince.get(project.projectId) ?? Date.now()
+        waitingSince.set(project.projectId, since)
+        const waitedMs = Date.now() - since
+        // A project must not starve behind workers that hold a slot without
+        // running anything — a stuck or abandoned project would otherwise keep
+        // the fleet full for ever. After a minute of waiting, the longest-held
+        // idle slot is handed over; workers actually running jobs are left alone.
+        if (waitedMs >= STARVATION_MS) {
+          const idleHolder = [...managed.values()]
+            .filter((w) => !w.exited)
+            .filter((w) => (work.find((p) => p.projectId === w.projectId)?.inFlight ?? 0) === 0)
+            .filter((w) => Date.now() - (rotatedAt.get(w.projectId) ?? 0) > ROTATE_COOLDOWN_MS)
+            .sort((a, b) => a.startedAt - b.startedAt)[0]
+          if (idleHolder) {
+            rotatedAt.set(idleHolder.projectId, Date.now())
+            supLog.warn('handing a worker slot to a waiting project', { waiting: project.slug, waitedSeconds: Math.round(waitedMs / 1000), stopping: idleHolder.slug, workerId: idleHolder.workerId })
+            idleHolder.child.kill('SIGTERM')
+            continue
+          }
+        }
+        const lastLog = lastWaitLogAt.get(project.projectId) ?? 0
+        if (Date.now() - lastLog > WAIT_LOG_MS) {
+          lastWaitLogAt.set(project.projectId, Date.now())
+          supLog.warn('worker cap reached; project waits', { slug: project.slug, cap: MAX_WORKERS, waitedSeconds: Math.round(waitedMs / 1000), busy: [...managed.values()].map((w) => w.slug) })
+        }
         continue
       }
+      waitingSince.delete(project.projectId)
+      lastWaitLogAt.delete(project.projectId)
       const exitedAt = lastExitAt.get(project.projectId)
       if (exitedAt && Date.now() - exitedAt < RESPAWN_BACKOFF_MS && project.inFlight === 0 && project.queued === 0) continue
       if (exitedAt && Date.now() - exitedAt < 2_000) continue // let the idle exit settle
@@ -138,6 +177,9 @@ async function main(): Promise<void> {
   await reconcile()
   supLog.info('watching project_jobs; workers spawn per project on demand')
 }
+
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => supLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return

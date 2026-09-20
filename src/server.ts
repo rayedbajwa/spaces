@@ -13,7 +13,7 @@ import { normalizeThinkingLevel, QUESTION_PATTERN, resolveCwd, runAIDLCAssistant
 import { PipelineEngine } from './lib/pipeline-engine'
 import { getTemplate, listTemplates } from './lib/pipeline-loader'
 import type { PipelineTemplate } from './lib/pipeline-template'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveGitHubLoginProvider, resolveProvider } from './lib/oauth'
@@ -121,6 +121,8 @@ import {
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
+import { readTaskProgress } from './lib/run-resume'
+import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
@@ -179,6 +181,29 @@ void (async () => {
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
+// The workspace volume fills with clones, dependencies and worktrees that
+// nothing reclaims, and a full volume kills runs mid-stage. Sweep at boot and
+// hourly, and say how much room is left.
+{
+  const housekeeping = async () => {
+    const { diskUsage, ensureDiskSpace, formatBytes } = await import('./lib/disk-housekeeping')
+    const { workspaceRoot } = await import('./lib/github')
+    const root = workspaceRoot()
+    const usage = (await ensureDiskSpace(root)) ?? (await diskUsage(root))
+    if (usage) serverLog.info('workspace volume', { free: formatBytes(usage.freeBytes), total: formatBytes(usage.totalBytes), used: `${Math.round((1 - usage.freeRatio) * 100)}%` })
+  }
+  void housekeeping().catch((error) => serverLog.warn('workspace housekeeping failed', { error: error instanceof Error ? error.message : String(error) }))
+  setInterval(() => { void housekeeping().catch(() => undefined) }, 60 * 60_000)
+}
+// A worker killed mid-flight leaves its job claimed for ever, which blocks the
+// whole project. Workers sweep for those, but a project whose worker never
+// spawned has nobody to sweep for it, so the server sweeps too.
+{
+  const sweep = () => reapAbandonedJobs()
+    .catch((error) => serverLog.warn('abandoned job sweep failed', { error: error instanceof Error ? error.message : String(error) }))
+  void sweep()
+  setInterval(() => { void sweep() }, 60_000)
+}
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
@@ -196,6 +221,9 @@ void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked
   void syncCatalog()
   setInterval(() => { void syncCatalog() }, 6 * 60 * 60_000)
 }
+
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => serverLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 
 const server = Bun.serve({
   port,
@@ -618,7 +646,9 @@ async function route(req: Request): Promise<Response> {
       const sourceId = sourceMatch[1]!
       const sub = sourceMatch[2] ?? ''
       const source = await getKnowledgeSource(sourceId)
-      if (!source || !visible(source.teamId)) return sendJson(404, { error: 'Knowledge source not found.' })
+      // An organization-level source has no team, so team membership alone would
+      // make it readable from any tenant that knows its id.
+      if (!source || source.orgId !== knowledgeOrg || !visible(source.teamId)) return sendJson(404, { error: 'Knowledge source not found.' })
 
       if (method === 'GET' && sub === '') return sendJson(200, { source, documents: await listKnowledgeDocuments(sourceId, Number(url.searchParams.get('limit') ?? '100')) })
       if (method === 'PATCH' && sub === '') {
@@ -1860,16 +1890,33 @@ async function route(req: Request): Promise<Response> {
       }
     }
 
-    // Guard 2: don't stack on top of an in-flight job for this project.
+    // Guard 2: don't stack on top of in-flight work for this project. The
+    // refusal names what is in the way — a run that is executing, one queued
+    // behind a busy worker, or one waiting for a human — because "1 job queued
+    // or running" tells nobody what to do about it.
     const sql = getDb()
-    const [inflight] = await sql<Array<{ n: number }>>`
-      SELECT COUNT(*)::int AS n FROM project_jobs
-       WHERE project_id = ${project.projectId} AND status IN ('queued','claimed','running')
+    const inflight = await sql<Array<{ jobId: string; status: string; kind: string; createdAt: string; claimedBy: string | null; runId: string | null; runStatus: string | null; runStage: string | null; pauseKind: string | null }>>`
+      SELECT j.job_id AS "jobId", j.status, j.kind, j.created_at AS "createdAt", j.claimed_by AS "claimedBy",
+             j.run_id AS "runId", r.status AS "runStatus", r.current_stage AS "runStage", r.pause_kind AS "pauseKind"
+        FROM project_jobs j
+        LEFT JOIN pipeline_runs r ON r.run_id = j.run_id
+       WHERE j.project_id = ${project.projectId} AND j.status IN ('queued','claimed','running')
+       ORDER BY j.created_at ASC
     `
-    if ((inflight?.n ?? 0) > 0 && !body.force) {
+    if (inflight.length > 0 && !body.force) {
+      const blocking = inflight[0]!
+      const waitingMinutes = Math.round((Date.now() - Date.parse(blocking.createdAt)) / 60_000)
+      const age = waitingMinutes >= 1 ? ` for ${waitingMinutes} minute${waitingMinutes === 1 ? '' : 's'}` : ''
+      const error = blocking.runStatus === 'paused' && blocking.pauseKind && blocking.pauseKind !== 'user'
+        ? `This project's run is waiting for you on ${blocking.runStage ?? 'a stage'}. Answer or approve it, then run ${body.step}.`
+        : blocking.status === 'queued'
+          ? `A ${blocking.kind.replace('_', ' ')} has been queued${age} and is waiting for a free worker. It starts on its own; ${body.step} can run once it finishes.`
+          : `A ${blocking.kind.replace('_', ' ')} is running${blocking.runStage ? ` (stage ${blocking.runStage})` : ''}${age}. Wait for it to finish, or cancel the run first.`
       return sendJson(409, {
-        error: `Project already has ${inflight.n} job(s) queued or running.`,
-        hint: 'Wait for the current job to finish, or pass {"force": true} to enqueue anyway.',
+        error,
+        code: 'project_busy',
+        inFlight: inflight.map((job) => ({ jobId: job.jobId, kind: job.kind, status: job.status, runId: job.runId, runStatus: job.runStatus, stage: job.runStage, pauseKind: job.pauseKind, since: job.createdAt })),
+        hint: 'Cancel the run from the project page to clear it, or send {"force": true} to queue this step behind it.',
       })
     }
 
@@ -1912,6 +1959,9 @@ async function route(req: Request): Promise<Response> {
         persistSession: true,
         nonInteractive: false,
         verbose: false,
+        // "force" is how the caller says they meant it: it is also what allows
+        // specify to open a new feature while the last one is unfinished.
+        ...(body.force ? { allowNewFeature: true } : {}),
         // Stage-specific inputs required by validateStageInputs. The endpoint
         // above rejects requests missing these when the step needs them.
         ...(body.feature ? { feature: body.feature } : {}),
@@ -2592,6 +2642,21 @@ async function requeueRun(
   return { ok: true }
 }
 
+/**
+ * Task counts for a run's feature, cached briefly: every event on a busy run
+ * rebuilds the snapshot, and the implement stage ticks tasks off slowly.
+ */
+const taskProgressCache = new Map<string, { at: number; value: RunSnapshot['tasks'] }>()
+async function runTaskProgress(row: RunRow): Promise<RunSnapshot['tasks']> {
+  if (!row.projectPath) return undefined
+  const cached = taskProgressCache.get(row.projectPath)
+  if (cached && Date.now() - cached.at < 3_000) return cached.value
+  const progress = await readTaskProgress(row.projectPath).catch(() => undefined)
+  const value = progress ? { done: progress.done, total: progress.total, remaining: progress.remaining.length } : undefined
+  taskProgressCache.set(row.projectPath, { at: Date.now(), value })
+  return value
+}
+
 async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
   const events = await dbListEvents(row.runId)
   const log = events
@@ -2625,6 +2690,7 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
     rerunnable: row.status === 'error' || row.status === 'completed' || row.status === 'paused',
     retryCount: row.retryCount,
     usage: await summarizeRunUsage(row.runId),
+    tasks: await runTaskProgress(row),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -3520,6 +3586,7 @@ function toFlowOptions(body: CreateRunRequest): FlowOptions {
     persistSession: body.persistSession === true,
     nonInteractive: false,
     verbose: body.verbose === true,
+    allowNewFeature: body.allowNewFeature === true,
   }
 }
 
@@ -3813,6 +3880,8 @@ interface RunSnapshot {
   retryCount?: number
   /** Tokens and cost recorded for this run so far. */
   usage?: UsageSummary
+  /** Checked-off tasks of the feature being implemented, so progress is visible while it runs. */
+  tasks?: { done: number; total: number; remaining: number }
   createdAt: string
   updatedAt: string
 }
@@ -4064,6 +4133,8 @@ interface CreateRunRequest {
   persistSession?: boolean
   dryRun?: boolean
   verbose?: boolean
+  /** Start a new feature even though the last one is unfinished (otherwise that one is continued). */
+  allowNewFeature?: boolean
 }
 
 interface AnswerRunRequest {

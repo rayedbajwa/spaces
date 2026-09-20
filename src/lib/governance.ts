@@ -158,14 +158,19 @@ export async function reconcilePlanRepositories(projectId: string, primaryPath: 
   const added: string[] = []
   const unknown: string[] = []
   const sql = getDb()
+  const { orgIdForProject } = await import('./orgs')
+  const catalogOrgId = await orgIdForProject(projectId)
   for (const ref of refs) {
     if (registered(ref.name)) continue
     let githubRepo = ref.githubRepo
     if (!githubRepo) {
       // Bare name → look it up in the synced GitHub catalog.
+      // The catalog belongs to an organization: a plan must never resolve a bare
+      // repository name against another tenant's repositories.
       const [hit] = await sql<Array<{ fullName: string }>>`
         SELECT full_name AS "fullName" FROM github_repo_index
-         WHERE lower(full_name) = ${norm(ref.name)} OR lower(split_part(full_name, '/', 2)) = ${norm(ref.name)}
+         WHERE org_id = ${catalogOrgId}
+           AND (lower(full_name) = ${norm(ref.name)} OR lower(split_part(full_name, '/', 2)) = ${norm(ref.name)})
          ORDER BY updated_at DESC LIMIT 1
       `
       githubRepo = hit?.fullName

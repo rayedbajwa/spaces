@@ -2438,3 +2438,8 @@ textarea {
   color: var(--text-strong);
 }
 .openrouter-pins button { justify-self: start; }
+
+/* Agent dock: how far the implement stage has got through tasks.md. */
+.dock-tasks { display: grid; gap: 4px; margin-top: 8px; }
+.dock-tasks-bar { height: 4px; border-radius: 999px; background: var(--bg-elevated-2); overflow: hidden; }
+.dock-tasks-bar span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #5e6ad2); transition: width 400ms ease; }

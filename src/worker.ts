@@ -8,7 +8,7 @@ async function fileExists(file: string): Promise<boolean> {
   try { await access(file); return true } catch { return false }
 }
 import { assertEnvOrExit } from './lib/env'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 
 assertEnvOrExit('worker')
 import { acquireWarmSession, reapIdleAgents } from './lib/agent-pool'
@@ -38,6 +38,8 @@ import {
 } from './lib/run-store'
 import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
+import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
+import { reapAbandonedJobs } from './lib/job-reaper'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -127,10 +129,28 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
 
   // Rerun/resume: start at the requested stage when it exists in this template.
   const templateStages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
-  const startStage = fromStage && templateStages.includes(fromStage) ? fromStage : undefined
+  const requested = fromStage && templateStages.includes(fromStage) ? fromStage : undefined
+  // A run that has run before picks up from what exists on disk rather than from
+  // the top: stages whose artifacts are already written are not redone, and a
+  // half-finished task list continues where it stopped. A run starting for the
+  // first time always begins at the first stage — the artifacts it would find
+  // belong to the previous feature, not to this one.
+  const isResume = Boolean(requested || run.currentStage || run.retryCount > 0)
+  const resumePoint = isResume
+    ? await resolveResumePoint({ projectPath: run.projectPath, stages: templateStages, recorded: requested ?? run.currentStage })
+        .catch((error) => {
+          workerLog.warn('resume point could not be read; starting from the requested stage', { runId, error: error instanceof Error ? error.message : String(error) })
+          return { stage: requested, completed: [], reason: 'progress on disk could not be read' } as Awaited<ReturnType<typeof resolveResumePoint>>
+        })
+    : { stage: undefined, completed: [], reason: 'new run' } as Awaited<ReturnType<typeof resolveResumePoint>>
+  const startStage = resumePoint.stage ?? requested
+  if (startStage && startStage !== requested) {
+    workerLog.info('resuming from existing progress', { runId, requested: requested ?? null, startStage, reason: resumePoint.reason })
+  }
 
   await claimRunForWorker(runId, getWorkerId())
   await updateRunStatus(runId, { status: 'running', currentStage: startStage ?? templateStages[0], errorMessage: null })
+  if (startStage) await queueEvent(runId, 'resumed', { stage: startStage, completed: resumePoint.completed, reason: resumePoint.reason, tasks: resumePoint.taskProgress ? { done: resumePoint.taskProgress.done, total: resumePoint.taskProgress.total } : undefined })
 
   // Read speed mode from the project's orchestrator config (persisted in
   // project_orchestrators.config_json.speed_mode). Falls through to 'balanced'
@@ -162,8 +182,13 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     await queueEvent(runId, 'context_restored', { sessionFile: resumeSessionFile ?? null, priorHandoffStages: priorHandoffs.map((h) => h.stage) })
   }
 
+  // The agent is told what is already finished, so it continues the work instead of repeating it.
+  const resumeNote = startStage ? buildResumeNote(resumePoint) : ''
+  const sharedContextPrompt = [run.optionsJson?.sharedContextPrompt, resumeNote].filter((part) => part && String(part).trim()).join('\n\n') || undefined
+
   const options = {
     ...run.optionsJson,
+    ...(sharedContextPrompt ? { sharedContextPrompt } : {}),
     ...(startStage ? { startStage } : {}),
     ...(speedMode ? { speedMode } : {}),
     // Project paused (by NOTIFY here, or in the database): stop before the next stage.
@@ -209,6 +234,21 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   // stuck at 'running' forever, showing "in progress" in the UI.
   // Agent shells push and open pull requests as the GitHub App (bot) when one
   // is installed, so branch protection applies to the agent and humans approve.
+  // A full volume kills a run mid-stage, usually while writing an artifact, so
+  // space is reclaimed before the work starts rather than after it fails.
+  {
+    const { ensureDiskSpace, formatBytes } = await import('./lib/disk-housekeeping')
+    const { workspaceRoot } = await import('./lib/github')
+    const usage = await ensureDiskSpace(workspaceRoot()).catch(() => undefined)
+    if (usage && usage.freeBytes < 200 * 1024 * 1024) {
+      const message = `The workspace volume has only ${formatBytes(usage.freeBytes)} free of ${formatBytes(usage.totalBytes)}. Free space or grow the volume before running this again.`
+      await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: null })
+      await queueEvent(runId, 'error', { message, reason: 'disk_full' })
+      workerLog.error('refusing to start a run on a full volume', new Error(message))
+      return
+    }
+  }
+
   const runOrgId = run.projectId ? await orgIdForProject(run.projectId) : await getDefaultOrgId()
   Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
 
@@ -229,6 +269,14 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
           })
           .catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
         void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
+      },
+      onStageStart: ({ stage, index, total }) => {
+        // A flow reports progress only when it pauses or finishes, so without this
+        // the stored stage lags behind the one running — and a restart would then
+        // resume at the wrong stage, or from the beginning when none was stored.
+        void updateRunStatus(runId, { status: 'running', currentStage: stage, pauseKind: null })
+          .catch((err) => workerLog.warn('recording the current stage failed', { runId, stage, error: err instanceof Error ? err.message : String(err) }))
+        void queueEvent(runId, 'stage_start', { stage, index, total })
       },
       stdout: (chunk) => {
         void queueEvent(runId, 'log', { stream: 'stdout', chunk })
@@ -614,37 +662,12 @@ async function drainDispatcher(workerId: string): Promise<void> {
 }
 
 /**
- * Close jobs claimed by workers that stopped heartbeating and hand their runs
- * to the queue. Only this worker's own project (per-project mode) or every
- * project (shared mode) is considered.
+ * Close jobs abandoned by dead workers and hand their runs back to the queue.
+ * A per-project worker sweeps only its own project; a shared worker sweeps all.
  */
 async function reapDeadWorkerJobs(): Promise<void> {
-  const sql = getDb()
   try {
-    const dead = await sql<Array<{ jobId: string; runId: string | null; projectId: string; claimedBy: string | null }>>`
-      SELECT j.job_id AS "jobId", j.run_id AS "runId", j.project_id AS "projectId", j.claimed_by AS "claimedBy"
-        FROM project_jobs j
-        LEFT JOIN workers w ON w.worker_id = j.claimed_by
-       WHERE j.status IN ('claimed','running')
-         AND j.started_at < now() - interval '2 minutes'
-         AND (${WORKER_PROJECT_ID ?? null}::uuid IS NULL OR j.project_id = ${WORKER_PROJECT_ID ?? null}::uuid)
-         AND (w.worker_id IS NULL OR w.last_heartbeat_at < now() - interval '90 seconds')
-    `
-    for (const job of dead) {
-      // Never reap our own in-flight jobs (we are obviously alive).
-      if (job.claimedBy === getWorkerId()) continue
-      await failJob(job.jobId, `Worker ${job.claimedBy ?? '(unknown)'} stopped heartbeating; job closed and run handed off.`)
-      if (!job.runId) continue
-      const run = await getRun(job.runId)
-      if (!run || run.status !== 'running') continue
-      const stage = run.currentStage ?? null
-      const note = `Worker ${job.claimedBy ?? '(unknown)'} died during stage ${stage ?? 'start'}; re-queued from that stage.`
-      await requeueRunFromStage(job.runId, stage, note)
-      await appendEvent({ runId: job.runId, kind: 'requeued', payload: { fromStage: stage, reason: note, deadWorker: job.claimedBy } })
-      await enqueueJob({ projectId: job.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId: job.runId, fromStage: stage ?? undefined }, runId: job.runId })
-      workerLog.info('handed off run from dead worker', { runId: job.runId, deadWorker: job.claimedBy, stage })
-    }
-    if (dead.length > 0) workerLog.info('reaped dead-worker jobs', { count: dead.length })
+    await reapAbandonedJobs({ projectId: WORKER_PROJECT_ID ?? undefined, selfWorkerId: getWorkerId() })
   } catch (err) {
     workerLog.error('dead-worker reaper failed', err instanceof Error ? err : new Error(String(err)))
   }
@@ -781,7 +804,8 @@ async function shutdown(signal: string): Promise<void> {
       } else if (run) {
         // Mid-stage: put the run back on the queue at the interrupted stage so the
         // next worker picks it up automatically instead of leaving a dead "error".
-        const stage = run.currentStage ?? null
+        // The engine knows which stage was executing; the row may be a step behind.
+        const stage = engine.getCurrentStage() ?? (run.currentStage as StageName | null) ?? null
         const note = `Interrupted by a worker restart (${signal}) during stage ${stage ?? 'start'}; re-queued from that stage.`
         await requeueRunFromStage(runId, stage, note)
         await queueEvent(runId, 'requeued', { fromStage: stage, reason: note, signal })
@@ -804,6 +828,8 @@ async function shutdown(signal: string): Promise<void> {
   process.exit(0)
 }
 
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => workerLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 process.on('SIGINT', () => void shutdown('SIGINT'))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 

@@ -139,14 +139,14 @@ Rules: only list repositories that exist in the catalog or are already registere
   })
   let parsed: Partial<ProjectSuggestions>
   try {
-    await session.prompt(prompt, { expandPromptTemplates: false })
+    await session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
     if (providerError) throw new Error(`LLM provider error: ${providerError}`)
     try {
       parsed = extractJson(output) as Partial<ProjectSuggestions>
     } catch (parseError) {
       // One repair round: ask the same session to re-emit strict JSON.
       output = ''
-      await session.prompt(`Your previous reply was not valid JSON (${parseError instanceof Error ? parseError.message : String(parseError)}). Reply again with ONLY the JSON object in the required shape — no comments, no prose, no alternatives like "a|b", double-quoted keys and strings, no trailing commas.`, { expandPromptTemplates: false })
+      await session.prompt(`Your previous reply was not valid JSON (${parseError instanceof Error ? parseError.message : String(parseError)}). Reply again with ONLY the JSON object in the required shape — no comments, no prose, no alternatives like "a|b", double-quoted keys and strings, no trailing commas.`, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
       if (providerError) throw new Error(`LLM provider error: ${providerError}`)
       parsed = extractJson(output) as Partial<ProjectSuggestions>
     }
