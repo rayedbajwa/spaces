@@ -230,6 +230,14 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
           .catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
         void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
       },
+      onStageStart: ({ stage, index, total }) => {
+        // A flow reports progress only when it pauses or finishes, so without this
+        // the stored stage lags behind the one running — and a restart would then
+        // resume at the wrong stage, or from the beginning when none was stored.
+        void updateRunStatus(runId, { status: 'running', currentStage: stage, pauseKind: null })
+          .catch((err) => workerLog.warn('recording the current stage failed', { runId, stage, error: err instanceof Error ? err.message : String(err) }))
+        void queueEvent(runId, 'stage_start', { stage, index, total })
+      },
       stdout: (chunk) => {
         void queueEvent(runId, 'log', { stream: 'stdout', chunk })
       },
@@ -781,7 +789,8 @@ async function shutdown(signal: string): Promise<void> {
       } else if (run) {
         // Mid-stage: put the run back on the queue at the interrupted stage so the
         // next worker picks it up automatically instead of leaving a dead "error".
-        const stage = run.currentStage ?? null
+        // The engine knows which stage was executing; the row may be a step behind.
+        const stage = engine.getCurrentStage() ?? (run.currentStage as StageName | null) ?? null
         const note = `Interrupted by a worker restart (${signal}) during stage ${stage ?? 'start'}; re-queued from that stage.`
         await requeueRunFromStage(runId, stage, note)
         await queueEvent(runId, 'requeued', { fromStage: stage, reason: note, signal })
