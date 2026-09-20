@@ -39,6 +39,7 @@ import {
 import { getWorkerId, heartbeatWorker, subscribeAsWorker, unregisterWorker } from './lib/worker-registry'
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
+import { reapAbandonedJobs } from './lib/job-reaper'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -646,37 +647,12 @@ async function drainDispatcher(workerId: string): Promise<void> {
 }
 
 /**
- * Close jobs claimed by workers that stopped heartbeating and hand their runs
- * to the queue. Only this worker's own project (per-project mode) or every
- * project (shared mode) is considered.
+ * Close jobs abandoned by dead workers and hand their runs back to the queue.
+ * A per-project worker sweeps only its own project; a shared worker sweeps all.
  */
 async function reapDeadWorkerJobs(): Promise<void> {
-  const sql = getDb()
   try {
-    const dead = await sql<Array<{ jobId: string; runId: string | null; projectId: string; claimedBy: string | null }>>`
-      SELECT j.job_id AS "jobId", j.run_id AS "runId", j.project_id AS "projectId", j.claimed_by AS "claimedBy"
-        FROM project_jobs j
-        LEFT JOIN workers w ON w.worker_id = j.claimed_by
-       WHERE j.status IN ('claimed','running')
-         AND j.started_at < now() - interval '2 minutes'
-         AND (${WORKER_PROJECT_ID ?? null}::uuid IS NULL OR j.project_id = ${WORKER_PROJECT_ID ?? null}::uuid)
-         AND (w.worker_id IS NULL OR w.last_heartbeat_at < now() - interval '90 seconds')
-    `
-    for (const job of dead) {
-      // Never reap our own in-flight jobs (we are obviously alive).
-      if (job.claimedBy === getWorkerId()) continue
-      await failJob(job.jobId, `Worker ${job.claimedBy ?? '(unknown)'} stopped heartbeating; job closed and run handed off.`)
-      if (!job.runId) continue
-      const run = await getRun(job.runId)
-      if (!run || run.status !== 'running') continue
-      const stage = run.currentStage ?? null
-      const note = `Worker ${job.claimedBy ?? '(unknown)'} died during stage ${stage ?? 'start'}; re-queued from that stage.`
-      await requeueRunFromStage(job.runId, stage, note)
-      await appendEvent({ runId: job.runId, kind: 'requeued', payload: { fromStage: stage, reason: note, deadWorker: job.claimedBy } })
-      await enqueueJob({ projectId: job.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId: job.runId, fromStage: stage ?? undefined }, runId: job.runId })
-      workerLog.info('handed off run from dead worker', { runId: job.runId, deadWorker: job.claimedBy, stage })
-    }
-    if (dead.length > 0) workerLog.info('reaped dead-worker jobs', { count: dead.length })
+    await reapAbandonedJobs({ projectId: WORKER_PROJECT_ID ?? undefined, selfWorkerId: getWorkerId() })
   } catch (err) {
     workerLog.error('dead-worker reaper failed', err instanceof Error ? err : new Error(String(err)))
   }
