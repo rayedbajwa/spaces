@@ -1601,8 +1601,6 @@ async function route(req: Request): Promise<Response> {
       }
 
       // Atlassian OAuth grants access to both Jira and Confluence — record both slots.
-      const denied = requireOrgAdmin('Only team owners or admins can connect organization integrations.')
-      if (denied) return denied
       const kinds: AppIntegrationKind[] = provider === 'atlassian' ? ['jira', 'confluence'] : [provider as AppIntegrationKind]
       // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
       const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
