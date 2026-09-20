@@ -20,6 +20,7 @@ import { log } from './logger'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
+import { standingAgentInstructions } from './agent-environment'
 import { readVerificationStatus } from './pipeline-branch'
 import {
   commentOnPullRequest,
@@ -64,6 +65,9 @@ export const DEFAULT_STAGES: StageName[] = ['init', 'research', 'specify', 'plan
 export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan', 'implement', 'orchestrate', 'review', 'verify', 'deliver']
 /** Stages that write code into the implementation checkouts. */
 const CODE_STAGES: StageName[] = ['implement', 'orchestrate', 'review', 'verify']
+
+/** Stages whose output is evidence someone else acts on, so it must be reproducible. */
+const EVIDENCE_STAGES: StageName[] = ['review', 'verify', 'orchestrate']
 
 export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'review', 'verify', 'checklist', 'taskstoissues', 'deliver']
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
@@ -335,6 +339,32 @@ export class AIDLCFlow {
     return this.sessionFile
   }
 
+  /**
+   * Instructions that hold for the whole run, appended to the agent's system
+   * prompt the way Pi does it: what this machine provides (a database, a free
+   * port, a headless browser) and, for a flow that reports results, what makes
+   * that evidence trustworthy. Repeating them on every stage prompt would push
+   * them into the conversation the agent is reasoning about instead.
+   */
+  private async standingInstructions(): Promise<string[]> {
+    const { describeAgentEnvironment, evidenceRules, renderAgentEnvironment } = await import('./agent-environment')
+    const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
+    if (!machine) return []
+    const reportsEvidence = this.stages.some((stage) => EVIDENCE_STAGES.includes(stage))
+    return [renderAgentEnvironment(machine), reportsEvidence ? evidenceRules(machine) : '']
+  }
+
+  /** Point every checkout at the assigned database, port and key before code stages run. */
+  private async prepareCheckouts(): Promise<void> {
+    const { describeAgentEnvironment, prepareCheckoutEnvironment } = await import('./agent-environment')
+    const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
+    if (!machine) return
+    for (const target of [{ localPath: this.options.cwd }, ...(this.options.repoTargets ?? [])]) {
+      const applied = await prepareCheckoutEnvironment(target.localPath, machine).catch(() => [])
+      if (applied.length) this.print(`[env] ${path.basename(target.localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
+    }
+  }
+
   /** Organization the run belongs to (explicit, else through the project, else the default). */
   orgId(): Promise<string> {
     this.orgIdPromise ??= resolveRunnerOrg(this.options)
@@ -379,8 +409,10 @@ export class AIDLCFlow {
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
       // Plus a real browser so implement/QA stages can run the app and verify what users see.
       customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
-      // Default resources plus the skills Spaces bundles (playwright-browser).
-      resourceLoader: await createAgentResourceLoader(this.options.cwd),
+      // Default resources plus the skills Spaces bundles (playwright-browser), and
+      // the standing instructions for this run: what the machine provides and how
+      // evidence must hold up.
+      resourceLoader: await createAgentResourceLoader(this.options.cwd, { appendSystemPrompt: await this.standingInstructions() }),
       sessionManager,
     })
 
@@ -562,14 +594,62 @@ export class AIDLCFlow {
       return this.pause('clarification', stage)
     }
 
+    // A code review that asks for changes is not a decision for a human to
+    // repeat: the run goes back to implement with the findings and works
+    // through them. Only when the changes are done, or the loop has run its
+    // course, does a person get asked anything.
+    const loopBack = await this.blockingReviewLoopBack(stage, output)
+    if (loopBack) return loopBack
+
     if (!this.shouldGateOnHuman(stage)) {
       this.print(`\nReview gate complete for ${stage}. Auto-continuing (no human gate configured for this stage).\n`)
       await this.advanceToNextStep(stage)
       return this.advance()
     }
 
-    this.print(`\nHuman approval required for ${stage}. Reply "approve" to continue, or provide requested changes.\n`)
+    this.print(`\nHuman approval required for ${stage}. Reply "approve" to continue, "approve: <notes>" to continue with changes applied first, or describe the changes you want to send it back for another pass.\n`)
     return this.pause('review', stage)
+  }
+
+  /** How many times one run may send itself back to implement before asking a person. */
+  private static readonly MAX_REVIEW_LOOP_BACKS = 2
+  private reviewLoopBacks = 0
+
+  /**
+   * Send the run back to implement when the code review asks for changes.
+   *
+   * The review writes `Code Review Status: CHANGES_REQUESTED` when something
+   * blocks; the findings are then the next piece of work, not a question. The
+   * loop is bounded, and once it is spent the review gate asks a person as
+   * usual so a run cannot circle for ever.
+   */
+  private async blockingReviewLoopBack(stage: StageName, reviewOutput: string): Promise<FlowProgress | undefined> {
+    if (stage !== 'review') return undefined
+    const implementIndex = this.stages.indexOf('implement')
+    if (implementIndex < 0) return undefined
+
+    const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
+    const review = featureDirAbs ? await readFile(path.join(featureDirAbs, 'code-review.md'), 'utf8').catch(() => '') : ''
+    if (parseCodeReviewStatus(review || reviewOutput) !== 'CHANGES_REQUESTED') return undefined
+
+    if (this.reviewLoopBacks >= AIDLCFlow.MAX_REVIEW_LOOP_BACKS) {
+      this.print(`\n[review] The review still requests changes after ${this.reviewLoopBacks} pass${this.reviewLoopBacks === 1 ? '' : 'es'} back through implement. Handing it to you instead of looping again.\n`)
+      return undefined
+    }
+
+    this.reviewLoopBacks += 1
+    const findings = (review || reviewOutput).trim().slice(0, 12_000)
+    this.pendingStageNote = [
+      'The code review asked for changes before this feature can go further.',
+      '',
+      findings,
+      '',
+      'Work through those findings now: make the changes, update tasks.md so it reflects what is done and what the review added, and leave a short note of what you changed. Do not start anything the review did not ask for.',
+    ].join('\n')
+    this.print(`\n[review] Changes requested — going back to implement (pass ${this.reviewLoopBacks} of ${AIDLCFlow.MAX_REVIEW_LOOP_BACKS}) with the findings.\n`)
+    await this.postStageResultsToPullRequest('review')
+    this.stageIndex = implementIndex
+    return this.advance()
   }
 
   private pause(kind: PauseKind, stage: StageName): FlowProgress {
@@ -584,6 +664,8 @@ export class AIDLCFlow {
   }
 
   private activeStage?: StageName
+  /** Findings handed to the next stage, set when a review sends the run back. */
+  private pendingStageNote?: string
 
   private async runStage(stage: StageName): Promise<string> {
     this.activeStage = stage
@@ -618,11 +700,14 @@ export class AIDLCFlow {
     const { describeWorkInProgress } = await import('./run-resume')
     const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
     if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
-    // Stages that build and verify are told what the machine offers — a database,
-    // a free port, a headless browser — so they run the checks instead of skipping them.
-    const { agentEnvironmentSection } = await import('./agent-environment')
-    const environment = CODE_STAGES.includes(stage) ? await agentEnvironmentSection(path.basename(this.options.cwd)).catch(() => '') : ''
-    const prompt = [inProgress, environment, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // What the machine provides is a standing instruction on the session, not part
+    // of the prompt. Each checkout is still pointed at the assigned database before
+    // a code stage runs, so a migration cannot land on the application's own.
+    if (CODE_STAGES.includes(stage)) await this.prepareCheckouts()
+    // A note left by a review that sent the run back here: the findings to work through.
+    const note = this.pendingStageNote
+    this.pendingStageNote = undefined
+    const prompt = [inProgress, note, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
@@ -754,23 +839,50 @@ export class AIDLCFlow {
       } else {
         this.print(`\n[pr] Nothing new to publish after ${stage} (branch ${branch} has no commits ahead of ${base}).\n`)
       }
-      // Review/verify results go on the PR even when the stage itself changed nothing.
-      const target = ref ?? await findOpenPullRequest(await this.orgId(), pr.githubRepo, branch).then((p) => (p ? { number: p.number, url: p.html_url } : undefined)).catch(() => undefined)
-      if (!target) return
-      if (stage === 'review' && featureDirAbs) {
-        const review = await readFile(path.join(featureDirAbs, 'code-review.md'), 'utf8').catch(() => '')
-        if (review.trim()) {
-          const status = /Code Review Status:\s*(APPROVED|CHANGES_REQUESTED)/i.exec(review)?.[1]?.toUpperCase() ?? 'UNKNOWN'
-          await commentOnPullRequest(await this.orgId(), pr.githubRepo, target.number, `## AIDLC code review — ${status}\n\n${review.trim().slice(0, 60_000)}`)
-          this.print(`[pr] Posted code review (${status}) on #${target.number}.\n`)
-        }
-      }
-      if (stage === 'verify') {
-        const status = await readVerificationStatus(this.options.cwd)
-        await commentOnPullRequest(await this.orgId(), pr.githubRepo, target.number, `**Verification: ${(status ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`)
-      }
     } catch (error) {
-      this.print(`\n[pr] Failed to publish pull request: ${error instanceof Error ? error.message : String(error)}\n`)
+      this.print(`\n[pr] Could not publish the branch after ${stage}: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+    // A failure to publish must not swallow the results: a review nobody can see
+    // on the pull request is a review that did not happen.
+    await this.postStageResultsToPullRequest(stage)
+  }
+
+  /**
+   * Put the review or verification on the pull request the feature is on.
+   *
+   * The branch is looked up in every GitHub-hosted repository this run touches,
+   * not only the governing workspace, because the code — and therefore the pull
+   * request — lives in the implementation checkout.
+   */
+  private async postStageResultsToPullRequest(stage: StageName): Promise<void> {
+    if (stage !== 'review' && stage !== 'verify') return
+    const branch = this.activeFeatureBranch ?? getCurrentGitBranch(this.options.cwd) ?? undefined
+    if (!branch || !isFeatureBranchName(branch)) return
+    const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
+    const featureDirRel = featureDirAbs ? path.relative(this.options.cwd, featureDirAbs) : undefined
+
+    const body = stage === 'review'
+      ? await (async () => {
+          const review = featureDirAbs ? await readFile(path.join(featureDirAbs, 'code-review.md'), 'utf8').catch(() => '') : ''
+          if (!review.trim()) return undefined
+          return `## AIDLC code review — ${parseCodeReviewStatus(review) ?? 'UNKNOWN'}\n\n${review.trim().slice(0, 60_000)}`
+        })()
+      : `**Verification: ${((await readVerificationStatus(this.options.cwd)) ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`
+    if (!body) return
+
+    const repos = new Set<string>()
+    if (this.options.pullRequests?.githubRepo) repos.add(this.options.pullRequests.githubRepo)
+    for (const target of this.options.repoTargets ?? []) if (target.githubRepo) repos.add(target.githubRepo)
+
+    for (const githubRepo of repos) {
+      try {
+        const found = await findOpenPullRequest(await this.orgId(), githubRepo, branch)
+        if (!found) continue
+        await commentOnPullRequest(await this.orgId(), githubRepo, found.number, body)
+        this.print(`[pr] Posted the ${stage} result on ${githubRepo}#${found.number}.\n`)
+      } catch (error) {
+        this.print(`[pr] Could not post the ${stage} result on ${githubRepo}: ${error instanceof Error ? error.message : String(error)}\n`)
+      }
     }
   }
 
@@ -1270,6 +1382,16 @@ function humanizeProviderError(raw: string): string {
  * An approval may carry notes; they are applied to the stage before the run
  * moves on, without another review round.
  */
+/**
+ * The verdict a code review recorded. `CHANGES_REQUESTED` is what sends a run
+ * back to implement instead of asking a person to relay the same finding.
+ */
+export function parseCodeReviewStatus(text: string): 'APPROVED' | 'CHANGES_REQUESTED' | undefined {
+  const match = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(text)
+  if (!match) return undefined
+  return /APPROVED/i.test(match[1]!) ? 'APPROVED' : 'CHANGES_REQUESTED'
+}
+
 export function parseApprovalAnswer(answer: string): { approved: boolean; note?: string } {
   const match = /^(approve|approved|lgtm|continue|ok|okay|yes|y)(?![\w-])[\s:,.;—–-]*([\s\S]*)$/i.exec(answer.trim())
   if (!match) return { approved: false }
@@ -1550,7 +1672,7 @@ export async function runAIDLCMergeOrchestrator(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1629,7 +1751,7 @@ export async function runAIDLCSpecificTask(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1709,7 +1831,7 @@ export async function runAIDLCSpecificWorkstream(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
 
@@ -1918,7 +2040,7 @@ export async function runAIDLCParallelSubAgents(options: {
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
           customTools: [...knowledgeTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
-          resourceLoader: await createAgentResourceLoader(workstreamCwd),
+          resourceLoader: await createAgentResourceLoader(workstreamCwd, { appendSystemPrompt: await standingAgentInstructions(workstreamCwd, { label: workstream.title }) }),
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
 
@@ -2266,9 +2388,8 @@ export async function readDevSetupState(cwd: string): Promise<DevSetupState> {
   }
 }
 
-export function buildDevSetupPrompt(options: { repoLabel?: string; environment?: string } = {}): string {
-  return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests.
-${options.environment ? `\n${options.environment}\n` : ''}
+export function buildDevSetupPrompt(options: { repoLabel?: string } = {}): string {
+  return `Prepare this repository${options.repoLabel ? ` (${options.repoLabel})` : ''} for development so implementation and verification can run real builds and tests. What this machine provides, and the rules for evidence, are in your instructions.
 
 Do this:
 1. Review README.md, CONTRIBUTING.md, docs/, the package/build manifests (package.json, go.mod, pyproject.toml, Cargo.toml, Makefile, Dockerfile, docker-compose*), and CI config (.github/workflows) to learn how the project is installed, built, tested and linted.
@@ -2303,10 +2424,18 @@ export async function runDevSetup(options: {
   const cwd = resolveCwd(options.cwd)
   await ensureIgnored(cwd, '.aidlc/').catch(() => undefined)
   const orgId = await resolveRunnerOrg(options)
-  // Tell the agent what this machine offers — a database, a free port, a browser —
-  // so it verifies the work instead of skipping tests it assumes it cannot run.
-  const { agentEnvironmentSection } = await import('./agent-environment')
-  const environment = await agentEnvironmentSection(options.repoLabel ?? path.basename(cwd)).catch(() => '')
+  // What this machine offers — a database, a free port, a browser — becomes a
+  // standing instruction on the session, and the assigned values are written into
+  // the checkout so its own tooling picks them up.
+  const { describeAgentEnvironment, evidenceRules, prepareCheckoutEnvironment, renderAgentEnvironment } = await import('./agent-environment')
+  const machine = await describeAgentEnvironment({ label: options.repoLabel ?? path.basename(cwd) }).catch(() => undefined)
+  const applied = machine ? await prepareCheckoutEnvironment(cwd, machine).catch(() => []) : []
+  const standingInstructions = machine
+    ? [
+        [renderAgentEnvironment(machine), applied.length ? `\n${applied.join(', ')} ${applied.length === 1 ? 'has' : 'have'} already been written into this checkout's \`.env\` for you.` : ''].filter(Boolean).join('\n'),
+        evidenceRules(machine),
+      ]
+    : []
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
@@ -2316,7 +2445,7 @@ export async function runDevSetup(options: {
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
     customTools: buildWebTools(),
-    resourceLoader: await createAgentResourceLoader(cwd),
+    resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: standingInstructions }),
     sessionManager: SessionManager.inMemory(cwd),
   })
   let output = ''
@@ -2332,7 +2461,7 @@ export async function runDevSetup(options: {
     }
   })
   try {
-    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel, environment }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
+    await session.prompt(withSharedContext(buildDevSetupPrompt({ repoLabel: options.repoLabel }), { sharedContextPrompt: options.sharedContextPrompt }), { expandPromptTemplates: false, streamingBehavior: 'followUp' })
   } finally {
     unsubscribe()
     session.dispose()

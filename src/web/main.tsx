@@ -3956,6 +3956,11 @@ function AiAgentOutputBar({
             <strong>{currentRun.pauseKind === 'review' ? 'Waiting for your review' : 'The agent has a question'}</strong>
             <span className="mini-badge paused">stage: {currentRun.stage ?? 'unknown'}</span>
           </div>
+          {currentRun.pauseKind === 'review' && (
+            <p className="text-subtle" style={{ margin: '2px 0 6px' }}>
+              Approve to continue as it stands, approve with notes to have them applied first, or describe what to change and it goes back for another pass.
+            </p>
+          )}
           <textarea
             autoFocus
             value={answerDraft}
@@ -3985,8 +3990,9 @@ function AiAgentOutputBar({
               type="button"
               className="secondary-button"
               disabled={!answerDraft.trim()}
+              title={currentRun.pauseKind === 'review' ? 'Send it back for another pass with these changes' : 'Send this answer to the agent'}
               onClick={() => { onSendAnswer(answerDraft); setAnswerDraft('') }}
-            >Send{answerDraft.trim() ? '' : ' (type something first)'}</button>
+            >{currentRun.pauseKind === 'review' ? 'Request changes' : 'Send'}{answerDraft.trim() ? '' : ' (type something first)'}</button>
           </div>
         </div>
       )}

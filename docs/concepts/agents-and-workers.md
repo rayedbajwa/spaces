@@ -80,9 +80,23 @@ skipping checks it assumes are impossible:
 - **A headless Chromium**, already installed, so Playwright and the browser
   tools run without downloading anything.
 
-The same description is written into `.aidlc/dev-setup.md` for the stages that
-follow, and a test that genuinely cannot run is recorded as skipped with its
-reason rather than as a failure.
+Those values are written into the checkout's own `.env` before the stage runs,
+for the variables the project declares, so its ordinary tooling picks them up:
+an agent cannot accidentally migrate the application's own database because it
+forgot to override one. The description is also written into
+`.aidlc/dev-setup.md` for the stages that follow, and a test that genuinely
+cannot run is recorded as skipped with its reason rather than as a failure.
+
+Both reach the agent the way Pi delivers standing instructions: appended to
+its system prompt through the resource loader, so they hold for every turn and
+survive compaction, rather than being repeated on top of each stage's prompt.
+
+Stages whose output is evidence — orchestrate, review and verify — get the
+rules that make it worth reading: name the database a result came from, commit
+any probe the result rests on or mark it unverified, map every identifier in a
+results table to a real test, tick a task off only when all of it is done,
+keep test data separate per run and clean it up, and refresh the delivery
+record in the same cycle.
 
 ## The agent output dock
 

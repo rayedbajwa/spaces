@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parseApprovalAnswer } from '../src/lib/aidlc'
+import { parseApprovalAnswer, parseCodeReviewStatus } from '../src/lib/aidlc'
 
 describe('approval answers', () => {
   test('plain approvals', () => {
@@ -13,5 +13,21 @@ describe('approval answers', () => {
   test('change requests are not approvals', () => {
     expect(parseApprovalAnswer('Please split the endpoint into two handlers').approved).toBe(false)
     expect(parseApprovalAnswer('okay-ish but no').approved).toBe(false)
+  })
+})
+
+describe('code review verdicts', () => {
+  test('recognises a review that asks for changes', () => {
+    expect(parseCodeReviewStatus('# Review\n\nCode Review Status: CHANGES_REQUESTED\n')).toBe('CHANGES_REQUESTED')
+    expect(parseCodeReviewStatus('Code Review Status: **CHANGES_REQUESTED**')).toBe('CHANGES_REQUESTED')
+    expect(parseCodeReviewStatus('code review status: changes requested')).toBe('CHANGES_REQUESTED')
+  })
+
+  test('recognises an approval', () => {
+    expect(parseCodeReviewStatus('Code Review Status: APPROVED')).toBe('APPROVED')
+  })
+
+  test('says nothing when the review recorded no verdict', () => {
+    expect(parseCodeReviewStatus('The code looks reasonable to me.')).toBeUndefined()
   })
 })

@@ -139,7 +139,7 @@ export function renderAgentEnvironment(env: AgentEnvironment): string {
 
   if (env.testDatabaseUrl) {
     lines.push(
-      `- **Postgres for tests**: \`${env.testDatabaseUrl}\` — already running and yours to use. Put it in the checkout's \`.env\` as \`DATABASE_URL\` (and \`TEST_DATABASE_URL\` if the project uses one), then run the project's migration/schema step before the tests that need it. Never point tests at a production database.`,
+      `- **Postgres for tests**: \`${env.testDatabaseUrl}\` — already running and yours to use. It is written into the checkout's \`.env\` as \`DATABASE_URL\` when the project declares that variable; check it before you migrate. The \`DATABASE_URL\` in your shell is the application's own and must never be migrated, seeded or tested against.`,
       `- **psql**: ${env.psql ? 'installed' : 'not installed — connect from the project\'s own tooling instead'}.`,
     )
   } else {
@@ -163,4 +163,105 @@ export async function agentEnvironmentSection(label?: string): Promise<string> {
     envLog.warn('environment probe failed', { error: error instanceof Error ? error.message : String(error) })
     return ''
   }
+}
+
+/**
+ * Put the assigned environment into the checkout before an agent touches it.
+ *
+ * Agents inherit the environment of the process running them, whose
+ * `DATABASE_URL` is the application's own database. A verify run discovered
+ * this the hard way: its migration went to the live database until the agent
+ * noticed and overrode the variable by hand. The fix is not to ask agents to
+ * remember — it is to write the assigned values into the checkout's own
+ * environment file, so the project's ordinary tooling picks them up.
+ *
+ * Only variables the project already declares in its example file are set, so
+ * nothing invents configuration a project does not use. An existing `.env` is
+ * respected except for values that are empty or point at the application's own
+ * database.
+ */
+export async function prepareCheckoutEnvironment(cwd: string, env: AgentEnvironment): Promise<string[]> {
+  const { readFile, writeFile } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+
+  const example = await Promise.all(['.env.example', '.env.sample', '.env.template'].map((name) =>
+    readFile(join(cwd, name), 'utf8').then((text) => ({ name, text })).catch(() => undefined),
+  )).then((found) => found.find(Boolean))
+  if (!example) return []
+
+  const envPath = join(cwd, '.env')
+  const current = await readFile(envPath, 'utf8').catch(() => undefined)
+  const declared = new Set(
+    example.text.split('\n')
+      .map((line) => /^\s*#?\s*([A-Z][A-Z0-9_]*)=/.exec(line)?.[1])
+      .filter((name): name is string => Boolean(name)),
+  )
+
+  const assignments: Record<string, string> = {}
+  if (env.testDatabaseUrl && declared.has('DATABASE_URL')) assignments.DATABASE_URL = env.testDatabaseUrl
+  if (declared.has('PORT')) assignments.PORT = String(env.testPort)
+  // A stable key means anything sealed with it stays readable across stages and runs.
+  if (declared.has('ENCRYPTION_KEY')) assignments.ENCRYPTION_KEY = 'aidlc-agent-checkout-key-not-a-production-secret'
+  if (Object.keys(assignments).length === 0) return []
+
+  const lines = (current ?? example.text).split('\n')
+  const applied: string[] = []
+  for (const [name, value] of Object.entries(assignments)) {
+    const index = lines.findIndex((line) => new RegExp(`^\\s*#?\\s*${name}=`).test(line))
+    const existing = index >= 0 ? /=(.*)$/.exec(lines[index]!)?.[1]?.trim() ?? '' : ''
+    const isCommented = index >= 0 && /^\s*#/.test(lines[index]!)
+    // Keep a value the project already has, unless it is empty or points at the
+    // database this application itself runs on.
+    const pointsAtLiveDatabase = name === 'DATABASE_URL' && existing !== '' && existing === process.env.DATABASE_URL?.trim()
+    // Values in an example file are placeholders, so a fresh .env takes the assigned
+    // ones; a file the project already had keeps what it says, unless it is empty or
+    // points at the application's own database.
+    const keepExisting = current !== undefined && index >= 0 && existing !== '' && !isCommented && !pointsAtLiveDatabase
+    if (keepExisting) continue
+    const assignment = `${name}=${value}`
+    if (index >= 0) lines[index] = assignment
+    else lines.push(assignment)
+    applied.push(name)
+  }
+  if (applied.length === 0) return []
+  await writeFile(envPath, `${lines.join('\n').replace(/\n+$/, '')}\n`)
+  envLog.info('checkout environment prepared', { cwd, applied })
+  return applied
+}
+
+/**
+ * Rules for a stage whose output is evidence someone else will act on.
+ *
+ * A verification report is only worth the evidence behind it, and a review of
+ * one found the recurring ways that evidence goes soft: results produced
+ * against the wrong database, probes written to a temporary file and deleted,
+ * identifiers in a table that map to nothing, tasks ticked off when only part
+ * of them ran, and a delivery record left describing an earlier cycle.
+ */
+export function evidenceRules(env: AgentEnvironment): string {
+  return [
+    '## Evidence rules',
+    '',
+    `- Run everything against the environment above. The \`DATABASE_URL\` in your shell belongs to the application running you${env.testDatabaseUrl ? ` — the database for this checkout is \`${env.testDatabaseUrl}\`` : ''}. Never migrate, seed or test against the application's own database, and say which database produced a result when you report it.`,
+    '- Evidence has to be reproducible by someone else. A probe or script you relied on is committed with the work; if you will not commit it, mark what it showed as unverified rather than passing.',
+    '- Every identifier in a results table maps to a real test name somewhere in the report. Remove legend entries you did not use.',
+    '- Tick a task off only when all of it is done. If part of it ran, leave it unticked and say which part.',
+    '- Keep test data separate per run and clean up what you create. Leaving rows behind makes the next run\'s results untrustworthy.',
+    '- Refresh the delivery record in the same cycle so it describes this run, not an earlier one.',
+  ].join('\n')
+}
+
+/**
+ * The standing instructions for a session working in `cwd`: what the machine
+ * provides, and — for work whose output others rely on — what makes its
+ * evidence trustworthy. Passed to the resource loader as
+ * `appendSystemPrompt`, so they hold for every turn instead of being repeated
+ * on top of each prompt.
+ */
+export async function standingAgentInstructions(cwd: string, options: { label?: string; evidence?: boolean } = {}): Promise<string[]> {
+  const { basename } = await import('node:path')
+  const machine = await describeAgentEnvironment({ label: options.label ?? basename(cwd) }).catch(() => undefined)
+  if (!machine) return []
+  await prepareCheckoutEnvironment(cwd, machine).catch(() => [])
+  return [renderAgentEnvironment(machine), options.evidence === false ? '' : evidenceRules(machine)].filter(Boolean)
 }

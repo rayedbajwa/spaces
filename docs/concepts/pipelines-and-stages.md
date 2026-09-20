@@ -28,8 +28,16 @@ harness, human gate and `onComplete` branch rules.
 ## Gates and loops
 
 - **Review harness** (`review: true`) has a second agent critique the stage output.
-- **Human gate** (`humanGate: true`) pauses the run for approval. Autonomous
-  mode on the project auto-approves gates.
+  When a code review records `Code Review Status: CHANGES_REQUESTED`, the run
+  does not stop to ask: it goes straight back to implement with the findings,
+  told to make the changes and update `tasks.md` to match. That happens at most
+  twice in one run; after that the review comes to you rather than looping
+  again. The review is posted on the feature's pull request either way, even
+  when publishing the branch failed.
+- **Human gate** (`humanGate: true`) pauses the run for approval, with three
+  ways out: approve it as it stands, approve with notes that are applied to the
+  stage before it continues, or describe the changes you want and send it back
+  for another pass. Autonomous mode on the project auto-approves gates.
 - **Clarification pauses** happen when the agent asks a question; answer in the
   run panel (or *Continue* if nothing was really asked).
 - **Branch rules** (`onComplete.branch`) evaluate variables after a step:
