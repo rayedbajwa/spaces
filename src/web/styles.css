@@ -2420,3 +2420,18 @@ textarea {
 .archived-item:hover { background: var(--bg-hover); color: var(--text-strong); }
 .archived-item-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .archived-item-sub { font-size: 11px; color: var(--text-subtle); font-family: var(--font-mono); }
+
+/* Organization → Models, OpenRouter: automatic routing or models named by hand. */
+.routing-openrouter { display: grid; gap: 4px; justify-items: start; }
+.openrouter-pins { display: grid; gap: 10px; width: 100%; margin-top: 6px; }
+.openrouter-pins label { display: grid; gap: 4px; }
+.openrouter-pins input {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-elevated-2);
+  color: var(--text-strong);
+}
+.openrouter-pins button { justify-self: start; }
