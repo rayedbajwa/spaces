@@ -77,6 +77,10 @@ forgot to override one. The description is also written into
 `.aidlc/dev-setup.md` for the stages that follow, and a test that genuinely
 cannot run is recorded as skipped with its reason rather than as a failure.
 
+Both reach the agent the way Pi delivers standing instructions: appended to
+its system prompt through the resource loader, so they hold for every turn and
+survive compaction, rather than being repeated on top of each stage's prompt.
+
 Stages whose output is evidence — orchestrate, review and verify — get the
 rules that make it worth reading: name the database a result came from, commit
 any probe the result rests on or mark it unverified, map every identifier in a
