@@ -590,7 +590,12 @@ export class AIDLCFlow {
     const preamble = this.options.beforeStagePrompt
       ? (await this.options.beforeStagePrompt({ stageIndex: this.stageIndex, stage })).trim()
       : ''
-    const prompt = preamble ? `${preamble}\n\n---\n\n${skillPrompt}` : skillPrompt
+    // Stages that can scaffold (init, specify) are told what already exists, so an
+    // interrupted project is continued instead of being created a second time.
+    const { describeWorkInProgress } = await import('./run-resume')
+    const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
+    if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
+    const prompt = [inProgress, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()

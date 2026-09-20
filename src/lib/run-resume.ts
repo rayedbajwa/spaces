@@ -155,3 +155,59 @@ export function buildResumeNote(point: ResumePoint): string {
   }
   return lines.filter((line) => line !== undefined).join('\n').trim()
 }
+
+/**
+ * What a stage that could scaffold new work must know before it runs.
+ *
+ * `init` on an initialized project and `specify` while a feature is still
+ * unfinished are the two ways a run destroys work: one rewrites the project
+ * scaffold, the other opens a new feature directory and leaves the half-built
+ * one behind. Both stages get a plain statement of what already exists and an
+ * instruction to read it first. When the latest feature has passed
+ * verification, starting the next one is legitimate and nothing is added.
+ */
+export async function describeWorkInProgress(projectPath: string, stage: StageName): Promise<string> {
+  if (stage !== 'init' && stage !== 'specify') return ''
+
+  const initialized = await exists(path.join(projectPath, '.specify'))
+  const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)
+  const featureName = featureDir ? path.basename(featureDir) : undefined
+
+  const present: string[] = []
+  if (featureDir) {
+    for (const file of ['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'code-review.md', 'verification-report.md']) {
+      if (await nonEmpty(path.join(featureDir, file))) present.push(file)
+    }
+  }
+
+  const verification = featureDir
+    ? await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '')
+    : ''
+  // A feature that verified successfully is finished work; the next one may start.
+  const verified = /(^|\n)#{0,3}\s*(overall\s+)?(status|result)\s*[:|-]?\s*\**\s*pass/i.test(verification)
+  const tasks = featureDir
+    ? await readFile(path.join(featureDir, 'tasks.md'), 'utf8').then((t) => parseTaskProgress(t)).catch(() => undefined)
+    : undefined
+
+  const featureUnfinished = Boolean(featureDir && present.length > 0 && !verified)
+  if (!initialized && !featureUnfinished) return ''
+
+  const lines: string[] = ['## Work already in progress — continue it, do not start over', '']
+  if (initialized) {
+    lines.push('This project is already initialized: `.specify/` exists with its templates, memory and scripts. Do not scaffold it again or overwrite anything inside it.')
+  }
+  if (featureUnfinished) {
+    lines.push(
+      '',
+      `Feature \`${featureName}\` is unfinished. It already has: ${present.join(', ')}.`,
+      tasks && tasks.total > 0 ? `Its task list stands at ${tasks.done} of ${tasks.total} done.` : '',
+      verification ? 'A verification report exists but has not passed.' : 'It has not been verified yet.',
+      '',
+      'Before doing anything else, read those files and the repository they describe. Then continue that feature: extend or correct the existing documents in place.',
+      'Do not create a new feature directory, a new numbered branch or a second spec for the same work. If you are convinced the request is genuinely a different feature, say so in your reply and stop instead of creating one.',
+    )
+  } else if (initialized) {
+    lines.push('', 'Check what is there and report it. Change nothing that already exists.')
+  }
+  return lines.filter((line) => line !== '').join('\n').trim()
+}

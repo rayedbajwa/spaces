@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { buildResumeNote, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
+import { buildResumeNote, describeWorkInProgress, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
 import type { StageName } from '../src/lib/aidlc'
 
 /**
@@ -96,5 +96,42 @@ describe('resume point', () => {
     const point = await resolveResumePoint({ projectPath: root, stages: STAGES })
     expect(point.stage).toBe('init')
     expect(point.completed).toEqual([])
+  })
+})
+
+describe('work in progress guardrail', () => {
+  test('tells specify to continue an unfinished feature', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/002-roles/spec.md': '# Spec',
+      'specs/002-roles/plan.md': '# Plan',
+      'specs/002-roles/tasks.md': '- [x] T001 Done\n- [ ] T002 Open\n',
+    })
+    const note = await describeWorkInProgress(root, 'specify')
+    expect(note).toContain('002-roles')
+    expect(note).toContain('1 of 2 done')
+    expect(note).toContain('Do not create a new feature directory')
+    expect(note).toContain('already initialized')
+  })
+
+  test('says nothing once the feature has passed verification', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/003-done/spec.md': '# Spec',
+      'specs/003-done/verification-report.md': '# Verification\n\nStatus: PASS\n',
+    })
+    const note = await describeWorkInProgress(root, 'specify')
+    expect(note).not.toContain('Do not create a new feature directory')
+  })
+
+  test('warns init about an initialized project and leaves other stages alone', async () => {
+    const root = await project({ '.specify/memory/constitution.md': '# Constitution' })
+    expect(await describeWorkInProgress(root, 'init')).toContain('already initialized')
+    expect(await describeWorkInProgress(root, 'implement')).toBe('')
+  })
+
+  test('says nothing for a project with nothing in it', async () => {
+    const root = await project({ 'README.md': 'empty' })
+    expect(await describeWorkInProgress(root, 'specify')).toBe('')
   })
 })
