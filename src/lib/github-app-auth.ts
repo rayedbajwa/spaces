@@ -65,6 +65,46 @@ export async function getInstallationToken(orgId: string): Promise<InstallationT
   return task
 }
 
+const appAliveCache = new Map<string, { at: number; alive: boolean }>()
+const APP_ALIVE_TTL_MS = 10 * 60_000
+
+/**
+ * Whether the stored GitHub App still exists on GitHub.
+ *
+ * An app deleted on GitHub leaves its credentials behind here, and the only
+ * symptom is GitHub answering 404 to the authorization page — so sign-in and
+ * "Connect GitHub" break with no explanation. Asking `GET /app` with the app's
+ * own JWT gives a straight answer. `undefined` means it cannot be determined
+ * (no private key stored, or GitHub is unreachable) and callers should treat
+ * the app as usable.
+ */
+export async function githubAppAlive(orgId: string): Promise<boolean | undefined> {
+  const cached = appAliveCache.get(orgId)
+  if (cached && Date.now() - cached.at < APP_ALIVE_TTL_MS) return cached.alive
+  const config = await getOAuthAppConfig(orgId, 'github').catch(() => ({} as Awaited<ReturnType<typeof getOAuthAppConfig>>))
+  if (!config.appId || !config.pemEnc) return undefined
+  let pem: string
+  try { pem = decryptSecret(config.pemEnc) } catch { return undefined }
+  const response = await fetch('https://api.github.com/app', {
+    headers: { Authorization: `Bearer ${signAppJwt(config.appId, pem)}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'spaces' },
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => undefined)
+  if (!response) return undefined
+  if (response.status === 404 || response.status === 401) {
+    authLog.warn('the stored GitHub App no longer exists on GitHub; it must be created again', { orgId, status: response.status })
+    appAliveCache.set(orgId, { at: Date.now(), alive: false })
+    return false
+  }
+  appAliveCache.set(orgId, { at: Date.now(), alive: response.ok })
+  return response.ok
+}
+
+/** Forget the cached answer after the app is re-created or removed. */
+export function forgetGitHubAppState(orgId: string): void {
+  appAliveCache.delete(orgId)
+  cached.delete(orgId)
+}
+
 /**
  * Token for writes that should carry the app's identity (pushes, pull
  * requests, comments, merges): the installation token when available,

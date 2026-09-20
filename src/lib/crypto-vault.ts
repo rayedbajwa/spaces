@@ -23,7 +23,8 @@ function getKey(): Buffer {
   if (cachedKey) return cachedKey
   const raw = process.env.ENCRYPTION_KEY
   if (!raw || raw.length < 8) {
-    throw new Error('ENCRYPTION_KEY env var must be set (>= 8 chars) before encrypting/decrypting credentials.')
+    // User-facing: never name the variable. The startup check in env.ts tells the operator which one is missing.
+    throw new Error('Secret storage is not configured on this server, so credentials cannot be saved or read. Ask an administrator to finish the server setup.')
   }
   cachedKey = scryptSync(raw, SALT, 32)
   return cachedKey

@@ -43,7 +43,7 @@ export async function listAppIntegrations(orgId: string): Promise<Array<AppInteg
 
 export class IntegrationCredentialsError extends Error {
   constructor(kind: AppIntegrationKind) {
-    super(`${kind} is marked connected but its stored token cannot be decrypted (ENCRYPTION_KEY changed, or it was saved by a process with a different key). Reconnect ${kind} under Integrations.`)
+    super(`${kind} is marked connected but its saved credentials can no longer be read. Reconnect ${kind} under Organization → Integrations.`)
     this.name = 'IntegrationCredentialsError'
   }
 }

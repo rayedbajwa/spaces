@@ -65,7 +65,7 @@ export function embeddingsAvailable(env: Env = process.env): boolean {
 export async function embedTexts(texts: string[], env: Env = process.env): Promise<number[][]> {
   if (texts.length === 0) return []
   const endpoint = resolveEmbeddingEndpoint(env)
-  if (!endpoint) throw new Error(`No API key can serve EMBEDDING_MODEL=${embeddingModel(env)} (set OPENAI_API_KEY or OPENROUTER_API_KEY).`)
+  if (!endpoint) throw new Error(`No stored key can serve the embedding model "${embeddingModel(env)}". Add an OpenAI or OpenRouter key under Organization → Models.`)
 
   const out: number[][] = []
   for (const batch of batches(texts)) {

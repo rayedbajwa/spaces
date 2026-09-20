@@ -37,6 +37,8 @@ interface OAuthApp {
     ownerLogin?: string
     source?: 'manifest' | 'manual'
   }
+  /** False when the provider no longer knows this app (deleted on their side). */
+  availableAtProvider?: boolean
 }
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
@@ -130,6 +132,12 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                   {canManage && <button type="button" className={isEditing || app.configured ? 'ghost-button' : 'primary-button'} onClick={() => setEditing(isEditing ? null : app.provider)}>{isEditing ? 'Close' : app.configured ? 'Manage app' : 'Set up app'}</button>}
                 </div>
               </div>
+
+              {app.availableAtProvider === false && (
+                <p className="error-text" style={{ margin: '0 0 8px' }}>
+                  This app no longer exists on {app.label.split(' ')[0]}, so connecting and signing in with it fail. Create it again below.
+                </p>
+              )}
 
               {isEditing && canManage && (
                 <SetupForm app={app} onSaved={async (m) => { setEditing(null); await load(); flash(m) }} onError={setError} />
@@ -227,7 +235,7 @@ function SetupForm({ app, onSaved, onError }: { app: OAuthApp; onSaved: (message
 
       <div className="button-row">
         {app.configured && <button type="button" className="ghost-button" disabled={busy} onClick={remove}>Remove app from Spaces</button>}
-        <span className="text-subtle" style={{ marginLeft: 'auto' }}>Secrets are encrypted with the server's ENCRYPTION_KEY and never shown again.</span>
+        <span className="text-subtle" style={{ marginLeft: 'auto' }}>Secrets are stored encrypted for this organization and never shown again.</span>
       </div>
     </div>
   )
