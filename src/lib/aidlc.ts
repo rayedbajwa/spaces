@@ -105,6 +105,8 @@ export interface ParallelSubAgentProgressEvent {
 
 export interface FlowOptions {
   cwd: string
+  /** Organization whose provider keys, integrations and GitHub identity the run uses. Derived from projectId when omitted. */
+  orgId?: string
   feature?: string
   constitution?: string
   planContext?: string
@@ -226,6 +228,7 @@ export class AIDLCFlow {
   private readonly sinks: OutputSinks
   private readonly speckitRoot: string
   private readonly modelRuntimePromise: Promise<ModelRuntime>
+  private orgIdPromise?: Promise<string>
   private session?: AgentSession
   private currentModelSpec?: string
   private stageIndex = 0
@@ -248,7 +251,7 @@ export class AIDLCFlow {
     this.stages = stages
     this.sinks = sinks
     this.speckitRoot = resolveSpeckitRoot()
-    this.modelRuntimePromise = createConfiguredModelRuntime()
+    this.modelRuntimePromise = this.orgId().then((orgId) => createConfiguredModelRuntime(orgId))
     if (options.startStage) {
       const idx = stages.indexOf(options.startStage)
       if (idx > 0) this.stageIndex = idx
@@ -318,6 +321,12 @@ export class AIDLCFlow {
     return this.sessionFile
   }
 
+  /** Organization the run belongs to (explicit, else through the project, else the default). */
+  orgId(): Promise<string> {
+    this.orgIdPromise ??= resolveRunnerOrg(this.options)
+    return this.orgIdPromise
+  }
+
   private async ensureSession(overrideModel?: string, overrideThinking?: ThinkingLevel): Promise<void> {
     if (this.session) {
       return
@@ -355,7 +364,7 @@ export class AIDLCFlow {
       // Connected integrations (Jira/Linear/Confluence/GitHub) as on-demand knowledge tools.
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
       // Plus a real browser so implement/QA stages can run the app and verify what users see.
-      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
+      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
       // Default resources plus the skills Spaces bundles (playwright-browser).
       resourceLoader: await createAgentResourceLoader(this.options.cwd),
       sessionManager,
@@ -557,7 +566,7 @@ export class AIDLCFlow {
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       if (featureDirAbs) {
         try {
-          const snapshot = await refreshDeliveryStatus(featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })))
+          const snapshot = await refreshDeliveryStatus(await this.orgId(), featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })))
           this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
         } catch (error) {
           this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
@@ -646,6 +655,7 @@ export class AIDLCFlow {
       try {
         const result = await runDevSetup({
           cwd: target.localPath,
+          orgId: await this.orgId(),
           model: this.options.model,
           thinking: this.options.thinking,
           sharedContextPrompt: this.options.sharedContextPrompt,
@@ -670,7 +680,7 @@ export class AIDLCFlow {
     }
 
     try {
-      const base = pr.baseBranch ?? await gitDefaultBranch(this.options.cwd, pr.githubRepo)
+      const base = pr.baseBranch ?? await gitDefaultBranch(await this.orgId(), this.options.cwd, pr.githubRepo)
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       const featureDirRel = featureDirAbs ? path.relative(this.options.cwd, featureDirAbs) : undefined
       const specTitle = featureDirAbs ? await readSpecTitle(featureDirAbs) : undefined
@@ -681,6 +691,7 @@ export class AIDLCFlow {
         : []
       const tail = output.trim().split('\n').slice(-25).join('\n').slice(-1500)
       const ref = await publishBranchAsPullRequest({
+        orgId: await this.orgId(),
         cwd: this.options.cwd,
         githubRepo: pr.githubRepo,
         branch,
@@ -702,19 +713,19 @@ export class AIDLCFlow {
         this.print(`\n[pr] Nothing new to publish after ${stage} (branch ${branch} has no commits ahead of ${base}).\n`)
       }
       // Review/verify results go on the PR even when the stage itself changed nothing.
-      const target = ref ?? await findOpenPullRequest(pr.githubRepo, branch).then((p) => (p ? { number: p.number, url: p.html_url } : undefined)).catch(() => undefined)
+      const target = ref ?? await findOpenPullRequest(await this.orgId(), pr.githubRepo, branch).then((p) => (p ? { number: p.number, url: p.html_url } : undefined)).catch(() => undefined)
       if (!target) return
       if (stage === 'review' && featureDirAbs) {
         const review = await readFile(path.join(featureDirAbs, 'code-review.md'), 'utf8').catch(() => '')
         if (review.trim()) {
           const status = /Code Review Status:\s*(APPROVED|CHANGES_REQUESTED)/i.exec(review)?.[1]?.toUpperCase() ?? 'UNKNOWN'
-          await commentOnPullRequest(pr.githubRepo, target.number, `## AIDLC code review — ${status}\n\n${review.trim().slice(0, 60_000)}`)
+          await commentOnPullRequest(await this.orgId(), pr.githubRepo, target.number, `## AIDLC code review — ${status}\n\n${review.trim().slice(0, 60_000)}`)
           this.print(`[pr] Posted code review (${status}) on #${target.number}.\n`)
         }
       }
       if (stage === 'verify') {
         const status = await readVerificationStatus(this.options.cwd)
-        await commentOnPullRequest(pr.githubRepo, target.number, `**Verification: ${(status ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`)
+        await commentOnPullRequest(await this.orgId(), pr.githubRepo, target.number, `**Verification: ${(status ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`)
       }
     } catch (error) {
       this.print(`\n[pr] Failed to publish pull request: ${error instanceof Error ? error.message : String(error)}\n`)
@@ -1042,20 +1053,29 @@ function getStageArgument(stage: StageName, options: FlowOptions): string {
 }
 
 /**
- * Create a ModelRuntime with env-provided credentials injected. Every code path
- * that spins up an agent session (the main flow, assistant chat, task/workstream
- * runners, parallel sub-agents) must go through this so they all authenticate
- * the same way. If ANTHROPIC_API_KEY / OPENROUTER_API_KEY / OPENAI_API_KEY are
- * set (from .env or the shell), they override any stored OAuth token for that
- * provider.
+ * Create a ModelRuntime with the organization's stored provider keys injected.
+ * Every code path that spins up an agent session (the main flow, assistant
+ * chat, task/workstream runners, parallel sub-agents) must go through this so
+ * they all authenticate the same way and never see another tenant's keys.
+ * Keys still present in the process environment (local development) are used
+ * only when no organization is known.
  */
-export async function createConfiguredModelRuntime(): Promise<ModelRuntime> {
+export async function createConfiguredModelRuntime(orgId?: string): Promise<ModelRuntime> {
   const runtime = await ModelRuntime.create()
+  const { loadProviderKeys } = await import('./provider-keys')
+  const stored = orgId ? await loadProviderKeys(orgId).catch(() => ({})) : {}
   for (const [provider, envKey] of Object.entries(PROVIDER_ENV_KEYS)) {
-    const key = process.env[envKey]?.trim()
+    const key = (stored as Record<string, string | undefined>)[provider]?.trim() || (orgId ? undefined : process.env[envKey]?.trim())
     if (key) await runtime.setRuntimeApiKey(provider, key)
   }
   return runtime
+}
+
+/** Organization for a runner: explicit, else the project's, else the default one. */
+async function resolveRunnerOrg(options: { orgId?: string; projectId?: string }): Promise<string> {
+  if (options.orgId) return options.orgId
+  const { getDefaultOrgId, orgIdForProject } = await import('./orgs')
+  return options.projectId ? orgIdForProject(options.projectId) : getDefaultOrgId()
 }
 
 function resolveModelSelection(modelRuntime: ModelRuntime, options: FlowOptions) {
@@ -1129,7 +1149,7 @@ function humanizeProviderError(raw: string): string {
  * moves on, without another review round.
  */
 export function parseApprovalAnswer(answer: string): { approved: boolean; note?: string } {
-  const match = /^(approve|approved|lgtm|continue|ok|okay|yes|y)\b[\s:,.;—–-]*([\s\S]*)$/i.exec(answer.trim())
+  const match = /^(approve|approved|lgtm|continue|ok|okay|yes|y)(?![\w-])[\s:,.;—–-]*([\s\S]*)$/i.exec(answer.trim())
   if (!match) return { approved: false }
   const note = match[2]?.trim()
   return note ? { approved: true, note } : { approved: true }
@@ -1217,6 +1237,8 @@ export interface AssistantChatTurn {
  */
 export async function runAIDLCAssistantChat(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
   message: string
   model?: string
   thinking?: ThinkingLevel
@@ -1230,14 +1252,15 @@ export async function runAIDLCAssistantChat(options: {
   /** State-changing tools (rerun, answer, run step…) supplied by the server. */
   actionTools?: ToolDefinition[]
 }): Promise<string> {
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, {
     cwd: options.cwd,
     model: options.model,
     thinking: options.thinking,
   })
 
-  const knowledgeTools = await buildKnowledgeTools({ projectId: options.projectId }).catch(() => [])
+  const knowledgeTools = await buildKnowledgeTools({ projectId: options.projectId, orgId }).catch(() => [])
   const actionNames = (options.actionTools ?? []).map((t) => t.name)
   const { session } = await createAgentSession({
     cwd: resolveCwd(options.cwd),
@@ -1301,6 +1324,9 @@ ${options.operationsContext ? `## Live operations snapshot\n${options.operations
  */
 export async function summarizeCodebaseForMemory(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
+  projectId?: string
   model?: string
   thinking?: ThinkingLevel
   inventory: string
@@ -1308,7 +1334,8 @@ export async function summarizeCodebaseForMemory(options: {
   onProgress?: (chunk: string) => void
 }): Promise<string> {
   const cwd = resolveCwd(options.cwd)
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
 
   const { session } = await createAgentSession({
@@ -1378,6 +1405,9 @@ Rules: be concrete (name real files, commands, and modules), keep it under 600 w
 
 export async function runAIDLCMergeOrchestrator(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
+  projectId?: string
   model?: string
   thinking?: ThinkingLevel
   sharedContextPrompt?: string
@@ -1389,7 +1419,8 @@ export async function runAIDLCMergeOrchestrator(options: {
   }
 
   const outputFile = path.join(featureDir, 'merge-orchestrator.md')
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
     cwd,
@@ -1439,6 +1470,9 @@ export async function runAIDLCMergeOrchestrator(options: {
 
 export async function runAIDLCSpecificTask(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
+  projectId?: string
   taskId: string
   sharedContextPrompt?: string
   model?: string
@@ -1464,7 +1498,8 @@ export async function runAIDLCSpecificTask(options: {
   await mkdir(outputDir, { recursive: true })
   const outputFile = path.join(outputDir, `${options.taskId.toLowerCase()}.md`)
 
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
     cwd,
@@ -1514,6 +1549,9 @@ export async function runAIDLCSpecificTask(options: {
 
 export async function runAIDLCSpecificWorkstream(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
+  projectId?: string
   taskId?: string
   workstreamTitle?: string
   sharedContextPrompt?: string
@@ -1540,7 +1578,8 @@ export async function runAIDLCSpecificWorkstream(options: {
   await mkdir(outputDir, { recursive: true })
   const outputFile = path.join(outputDir, `single-${slugify(workstream.title)}.md`)
 
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
     cwd,
@@ -1582,6 +1621,8 @@ export async function runAIDLCSpecificWorkstream(options: {
 
 export async function runAIDLCParallelSubAgents(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
   model?: string
   thinking?: ThinkingLevel
   sharedContextPrompt?: string
@@ -1622,7 +1663,8 @@ export async function runAIDLCParallelSubAgents(options: {
   options.onProgress?.({ type: 'job_start', featureDir })
   await mkdir(outputDir, { recursive: true })
 
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, {
     cwd,
     model: options.model,
@@ -1632,6 +1674,7 @@ export async function runAIDLCParallelSubAgents(options: {
   const selected = workstreams.slice(0, maxAgents)
   const knowledgeTools = await buildKnowledgeTools({
     projectId: options.projectId,
+    orgId,
     repos: (options.repoTargets ?? []).map((t) => t.githubRepo).filter((r): r is string => Boolean(r)),
   }).catch(() => [])
 
@@ -1672,7 +1715,7 @@ export async function runAIDLCParallelSubAgents(options: {
   const defaultBaseCache = new Map<string, Promise<string>>()
   const baseBranchFor = (repo: WorkstreamRepoTarget): Promise<string> => {
     if (options.pullRequests?.baseBranch) return Promise.resolve(options.pullRequests.baseBranch)
-    if (!defaultBaseCache.has(repo.localPath)) defaultBaseCache.set(repo.localPath, gitDefaultBranch(repo.localPath, repo.githubRepo!))
+    if (!defaultBaseCache.has(repo.localPath)) defaultBaseCache.set(repo.localPath, gitDefaultBranch(orgId, repo.localPath, repo.githubRepo!))
     return defaultBaseCache.get(repo.localPath)!
   }
   const branchDelivered = new Map<number, { branch: string; repoPath: string }>()
@@ -1692,7 +1735,7 @@ export async function runAIDLCParallelSubAgents(options: {
     const title = `Dev setup: ${label}`
     options.onProgress?.({ type: 'workstream_start', featureDir, workstream: title, summary: `Preparing ${repoPath} for development (reviewing README, installing, building, running tests)…` })
     try {
-      const result = await runDevSetup({ cwd: repoPath, model: options.model, thinking: options.thinking, sharedContextPrompt: options.sharedContextPrompt, repoLabel: label })
+      const result = await runDevSetup({ cwd: repoPath, orgId, model: options.model, thinking: options.thinking, sharedContextPrompt: options.sharedContextPrompt, repoLabel: label })
       options.onProgress?.({ type: 'workstream_complete', featureDir, workstream: title, summary: `Dev Setup Status: ${result.status}. ${result.summary}` })
     } catch (error) {
       options.onProgress?.({ type: 'workstream_error', featureDir, workstream: title, error: error instanceof Error ? error.message : String(error), summary: 'Dev setup failed; workstreams will still run and should read the setup notes.' })
@@ -1846,6 +1889,7 @@ export async function runAIDLCParallelSubAgents(options: {
         if (prPlan && outcome && !outcome.error) {
           try {
             const ref = await publishBranchAsPullRequest({
+              orgId,
               cwd: workstreamCwd,
               githubRepo: prPlan.repo.githubRepo!,
               branch: prPlan.branch,
@@ -2124,6 +2168,9 @@ Do this:
  */
 export async function runDevSetup(options: {
   cwd: string
+  /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
+  orgId?: string
+  projectId?: string
   model?: string
   thinking?: ThinkingLevel
   sharedContextPrompt?: string
@@ -2132,7 +2179,8 @@ export async function runDevSetup(options: {
 }): Promise<{ status: DevSetupStatus | 'UNKNOWN'; summary: string }> {
   const cwd = resolveCwd(options.cwd)
   await ensureIgnored(cwd, '.aidlc/').catch(() => undefined)
-  const modelRuntime = await createConfiguredModelRuntime()
+  const orgId = await resolveRunnerOrg(options)
+  const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
     cwd,

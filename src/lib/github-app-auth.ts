@@ -19,8 +19,8 @@ const authLog = log.child({ mod: 'github-app-auth' })
 
 interface InstallationToken { token: string; expiresAt: number; slug: string; installationId: number }
 
-let cached: InstallationToken | undefined
-let inflight: Promise<InstallationToken | undefined> | undefined
+const cached = new Map<string, InstallationToken>()
+const inflight = new Map<string, Promise<InstallationToken | undefined>>()
 
 function base64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_')
@@ -36,11 +36,13 @@ export function signAppJwt(appId: number, privateKeyPem: string, now = Math.floo
 }
 
 /** Installation token for the stored GitHub App, or undefined when the app is not set up that way. */
-export async function getInstallationToken(): Promise<InstallationToken | undefined> {
-  if (cached && cached.expiresAt - Date.now() > 5 * 60_000) return cached
-  if (inflight) return inflight
-  inflight = (async () => {
-    const config = await getOAuthAppConfig('github')
+export async function getInstallationToken(orgId: string): Promise<InstallationToken | undefined> {
+  const have = cached.get(orgId)
+  if (have && have.expiresAt - Date.now() > 5 * 60_000) return have
+  const pending = inflight.get(orgId)
+  if (pending) return pending
+  const task = (async () => {
+    const config = await getOAuthAppConfig(orgId, 'github')
     const installationId = config.installationIds?.[0]
     if (!config.appId || !config.pemEnc || !installationId) return undefined
     let pem: string
@@ -54,11 +56,13 @@ export async function getInstallationToken(): Promise<InstallationToken | undefi
       return undefined
     }
     const data = (await response.json()) as { token: string; expires_at: string }
-    cached = { token: data.token, expiresAt: Date.parse(data.expires_at), slug: config.appSlug ?? 'github-app', installationId }
-    authLog.info('GitHub App installation token issued', { app: cached.slug, installationId })
-    return cached
-  })().finally(() => { inflight = undefined })
-  return inflight
+    const issued: InstallationToken = { token: data.token, expiresAt: Date.parse(data.expires_at), slug: config.appSlug ?? 'github-app', installationId }
+    cached.set(orgId, issued)
+    authLog.info('GitHub App installation token issued', { orgId, app: issued.slug, installationId })
+    return issued
+  })().finally(() => { inflight.delete(orgId) })
+  inflight.set(orgId, task)
+  return task
 }
 
 /**
@@ -66,17 +70,17 @@ export async function getInstallationToken(): Promise<InstallationToken | undefi
  * requests, comments, merges): the installation token when available,
  * otherwise the user token.
  */
-export async function getGitHubActorToken(): Promise<string> {
-  const installation = await getInstallationToken().catch(() => undefined)
-  return installation?.token ?? (await getGitHubToken())
+export async function getGitHubActorToken(orgId: string): Promise<string> {
+  const installation = await getInstallationToken(orgId).catch(() => undefined)
+  return installation?.token ?? (await getGitHubToken(orgId))
 }
 
 /** Who pushes and opens pull requests: the app bot or the connected user. */
-export async function describeGitHubActor(): Promise<{ kind: 'app' | 'user'; name: string }> {
-  const installation = await getInstallationToken().catch(() => undefined)
+export async function describeGitHubActor(orgId: string): Promise<{ kind: 'app' | 'user'; name: string }> {
+  const installation = await getInstallationToken(orgId).catch(() => undefined)
   if (installation) return { kind: 'app', name: `${installation.slug}[bot]` }
   const { getGitHubLogin } = await import('./github')
-  return { kind: 'user', name: await getGitHubLogin().catch(() => 'connected user') }
+  return { kind: 'user', name: await getGitHubLogin(orgId).catch(() => 'connected user') }
 }
 
 /**
@@ -84,8 +88,8 @@ export async function describeGitHubActor(): Promise<{ kind: 'app' | 'user'; nam
  * git reads the auth header from GIT_CONFIG_* (nothing written to disk) and
  * gh reads GH_TOKEN.
  */
-export async function gitHubActorEnv(): Promise<Record<string, string>> {
-  const token = await getGitHubActorToken()
+export async function gitHubActorEnv(orgId: string): Promise<Record<string, string>> {
+  const token = await getGitHubActorToken(orgId)
   const header = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
   return {
     GH_TOKEN: token,

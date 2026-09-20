@@ -1,14 +1,16 @@
-# Organization, teams and access
+# Organizations, teams and access
 
-Spaces follows the AIDLC model of **spaces**: one shared organization, and
-inside it teams that each own their own projects, memory and knowledge, so
-several teams can work on one installation without colliding.
+Spaces follows the AIDLC model of **spaces**. An **organization is the tenant
+boundary**: one installation can host many organizations, and two of them share
+nothing. Inside an organization, teams each own their projects, memory and
+knowledge, so several teams can work side by side without colliding.
 
 ```mermaid
 flowchart TB
-  O[Organization<br/>shared memory · integrations · repository catalog · users]
-  O --> T1[Team A — a space<br/>team memory · knowledge defaults · members]
-  O --> T2[Team B — a space]
+  O1[Organization A — a tenant<br/>memory · model keys · integrations · knowledge · repository catalog]
+  O2[Organization B — a separate tenant<br/>its own keys, integrations and knowledge]
+  O1 --> T1[Team A — a space<br/>team memory · knowledge defaults · members]
+  O1 --> T2[Team B — a space]
   T1 --> P1[Project<br/>governing workspace · specs · memory · knowledge]
   T1 --> P2[Project]
   T2 --> P3[Project]
@@ -16,9 +18,22 @@ flowchart TB
 
 | Layer | Shared with | Holds |
 |---|---|---|
-| **Organization** | every team | Organization memory (principles, policies, standards), OAuth integrations, the GitHub repository catalog, user accounts |
+| **Organization** (tenant) | its own teams only | Organization memory, LLM provider keys, model routing policy, OAuth apps and integrations, knowledge sources, the GitHub repository catalog, promotions, usage and cost |
 | **Team** (space) | its members | Projects, team memory, default knowledge scope, members and roles, invites |
 | **Project** | the team | Governing workspace, features and artifacts, project memory, imported knowledge, repositories |
+
+## Tenant isolation
+
+Every organization-level row carries an `org_id`, and every API route resolves
+the caller's organization from their active team before it reads or writes.
+An account in one organization cannot see another's memory, keys, integrations,
+knowledge, catalog, promotions, projects, runs or costs, and being an owner of
+one organization grants nothing in another. Agents authenticate with the keys
+and the GitHub identity of the organization that owns the running project;
+nothing is taken from the server's environment.
+
+Deployments created before this model are migrated onto one default
+organization, which keeps every existing team, project and key together.
 
 Agents receive the three memory layers in that order in every stage's
 context: organization first, then the team's, then the project's. The board,
@@ -33,9 +48,13 @@ top of the sidebar.
   for identity and never stored).
 - Sessions are HttpOnly cookies valid for 30 days; only a hash of the token is
   stored.
-- The **first account** created becomes the owner of the default team and
-  adopts every existing project.
-- After that, **registration is by invitation** unless `OPEN_REGISTRATION=1`.
+- The **first account** created becomes the owner of the default organization
+  and its default team, and adopts every existing project.
+- A later account that registers without an invite starts **its own
+  organization** (name it on the registration form); an account that registers
+  from an invite joins the inviting team's organization instead.
+- After the first account, **registration is by invitation** unless
+  `OPEN_REGISTRATION=1`.
 - `AUTH_DISABLED=1` turns authentication off for single-user local use.
 
 ## Roles
@@ -48,7 +67,9 @@ top of the sidebar.
 | **viewer** | Read everything and chat with the assistant; no changes |
 
 Project-level authorization is by team membership: a project belongs to one
-team, and only that team's members can read or act on it.
+team, and only that team's members can read or act on it. Roles apply inside
+one organization: owners and admins administer the organization their active
+team belongs to, never another.
 
 ## Invites
 

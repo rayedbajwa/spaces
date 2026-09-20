@@ -19,6 +19,7 @@ import path from 'node:path'
 import { getDb } from './db'
 import { scheduleRepoClone } from './github'
 import { renderKnowledgeHits, searchOrgKnowledge } from './knowledge-store'
+import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { log } from './logger'
 import { refreshRepositoryKnowledge } from './project-onboarding'
 import { addRepo, getProject, listRepos, type ProjectSuggestions, type RepoRow } from './project-registry'
@@ -109,7 +110,7 @@ export async function prepareResearchInputs(options: {
   const query = [project?.name, project?.description, feature].filter(Boolean).join('. ')
   if (query.trim()) {
     try {
-      const { hits, mode } = await searchOrgKnowledge({ query, scope: { teamIds: project?.teamId ? [project.teamId] : [] }, limit: 8 })
+      const { hits, mode } = await searchOrgKnowledge({ query, scope: { orgId: project ? await orgIdForProject(project.projectId) : await getDefaultOrgId(), teamIds: project?.teamId ? [project.teamId] : [] }, limit: 8 })
       knowledgeHits = hits.length
       if (hits.length) {
         sections.push(`## Organization knowledge (${mode} search, ${hits.length} excerpts)\n\nUse \`org_knowledge_search(query)\` for more.\n\n${renderKnowledgeHits(hits, { maxCharsPerHit: 1_000 })}`)

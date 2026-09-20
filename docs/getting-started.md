@@ -55,11 +55,13 @@ make down           # stop everything
 
 Open [http://localhost:3000](http://localhost:3000). With no accounts yet, the
 sign-in screen offers **Create the first account**; that account becomes the
-owner of the default team and adopts any existing projects. Afterwards,
-registration is by invitation: open **People** in the sidebar,
-invite teammates by email and role, and share the generated link. Teammates can
-also **Continue with GitHub**. See
-[Organization, teams & access](concepts/organization-teams-and-access.md).
+owner of the first organization and its default team, and adopts any existing
+projects. Afterwards, registration is by invitation: open **People** in the
+sidebar, invite teammates by email and role, and share the generated link.
+Teammates can also **Continue with GitHub**. An account that registers without
+an invite starts its own organization, which shares no keys, integrations,
+knowledge or projects with yours. See
+[Organizations, teams & access](concepts/organization-teams-and-access.md).
 
 ## Bring your model keys
 

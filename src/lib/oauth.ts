@@ -26,6 +26,8 @@ export interface OAuthState {
   createdAt: number
   /** Relative path to send the browser to after the callback stores the token. */
   returnTo?: string
+  /** Organization the connection belongs to. */
+  orgId?: string
 }
 
 // In-memory pending state store — 10 min expiry. Callback verifies + consumes.
@@ -39,10 +41,10 @@ function pruneStates(): void {
   }
 }
 
-export function beginAuthorization(cfg: OAuthProviderConfig, projectId: string, callbackUrl: string, returnTo?: string): { redirectUrl: string; state: string } {
+export function beginAuthorization(cfg: OAuthProviderConfig, projectId: string, callbackUrl: string, returnTo?: string, orgId?: string): { redirectUrl: string; state: string } {
   pruneStates()
   const state = randomBytes(24).toString('base64url')
-  pendingStates.set(state, { state, projectId, provider: cfg.provider, createdAt: Date.now(), ...(returnTo ? { returnTo } : {}) })
+  pendingStates.set(state, { state, projectId, provider: cfg.provider, createdAt: Date.now(), ...(returnTo ? { returnTo } : {}), ...(orgId ? { orgId } : {}) })
 
   const params = new URLSearchParams({
     client_id: cfg.clientId,
@@ -166,11 +168,11 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
  * Provider config with credentials, or undefined when none are set. Credentials
  * come from the oauth_apps table, set in the Integrations panel.
  */
-export async function resolveProvider(provider: string): Promise<OAuthProviderConfig | undefined> {
+export async function resolveProvider(orgId: string, provider: string): Promise<OAuthProviderConfig | undefined> {
   if (!(provider in PROVIDER_TEMPLATES)) return undefined
   const id = provider as OAuthProviderId
   const { getOAuthAppCredentials } = await import('./oauth-apps')
-  const creds = await getOAuthAppCredentials(id)
+  const creds = await getOAuthAppCredentials(orgId, id)
   if (!creds) return undefined
   const { label: _label, kinds: _kinds, consoleUrl: _console, notes: _notes, ...rest } = PROVIDER_TEMPLATES[id]
   return { ...rest, clientId: creds.clientId, clientSecret: creds.clientSecret }

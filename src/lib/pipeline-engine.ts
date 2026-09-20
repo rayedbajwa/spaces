@@ -15,7 +15,9 @@ import { evaluateBranchExpression, readCodeReviewStatus, readDeliveryStatus, rea
 import { loadPersona } from './persona-loader'
 import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
 import { getTierModels } from './model-policy'
-import { isProviderConfigured, tierOfModel } from './default-model'
+import { isProviderConfiguredWith, tierOfModel } from './default-model'
+import { loadProviderKeys } from './provider-keys'
+import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { compactHandoff } from './context-compactor'
 import { prepareResearchInputs } from './research-stage'
 import { log } from './logger'
@@ -176,6 +178,8 @@ export class PipelineEngine {
       if (!step.parallel) continue
       const { results } = await runAIDLCParallelSubAgents({
         cwd: this.options.cwd,
+        orgId: await this.orgId(),
+        projectId: this.options.projectId,
         model: this.options.model,
         thinking: this.options.thinking,
         sharedContextPrompt: this.options.sharedContextPrompt,
@@ -278,7 +282,7 @@ export class PipelineEngine {
 
       // Compact the tail into a preamble-ready summary. Safe-fails to the raw
       // tail on any error, so the pipeline never breaks because compaction did.
-      const compaction = await compactHandoff({ stage: String(stage), stepId: step.id, model, tail: raw })
+      const compaction = await compactHandoff({ stage: String(stage), stepId: step.id, model, tail: raw, orgId: await this.orgId() })
       const text = compaction.text
 
       this.stageHandoffs.push({ stepId: step.id, stage, model, text, compacted: compaction.compacted })
@@ -315,18 +319,28 @@ export class PipelineEngine {
     return `# Cross-stage memory\n\nCompact summaries of what prior stages produced in this run. The Pi session may have been reset when the model changed, but this thread carries context across boundaries.\n\n${entries.join('\n\n---\n\n')}`
   }
 
+  private orgIdPromise?: Promise<string>
+
+  /** Organization of this run: explicit option, else the project's, else the default one. */
+  private orgId(): Promise<string> {
+    this.orgIdPromise ??= this.options.orgId ? Promise.resolve(this.options.orgId) : this.options.projectId ? orgIdForProject(this.options.projectId) : getDefaultOrgId()
+    return this.orgIdPromise
+  }
+
   private buildStepModelResolver(): FlowOptions['stepModel'] {
     const engineLog = log.child({ mod: 'pipeline-engine', pipeline: this.template.name })
     const substituted = new Set<string>()
     return async ({ stageIndex, stage }) => {
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
       const config = await loadRoutingConfig()
-      const tiers = await getTierModels()
+      const orgId = await this.orgId()
+      const tiers = await getTierModels(orgId)
+      const orgKeys = await loadProviderKeys(orgId).catch(() => ({}))
       const attempt = step ? this.visitCount.get(step.id) ?? 0 : 0
       // A template may pin a model from a provider this deployment has no key
       // for. Keep the author's intent — the size tier — on the provider in use.
       let explicitModel = step?.model
-      if (explicitModel && !isProviderConfigured(explicitModel)) {
+      if (explicitModel && !isProviderConfiguredWith(explicitModel, orgKeys)) {
         const substitute = tiers[tierOfModel(explicitModel)]
         if (step && !substituted.has(step.id)) {
           substituted.add(step.id)

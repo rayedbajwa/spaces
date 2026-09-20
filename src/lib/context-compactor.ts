@@ -81,9 +81,11 @@ async function lookupCachedSummary(hash: string): Promise<string | undefined> {
  * One-shot Anthropic Messages call. Returns the assistant's text or throws.
  * Deliberately not using the Pi SDK — we want a small, dependency-free call.
  */
-async function callAnthropicOnce(prompt: string): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set')
+async function callAnthropicOnce(prompt: string, orgId?: string): Promise<string> {
+  // The key belongs to the organization whose run is being compacted; nothing is read from the process environment.
+  const { loadProviderKeys } = await import('./provider-keys')
+  const apiKey = orgId ? (await loadProviderKeys(orgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>))).anthropic : undefined
+  if (!apiKey) throw new Error('this organization has no Anthropic key for compaction')
 
   const res = await fetch(ANTHROPIC_API, {
     method: 'POST',
@@ -126,6 +128,8 @@ export async function compactHandoff(input: {
   stepId: string
   model?: string
   tail: string
+  /** Organization whose Anthropic key pays for the summary. Without one the raw tail is kept. */
+  orgId?: string
 }): Promise<CompactionResult> {
   const hash = sha1(input.tail)
 
@@ -167,7 +171,7 @@ Instructions:
 
 ${input.tail}
 `
-    const summary = await callAnthropicOnce(prompt)
+    const summary = await callAnthropicOnce(prompt, input.orgId)
     compactorLog.debug('compacted stage tail', {
       hash,
       stage: input.stage,

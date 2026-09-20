@@ -77,9 +77,11 @@ export async function buildContextBundle(options: {
   const featureArtifacts = await loadFeatureArtifacts(projectPath)
   const sourceSnapshots = projectId ? await loadSourceSnapshots(projectId) : []
   // Only the sources this project has selected (and that are connected).
-  const knowledgeSources = await resolveKnowledgeScope(projectId).then((scope) => scope.sources).catch(() => [] as KnowledgeSource[])
-  // Every GitHub repo the account can see, with its use case — so plans can name repos without upfront selection.
-  const repoCatalog = await loadRepoCatalog().catch(() => '')
+  const { getDefaultOrgId, orgIdForProject } = await import('./orgs')
+  const bundleOrgId = projectId ? await orgIdForProject(projectId) : await getDefaultOrgId()
+  const knowledgeSources = await resolveKnowledgeScope(bundleOrgId, projectId).then((scope) => scope.sources).catch(() => [] as KnowledgeSource[])
+  // Every GitHub repo the organization's account can see, with its use case — so plans can name repos without upfront selection.
+  const repoCatalog = await loadRepoCatalog(bundleOrgId).catch(() => '')
   // Shared layers above the project: organization (everyone) and team (this space).
   const shared = await loadSharedMemoryLayers(projectId).catch(() => ({ orgName: 'Organization', orgMemory: '', teamName: undefined, teamMemory: '' }))
   // Organization knowledge base: excerpts relevant to this project and its current feature.
@@ -125,7 +127,8 @@ export async function buildContextBundle(options: {
 async function loadRetrievedKnowledge(projectId: string | undefined, projectSlug: string | undefined, artifacts: ContextArtifact[]): Promise<{ available: boolean; retrieved: string }> {
   const { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge } = await import('./knowledge-store')
   const project = projectId ? await getProject(projectId).catch(() => undefined) : undefined
-  const scope = { teamIds: project?.teamId ? [project.teamId] : [] }
+  const { getDefaultOrgId, orgIdForProject } = await import('./orgs')
+  const scope = { orgId: projectId ? await orgIdForProject(projectId) : await getDefaultOrgId(), teamIds: project?.teamId ? [project.teamId] : [] }
   if (!(await hasOrgKnowledge(scope))) return { available: false, retrieved: '' }
   // The spec (or the newest artifact) says what this work is about; the project name anchors it.
   const focus = artifacts[0]?.content.replace(/\s+/g, ' ').slice(0, 800) ?? ''
@@ -199,11 +202,11 @@ async function loadFeatureArtifacts(projectPath: string): Promise<ContextArtifac
 }
 
 /** Compact list of synced GitHub repos with their README-derived use case (capped). */
-async function loadRepoCatalog(limit = 60): Promise<string> {
+async function loadRepoCatalog(orgId: string, limit = 60): Promise<string> {
   const sql = getDb()
   const rows = await sql<Array<{ fullName: string; description: string | null; language: string | null; topics: string[] | null; usecase: string | null }>>`
     SELECT full_name AS "fullName", description, language, topics, usecase
-      FROM github_repo_index ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
+      FROM github_repo_index WHERE org_id = ${orgId} ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
   `
   return rows
     .map((r) => `- **${r.fullName}**${r.language ? ` (${r.language})` : ''}${r.topics?.length ? ` [${r.topics.slice(0, 4).join(', ')}]` : ''} — ${(r.usecase ?? r.description ?? 'no description').replace(/\s+/g, ' ').slice(0, 160)}`)

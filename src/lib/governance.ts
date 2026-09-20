@@ -201,10 +201,10 @@ export interface CatalogEntry {
  * periodically; the plan stage reads the catalog to name repositories without
  * anyone selecting them up front.
  */
-export async function syncGitHubRepoCatalog(options: { maxRepos?: number } = {}): Promise<{ indexed: number }> {
+export async function syncGitHubRepoCatalog(orgId: string, options: { maxRepos?: number } = {}): Promise<{ indexed: number }> {
   const { listGitHubRepos } = await import('./github')
-  const token = await getGitHubToken()
-  const repos = (await listGitHubRepos({ maxPages: 5 })).slice(0, options.maxRepos ?? 300)
+  const token = await getGitHubToken(orgId)
+  const repos = (await listGitHubRepos(orgId, { maxPages: 5 })).slice(0, options.maxRepos ?? 300)
   const sql = getDb()
   let indexed = 0
   for (const repo of repos) {
@@ -228,9 +228,9 @@ export async function syncGitHubRepoCatalog(options: { maxRepos?: number } = {})
       // metadata is best-effort
     }
     await sql`
-      INSERT INTO github_repo_index (full_name, description, language, topics, default_branch, usecase, is_private, updated_at, indexed_at)
-      VALUES (${repo.fullName}, ${repo.description ?? null}, ${language ?? null}, ${sql.json(topics as never)}, ${repo.defaultBranch ?? null}, ${usecase ?? null}, ${repo.private}, ${repo.updatedAt ?? null}, now())
-      ON CONFLICT (full_name) DO UPDATE SET
+      INSERT INTO github_repo_index (org_id, full_name, description, language, topics, default_branch, usecase, is_private, updated_at, indexed_at)
+      VALUES (${orgId}, ${repo.fullName}, ${repo.description ?? null}, ${language ?? null}, ${sql.json(topics as never)}, ${repo.defaultBranch ?? null}, ${usecase ?? null}, ${repo.private}, ${repo.updatedAt ?? null}, now())
+      ON CONFLICT (org_id, full_name) DO UPDATE SET
         description = EXCLUDED.description, language = EXCLUDED.language, topics = EXCLUDED.topics,
         default_branch = EXCLUDED.default_branch, usecase = COALESCE(EXCLUDED.usecase, github_repo_index.usecase),
         is_private = EXCLUDED.is_private, updated_at = EXCLUDED.updated_at, indexed_at = now()
@@ -241,12 +241,12 @@ export async function syncGitHubRepoCatalog(options: { maxRepos?: number } = {})
   return { indexed }
 }
 
-export async function listRepoCatalog(limit = 200): Promise<CatalogEntry[]> {
+export async function listRepoCatalog(orgId: string, limit = 200): Promise<CatalogEntry[]> {
   const sql = getDb()
   const rows = await sql<Array<{ fullName: string; description: string | null; language: string | null; topics: string[] | null; defaultBranch: string | null; usecase: string | null; isPrivate: boolean; updatedAt: string | null; indexedAt: string }>>`
     SELECT full_name AS "fullName", description, language, topics, default_branch AS "defaultBranch", usecase, is_private AS "isPrivate",
            updated_at AS "updatedAt", indexed_at AS "indexedAt"
-      FROM github_repo_index ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
+      FROM github_repo_index WHERE org_id = ${orgId} ORDER BY updated_at DESC NULLS LAST LIMIT ${limit}
   `
   return rows.map((r) => ({
     fullName: r.fullName,
@@ -262,8 +262,8 @@ export async function listRepoCatalog(limit = 200): Promise<CatalogEntry[]> {
 }
 
 /** Compact Markdown catalog for the shared context: what each repo is for. */
-export async function renderRepoCatalog(limit = 60): Promise<string> {
-  const entries = await listRepoCatalog(limit).catch(() => [] as CatalogEntry[])
+export async function renderRepoCatalog(orgId: string, limit = 60): Promise<string> {
+  const entries = await listRepoCatalog(orgId, limit).catch(() => [] as CatalogEntry[])
   if (entries.length === 0) return ''
   return entries.map((e) => `- **${e.fullName}**${e.language ? ` (${e.language})` : ''}${e.topics.length ? ` [${e.topics.slice(0, 4).join(', ')}]` : ''} — ${(e.usecase ?? e.description ?? 'no description').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n')
 }

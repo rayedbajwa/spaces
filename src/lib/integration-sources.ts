@@ -3,7 +3,7 @@ import { getAppIntegration, getAppIntegrationCredentials, upsertAppIntegration, 
 import { getDb } from './db'
 import { getIntegrationAccessToken, refreshIntegrationTokens } from './integration-token'
 import { getProject, listRepos, type ProjectKnowledgeConfig } from './project-registry'
-import { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge } from './knowledge-store'
+import { hasOrgKnowledge, renderKnowledgeHits, searchOrgKnowledge, type KnowledgeScope as OrgKnowledgeScope } from './knowledge-store'
 
 /**
  * Effective knowledge scope for one project: which sources are exposed and how
@@ -20,8 +20,8 @@ export interface KnowledgeScope {
   githubRepos: string[]
 }
 
-export async function resolveKnowledgeScope(projectId?: string): Promise<KnowledgeScope> {
-  const connected = await listConnectedKnowledgeSources()
+export async function resolveKnowledgeScope(orgId: string, projectId?: string): Promise<KnowledgeScope> {
+  const connected = await listConnectedKnowledgeSources(orgId)
   if (!projectId) {
     return { sources: connected, jiraProjects: [], linearTeams: [], linearProjects: [], confluenceSpaces: [], githubRepos: [] }
   }
@@ -101,22 +101,22 @@ const SOURCE_KIND: Record<KnowledgeSource, AppIntegrationKind> = {
   github: 'github',
 }
 
-export async function listConnectedKnowledgeSources(): Promise<KnowledgeSource[]> {
+export async function listConnectedKnowledgeSources(orgId: string): Promise<KnowledgeSource[]> {
   const out: KnowledgeSource[] = []
   for (const source of Object.keys(SOURCE_KIND) as KnowledgeSource[]) {
-    const row = await getAppIntegration(SOURCE_KIND[source])
+    const row = await getAppIntegration(orgId, SOURCE_KIND[source])
     if (row?.status === 'connected') out.push(source)
   }
   return out
 }
 
-async function requireToken(source: KnowledgeSource): Promise<string> {
+async function requireToken(orgId: string, source: KnowledgeSource): Promise<string> {
   const kind = SOURCE_KIND[source]
-  const row = await getAppIntegration(kind)
+  const row = await getAppIntegration(orgId, kind)
   if (row?.status !== 'connected') throw new KnowledgeSourceNotConnectedError(source)
   // Refreshes expiring tokens (Atlassian hourly, GitHub App user tokens every
   // 8h); throws IntegrationCredentialsError when the stored token cannot be read.
-  return getIntegrationAccessToken(kind)
+  return getIntegrationAccessToken(orgId, kind)
 }
 
 function clip(text: string, max: number): string {
@@ -128,8 +128,8 @@ function clip(text: string, max: number): string {
 // Linear (GraphQL)
 // ---------------------------------------------------------------------------
 
-export async function linearGraphQL<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const token = await requireToken('linear')
+export async function linearGraphQL<T>(orgId: string, query: string, variables: Record<string, unknown>): Promise<T> {
+  const token = await requireToken(orgId, 'linear')
   const response = await fetch('https://api.linear.app/graphql', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -165,11 +165,11 @@ export const LINEAR_ISSUE_FIELDS = `
   state { name } team { key name } project { name } assignee { name } labels { nodes { name } }
 `
 
-async function linearSearch(query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
+async function linearSearch(orgId: string, query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
   // Exact identifier (ENG-123) → fetch directly; otherwise full-text search.
   if (/^[A-Z][A-Z0-9]+-\d+$/i.test(query.trim())) {
     try {
-      const doc = await linearGet(query.trim())
+      const doc = await linearGet(orgId, query.trim())
       return [{ source: 'linear', id: doc.id, title: doc.title, url: doc.url, snippet: clip(doc.content, 240), type: 'issue', status: String(doc.metadata.status ?? '') }]
     } catch {
       // fall through to search
@@ -179,8 +179,7 @@ async function linearSearch(query: string, limit: number, scope?: KnowledgeScope
   const filter: Record<string, unknown> = {}
   if (scope?.linearTeams.length) filter.team = { key: { in: scope.linearTeams } }
   if (scope?.linearProjects.length) filter.project = { name: { in: scope.linearProjects } }
-  const data = await linearGraphQL<{ searchIssues: { nodes: LinearIssueNode[] } }>(
-    `query Search($term: String!, $first: Int!, $filter: IssueFilter) { searchIssues(term: $term, first: $first, filter: $filter) { nodes { ${LINEAR_ISSUE_FIELDS} } } }`,
+  const data = await linearGraphQL<{ searchIssues: { nodes: LinearIssueNode[] } }>(orgId, `query Search($term: String!, $first: Int!, $filter: IssueFilter) { searchIssues(term: $term, first: $first, filter: $filter) { nodes { ${LINEAR_ISSUE_FIELDS} } } }`,
     { term: query, first: limit, filter: Object.keys(filter).length ? filter : null },
   )
   return data.searchIssues.nodes.map((n) => ({
@@ -195,9 +194,8 @@ async function linearSearch(query: string, limit: number, scope?: KnowledgeScope
   }))
 }
 
-async function linearGet(identifier: string): Promise<KnowledgeDoc> {
-  const data = await linearGraphQL<{ issue: LinearIssueNode | null }>(
-    `query Issue($id: String!) { issue(id: $id) { ${LINEAR_ISSUE_FIELDS} comments(first: 20) { nodes { body createdAt user { name } } } } }`,
+async function linearGet(orgId: string, identifier: string): Promise<KnowledgeDoc> {
+  const data = await linearGraphQL<{ issue: LinearIssueNode | null }>(orgId, `query Issue($id: String!) { issue(id: $id) { ${LINEAR_ISSUE_FIELDS} comments(first: 20) { nodes { body createdAt user { name } } } } }`,
     { id: identifier },
   )
   const issue = data.issue as (LinearIssueNode & { comments?: { nodes: Array<{ body: string; createdAt: string; user?: { name: string } | null }> } }) | null
@@ -232,32 +230,33 @@ interface AtlassianAccess {
   siteUrl: string
 }
 
-export async function atlassianAccess(source: 'jira' | 'confluence'): Promise<AtlassianAccess> {
-  const token = await requireToken(source)
-  const row = await getAppIntegration(source)
+export async function atlassianAccess(orgId: string, source: 'jira' | 'confluence'): Promise<AtlassianAccess> {
+  const token = await requireToken(orgId, source)
+  const row = await getAppIntegration(orgId, source)
   const cached = row?.configJson as { cloudId?: string; siteUrl?: string } | undefined
   if (cached?.cloudId && cached.siteUrl) return { token, cloudId: cached.cloudId, siteUrl: cached.siteUrl }
 
   const resources = await atlassianFetchJson<Array<{ id: string; url: string; scopes: string[] }>>(
+    orgId,
     source,
     'https://api.atlassian.com/oauth/token/accessible-resources',
   )
   const wanted = source === 'jira' ? /jira/ : /confluence/
   const site = resources.find((r) => r.scopes.some((s) => wanted.test(s))) ?? resources[0]
   if (!site) throw new Error('Atlassian account has no accessible sites for this token.')
-  await upsertAppIntegration({ kind: source, status: 'connected', config: { cloudId: site.id, siteUrl: site.url } })
+  await upsertAppIntegration({ orgId, kind: source, status: 'connected', config: { cloudId: site.id, siteUrl: site.url } })
   return { token, cloudId: site.id, siteUrl: site.url }
 }
 
 /** GET with one automatic token refresh on 401 (Atlassian access tokens last an hour). */
-export async function atlassianFetchJson<T>(source: 'jira' | 'confluence', url: string, attempt = 0): Promise<T> {
-  const token = await requireToken(source)
+export async function atlassianFetchJson<T>(orgId: string, source: 'jira' | 'confluence', url: string, attempt = 0): Promise<T> {
+  const token = await requireToken(orgId, source)
   const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } })
   if (response.status === 401 && attempt === 0) {
-    const creds = await getAppIntegrationCredentials(source)
+    const creds = await getAppIntegrationCredentials(orgId, source)
     if (typeof creds?.refresh_token === 'string' && creds.refresh_token) {
-      await refreshIntegrationTokens(source, creds)
-      return atlassianFetchJson<T>(source, url, 1)
+      await refreshIntegrationTokens(orgId, source, creds)
+      return atlassianFetchJson<T>(orgId, source, url, 1)
     }
   }
   if (!response.ok) {
@@ -320,8 +319,8 @@ function withScopeClause(query: string, clause: string | undefined): string {
   return `(${where.trim()}) AND ${clause}${order}`
 }
 
-async function jiraSearch(query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
-  const access = await atlassianAccess('jira')
+async function jiraSearch(orgId: string, query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
+  const access = await atlassianAccess(orgId, 'jira')
   const isKey = /^[A-Z][A-Z0-9_]+-\d+$/i.test(query.trim())
   const rawJql = isKey
     ? `key = ${query.trim().toUpperCase()}`
@@ -332,10 +331,10 @@ async function jiraSearch(query: string, limit: number, scope?: KnowledgeScope):
   const base = `https://api.atlassian.com/ex/jira/${access.cloudId}/rest/api/3`
   let issues: JiraIssue[]
   try {
-    const data = await atlassianFetchJson<{ issues: JiraIssue[] }>('jira', `${base}/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${limit}&fields=${fields}`)
+    const data = await atlassianFetchJson<{ issues: JiraIssue[] }>(orgId, 'jira', `${base}/search/jql?jql=${encodeURIComponent(jql)}&maxResults=${limit}&fields=${fields}`)
     issues = data.issues
   } catch {
-    const data = await atlassianFetchJson<{ issues: JiraIssue[] }>('jira', `${base}/search?jql=${encodeURIComponent(jql)}&maxResults=${limit}&fields=${fields}`)
+    const data = await atlassianFetchJson<{ issues: JiraIssue[] }>(orgId, 'jira', `${base}/search?jql=${encodeURIComponent(jql)}&maxResults=${limit}&fields=${fields}`)
     issues = data.issues
   }
   return issues.map((i) => ({
@@ -349,10 +348,9 @@ async function jiraSearch(query: string, limit: number, scope?: KnowledgeScope):
   }))
 }
 
-async function jiraGet(key: string): Promise<KnowledgeDoc> {
-  const access = await atlassianAccess('jira')
-  const issue = await atlassianFetchJson<JiraIssue>(
-    'jira',
+async function jiraGet(orgId: string, key: string): Promise<KnowledgeDoc> {
+  const access = await atlassianAccess(orgId, 'jira')
+  const issue = await atlassianFetchJson<JiraIssue>(orgId, 'jira',
     `https://api.atlassian.com/ex/jira/${access.cloudId}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary,description,status,issuetype,priority,labels,assignee,updated,comment`,
   )
   const comments = issue.fields.comment?.comments ?? []
@@ -400,13 +398,12 @@ export interface ConfluencePage {
   space?: { name?: string }
 }
 
-async function confluenceSearch(query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
-  const access = await atlassianAccess('confluence')
+async function confluenceSearch(orgId: string, query: string, limit: number, scope?: KnowledgeScope): Promise<KnowledgeHit[]> {
+  const access = await atlassianAccess(orgId, 'confluence')
   const rawCql = /\b(=|~|AND|OR|type)\b/.test(query) && /[=~]/.test(query) ? query : `text ~ "${query.replace(/"/g, '\\"')}" AND type = page ORDER BY lastmodified DESC`
   const spaceClause = scope?.confluenceSpaces.length ? `space in (${scope.confluenceSpaces.map((s) => `"${s}"`).join(', ')})` : undefined
   const cql = withScopeClause(rawCql, spaceClause)
-  const data = await atlassianFetchJson<{ results: ConfluencePage[] }>(
-    'confluence',
+  const data = await atlassianFetchJson<{ results: ConfluencePage[] }>(orgId, 'confluence',
     `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/content/search?cql=${encodeURIComponent(cql)}&limit=${limit}&expand=version,space`,
   )
   return data.results.map((p) => ({
@@ -420,11 +417,10 @@ async function confluenceSearch(query: string, limit: number, scope?: KnowledgeS
   }))
 }
 
-async function confluenceGet(id: string): Promise<KnowledgeDoc> {
-  const access = await atlassianAccess('confluence')
+async function confluenceGet(orgId: string, id: string): Promise<KnowledgeDoc> {
+  const access = await atlassianAccess(orgId, 'confluence')
   // The v1 /content/{id} endpoint was retired; a CQL search by id returns the same page with its body.
-  const data = await atlassianFetchJson<{ results: ConfluencePage[] }>(
-    'confluence',
+  const data = await atlassianFetchJson<{ results: ConfluencePage[] }>(orgId, 'confluence',
     `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/content/search?cql=${encodeURIComponent(`id = ${id.replace(/[^0-9]/g, '')}`)}&limit=1&expand=body.storage,version,space`,
   )
   const page = data.results[0]
@@ -456,8 +452,8 @@ interface GitHubSearchItem {
   repository_url: string
 }
 
-export async function githubFetchJson<T>(url: string): Promise<T> {
-  const token = await requireToken('github')
+export async function githubFetchJson<T>(orgId: string, url: string): Promise<T> {
+  const token = await requireToken(orgId, 'github')
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'pi-speckit-pdlc' },
   })
@@ -472,10 +468,10 @@ function repoFromApiUrl(url: string): string {
   return url.replace(/^https:\/\/api\.github\.com\/repos\//, '')
 }
 
-async function githubSearch(query: string, limit: number, repos: string[]): Promise<KnowledgeHit[]> {
+async function githubSearch(orgId: string, query: string, limit: number, repos: string[]): Promise<KnowledgeHit[]> {
   const scope = repos.length ? repos.map((r) => `repo:${r}`).join(' ') : ''
   const q = /\brepo:/.test(query) || !scope ? query : `${query} ${scope}`
-  const data = await githubFetchJson<{ items: GitHubSearchItem[] }>(`https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=${limit}&sort=updated`)
+  const data = await githubFetchJson<{ items: GitHubSearchItem[] }>(orgId, `https://api.github.com/search/issues?q=${encodeURIComponent(q)}&per_page=${limit}&sort=updated`)
   return data.items.map((i) => ({
     source: 'github' as const,
     id: `${repoFromApiUrl(i.repository_url)}#${i.number}`,
@@ -488,14 +484,14 @@ async function githubSearch(query: string, limit: number, repos: string[]): Prom
   }))
 }
 
-async function githubGet(id: string, repos: string[]): Promise<KnowledgeDoc> {
+async function githubGet(orgId: string, id: string, repos: string[]): Promise<KnowledgeDoc> {
   const match = /^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/.exec(id.trim())
   if (!match) throw new Error(`GitHub item id must look like owner/name#123 (got "${id}").`)
   const repo = match[1] ?? repos[0]
   if (!repo) throw new Error(`GitHub item "${id}" needs a repository (owner/name#number).`)
   const number = match[2]
-  const issue = await githubFetchJson<GitHubSearchItem & { comments_url: string; user?: { login: string }; labels?: Array<{ name: string }> }>(`https://api.github.com/repos/${repo}/issues/${number}`)
-  const comments = await githubFetchJson<Array<{ user?: { login: string }; created_at: string; body?: string | null }>>(`${issue.comments_url}?per_page=20`).catch(() => [])
+  const issue = await githubFetchJson<GitHubSearchItem & { comments_url: string; user?: { login: string }; labels?: Array<{ name: string }> }>(orgId, `https://api.github.com/repos/${repo}/issues/${number}`)
+  const comments = await githubFetchJson<Array<{ user?: { login: string }; created_at: string; body?: string | null }>>(orgId, `${issue.comments_url}?per_page=20`).catch(() => [])
   const content = [
     `# ${repo}#${issue.number}: ${issue.title}`,
     `${issue.pull_request ? 'Pull request' : 'Issue'} · State: ${issue.state} · Author: ${issue.user?.login ?? '?'}${issue.labels?.length ? ` · Labels: ${issue.labels.map((l) => l.name).join(', ')}` : ''}`,
@@ -518,7 +514,7 @@ async function githubGet(id: string, repos: string[]): Promise<KnowledgeDoc> {
 // Unified surface
 // ---------------------------------------------------------------------------
 
-export async function searchKnowledge(options: { source: KnowledgeSource; query: string; limit?: number; repos?: string[]; scope?: KnowledgeScope }): Promise<KnowledgeHit[]> {
+export async function searchKnowledge(orgId: string, options: { source: KnowledgeSource; query: string; limit?: number; repos?: string[]; scope?: KnowledgeScope }): Promise<KnowledgeHit[]> {
   const limit = Math.max(1, Math.min(options.limit ?? 10, 25))
   const query = options.query.trim()
   if (!query) return []
@@ -526,19 +522,19 @@ export async function searchKnowledge(options: { source: KnowledgeSource; query:
     throw new Error(`${SOURCE_LABEL[options.source]} is not in this project's knowledge scope.`)
   }
   switch (options.source) {
-    case 'linear': return linearSearch(query, limit, options.scope)
-    case 'jira': return jiraSearch(query, limit, options.scope)
-    case 'confluence': return confluenceSearch(query, limit, options.scope)
-    case 'github': return githubSearch(query, limit, options.repos?.length ? options.repos : (options.scope?.githubRepos ?? []))
+    case 'linear': return linearSearch(orgId, query, limit, options.scope)
+    case 'jira': return jiraSearch(orgId, query, limit, options.scope)
+    case 'confluence': return confluenceSearch(orgId, query, limit, options.scope)
+    case 'github': return githubSearch(orgId, query, limit, options.repos?.length ? options.repos : (options.scope?.githubRepos ?? []))
   }
 }
 
-export async function getKnowledgeItem(options: { source: KnowledgeSource; id: string; repos?: string[] }): Promise<KnowledgeDoc> {
+export async function getKnowledgeItem(orgId: string, options: { source: KnowledgeSource; id: string; repos?: string[] }): Promise<KnowledgeDoc> {
   switch (options.source) {
-    case 'linear': return linearGet(options.id)
-    case 'jira': return jiraGet(options.id)
-    case 'confluence': return confluenceGet(options.id)
-    case 'github': return githubGet(options.id, options.repos ?? [])
+    case 'linear': return linearGet(orgId, options.id)
+    case 'jira': return jiraGet(orgId, options.id)
+    case 'confluence': return confluenceGet(orgId, options.id)
+    case 'github': return githubGet(orgId, options.id, options.repos ?? [])
   }
 }
 
@@ -570,15 +566,17 @@ function textResult(text: string, details: unknown = {}) {
  * the description reflects what is actually connected right now; when nothing is
  * connected no tools are added and the agent is not tempted to call them.
  */
-export async function buildKnowledgeTools(options: { projectId?: string; repos?: string[] } = {}): Promise<ToolDefinition[]> {
+export async function buildKnowledgeTools(options: { projectId?: string; repos?: string[]; orgId?: string } = {}): Promise<ToolDefinition[]> {
   // Project scope decides which sources are exposed and how queries are narrowed;
   // without a project, every connected source is available unscoped.
-  const scope = await resolveKnowledgeScope(options.projectId)
+  const { getDefaultOrgId, orgIdForProject } = await import('./orgs')
+  const orgId = options.orgId ?? (options.projectId ? await orgIdForProject(options.projectId) : await getDefaultOrgId())
+  const scope = await resolveKnowledgeScope(orgId, options.projectId)
   const connected = scope.sources
   // The organization knowledge base (imported spaces, projects, repos, notes) is
   // searchable whenever it has content the project's team may see.
   const teamId = options.projectId ? (await getProject(options.projectId).catch(() => undefined))?.teamId ?? null : null
-  const knowledgeScope = { teamIds: teamId ? [teamId] : [] }
+  const knowledgeScope: OrgKnowledgeScope = { orgId, teamIds: teamId ? [teamId] : [] }
   const orgKnowledge = await hasOrgKnowledge(knowledgeScope).catch(() => false)
   const tools: ToolDefinition[] = []
   if (orgKnowledge) tools.push(buildOrgKnowledgeTool(knowledgeScope))
@@ -615,7 +613,7 @@ export async function buildKnowledgeTools(options: { projectId?: string; repos?:
     async execute(_toolCallId, params) {
       const p = params as { source: KnowledgeSource; query: string; limit?: number }
       try {
-        const hits = await searchKnowledge({ source: p.source, query: p.query, limit: p.limit, repos, scope })
+        const hits = await searchKnowledge(orgId, { source: p.source, query: p.query, limit: p.limit, repos, scope })
         if (hits.length === 0) return textResult(`No ${SOURCE_LABEL[p.source]} results for "${p.query}".`, { hits: [] })
         const lines = hits.map((h) => `- [${h.id}] ${h.title}${h.status ? ` (${h.status})` : ''}${h.type ? ` · ${h.type}` : ''}${h.url ? ` · ${h.url}` : ''}${h.snippet ? `\n    ${h.snippet}` : ''}`)
         return textResult(`${hits.length} ${SOURCE_LABEL[p.source]} result${hits.length === 1 ? '' : 's'} for "${p.query}":\n${lines.join('\n')}\n\nCall integration_get(source, id) for full content.`, { hits })
@@ -642,7 +640,7 @@ export async function buildKnowledgeTools(options: { projectId?: string; repos?:
     async execute(_toolCallId, params) {
       const p = params as { source: KnowledgeSource; id: string }
       try {
-        const doc = await getKnowledgeItem({ source: p.source, id: p.id, repos })
+        const doc = await getKnowledgeItem(orgId, { source: p.source, id: p.id, repos })
         return textResult(`${doc.url ? `Source: ${doc.url}\n\n` : ''}${clip(doc.content, 24_000)}`, { source: doc.source, id: doc.id, url: doc.url })
       } catch (error) {
         return textResult(`integration_get failed: ${error instanceof Error ? error.message : String(error)}`, { error: true })
@@ -659,7 +657,7 @@ export async function buildKnowledgeTools(options: { projectId?: string; repos?:
  * knowledge base — Confluence spaces, Jira/Linear projects and initiatives,
  * repository docs, web pages and notes imported by the team.
  */
-function buildOrgKnowledgeTool(scope: { teamIds: string[] }): ToolDefinition {
+function buildOrgKnowledgeTool(scope: OrgKnowledgeScope): ToolDefinition {
   return {
     name: 'org_knowledge_search',
     label: 'Search organization knowledge',

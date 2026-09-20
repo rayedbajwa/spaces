@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { closeDb, getDb } from '../src/lib/db'
+import { getDefaultOrgId } from '../src/lib/orgs'
 import {
   createKnowledgeSource,
   deleteKnowledgeSource,
@@ -47,9 +48,11 @@ const live = await dbReachable()
 
 describe.if(live)('knowledge store (live Postgres)', () => {
   let sourceId: string
+  let orgId: string
 
   beforeAll(async () => {
-    const source = await createKnowledgeSource({ kind: 'manual', label: `test-notes-${Date.now()}`, teamId: null })
+    orgId = await getDefaultOrgId()
+    const source = await createKnowledgeSource({ orgId, kind: 'manual', label: `test-notes-${Date.now()}`, teamId: null })
     sourceId = source.sourceId
   })
 
@@ -59,7 +62,7 @@ describe.if(live)('knowledge store (live Postgres)', () => {
   })
 
   test('index, search, unchanged skip, prune', async () => {
-    const source = { sourceId, teamId: null }
+    const source = { sourceId, teamId: null, orgId }
     const first = await indexKnowledgeDocument(source, {
       externalId: 'runbook-rollback',
       title: 'Payments deploy rollback runbook',
@@ -87,16 +90,16 @@ describe.if(live)('knowledge store (live Postgres)', () => {
     expect(docs.map((d) => d.externalId).sort()).toEqual(['adr-auth', 'runbook-rollback'])
 
     // Search scoped to this source finds the right document first, with either mode.
-    const rollback = await searchOrgKnowledge({ query: 'how do we roll back a payments deploy', scope: { teamIds: [], sourceIds: [sourceId] }, limit: 2 })
+    const rollback = await searchOrgKnowledge({ query: 'how do we roll back a payments deploy', scope: { orgId, teamIds: [], sourceIds: [sourceId] }, limit: 2 })
     expect(rollback.hits.length).toBeGreaterThan(0)
     expect(rollback.hits[0]!.title).toContain('rollback')
     expect(['hybrid', 'text']).toContain(rollback.mode)
 
-    const auth = await searchOrgKnowledge({ query: 'authentication OIDC mTLS', scope: { teamIds: [], sourceIds: [sourceId] }, limit: 2 })
+    const auth = await searchOrgKnowledge({ query: 'authentication OIDC mTLS', scope: { orgId, teamIds: [], sourceIds: [sourceId] }, limit: 2 })
     expect(auth.hits[0]!.title).toContain('ADR 7')
 
     // Organization-level sources are visible to any team scope.
-    const anyTeam = await searchOrgKnowledge({ query: 'OIDC', scope: { teamIds: ['00000000-0000-0000-0000-000000000000'], sourceIds: [sourceId] }, limit: 1 })
+    const anyTeam = await searchOrgKnowledge({ query: 'OIDC', scope: { orgId, teamIds: ['00000000-0000-0000-0000-000000000000'], sourceIds: [sourceId] }, limit: 1 })
     expect(anyTeam.hits.length).toBe(1)
 
     // Pruning keeps only the ids a full enumeration returned.
@@ -104,7 +107,7 @@ describe.if(live)('knowledge store (live Postgres)', () => {
     expect(deleted).toBe(1)
     expect((await listKnowledgeDocuments(sourceId)).map((d) => d.externalId)).toEqual(['adr-auth'])
 
-    const status = await getKnowledgeStatus({ teamIds: 'all' })
+    const status = await getKnowledgeStatus({ orgId, teamIds: 'all' })
     expect(status.documents).toBeGreaterThanOrEqual(1)
     expect(typeof status.vectorSearch).toBe('boolean')
   })

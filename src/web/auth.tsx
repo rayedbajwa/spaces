@@ -98,6 +98,7 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
   const [mode, setMode] = useState<'login' | 'register'>(needsBootstrap || inviteToken ? 'register' : 'login')
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
+  const [organizationName, setOrganizationName] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -114,7 +115,7 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
     setError('')
     try {
       if (mode === 'register') {
-        await json('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password, inviteToken }) })
+        await json('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password, inviteToken, organizationName: organizationName.trim() || undefined }) })
       } else {
         await json('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password, inviteToken }) })
       }
@@ -142,12 +143,15 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
         )}
         {inviteToken && inviteError && <p className="error-text">{inviteError}</p>}
         {!needsBootstrap && !inviteToken && mode === 'register' && (
-          <p className="panel-subtitle">Registration is by invitation unless the server sets OPEN_REGISTRATION=1.</p>
+          <p className="panel-subtitle">Registration is by invitation unless the server sets OPEN_REGISTRATION=1. A new account starts its own organization: keys, integrations, knowledge and projects are never shared with another one.</p>
         )}
 
         <form onSubmit={(e) => { e.preventDefault(); void submit() }}>
           {mode === 'register' && (
             <label>Name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ada Lovelace" autoComplete="name" /></label>
+          )}
+          {mode === 'register' && !inviteToken && (
+            <label>Organization<input value={organizationName} onChange={(e) => setOrganizationName(e.target.value)} placeholder="Your company" autoComplete="organization" /></label>
           )}
           <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" required readOnly={Boolean(invite)} /></label>
           <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === 'register' ? 'At least 10 characters' : '••••••••••'} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} required minLength={mode === 'register' ? 10 : undefined} /></label>

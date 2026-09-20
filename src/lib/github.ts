@@ -51,13 +51,13 @@ function splitFullName(fullName: string): [string, string] {
   return [parts[0], parts[1]]
 }
 
-export async function getGitHubToken(): Promise<string> {
-  const integration = await getAppIntegration('github')
+export async function getGitHubToken(orgId: string): Promise<string> {
+  const integration = await getAppIntegration(orgId, 'github')
   if (!integration || integration.status !== 'connected') throw new GitHubNotConnectedError()
   // Refreshes GitHub App user tokens (8h lifetime) before they expire; throws
   // IntegrationCredentialsError when the stored token cannot be read, so a
   // changed ENCRYPTION_KEY is named instead of a vague "not connected".
-  return getIntegrationAccessToken('github')
+  return getIntegrationAccessToken(orgId, 'github')
 }
 
 async function githubGet<T>(token: string, url: string): Promise<{ data: T; next?: string }> {
@@ -93,8 +93,8 @@ interface GitHubApiRepo {
  * Repos the connected account can push to (owned, collaborator, org member),
  * most recently updated first. Paginates up to `maxPages` × 100.
  */
-export async function listGitHubRepos(options: { maxPages?: number } = {}): Promise<GitHubRepoSummary[]> {
-  const token = await getGitHubToken()
+export async function listGitHubRepos(orgId: string, options: { maxPages?: number } = {}): Promise<GitHubRepoSummary[]> {
+  const token = await getGitHubToken(orgId)
   const maxPages = options.maxPages ?? 5
   const repos: GitHubRepoSummary[] = []
   let url: string | undefined = 'https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member'
@@ -131,9 +131,9 @@ async function isGitRepo(dir: string): Promise<boolean> {
  * The token is passed as an HTTP header for the single git invocation only, so it
  * is never written into the clone's .git/config.
  */
-export async function cloneGitHubRepo(fullName: string): Promise<string> {
+export async function cloneGitHubRepo(orgId: string, fullName: string): Promise<string> {
   const [owner, name] = splitFullName(fullName)
-  const token = await getGitHubToken()
+  const token = await getGitHubToken(orgId)
   const target = path.join(workspaceRoot(), owner, name)
   await mkdir(path.dirname(target), { recursive: true })
 
@@ -166,7 +166,8 @@ export function scheduleRepoClone(repo: RepoRow): Promise<void> {
   const job = (async () => {
     await updateRepoClone(repo.repoId, { cloneStatus: 'cloning', cloneError: null })
     try {
-      const localPath = await cloneGitHubRepo(repo.githubRepo!)
+      const { orgIdForProject } = await import('./orgs')
+      const localPath = await cloneGitHubRepo(await orgIdForProject(repo.projectId), repo.githubRepo!)
       await updateRepoClone(repo.repoId, { cloneStatus: 'ready', cloneError: null, localPath })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -187,14 +188,15 @@ export class GitHubPermissionError extends Error {
   }
 }
 
-let cachedLogin: { login: string; at: number } | undefined
+const cachedLogins = new Map<string, { login: string; at: number }>()
 
-/** Login of the connected GitHub account (cached for an hour). */
-export async function getGitHubLogin(): Promise<string> {
-  if (cachedLogin && Date.now() - cachedLogin.at < 60 * 60_000) return cachedLogin.login
-  const token = await getGitHubToken()
+/** Login of the organization's connected GitHub account (cached for an hour). */
+export async function getGitHubLogin(orgId: string): Promise<string> {
+  const cached = cachedLogins.get(orgId)
+  if (cached && Date.now() - cached.at < 60 * 60_000) return cached.login
+  const token = await getGitHubToken(orgId)
   const { data } = await githubGet<{ login: string }>(token, 'https://api.github.com/user')
-  cachedLogin = { login: data.login, at: Date.now() }
+  cachedLogins.set(orgId, { login: data.login, at: Date.now() })
   return data.login
 }
 
@@ -204,9 +206,9 @@ export async function getGitHubLogin(): Promise<string> {
  * Throws GitHubPermissionError when the token may not create repositories
  * (GitHub Apps need the Administration permission; classic OAuth needs `repo`).
  */
-export async function createGitHubRepository(input: { name: string; owner?: string; description?: string; private?: boolean }): Promise<GitHubRepoSummary> {
-  const token = await getGitHubToken()
-  const login = await getGitHubLogin().catch(() => undefined)
+export async function createGitHubRepository(orgId: string, input: { name: string; owner?: string; description?: string; private?: boolean }): Promise<GitHubRepoSummary> {
+  const token = await getGitHubToken(orgId)
+  const login = await getGitHubLogin(orgId).catch(() => undefined)
   const owner = input.owner?.trim()
   const url = owner && owner.toLowerCase() !== login?.toLowerCase() ? `https://api.github.com/orgs/${encodeURIComponent(owner)}/repos` : 'https://api.github.com/user/repos'
   const response = await fetch(url, {

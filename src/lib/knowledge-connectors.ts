@@ -92,17 +92,16 @@ export interface CatalogEntry {
 
 export type CatalogIntegration = 'confluence' | 'jira' | 'linear' | 'github'
 
-export async function listImportCatalog(integration: CatalogIntegration): Promise<CatalogEntry[]> {
+export async function listImportCatalog(orgId: string, integration: CatalogIntegration): Promise<CatalogEntry[]> {
   switch (integration) {
     case 'confluence': {
       // Atlassian retired the v1 /space listing; site search with `type = space`
       // still works with the classic scopes and returns every visible space.
-      const access = await atlassianAccess('confluence')
+      const access = await atlassianAccess(orgId, 'confluence')
       const out: CatalogEntry[] = []
       let start = 0
       for (;;) {
-        const page = await atlassianFetchJson<{ results: Array<{ space?: { key: string; name: string; type?: string } }>; size: number; _links?: { next?: string } }>(
-          'confluence', `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/search?cql=${encodeURIComponent('type = space ORDER BY title')}&limit=100&start=${start}`,
+        const page = await atlassianFetchJson<{ results: Array<{ space?: { key: string; name: string; type?: string } }>; size: number; _links?: { next?: string } }>(orgId, 'confluence', `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/search?cql=${encodeURIComponent('type = space ORDER BY title')}&limit=100&start=${start}`,
         )
         for (const r of page.results) {
           if (!r.space) continue
@@ -114,12 +113,11 @@ export async function listImportCatalog(integration: CatalogIntegration): Promis
       return out.sort((a, b) => a.name.localeCompare(b.name))
     }
     case 'jira': {
-      const access = await atlassianAccess('jira')
+      const access = await atlassianAccess(orgId, 'jira')
       const out: CatalogEntry[] = []
       let startAt = 0
       for (;;) {
-        const page = await atlassianFetchJson<{ values: Array<{ key: string; name: string; projectTypeKey?: string }>; isLast?: boolean; total?: number }>(
-          'jira', `https://api.atlassian.com/ex/jira/${access.cloudId}/rest/api/3/project/search?maxResults=100&startAt=${startAt}&orderBy=name`,
+        const page = await atlassianFetchJson<{ values: Array<{ key: string; name: string; projectTypeKey?: string }>; isLast?: boolean; total?: number }>(orgId, 'jira', `https://api.atlassian.com/ex/jira/${access.cloudId}/rest/api/3/project/search?maxResults=100&startAt=${startAt}&orderBy=name`,
         )
         for (const p of page.values) out.push({ id: p.key, name: `${p.name} (${p.key})`, description: p.projectTypeKey })
         startAt += page.values.length
@@ -132,7 +130,7 @@ export async function listImportCatalog(integration: CatalogIntegration): Promis
         teams: { nodes: Array<{ key: string; name: string }> }
         projects: { nodes: Array<{ id: string; name: string; state?: string }> }
         initiatives: { nodes: Array<{ id: string; name: string; status?: string }> }
-      }>(
+      }>(orgId, 
         `query Catalog { teams(first: 50) { nodes { key name } } projects(first: 100) { nodes { id name state } } initiatives(first: 50) { nodes { id name status } } }`,
         {},
       )
@@ -144,10 +142,10 @@ export async function listImportCatalog(integration: CatalogIntegration): Promis
     }
     case 'github': {
       const { listRepoCatalog } = await import('./governance')
-      const rows = await listRepoCatalog(500)
+      const rows = await listRepoCatalog(orgId, 500)
       if (rows.length > 0) return rows.map((r) => ({ id: r.fullName, name: r.fullName, description: r.usecase ?? r.description ?? undefined }))
       const { listGitHubRepos } = await import('./github')
-      return (await listGitHubRepos({ maxPages: 3 })).map((r) => ({ id: r.fullName, name: r.fullName, description: r.description ?? undefined }))
+      return (await listGitHubRepos(orgId, { maxPages: 3 })).map((r) => ({ id: r.fullName, name: r.fullName, description: r.description ?? undefined }))
     }
   }
 }
@@ -159,7 +157,7 @@ export async function listImportCatalog(integration: CatalogIntegration): Promis
 async function importConfluence(source: KnowledgeSourceRow): Promise<SyncBatch> {
   const spaces = strings(source.config.spaces).map((s) => s.toUpperCase())
   const since = typeof source.cursor.lastModified === 'string' ? source.cursor.lastModified : undefined
-  const access = await atlassianAccess('confluence')
+  const access = await atlassianAccess(source.orgId, 'confluence')
   const clauses = [`type = page`, `space in (${spaces.map(quote).join(', ')})`]
   // CQL takes "yyyy-MM-dd HH:mm"; step back an hour so clock skew cannot skip a page.
   if (since) clauses.push(`lastmodified >= "${cqlDate(new Date(new Date(since).getTime() - 60 * 60_000))}"`)
@@ -170,8 +168,7 @@ async function importConfluence(source: KnowledgeSourceRow): Promise<SyncBatch> 
   let hasMore = false
   let lastModified = since
   for (;;) {
-    const page = await atlassianFetchJson<{ results: ConfluencePage[]; _links?: { next?: string } }>(
-      'confluence',
+    const page = await atlassianFetchJson<{ results: ConfluencePage[]; _links?: { next?: string } }>(source.orgId, 'confluence',
       `https://api.atlassian.com/ex/confluence/${access.cloudId}/wiki/rest/api/content/search?cql=${encodeURIComponent(cql)}&start=${start}&limit=25&expand=body.storage,version,space`,
     )
     for (const p of page.results) {
@@ -206,7 +203,7 @@ async function importJira(source: KnowledgeSourceRow): Promise<SyncBatch> {
   const projects = strings(source.config.projects).map((p) => p.toUpperCase())
   const customJql = typeof source.config.jql === 'string' && source.config.jql.trim() ? source.config.jql.trim() : undefined
   const since = typeof source.cursor.updated === 'string' ? source.cursor.updated : undefined
-  const access = await atlassianAccess('jira')
+  const access = await atlassianAccess(source.orgId, 'jira')
   const where: string[] = []
   if (customJql) where.push(`(${customJql.replace(/\s+ORDER\s+BY[\s\S]*$/i, '')})`)
   else where.push(`project in (${projects.map(quote).join(', ')})`)
@@ -227,8 +224,7 @@ async function importJira(source: KnowledgeSourceRow): Promise<SyncBatch> {
     let last = true
     if (!legacy) {
       try {
-        const data = await atlassianFetchJson<{ issues: JiraIssue[]; nextPageToken?: string; isLast?: boolean }>(
-          'jira', `${base}/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=${fields}${nextPageToken ? `&nextPageToken=${encodeURIComponent(nextPageToken)}` : ''}`,
+        const data = await atlassianFetchJson<{ issues: JiraIssue[]; nextPageToken?: string; isLast?: boolean }>(source.orgId, 'jira', `${base}/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=${fields}${nextPageToken ? `&nextPageToken=${encodeURIComponent(nextPageToken)}` : ''}`,
         )
         issues = data.issues
         nextPageToken = data.nextPageToken
@@ -238,7 +234,7 @@ async function importJira(source: KnowledgeSourceRow): Promise<SyncBatch> {
       }
     }
     if (legacy) {
-      const data = await atlassianFetchJson<{ issues: JiraIssue[]; total: number }>('jira', `${base}/search?jql=${encodeURIComponent(jql)}&maxResults=50&startAt=${startAt}&fields=${fields}`)
+      const data = await atlassianFetchJson<{ issues: JiraIssue[]; total: number }>(source.orgId, 'jira', `${base}/search?jql=${encodeURIComponent(jql)}&maxResults=50&startAt=${startAt}&fields=${fields}`)
       issues = data.issues
       startAt += issues.length
       last = startAt >= data.total || issues.length === 0
@@ -294,7 +290,7 @@ async function importLinear(source: KnowledgeSourceRow): Promise<SyncBatch> {
 
   // Initiatives: one document each, plus their projects join the project set.
   for (const id of initiativeIds) {
-    const data = await linearGraphQL<{ initiative: { id: string; name: string; description?: string | null; content?: string | null; status?: string; url?: string; updatedAt?: string; projects: { nodes: Array<{ name: string }> } } | null }>(
+    const data = await linearGraphQL<{ initiative: { id: string; name: string; description?: string | null; content?: string | null; status?: string; url?: string; updatedAt?: string; projects: { nodes: Array<{ name: string }> } } | null }>(source.orgId, 
       `query Initiative($id: String!) { initiative(id: $id) { id name description content status url updatedAt projects(first: 50) { nodes { name } } } }`,
       { id },
     )
@@ -318,7 +314,7 @@ async function importLinear(source: KnowledgeSourceRow): Promise<SyncBatch> {
 
   // Projects: one document each (description + content).
   if (projectNames.size > 0) {
-    const data = await linearGraphQL<{ projects: { nodes: Array<{ id: string; name: string; description?: string | null; content?: string | null; state?: string; url?: string; updatedAt?: string; lead?: { name: string } | null; teams: { nodes: Array<{ key: string }> } }> } }>(
+    const data = await linearGraphQL<{ projects: { nodes: Array<{ id: string; name: string; description?: string | null; content?: string | null; state?: string; url?: string; updatedAt?: string; lead?: { name: string } | null; teams: { nodes: Array<{ key: string }> } }> } }>(source.orgId,
       `query Projects($filter: ProjectFilter) { projects(first: 50, filter: $filter) { nodes { id name description content state url updatedAt lead { name } teams { nodes { key } } } } }`,
       { filter: { name: { in: [...projectNames] } } },
     )
@@ -354,7 +350,7 @@ async function importLinear(source: KnowledgeSourceRow): Promise<SyncBatch> {
   if (or.length > 0) {
     for (;;) {
       // Linear caps query complexity at 10 000; 50 issues × 20 comments blew past it.
-      const data = await linearGraphQL<{ issues: { nodes: LinearSyncNode[]; pageInfo: { hasNextPage: boolean; endCursor?: string } } }>(
+      const data = await linearGraphQL<{ issues: { nodes: LinearSyncNode[]; pageInfo: { hasNextPage: boolean; endCursor?: string } } }>(source.orgId, 
         `query Sync($filter: IssueFilter, $after: String) {
            issues(filter: $filter, first: 20, after: $after, orderBy: updatedAt) {
              nodes { ${LINEAR_ISSUE_FIELDS} comments(first: 10) { nodes { body createdAt user { name } } } }
@@ -401,13 +397,13 @@ async function importGitHubRepo(source: KnowledgeSourceRow): Promise<SyncBatch> 
   const repo = String(source.config.repo)
   const include = strings(source.config.include)
   const patterns = include.length ? include : DEFAULT_INCLUDE
-  const info = await githubFetchJson<{ default_branch: string }>(`https://api.github.com/repos/${repo}`)
+  const info = await githubFetchJson<{ default_branch: string }>(source.orgId, `https://api.github.com/repos/${repo}`)
   const branch = typeof source.config.branch === 'string' && source.config.branch.trim() ? source.config.branch.trim() : info.default_branch
-  const head = await githubFetchJson<{ commit: { sha: string } }>(`https://api.github.com/repos/${repo}/branches/${encodeURIComponent(branch)}`)
+  const head = await githubFetchJson<{ commit: { sha: string } }>(source.orgId, `https://api.github.com/repos/${repo}/branches/${encodeURIComponent(branch)}`)
   const sha = head.commit.sha
   if (source.cursor.commitSha === sha) return { documents: [], cursor: source.cursor, complete: false, hasMore: false }
 
-  const tree = await githubFetchJson<{ tree: Array<{ path: string; type: string; size?: number }>; truncated?: boolean }>(
+  const tree = await githubFetchJson<{ tree: Array<{ path: string; type: string; size?: number }>; truncated?: boolean }>(source.orgId, 
     `https://api.github.com/repos/${repo}/git/trees/${sha}?recursive=1`,
   )
   const files = tree.tree.filter((e) => e.type === 'blob' && matchesAny(e.path, patterns))
@@ -419,7 +415,7 @@ async function importGitHubRepo(source: KnowledgeSourceRow): Promise<SyncBatch> 
   for (let i = 0; i < eligible.length; i += 4) {
     const slice = eligible.slice(i, i + 4)
     const fetched = await Promise.all(slice.map(async (entry) => {
-      const blob = await githubFetchJson<{ content?: string; encoding?: string }>(`https://api.github.com/repos/${repo}/contents/${entry.path.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`)
+      const blob = await githubFetchJson<{ content?: string; encoding?: string }>(source.orgId, `https://api.github.com/repos/${repo}/contents/${entry.path.split('/').map(encodeURIComponent).join('/')}?ref=${sha}`)
       const text = blob.encoding === 'base64' && blob.content ? Buffer.from(blob.content, 'base64').toString('utf8') : ''
       if (!text.trim() || looksBinary(text)) return undefined
       return {
@@ -469,7 +465,7 @@ async function importGitHubIssues(source: KnowledgeSourceRow): Promise<SyncBatch
   let page = 1
   let hasMore = false
   for (;;) {
-    const items = await githubFetchJson<Array<{ number: number; title: string; html_url: string; state: string; body?: string | null; updated_at: string; pull_request?: unknown; user?: { login: string }; labels?: Array<{ name: string }> }>>(
+    const items = await githubFetchJson<Array<{ number: number; title: string; html_url: string; state: string; body?: string | null; updated_at: string; pull_request?: unknown; user?: { login: string }; labels?: Array<{ name: string }> }>>(source.orgId,
       `https://api.github.com/repos/${repo}/issues?state=all&sort=updated&direction=asc&per_page=100&page=${page}${since ? `&since=${encodeURIComponent(since)}` : ''}`,
     )
     for (const issue of items) {

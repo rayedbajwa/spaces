@@ -47,8 +47,8 @@ export interface DeliverySnapshot {
 
 const PR_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/g
 
-async function githubApi<T>(url: string): Promise<T> {
-  const token = await getGitHubActorToken()
+async function githubApi<T>(orgId: string, url: string): Promise<T> {
+  const token = await getGitHubActorToken(orgId)
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'pi-speckit-pdlc' },
   })
@@ -92,7 +92,7 @@ function currentBranch(localPath: string): string | undefined {
  * feature branch and every branch name the reports mention — so a PR the
  * implement stage opened is tracked even when no report pasted its link.
  */
-export async function discoverPullRequestsByBranch(featureDirAbs: string, repos: DeliveryRepoHint[]): Promise<Array<{ githubRepo: string; number: number; source: string }>> {
+export async function discoverPullRequestsByBranch(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[]): Promise<Array<{ githubRepo: string; number: number; source: string }>> {
   const found: Array<{ githubRepo: string; number: number; source: string }> = []
   const mentioned = new Set<string>()
   for (const name of ['parallel-workstreams.md', 'merge-orchestrator.md', 'tasks.md', 'code-review.md', 'verification-report.md']) {
@@ -105,7 +105,7 @@ export async function discoverPullRequestsByBranch(featureDirAbs: string, repos:
     const head = repo.localPath ? currentBranch(repo.localPath) : undefined
     if (head) branches.add(head)
     for (const branch of branches) {
-      const pulls = await githubApi<Array<{ number: number }>>(`https://api.github.com/repos/${repo.githubRepo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=5`).catch(() => [])
+      const pulls = await githubApi<Array<{ number: number }>>(orgId, `https://api.github.com/repos/${repo.githubRepo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=5`).catch(() => [])
       for (const pr of pulls) found.push({ githubRepo: repo.githubRepo, number: pr.number, source: `branch ${branch}` })
     }
   }
@@ -126,12 +126,12 @@ interface GitHubPull {
   base: { ref: string }
 }
 
-export async function inspectPullRequest(githubRepo: string, number: number, source: string, workstreamBranchPrefix?: string): Promise<TrackedPullRequest> {
-  const pr = await githubApi<GitHubPull>(`https://api.github.com/repos/${githubRepo}/pulls/${number}`)
+export async function inspectPullRequest(orgId: string, githubRepo: string, number: number, source: string, workstreamBranchPrefix?: string): Promise<TrackedPullRequest> {
+  const pr = await githubApi<GitHubPull>(orgId, `https://api.github.com/repos/${githubRepo}/pulls/${number}`)
   const [reviews, checks, deployments] = await Promise.all([
-    githubApi<Array<{ state: string; submitted_at: string; user?: { login: string } }>>(`https://api.github.com/repos/${githubRepo}/pulls/${number}/reviews?per_page=50`).catch(() => []),
-    githubApi<{ check_runs: Array<{ conclusion: string | null; status: string }> }>(`https://api.github.com/repos/${githubRepo}/commits/${pr.head.sha}/check-runs?per_page=50`).catch(() => ({ check_runs: [] })),
-    githubApi<Array<{ id: number; environment: string; created_at: string }>>(`https://api.github.com/repos/${githubRepo}/deployments?sha=${pr.merge_commit_sha ?? pr.head.sha}&per_page=5`).catch(() => []),
+    githubApi<Array<{ state: string; submitted_at: string; user?: { login: string } }>>(orgId, `https://api.github.com/repos/${githubRepo}/pulls/${number}/reviews?per_page=50`).catch(() => []),
+    githubApi<{ check_runs: Array<{ conclusion: string | null; status: string }> }>(orgId, `https://api.github.com/repos/${githubRepo}/commits/${pr.head.sha}/check-runs?per_page=50`).catch(() => ({ check_runs: [] })),
+    githubApi<Array<{ id: number; environment: string; created_at: string }>>(orgId, `https://api.github.com/repos/${githubRepo}/deployments?sha=${pr.merge_commit_sha ?? pr.head.sha}&per_page=5`).catch(() => []),
   ])
   // Latest review per reviewer decides.
   const latestByUser = new Map<string, string>()
@@ -141,7 +141,7 @@ export async function inspectPullRequest(githubRepo: string, number: number, sou
   const runs = checks.check_runs
   const checkState = runs.length === 0 ? 'none' : runs.some((r) => r.status !== 'completed') ? 'pending' : runs.every((r) => ['success', 'neutral', 'skipped'].includes(r.conclusion ?? '')) ? 'success' : 'failure'
   const deployStates = await Promise.all(deployments.slice(0, 3).map(async (d) => {
-    const statuses = await githubApi<Array<{ state: string; environment_url?: string; created_at: string }>>(`https://api.github.com/repos/${githubRepo}/deployments/${d.id}/statuses?per_page=1`).catch(() => [])
+    const statuses = await githubApi<Array<{ state: string; environment_url?: string; created_at: string }>>(orgId, `https://api.github.com/repos/${githubRepo}/deployments/${d.id}/statuses?per_page=1`).catch(() => [])
     return { environment: d.environment, state: statuses[0]?.state ?? 'unknown', url: statuses[0]?.environment_url, createdAt: d.created_at }
   }))
   const stackedOn = workstreamBranchPrefix && pr.base.ref.startsWith(workstreamBranchPrefix) ? pr.base.ref : (/\/ws-\d+-/.test(pr.base.ref) ? pr.base.ref : undefined)
@@ -181,10 +181,10 @@ function orderByStack(prs: TrackedPullRequest[]): TrackedPullRequest[] {
  * Gather every PR for the feature, inspect it on GitHub, order by stack, write
  * `<feature>/delivery-status.md`, and return the snapshot.
  */
-export async function refreshDeliveryStatus(featureDirAbs: string, repos: DeliveryRepoHint[] = []): Promise<DeliverySnapshot> {
+export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[] = []): Promise<DeliverySnapshot> {
   const links = await collectPullRequestLinks(featureDirAbs)
   const seen = new Set(links.map((l) => `${l.githubRepo}#${l.number}`))
-  for (const link of await discoverPullRequestsByBranch(featureDirAbs, repos).catch(() => [])) {
+  for (const link of await discoverPullRequestsByBranch(orgId, featureDirAbs, repos).catch(() => [])) {
     const key = `${link.githubRepo}#${link.number}`
     if (!seen.has(key)) { seen.add(key); links.push(link) }
   }
@@ -192,7 +192,7 @@ export async function refreshDeliveryStatus(featureDirAbs: string, repos: Delive
   const errors: string[] = []
   for (const link of links) {
     try {
-      inspected.push(await inspectPullRequest(link.githubRepo, link.number, link.source))
+      inspected.push(await inspectPullRequest(orgId, link.githubRepo, link.number, link.source))
     } catch (error) {
       errors.push(`${link.githubRepo}#${link.number}: ${error instanceof Error ? error.message : String(error)}`)
     }

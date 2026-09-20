@@ -1,11 +1,12 @@
 /**
- * LLM provider API keys (Anthropic, OpenAI, OpenRouter), managed in the app.
+ * LLM provider API keys (Anthropic, OpenAI, OpenRouter), managed in the app
+ * and scoped per organization.
  *
  * Keys live in Postgres sealed with ENCRYPTION_KEY and are edited under
- * Organization → Models. Every process (web server, supervisor, workers) loads
- * them into its own environment at boot and again whenever a key changes
- * (Postgres NOTIFY), so the runtime, embeddings and compaction code keep
- * reading `process.env.*_API_KEY` — but the database is the only source.
+ * Organization → Models. They are never applied to the process environment:
+ * a deployment hosts many organizations, so every model runtime, embedding
+ * call and routing decision loads the keys of the organization it works for
+ * (`loadProviderKeys(orgId)` / `envWithProviderKeys(orgId)`).
  */
 
 import { decryptSecret, encryptSecret } from './crypto-vault'
@@ -24,6 +25,8 @@ export const PROVIDER_CONSOLE: Record<ProviderId, string> = {
 }
 
 export type VerifyStatus = 'ok' | 'rejected' | 'forbidden' | 'unreachable' | 'unknown'
+
+export type ProviderKeys = Partial<Record<ProviderId, string>>
 
 export interface ProviderKeySummary {
   provider: ProviderId
@@ -45,14 +48,14 @@ export function isProviderId(value: string): value is ProviderId {
 }
 
 // ---------------------------------------------------------------------------
-// Storage
+// Storage (per organization)
 // ---------------------------------------------------------------------------
 
-export async function listProviderKeys(): Promise<ProviderKeySummary[]> {
+export async function listProviderKeys(orgId: string): Promise<ProviderKeySummary[]> {
   const rows = await getDb()<Array<{ provider: ProviderId; keyEnc: string; updatedAt: string; updatedByName: string | null; lastVerifiedAt: string | null; lastVerifyStatus: VerifyStatus | null; lastVerifyError: string | null }>>`
     SELECT k.provider, k.key_enc AS "keyEnc", k.updated_at AS "updatedAt", u.name AS "updatedByName",
            k.last_verified_at AS "lastVerifiedAt", k.last_verify_status AS "lastVerifyStatus", k.last_verify_error AS "lastVerifyError"
-    FROM provider_keys k LEFT JOIN users u ON u.user_id = k.updated_by
+    FROM provider_keys k LEFT JOIN users u ON u.user_id = k.updated_by WHERE k.org_id = ${orgId}
   `.catch(() => [])
   const byProvider = new Map(rows.map((r) => [r.provider, r]))
   return PROVIDER_IDS.map((provider) => {
@@ -77,50 +80,79 @@ export async function listProviderKeys(): Promise<ProviderKeySummary[]> {
   })
 }
 
-/** Decrypted keys for every configured provider. */
-export async function loadProviderKeys(): Promise<Partial<Record<ProviderId, string>>> {
-  const rows = await getDb()<Array<{ provider: ProviderId; keyEnc: string }>>`SELECT provider, key_enc AS "keyEnc" FROM provider_keys`.catch(() => [])
-  const out: Partial<Record<ProviderId, string>> = {}
+const keyCache = new Map<string, { at: number; keys: ProviderKeys }>()
+const KEY_CACHE_MS = 30_000
+
+/** Decrypted keys of an organization (cached briefly; invalidated on change through NOTIFY). */
+export async function loadProviderKeys(orgId: string): Promise<ProviderKeys> {
+  const cached = keyCache.get(orgId)
+  if (cached && Date.now() - cached.at < KEY_CACHE_MS) return cached.keys
+  const rows = await getDb()<Array<{ provider: ProviderId; keyEnc: string }>>`SELECT provider, key_enc AS "keyEnc" FROM provider_keys WHERE org_id = ${orgId}`.catch(() => [])
+  const out: ProviderKeys = {}
   for (const row of rows) {
-    try { out[row.provider] = decryptSecret(row.keyEnc) } catch { keysLog.warn('stored provider key cannot be decrypted (ENCRYPTION_KEY changed?)', { provider: row.provider }) }
+    try { out[row.provider] = decryptSecret(row.keyEnc) } catch { keysLog.warn('stored provider key cannot be decrypted (ENCRYPTION_KEY changed?)', { orgId, provider: row.provider }) }
   }
+  keyCache.set(orgId, { at: Date.now(), keys: out })
   return out
 }
 
-export async function saveProviderKey(provider: ProviderId, key: string, updatedBy?: string | null): Promise<{ status: VerifyStatus; message?: string }> {
+/** Providers an organization has a key for. */
+export async function configuredProvidersFor(orgId: string): Promise<ProviderId[]> {
+  const keys = await loadProviderKeys(orgId)
+  return PROVIDER_IDS.filter((p) => Boolean(keys[p]))
+}
+
+/** A process-environment-like object with the organization's keys set, for code that reads `*_API_KEY` from an env. */
+export async function envWithProviderKeys(orgId: string, base: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
+  const keys = await loadProviderKeys(orgId)
+  const env: NodeJS.ProcessEnv = { ...base }
+  for (const provider of PROVIDER_IDS) {
+    const envKey = PROVIDER_ENV_KEYS[provider]
+    if (keys[provider]) env[envKey] = keys[provider]
+    else delete env[envKey]
+  }
+  return env
+}
+
+export async function saveProviderKey(orgId: string, provider: ProviderId, key: string, updatedBy?: string | null): Promise<{ status: VerifyStatus; message?: string }> {
   const trimmed = key.trim()
   if (!trimmed) throw new Error('The key is empty.')
   const verification = await verifyProviderKey(provider, trimmed)
   if (verification.status === 'rejected') throw new Error(`${PROVIDER_LABEL[provider]} rejected this key (401). Check that it was copied completely and is not revoked.`)
   const sql = getDb()
   await sql`
-    INSERT INTO provider_keys (provider, key_enc, updated_by, updated_at, last_verified_at, last_verify_status, last_verify_error)
-    VALUES (${provider}, ${encryptSecret(trimmed)}, ${updatedBy ?? null}, now(), now(), ${verification.status}, ${verification.message ?? null})
-    ON CONFLICT (provider) DO UPDATE SET key_enc = EXCLUDED.key_enc, updated_by = EXCLUDED.updated_by, updated_at = now(),
+    INSERT INTO provider_keys (org_id, provider, key_enc, updated_by, updated_at, last_verified_at, last_verify_status, last_verify_error)
+    VALUES (${orgId}, ${provider}, ${encryptSecret(trimmed)}, ${updatedBy ?? null}, now(), now(), ${verification.status}, ${verification.message ?? null})
+    ON CONFLICT (org_id, provider) DO UPDATE SET key_enc = EXCLUDED.key_enc, updated_by = EXCLUDED.updated_by, updated_at = now(),
       last_verified_at = now(), last_verify_status = EXCLUDED.last_verify_status, last_verify_error = EXCLUDED.last_verify_error
   `
-  await applyProviderKeysToEnv()
-  await sql`SELECT pg_notify('provider_keys', ${provider})`
-  keysLog.info('provider key saved', { provider, status: verification.status })
+  await notifyKeyChange(orgId, provider)
+  keysLog.info('provider key saved', { orgId, provider, status: verification.status })
   return verification
 }
 
-export async function deleteProviderKey(provider: ProviderId): Promise<boolean> {
+export async function deleteProviderKey(orgId: string, provider: ProviderId): Promise<boolean> {
   const sql = getDb()
-  const rows = await sql`DELETE FROM provider_keys WHERE provider = ${provider} RETURNING provider`
-  await applyProviderKeysToEnv()
-  await sql`SELECT pg_notify('provider_keys', ${provider})`
+  const rows = await sql`DELETE FROM provider_keys WHERE org_id = ${orgId} AND provider = ${provider} RETURNING provider`
+  await notifyKeyChange(orgId, provider)
   return rows.length > 0
 }
 
 /** Re-check a stored key against the provider and record the outcome. */
-export async function reverifyProviderKey(provider: ProviderId): Promise<{ status: VerifyStatus; message?: string }> {
-  const keys = await loadProviderKeys()
+export async function reverifyProviderKey(orgId: string, provider: ProviderId): Promise<{ status: VerifyStatus; message?: string }> {
+  const keys = await loadProviderKeys(orgId)
   const key = keys[provider]
   if (!key) return { status: 'unknown', message: 'No key stored.' }
   const verification = await verifyProviderKey(provider, key)
-  await getDb()`UPDATE provider_keys SET last_verified_at = now(), last_verify_status = ${verification.status}, last_verify_error = ${verification.message ?? null} WHERE provider = ${provider}`
+  await getDb()`UPDATE provider_keys SET last_verified_at = now(), last_verify_status = ${verification.status}, last_verify_error = ${verification.message ?? null} WHERE org_id = ${orgId} AND provider = ${provider}`
   return verification
+}
+
+async function notifyKeyChange(orgId: string, provider: ProviderId): Promise<void> {
+  keyCache.delete(orgId)
+  const { invalidateTierModels } = await import('./model-policy')
+  invalidateTierModels(orgId)
+  await getDb()`SELECT pg_notify('provider_keys', ${`${orgId}:${provider}`})`
 }
 
 // ---------------------------------------------------------------------------
@@ -146,35 +178,29 @@ export async function verifyProviderKey(provider: ProviderId, key: string): Prom
 }
 
 // ---------------------------------------------------------------------------
-// Process environment bridge
+// Environment: one-time import, and never a source afterwards
 // ---------------------------------------------------------------------------
 
 /** Values the process started with (from .env or the shell), kept to detect leftovers. */
 const envFileValues: Record<string, string | undefined> = Object.fromEntries(PROVIDER_IDS.map((p) => [PROVIDER_ENV_KEYS[p], process.env[PROVIDER_ENV_KEYS[p]]]))
 
 /**
- * Make the database the only source of provider keys for this process: clear
- * any variables it started with and set the stored ones.
+ * Keys are never read from the environment at run time: they belong to an
+ * organization. Any `*_API_KEY` the process started with is cleared so no
+ * library picks it up by accident.
  */
-export async function applyProviderKeysToEnv(): Promise<ProviderId[]> {
-  const keys = await loadProviderKeys()
-  for (const provider of PROVIDER_IDS) {
-    const envKey = PROVIDER_ENV_KEYS[provider]
-    if (keys[provider]) process.env[envKey] = keys[provider]
-    else delete process.env[envKey]
-  }
-  const { invalidateTierModels } = await import('./model-policy')
-  invalidateTierModels()
-  return PROVIDER_IDS.filter((p) => Boolean(keys[p]))
+export function scrubProviderKeysFromEnv(): void {
+  for (const provider of PROVIDER_IDS) delete process.env[PROVIDER_ENV_KEYS[provider]]
 }
 
 /**
- * One-time migration: keys still present in the environment at boot are moved
- * into the database (when none is stored yet) so nothing breaks the first time
- * a deployment upgrades. Afterwards .env should lose them.
+ * One-time migration into the default organization: keys still present in
+ * the environment at boot are stored (when that organization has none) so
+ * nothing breaks the first time a deployment upgrades. Afterwards .env
+ * should lose them.
  */
-export async function importProviderKeysFromEnv(): Promise<ProviderId[]> {
-  const stored = await loadProviderKeys()
+export async function importProviderKeysFromEnv(orgId: string): Promise<ProviderId[]> {
+  const stored = await loadProviderKeys(orgId)
   const imported: ProviderId[] = []
   for (const provider of PROVIDER_IDS) {
     const value = envFileValues[PROVIDER_ENV_KEYS[provider]]?.trim()
@@ -182,21 +208,26 @@ export async function importProviderKeysFromEnv(): Promise<ProviderId[]> {
     const verification = await verifyProviderKey(provider, value)
     if (verification.status === 'rejected') { keysLog.warn('environment key rejected by provider; not imported', { provider }); continue }
     await getDb()`
-      INSERT INTO provider_keys (provider, key_enc, updated_at, last_verified_at, last_verify_status, last_verify_error)
-      VALUES (${provider}, ${encryptSecret(value)}, now(), now(), ${verification.status}, ${verification.message ?? null})
-      ON CONFLICT (provider) DO NOTHING
+      INSERT INTO provider_keys (org_id, provider, key_enc, updated_at, last_verified_at, last_verify_status, last_verify_error)
+      VALUES (${orgId}, ${provider}, ${encryptSecret(value)}, now(), now(), ${verification.status}, ${verification.message ?? null})
+      ON CONFLICT (org_id, provider) DO NOTHING
     `
     imported.push(provider)
   }
+  keyCache.delete(orgId)
   if (imported.length) keysLog.warn('imported provider keys from the environment into the database; remove them from .env', { providers: imported })
   return imported
 }
 
-/** Reload keys when another process changes them. */
-export async function listenProviderKeys(onChange?: (provider: string) => void): Promise<void> {
+/** Drop caches when another process changes keys (payload "orgId:provider"). */
+export async function listenProviderKeys(onChange?: (orgId: string, provider: string) => void): Promise<void> {
   const sql = getDb()
-  await sql.listen('provider_keys', (provider) => {
-    void applyProviderKeysToEnv().then(() => { keysLog.info('provider keys reloaded', { provider }); onChange?.(provider) }).catch(() => undefined)
+  await sql.listen('provider_keys', (payload) => {
+    const [orgId, provider] = payload.split(':')
+    if (orgId) keyCache.delete(orgId)
+    void import('./model-policy').then((m) => m.invalidateTierModels(orgId)).catch(() => undefined)
+    keysLog.info('provider keys changed', { orgId, provider })
+    onChange?.(orgId ?? '', provider ?? '')
   })
 }
 

@@ -34,7 +34,7 @@ const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
 const EXPIRY_MARGIN_MS = 90_000
 
 /** Refreshes are serialized per provider so concurrent callers do not race. */
-const inflight = new Map<OAuthProviderId, Promise<Record<string, unknown>>>()
+const inflight = new Map<string, Promise<Record<string, unknown>>>()
 
 /** Add `expires_at` (ISO) to a token response that carries `expires_in` seconds. */
 export function withExpiry<T extends Record<string, unknown>>(tokens: T, issuedAt = Date.now()): T & { expires_at?: string } {
@@ -62,13 +62,13 @@ export class IntegrationNotConnectedError extends Error {
  * IntegrationNotConnectedError when the integration is not connected and
  * IntegrationCredentialsError when its stored token cannot be read.
  */
-export async function getIntegrationAccessToken(kind: AppIntegrationKind): Promise<string> {
-  const row = await getAppIntegration(kind)
+export async function getIntegrationAccessToken(orgId: string, kind: AppIntegrationKind): Promise<string> {
+  const row = await getAppIntegration(orgId, kind)
   if (row?.status !== 'connected') throw new IntegrationNotConnectedError(kind)
-  let creds = await getAppIntegrationCredentials(kind)
+  let creds = await getAppIntegrationCredentials(orgId, kind)
   if (typeof creds?.access_token !== 'string' || !creds.access_token) throw new IntegrationCredentialsError(kind)
   if (tokenExpiresSoon(creds) && typeof creds.refresh_token === 'string' && creds.refresh_token) {
-    creds = await refreshIntegrationTokens(kind, creds).catch((error) => {
+    creds = await refreshIntegrationTokens(orgId, kind, creds).catch((error) => {
       // A failed refresh is not fatal while the old token may still work; surface it once it is rejected.
       tokenLog.warn('token refresh failed; using the stored token', { kind, error: error instanceof Error ? error.message : String(error) })
       return creds!
@@ -81,25 +81,26 @@ export async function getIntegrationAccessToken(kind: AppIntegrationKind): Promi
  * Refresh the token for `kind`'s provider and store the result on every
  * integration kind that shares it. Returns the merged credentials.
  */
-export async function refreshIntegrationTokens(kind: AppIntegrationKind, current?: Record<string, unknown>): Promise<Record<string, unknown>> {
+export async function refreshIntegrationTokens(orgId: string, kind: AppIntegrationKind, current?: Record<string, unknown>): Promise<Record<string, unknown>> {
   const provider = KIND_PROVIDER[kind]
-  const existing = inflight.get(provider)
+  const key = `${orgId}:${provider}`
+  const existing = inflight.get(key)
   if (existing) return existing
   const task = (async () => {
-    const creds = current ?? (await getAppIntegrationCredentials(kind))
+    const creds = current ?? (await getAppIntegrationCredentials(orgId, kind))
     const refreshToken = creds?.refresh_token
     if (typeof refreshToken !== 'string' || !refreshToken) throw new Error(`${kind} has no refresh token; reconnect it under Integrations.`)
-    const cfg = await resolveProvider(provider)
+    const cfg = await resolveProvider(orgId, provider)
     if (!cfg) throw new Error(`${provider} no longer has app credentials; add them under Organization → Integrations.`)
     const refreshed = withExpiry(await refreshAccessToken(cfg, refreshToken))
     const merged: Record<string, unknown> = { ...creds, ...refreshed, refresh_token: refreshed.refresh_token ?? refreshToken }
     for (const k of PROVIDER_KINDS[provider]) {
-      const row = await getAppIntegration(k)
-      if (row?.status === 'connected') await upsertAppIntegration({ kind: k, status: 'connected', credentials: merged })
+      const row = await getAppIntegration(orgId, k)
+      if (row?.status === 'connected') await upsertAppIntegration({ orgId, kind: k, status: 'connected', credentials: merged })
     }
     tokenLog.info('integration token refreshed', { provider })
     return merged
-  })().finally(() => inflight.delete(provider))
-  inflight.set(provider, task)
+  })().finally(() => inflight.delete(key))
+  inflight.set(key, task)
   return task
 }

@@ -17,16 +17,16 @@ describe('GitHub App manifest', () => {
   })
 
   test('the page posts the manifest to GitHub with a one-time state', () => {
-    const { html, state } = githubAppManifestPage('http://localhost:3000')
+    const { html, state } = githubAppManifestPage('http://localhost:3000', { orgId: 'org-test' })
     expect(html).toContain(`action="https://github.com/settings/apps/new?state=${state}"`)
     expect(html).toContain('name="manifest"')
-    expect(consumeManifestState(state)).toBe(true)
-    expect(consumeManifestState(state)).toBe(false)
-    expect(consumeManifestState('nope')).toBe(false)
+    expect(consumeManifestState(state)?.orgId).toBe('org-test')
+    expect(consumeManifestState(state)).toBeUndefined()
+    expect(consumeManifestState('nope')).toBeUndefined()
   })
 
   test('organization apps are created under the organization', () => {
-    const { html } = githubAppManifestPage('http://localhost:3000', { organization: 'acme-inc' })
+    const { html } = githubAppManifestPage('http://localhost:3000', { organization: 'acme-inc', orgId: 'org-test' })
     expect(html).toContain('https://github.com/organizations/acme-inc/settings/apps/new?state=')
   })
 

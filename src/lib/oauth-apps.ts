@@ -74,10 +74,10 @@ export function isOAuthProviderId(value: string): value is OAuthProviderId {
 }
 
 /** Credentials for a provider, or undefined when none were saved (or they cannot be decrypted). */
-export async function getOAuthAppCredentials(provider: OAuthProviderId): Promise<(OAuthAppCredentials & { source: 'database' }) | undefined> {
+export async function getOAuthAppCredentials(orgId: string, provider: OAuthProviderId): Promise<(OAuthAppCredentials & { source: 'database' }) | undefined> {
   const sql = getDb()
   const [row] = await sql<Array<{ clientId: string; secretEnc: string }>>`
-    SELECT client_id AS "clientId", client_secret_enc AS "secretEnc" FROM oauth_apps WHERE provider = ${provider}
+    SELECT client_id AS "clientId", client_secret_enc AS "secretEnc" FROM oauth_apps WHERE org_id = ${orgId} AND provider = ${provider}
   `.catch(() => [])
   if (!row) return undefined
   try {
@@ -88,8 +88,8 @@ export async function getOAuthAppCredentials(provider: OAuthProviderId): Promise
   }
 }
 
-export async function getOAuthAppConfig(provider: OAuthProviderId): Promise<OAuthAppConfig> {
-  const [row] = await getDb()<Array<{ config: OAuthAppConfig | null }>>`SELECT config_json AS config FROM oauth_apps WHERE provider = ${provider}`.catch(() => [])
+export async function getOAuthAppConfig(orgId: string, provider: OAuthProviderId): Promise<OAuthAppConfig> {
+  const [row] = await getDb()<Array<{ config: OAuthAppConfig | null }>>`SELECT config_json AS config FROM oauth_apps WHERE org_id = ${orgId} AND provider = ${provider}`.catch(() => [])
   return row?.config ?? {}
 }
 
@@ -118,18 +118,18 @@ export function describeSetup(provider: OAuthProviderId, origin: string, config:
   return { ...base, method: 'console' }
 }
 
-export async function listOAuthApps(origin: string): Promise<OAuthAppSummary[]> {
+export async function listOAuthApps(orgId: string, origin: string): Promise<OAuthAppSummary[]> {
   const sql = getDb()
   const rows = await sql<Array<{ provider: OAuthProviderId; clientId: string; config: OAuthAppConfig | null; updatedAt: string; updatedByName: string | null }>>`
     SELECT a.provider, a.client_id AS "clientId", a.config_json AS config, a.updated_at AS "updatedAt", u.name AS "updatedByName"
-    FROM oauth_apps a LEFT JOIN users u ON u.user_id = a.updated_by
+    FROM oauth_apps a LEFT JOIN users u ON u.user_id = a.updated_by WHERE a.org_id = ${orgId}
   `.catch(() => [])
   const byProvider = new Map(rows.map((r) => [r.provider, r]))
   const out: OAuthAppSummary[] = []
   for (const provider of OAUTH_PROVIDER_IDS) {
     const template = PROVIDER_TEMPLATES[provider]
     const stored = byProvider.get(provider)
-    const creds = await getOAuthAppCredentials(provider)
+    const creds = await getOAuthAppCredentials(orgId, provider)
     out.push({
       provider,
       label: template.label,
@@ -151,7 +151,7 @@ export async function listOAuthApps(origin: string): Promise<OAuthAppSummary[]> 
 }
 
 /** Save pasted credentials. An empty secret keeps the stored one (so the id alone can be corrected). */
-export async function saveOAuthApp(provider: OAuthProviderId, input: { clientId: string; clientSecret?: string; updatedBy?: string | null }): Promise<void> {
+export async function saveOAuthApp(orgId: string, provider: OAuthProviderId, input: { clientId: string; clientSecret?: string; updatedBy?: string | null }): Promise<void> {
   const sql = getDb()
   const clientId = input.clientId.trim()
   if (!clientId) throw new Error('Client id is required.')
@@ -159,19 +159,19 @@ export async function saveOAuthApp(provider: OAuthProviderId, input: { clientId:
   const config: OAuthAppConfig = { source: 'manual' }
   if (secret) {
     await sql`
-      INSERT INTO oauth_apps (provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
-      VALUES (${provider}, ${clientId}, ${encryptSecret(secret)}, ${sql.json(config as never)}, ${input.updatedBy ?? null}, now())
-      ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
+      INSERT INTO oauth_apps (org_id, provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
+      VALUES (${orgId}, ${provider}, ${clientId}, ${encryptSecret(secret)}, ${sql.json(config as never)}, ${input.updatedBy ?? null}, now())
+      ON CONFLICT (org_id, provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
         config_json = EXCLUDED.config_json, updated_by = EXCLUDED.updated_by, updated_at = now()
     `
     return
   }
-  const rows = await sql`UPDATE oauth_apps SET client_id = ${clientId}, updated_by = ${input.updatedBy ?? null}, updated_at = now() WHERE provider = ${provider} RETURNING provider`
+  const rows = await sql`UPDATE oauth_apps SET client_id = ${clientId}, updated_by = ${input.updatedBy ?? null}, updated_at = now() WHERE org_id = ${orgId} AND provider = ${provider} RETURNING provider`
   if (rows.length === 0) throw new Error('Client secret is required the first time.')
 }
 
 /** Store the GitHub App that the manifest flow just created. Replaces any pasted credentials. */
-export async function saveGitHubAppFromManifest(app: GitHubAppManifestResult, updatedBy?: string | null): Promise<OAuthAppConfig> {
+export async function saveGitHubAppFromManifest(orgId: string, app: GitHubAppManifestResult, updatedBy?: string | null): Promise<OAuthAppConfig> {
   const sql = getDb()
   const config: OAuthAppConfig = {
     source: 'manifest',
@@ -184,25 +184,25 @@ export async function saveGitHubAppFromManifest(app: GitHubAppManifestResult, up
     webhookSecretEnc: app.webhook_secret ? encryptSecret(app.webhook_secret) : undefined,
   }
   await sql`
-    INSERT INTO oauth_apps (provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
-    VALUES ('github', ${app.client_id}, ${encryptSecret(app.client_secret)}, ${sql.json(config as never)}, ${updatedBy ?? null}, now())
-    ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
+    INSERT INTO oauth_apps (org_id, provider, client_id, client_secret_enc, config_json, updated_by, updated_at)
+    VALUES (${orgId}, 'github', ${app.client_id}, ${encryptSecret(app.client_secret)}, ${sql.json(config as never)}, ${updatedBy ?? null}, now())
+    ON CONFLICT (org_id, provider) DO UPDATE SET client_id = EXCLUDED.client_id, client_secret_enc = EXCLUDED.client_secret_enc,
       config_json = EXCLUDED.config_json, updated_by = EXCLUDED.updated_by, updated_at = now()
   `
   return config
 }
 
 /** Remember a GitHub App installation reported through the setup redirect. */
-export async function recordGitHubInstallation(installationId: number): Promise<void> {
+export async function recordGitHubInstallation(orgId: string, installationId: number): Promise<void> {
   const sql = getDb()
-  const current = await getOAuthAppConfig('github')
+  const current = await getOAuthAppConfig(orgId, 'github')
   const ids = Array.from(new Set([...(current.installationIds ?? []), installationId]))
   const patch: OAuthAppConfig = { installationIds: ids, installedAt: new Date().toISOString() }
-  await sql`UPDATE oauth_apps SET config_json = config_json || ${sql.json(patch as never)} WHERE provider = 'github'`
+  await sql`UPDATE oauth_apps SET config_json = config_json || ${sql.json(patch as never)} WHERE org_id = ${orgId} AND provider = 'github'`
 }
 
-export async function deleteOAuthApp(provider: OAuthProviderId): Promise<boolean> {
-  const rows = await getDb()`DELETE FROM oauth_apps WHERE provider = ${provider} RETURNING provider`
+export async function deleteOAuthApp(orgId: string, provider: OAuthProviderId): Promise<boolean> {
+  const rows = await getDb()`DELETE FROM oauth_apps WHERE org_id = ${orgId} AND provider = ${provider} RETURNING provider`
   return rows.length > 0
 }
 
