@@ -4,7 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { assertEnvOrExit } from './lib/env'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { getOrchestrator } from './lib/dispatcher'
 import { log } from './lib/logger'
 import { listLiveWorkers, pruneDeadWorkers } from './lib/worker-registry'
@@ -177,6 +177,9 @@ async function main(): Promise<void> {
   await reconcile()
   supLog.info('watching project_jobs; workers spawn per project on demand')
 }
+
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => supLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return

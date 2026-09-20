@@ -13,7 +13,7 @@ import { normalizeThinkingLevel, QUESTION_PATTERN, resolveCwd, runAIDLCAssistant
 import { PipelineEngine } from './lib/pipeline-engine'
 import { getTemplate, listTemplates } from './lib/pipeline-loader'
 import type { PipelineTemplate } from './lib/pipeline-template'
-import { closeDb, getDb } from './lib/db'
+import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveGitHubLoginProvider, resolveProvider } from './lib/oauth'
@@ -195,6 +195,9 @@ void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked
   void syncCatalog()
   setInterval(() => { void syncCatalog() }, 6 * 60 * 60_000)
 }
+
+// Queries still in flight when the pool closes are part of shutting down, not a crash.
+ignoreShutdownDbErrors((reason) => serverLog.error('unhandled rejection', reason instanceof Error ? reason : new Error(String(reason))))
 
 const server = Bun.serve({
   port,

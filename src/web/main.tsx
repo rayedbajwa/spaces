@@ -3619,6 +3619,25 @@ function findBoardCardByNamespace(board: BoardResponse, namespace: string): Boar
   return null
 }
 
+/**
+ * True once streamed output has stopped arriving for a moment.
+ *
+ * A run pauses server-side as soon as its stage returns, but the tail of that
+ * stage's output is still on its way to the browser. Asking for approval then
+ * covers text the reviewer has not seen, so the decision waits for the stream
+ * to fall quiet. Anything that is not waiting for input counts as settled.
+ */
+function useStreamSettled(log: string | undefined, waiting: boolean, quietMs = 900): boolean {
+  const [settled, setSettled] = useState(!waiting)
+  useEffect(() => {
+    if (!waiting) { setSettled(true); return }
+    setSettled(false)
+    const timer = window.setTimeout(() => setSettled(true), quietMs)
+    return () => window.clearTimeout(timer)
+  }, [log, waiting, quietMs])
+  return settled
+}
+
 function AiAgentOutputBar({
   currentRun,
   nextStep,
@@ -3669,6 +3688,11 @@ function AiAgentOutputBar({
   const canPauseQueued = currentRun?.status === 'running' && !!currentRun.queued
   const canResume = currentRun?.status === 'paused' && currentRun.pauseKind === 'user' && !projectPaused
   const canCancel = !!currentRun && ['running', 'paused'].includes(currentRun.status)
+
+  // A pause reaches the browser before the last of the streamed output does, so
+  // the review box would cover text that is still arriving. Wait for the stream
+  // to go quiet before asking for a decision.
+  const streamSettled = useStreamSettled(currentRun?.log, needsInput)
 
   // Follow the stream only while the reader is at the bottom; scrolling up to
   // read pauses following until they return (or press the arrow).
@@ -3799,7 +3823,15 @@ function AiAgentOutputBar({
           {!projectPaused && onResume && <div className="button-row" style={{ marginTop: 8 }}><button type="button" className="primary-button" disabled={busy} onClick={onResume}>Resume run</button></div>}
         </div>
       )}
-      {expanded && canAnswer && currentRun?.status === 'paused' && currentRun.pauseKind !== 'user' && onSendAnswer && (
+      {expanded && canAnswer && currentRun?.status === 'paused' && currentRun.pauseKind !== 'user' && onSendAnswer && !streamSettled && (
+        <div className="notice">
+          <div className="notice-title">
+            <strong>Finishing the stage…</strong>
+            <span className="text-subtle">the review box opens when the output stops</span>
+          </div>
+        </div>
+      )}
+      {expanded && canAnswer && currentRun?.status === 'paused' && currentRun.pauseKind !== 'user' && onSendAnswer && streamSettled && (
         <div className="notice notice-warning">
           <div className="notice-title">
             <strong>{currentRun.pauseKind === 'review' ? 'Waiting for your review' : 'The agent has a question'}</strong>

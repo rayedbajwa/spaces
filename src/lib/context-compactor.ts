@@ -77,45 +77,61 @@ async function lookupCachedSummary(hash: string): Promise<string | undefined> {
   }
 }
 
+/** Raised when the organization has no key that can summarize; the caller keeps the raw tail quietly. */
+class NoCompactionKeyError extends Error {
+  constructor() {
+    super('no provider key can summarize for this organization')
+    this.name = 'NoCompactionKeyError'
+  }
+}
+
+const OPENAI_CHAT_API = 'https://api.openai.com/v1/chat/completions'
+const OPENROUTER_CHAT_API = 'https://openrouter.ai/api/v1/chat/completions'
+/** Cheap models used for the summary on each provider. */
+const OPENAI_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENAI || 'gpt-5-mini'
+const OPENROUTER_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENROUTER || 'openrouter/auto'
+
 /**
- * One-shot Anthropic Messages call. Returns the assistant's text or throws.
- * Deliberately not using the Pi SDK — we want a small, dependency-free call.
+ * One-shot summarization call with whatever key the organization has:
+ * Anthropic's Messages API, or the OpenAI-compatible chat endpoints of OpenAI
+ * and OpenRouter. Deliberately not using the Pi SDK — a small, dependency-free
+ * call is enough for a summary, and it must not depend on one provider, since
+ * a tenant routing through OpenRouter has no Anthropic key at all.
  */
-async function callAnthropicOnce(prompt: string, orgId?: string): Promise<string> {
-  // The key belongs to the organization whose run is being compacted; nothing is read from the process environment.
+async function summarizeOnce(prompt: string, orgId?: string): Promise<string> {
+  // Keys belong to the organization whose run is being compacted; nothing is read from the process environment.
   const { loadProviderKeys } = await import('./provider-keys')
-  const apiKey = orgId ? (await loadProviderKeys(orgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>))).anthropic : undefined
-  if (!apiKey) throw new Error('this organization has no Anthropic key for compaction')
+  const keys = orgId ? await loadProviderKeys(orgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>)) : {}
 
-  const res = await fetch(ANTHROPIC_API, {
+  if (keys.anthropic) {
+    const res = await fetch(ANTHROPIC_API, {
+      method: 'POST',
+      headers: { 'x-api-key': keys.anthropic, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: COMPACT_MODEL, max_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+    })
+    if (!res.ok) throw new Error(`Anthropic ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+    const data = (await res.json()) as { content?: Array<{ type: string; text?: string }> }
+    const text = (data.content ?? []).filter((b) => b.type === 'text' && typeof b.text === 'string').map((b) => b.text!).join('').trim()
+    if (!text) throw new Error('Anthropic returned empty text content')
+    return text
+  }
+
+  const openAiCompatible = keys.openrouter
+    ? { url: OPENROUTER_CHAT_API, key: keys.openrouter, model: OPENROUTER_COMPACT_MODEL, label: 'OpenRouter' }
+    : keys.openai
+      ? { url: OPENAI_CHAT_API, key: keys.openai, model: OPENAI_COMPACT_MODEL, label: 'OpenAI' }
+      : undefined
+  if (!openAiCompatible) throw new NoCompactionKeyError()
+
+  const res = await fetch(openAiCompatible.url, {
     method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: COMPACT_MODEL,
-      max_tokens: 800,
-      messages: [{ role: 'user', content: prompt }],
-    }),
+    headers: { Authorization: `Bearer ${openAiCompatible.key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: openAiCompatible.model, max_completion_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
   })
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new Error(`Anthropic ${res.status}: ${body.slice(0, 300)}`)
-  }
-
-  const data = await res.json() as {
-    content?: Array<{ type: string; text?: string }>
-  }
-  const text = (data.content ?? [])
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text!)
-    .join('')
-    .trim()
-
-  if (!text) throw new Error('Anthropic returned empty text content')
+  if (!res.ok) throw new Error(`${openAiCompatible.label} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
+  const text = (data.choices?.[0]?.message?.content ?? '').trim()
+  if (!text) throw new Error(`${openAiCompatible.label} returned empty text content`)
   return text
 }
 
@@ -171,7 +187,7 @@ Instructions:
 
 ${input.tail}
 `
-    const summary = await callAnthropicOnce(prompt, input.orgId)
+    const summary = await summarizeOnce(prompt, input.orgId)
     compactorLog.debug('compacted stage tail', {
       hash,
       stage: input.stage,
@@ -181,11 +197,11 @@ ${input.tail}
     })
     return { text: summary, hash, compacted: true, cached: false }
   } catch (err) {
-    compactorLog.warn('compaction failed, falling back to raw tail', {
-      hash,
-      stage: input.stage,
-      err: err instanceof Error ? err.message : String(err),
-    })
+    // Having no key for a summary is a configuration fact, not a failure: the
+    // raw tail is passed on and the run is unaffected, so it is not a warning.
+    const detail = { hash, stage: input.stage, err: err instanceof Error ? err.message : String(err) }
+    if (err instanceof NoCompactionKeyError) compactorLog.debug('no key for compaction; passing the raw tail on', detail)
+    else compactorLog.warn('compaction failed, falling back to raw tail', detail)
     return { text: input.tail, hash, compacted: false, cached: false }
   }
 }
