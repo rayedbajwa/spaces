@@ -234,6 +234,21 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
   // stuck at 'running' forever, showing "in progress" in the UI.
   // Agent shells push and open pull requests as the GitHub App (bot) when one
   // is installed, so branch protection applies to the agent and humans approve.
+  // A full volume kills a run mid-stage, usually while writing an artifact, so
+  // space is reclaimed before the work starts rather than after it fails.
+  {
+    const { ensureDiskSpace, formatBytes } = await import('./lib/disk-housekeeping')
+    const { workspaceRoot } = await import('./lib/github')
+    const usage = await ensureDiskSpace(workspaceRoot()).catch(() => undefined)
+    if (usage && usage.freeBytes < 200 * 1024 * 1024) {
+      const message = `The workspace volume has only ${formatBytes(usage.freeBytes)} free of ${formatBytes(usage.totalBytes)}. Free space or grow the volume before running this again.`
+      await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: null })
+      await queueEvent(runId, 'error', { message, reason: 'disk_full' })
+      workerLog.error('refusing to start a run on a full volume', new Error(message))
+      return
+    }
+  }
+
   const runOrgId = run.projectId ? await orgIdForProject(run.projectId) : await getDefaultOrgId()
   Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
 
