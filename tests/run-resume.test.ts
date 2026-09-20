@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { buildResumeNote, describeWorkInProgress, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
+import { buildResumeNote, describeWorkInProgress, findUnfinishedFeature, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
 import type { StageName } from '../src/lib/aidlc'
 
 /**
@@ -133,5 +133,43 @@ describe('work in progress guardrail', () => {
   test('says nothing for a project with nothing in it', async () => {
     const root = await project({ 'README.md': 'empty' })
     expect(await describeWorkInProgress(root, 'specify')).toBe('')
+  })
+})
+
+describe('unfinished feature detection', () => {
+  test('reports the feature, its documents and its task progress', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/003-responsibilities/spec.md': '# Spec',
+      'specs/003-responsibilities/tasks.md': '- [x] T001 Done\n- [ ] T002 Open\n- [ ] T003 Open\n',
+    })
+    const unfinished = await findUnfinishedFeature(root)
+    expect(unfinished?.name).toBe('003-responsibilities')
+    expect(unfinished?.artifacts).toEqual(['spec.md', 'tasks.md'])
+    expect(unfinished?.tasks?.done).toBe(1)
+    expect(unfinished?.verificationFailed).toBe(false)
+  })
+
+  test('a verified feature is finished', async () => {
+    const root = await project({
+      'specs/004-done/spec.md': '# Spec',
+      'specs/004-done/verification-report.md': '## Overall status: **PASS**\n',
+    })
+    expect(await findUnfinishedFeature(root)).toBeUndefined()
+  })
+
+  test('a failed verification leaves the feature unfinished', async () => {
+    const root = await project({
+      'specs/005-failing/spec.md': '# Spec',
+      'specs/005-failing/verification-report.md': '## Overall status: FAIL\n',
+    })
+    const unfinished = await findUnfinishedFeature(root)
+    expect(unfinished?.name).toBe('005-failing')
+    expect(unfinished?.verificationFailed).toBe(true)
+  })
+
+  test('an empty feature directory is not work in progress', async () => {
+    const root = await project({ 'specs/006-empty/.keep': '' })
+    expect(await findUnfinishedFeature(root)).toBeUndefined()
   })
 })
