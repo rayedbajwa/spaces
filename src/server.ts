@@ -120,6 +120,7 @@ import {
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
+import { readTaskProgress } from './lib/run-resume'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
@@ -2558,6 +2559,21 @@ async function requeueRun(
   return { ok: true }
 }
 
+/**
+ * Task counts for a run's feature, cached briefly: every event on a busy run
+ * rebuilds the snapshot, and the implement stage ticks tasks off slowly.
+ */
+const taskProgressCache = new Map<string, { at: number; value: RunSnapshot['tasks'] }>()
+async function runTaskProgress(row: RunRow): Promise<RunSnapshot['tasks']> {
+  if (!row.projectPath) return undefined
+  const cached = taskProgressCache.get(row.projectPath)
+  if (cached && Date.now() - cached.at < 3_000) return cached.value
+  const progress = await readTaskProgress(row.projectPath).catch(() => undefined)
+  const value = progress ? { done: progress.done, total: progress.total, remaining: progress.remaining.length } : undefined
+  taskProgressCache.set(row.projectPath, { at: Date.now(), value })
+  return value
+}
+
 async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
   const events = await dbListEvents(row.runId)
   const log = events
@@ -2591,6 +2607,7 @@ async function snapshotFromRow(row: RunRow): Promise<RunSnapshot> {
     rerunnable: row.status === 'error' || row.status === 'completed' || row.status === 'paused',
     retryCount: row.retryCount,
     usage: await summarizeRunUsage(row.runId),
+    tasks: await runTaskProgress(row),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -3779,6 +3796,8 @@ interface RunSnapshot {
   retryCount?: number
   /** Tokens and cost recorded for this run so far. */
   usage?: UsageSummary
+  /** Checked-off tasks of the feature being implemented, so progress is visible while it runs. */
+  tasks?: { done: number; total: number; remaining: number }
   createdAt: string
   updatedAt: string
 }
