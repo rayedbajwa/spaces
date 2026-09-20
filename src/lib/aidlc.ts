@@ -65,6 +65,9 @@ export const REVIEW_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'testplan
 /** Stages that write code into the implementation checkouts. */
 const CODE_STAGES: StageName[] = ['implement', 'orchestrate', 'review', 'verify']
 
+/** Stages whose output is evidence someone else acts on, so it must be reproducible. */
+const EVIDENCE_STAGES: StageName[] = ['review', 'verify', 'orchestrate']
+
 export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'review', 'verify', 'checklist', 'taskstoissues', 'deliver']
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
@@ -619,10 +622,24 @@ export class AIDLCFlow {
     const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
     if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
     // Stages that build and verify are told what the machine offers — a database,
-    // a free port, a headless browser — so they run the checks instead of skipping them.
-    const { agentEnvironmentSection } = await import('./agent-environment')
-    const environment = CODE_STAGES.includes(stage) ? await agentEnvironmentSection(path.basename(this.options.cwd)).catch(() => '') : ''
-    const prompt = [inProgress, environment, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // a free port, a headless browser — so they run the checks instead of skipping them,
+    // and each checkout is pointed at that database before the stage starts so a
+    // migration cannot land on the application's own.
+    let environment = ''
+    let evidence = ''
+    if (CODE_STAGES.includes(stage)) {
+      const { describeAgentEnvironment, evidenceRules, prepareCheckoutEnvironment, renderAgentEnvironment } = await import('./agent-environment')
+      const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
+      if (machine) {
+        environment = renderAgentEnvironment(machine)
+        evidence = EVIDENCE_STAGES.includes(stage) ? evidenceRules(machine) : ''
+        for (const target of [{ localPath: this.options.cwd }, ...(this.options.repoTargets ?? [])]) {
+          const applied = await prepareCheckoutEnvironment(target.localPath, machine).catch(() => [])
+          if (applied.length) this.print(`[env] ${path.basename(target.localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
+        }
+      }
+    }
+    const prompt = [inProgress, environment, evidence, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
@@ -2305,8 +2322,12 @@ export async function runDevSetup(options: {
   const orgId = await resolveRunnerOrg(options)
   // Tell the agent what this machine offers — a database, a free port, a browser —
   // so it verifies the work instead of skipping tests it assumes it cannot run.
-  const { agentEnvironmentSection } = await import('./agent-environment')
-  const environment = await agentEnvironmentSection(options.repoLabel ?? path.basename(cwd)).catch(() => '')
+  const { describeAgentEnvironment, evidenceRules, prepareCheckoutEnvironment, renderAgentEnvironment } = await import('./agent-environment')
+  const machine = await describeAgentEnvironment({ label: options.repoLabel ?? path.basename(cwd) }).catch(() => undefined)
+  const applied = machine ? await prepareCheckoutEnvironment(cwd, machine).catch(() => []) : []
+  const environment = machine
+    ? [renderAgentEnvironment(machine), applied.length ? `\n${applied.join(', ')} ${applied.length === 1 ? 'has' : 'have'} already been written into this checkout's \`.env\` for you.` : '', evidenceRules(machine)].filter(Boolean).join('\n')
+    : ''
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
