@@ -157,17 +157,18 @@ void checkProviderKeys(serverLog)
 // can be checked from its logs without reading the database by hand.
 void (async () => {
   const sql = getDb()
-  const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; knowledgeSources: number; users: number }>>`
+  const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; oauthApps: number; knowledgeSources: number; users: number }>>`
     SELECT o.slug, o.name,
            (SELECT count(*)::int FROM teams t WHERE t.org_id = o.org_id) AS teams,
            (SELECT count(*)::int FROM projects p JOIN teams t ON t.team_id = p.team_id WHERE t.org_id = o.org_id) AS projects,
            (SELECT count(*)::int FROM provider_keys k WHERE k.org_id = o.org_id) AS keys,
            (SELECT count(*)::int FROM app_integrations a WHERE a.org_id = o.org_id AND a.status = 'connected') AS integrations,
+           (SELECT count(*)::int FROM oauth_apps a WHERE a.org_id = o.org_id) AS "oauthApps",
            (SELECT count(*)::int FROM knowledge_sources s WHERE s.org_id = o.org_id) AS "knowledgeSources",
            (SELECT count(DISTINCT m.user_id)::int FROM team_members m JOIN teams t ON t.team_id = m.team_id WHERE t.org_id = o.org_id) AS users
       FROM organizations o ORDER BY o.created_at ASC
   `
-  for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, knowledgeSources: row.knowledgeSources })
+  for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, appCredentials: row.oauthApps, knowledgeSources: row.knowledgeSources })
   const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
   if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
 })().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
@@ -261,9 +262,20 @@ async function route(req: Request): Promise<Response> {
   const isApi = url.pathname.startsWith('/api/')
   let auth: AuthContext | undefined = isApi || url.pathname.startsWith('/api') ? await authenticate(req).catch(() => undefined) : undefined
 
+  /**
+   * Endpoints a browser reaches without a session: starting GitHub sign-in and
+   * every provider callback, which arrives straight from the provider. Both
+   * carry a one-time state, and the callback takes the organization from that
+   * state rather than from the caller.
+   */
+  const isPublicOAuth = method === 'GET' && (
+    /^\/api\/oauth\/[^/]+\/callback$/.test(url.pathname) ||
+    (url.pathname === '/api/oauth/github/authorize' && url.searchParams.get('mode') === 'login')
+  )
+
   // An account that belongs to no team has no tenant: nothing beyond its own
   // session, team creation and invites is visible until it joins or creates one.
-  if (auth && auth.teams.length === 0 && isApi && !/^\/api\/(auth|me|teams|invites)(\/|$)/.test(url.pathname)) {
+  if (auth && auth.teams.length === 0 && isApi && !isPublicOAuth && !/^\/api\/(auth|me|teams|invites)(\/|$)/.test(url.pathname)) {
     return sendJson(403, { error: 'You are not in a team yet. Create one or accept an invite first.', code: 'no_team' })
   }
   /** The caller's organization (tenant): the active team's, or the default one when sign-in is disabled. */
@@ -325,7 +337,7 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { email: invite.email, role: invite.role, teamName: invite.teamName, teamSlug: invite.teamSlug, expiresAt: invite.expiresAt })
   }
 
-  if (isApi && !authDisabled() && !auth) {
+  if (isApi && !authDisabled() && !auth && !isPublicOAuth) {
     return sendJson(401, { error: 'Sign in required.', code: 'unauthenticated' })
   }
 
