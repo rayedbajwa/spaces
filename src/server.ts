@@ -145,8 +145,6 @@ try {
 }
 await ensureFrontendBuilt()
 const versionMetadata = resolveVersionMetadata({ packageMetadata })
-// Provider keys live in the database: import any left in the environment once,
-// then load the stored ones into this process and follow later changes.
 // Provider keys live in the database, per organization: keys left in the
 // environment are imported once into the default organization and scrubbed so
 // no tenant inherits them from the process. Routing is warmed per organization.
@@ -155,6 +153,24 @@ await importProviderKeysFromEnv(bootOrgId).catch((error) => serverLog.warn('prov
 scrubProviderKeysFromEnv()
 await listenProviderKeys((orgId) => { void warmModelRouting(orgId, serverLog).catch(() => undefined) }).catch(() => undefined)
 void checkProviderKeys(serverLog)
+// What each tenant holds after the schema migrated, so an upgraded deployment
+// can be checked from its logs without reading the database by hand.
+void (async () => {
+  const sql = getDb()
+  const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; knowledgeSources: number; users: number }>>`
+    SELECT o.slug, o.name,
+           (SELECT count(*)::int FROM teams t WHERE t.org_id = o.org_id) AS teams,
+           (SELECT count(*)::int FROM projects p JOIN teams t ON t.team_id = p.team_id WHERE t.org_id = o.org_id) AS projects,
+           (SELECT count(*)::int FROM provider_keys k WHERE k.org_id = o.org_id) AS keys,
+           (SELECT count(*)::int FROM app_integrations a WHERE a.org_id = o.org_id AND a.status = 'connected') AS integrations,
+           (SELECT count(*)::int FROM knowledge_sources s WHERE s.org_id = o.org_id) AS "knowledgeSources",
+           (SELECT count(DISTINCT m.user_id)::int FROM team_members m JOIN teams t ON t.team_id = m.team_id WHERE t.org_id = o.org_id) AS users
+      FROM organizations o ORDER BY o.created_at ASC
+  `
+  for (const row of rows) serverLog.info('tenant', { org: row.slug, name: row.name, users: row.users, teams: row.teams, projects: row.projects, providerKeys: row.keys, integrations: row.integrations, knowledgeSources: row.knowledgeSources })
+  const [orphans] = await sql<Array<{ projects: number }>>`SELECT count(*)::int AS projects FROM projects WHERE team_id IS NULL`
+  if (orphans?.projects) serverLog.warn('projects belong to no team and are unreachable while sign-in is on', { count: orphans.projects })
+})().catch((error) => serverLog.warn('tenant report failed', { error: error instanceof Error ? error.message : String(error) }))
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
@@ -641,7 +657,9 @@ async function route(req: Request): Promise<Response> {
       const project = /^[0-9a-f-]{36}$/.test(idOrSlug)
         ? await projGet(idOrSlug)
         : await import('./lib/project-registry').then((m) => m.getProjectBySlug(idOrSlug))
-      if (project?.teamId && !auth.teams.some((t) => t.teamId === project.teamId)) {
+      // Fails closed: a project whose team the caller is not in is invisible, and so
+      // is a project with no team at all (nothing to authorize against).
+      if (project && (!project.teamId || !auth.teams.some((t) => t.teamId === project.teamId))) {
         return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
       }
     }
@@ -965,7 +983,12 @@ async function route(req: Request): Promise<Response> {
   // ---- Workers (shared or per-project via src/supervisor.ts) ----
 
   if (method === 'GET' && url.pathname === '/api/workers') {
-    return sendJson(200, { workers: await listLiveWorkers() })
+    const workers = await listLiveWorkers()
+    if (!auth) return sendJson(200, { workers })
+    // A per-project worker names the project it serves, so only that project's
+    // team sees it; shared workers belong to no tenant.
+    const mine = new Set((await Promise.all(auth.teams.map((t) => projList(t.teamId)))).flat().map((p) => p.projectId))
+    return sendJson(200, { workers: workers.filter((w) => !w.projectId || mine.has(w.projectId)) })
   }
 
   // The worker serving one project: hot (running jobs), warm (alive, idle or
@@ -1185,14 +1208,23 @@ async function route(req: Request): Promise<Response> {
     return sendJson(204, {})
   }
 
+  /** A project named in a query parameter is only honoured for its own team's members. */
+  const visibleProjectNamespace = async (slug: string | null): Promise<string | undefined> => {
+    if (!slug) return undefined
+    if (!auth) return slug
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
+    if (!project?.teamId || !auth.teams.some((t) => t.teamId === project.teamId)) return undefined
+    return slug
+  }
+
   if (method === 'GET' && url.pathname === '/api/pipelines') {
-    const projectNamespace = url.searchParams.get('project') || undefined
+    const projectNamespace = await visibleProjectNamespace(url.searchParams.get('project'))
     return sendJson(200, await listTemplates(projectNamespace))
   }
 
   if (method === 'GET' && /^\/api\/pipelines\/[^/]+$/.test(url.pathname)) {
     const name = url.pathname.split('/').filter(Boolean)[2]!
-    const projectNamespace = url.searchParams.get('project') || undefined
+    const projectNamespace = await visibleProjectNamespace(url.searchParams.get('project'))
     try {
       const { template, source, path } = await getTemplate(name, projectNamespace)
       return sendJson(200, { template, source, path, plan: PipelineEngine.describePlan(template) })
@@ -1930,6 +1962,9 @@ async function route(req: Request): Promise<Response> {
     }
     const project = await projGet(body.projectId)
     if (!project) return sendJson(404, { error: 'Project not found.' })
+    // A run is started through its project, so the project's team decides who may start it.
+    const deniedRun = requireProjectRole(project, 'member', 'Only team members can start runs on this project.'); if (deniedRun) return deniedRun
+    if (auth && !project.teamId) return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
 
     const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
     const repo = body.targetRepoId

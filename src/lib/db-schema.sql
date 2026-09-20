@@ -735,3 +735,105 @@ BEGIN
     END IF;
   END LOOP;
 END $$;
+
+-- ============================================================================
+-- One-time repair for installations that existed before tenancy: the migration
+-- above puts every team into one default organization, which is right for a
+-- single company but wrong where unrelated accounts each made their own team.
+-- Teams are grouped into connected components through shared members; the
+-- component holding the installation's first account keeps the existing
+-- organization (with its keys, integrations and knowledge), and every other
+-- component becomes its own organization, starting empty. Runs once, tracked
+-- by a marker row so ordinary later teams are never split off.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tenancy_repairs (
+  name        TEXT PRIMARY KEY,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  details     JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+DO $$
+DECLARE
+  owner_user UUID;
+  owner_comp UUID;
+  def_org    UUID;
+  rec        RECORD;
+  new_org    UUID;
+  base_slug  TEXT;
+  cand_slug  TEXT;
+  n          INT;
+  created    INT := 0;
+BEGIN
+  IF EXISTS (SELECT 1 FROM tenancy_repairs WHERE name = 'split-legacy-organizations') THEN RETURN; END IF;
+
+  SELECT org_id INTO def_org FROM organizations ORDER BY (slug = 'default') DESC, created_at ASC LIMIT 1;
+  IF def_org IS NULL THEN
+    INSERT INTO tenancy_repairs (name, details) VALUES ('split-legacy-organizations', jsonb_build_object('organizationsCreated', 0));
+    RETURN;
+  END IF;
+
+  -- Label every team with the lowest team_id it reaches through shared members.
+  DROP TABLE IF EXISTS _team_comp;
+  CREATE TEMP TABLE _team_comp ON COMMIT DROP AS SELECT DISTINCT team_id, team_id AS comp FROM team_members;
+  LOOP
+    WITH linked AS (
+      -- Postgres has no min(uuid); compare as text, which keeps the labelling stable.
+      SELECT a.team_id, MIN(b.comp::text)::uuid AS comp
+        FROM _team_comp a
+        JOIN team_members ma ON ma.team_id = a.team_id
+        JOIN team_members mb ON mb.user_id = ma.user_id
+        JOIN _team_comp b ON b.team_id = mb.team_id
+       GROUP BY a.team_id
+    )
+    UPDATE _team_comp t SET comp = l.comp FROM linked l WHERE l.team_id = t.team_id AND l.comp < t.comp;
+    EXIT WHEN NOT FOUND;
+  END LOOP;
+
+  -- The first account ever created is the installation owner; its component stays put.
+  SELECT user_id INTO owner_user FROM users ORDER BY created_at ASC LIMIT 1;
+  SELECT c.comp INTO owner_comp
+    FROM _team_comp c JOIN team_members m ON m.team_id = c.team_id
+   WHERE m.user_id = owner_user
+   ORDER BY c.comp LIMIT 1;
+
+  FOR rec IN
+    SELECT c.comp AS comp,
+           (SELECT COALESCE(NULLIF(btrim(u.name), ''), split_part(u.email, '@', 1))
+              FROM _team_comp c2
+              JOIN team_members m ON m.team_id = c2.team_id
+              JOIN users u ON u.user_id = m.user_id
+             WHERE c2.comp = c.comp
+             ORDER BY u.created_at ASC LIMIT 1) AS owner_name
+      FROM _team_comp c
+     WHERE owner_comp IS NOT NULL AND c.comp <> owner_comp
+     GROUP BY c.comp
+  LOOP
+    base_slug := btrim(regexp_replace(lower(COALESCE(rec.owner_name, 'org')), '[^a-z0-9]+', '-', 'g'), '-');
+    IF base_slug = '' THEN base_slug := 'org'; END IF;
+    cand_slug := base_slug;
+    n := 2;
+    WHILE EXISTS (SELECT 1 FROM organizations WHERE slug = cand_slug) LOOP
+      cand_slug := base_slug || '-' || n;
+      n := n + 1;
+    END LOOP;
+    new_org := gen_random_uuid();
+    INSERT INTO organizations (org_id, name, slug)
+      VALUES (new_org, COALESCE(rec.owner_name, 'Organization') || '''s organization', cand_slug);
+    INSERT INTO org_memory (org_id, name)
+      VALUES (new_org, COALESCE(rec.owner_name, 'Organization') || '''s organization')
+      ON CONFLICT (org_id) DO NOTHING;
+    UPDATE teams SET org_id = new_org WHERE team_id IN (SELECT team_id FROM _team_comp WHERE comp = rec.comp);
+    created := created + 1;
+  END LOOP;
+
+  -- A knowledge source scoped to a team belongs to that team's organization.
+  UPDATE knowledge_sources s SET org_id = t.org_id
+    FROM teams t WHERE t.team_id = s.team_id AND s.org_id IS DISTINCT FROM t.org_id;
+
+  -- Projects created before teams existed belong to the owner organization's oldest team,
+  -- otherwise no one can reach them once every route is scoped.
+  UPDATE projects SET team_id = (SELECT team_id FROM teams WHERE org_id = def_org ORDER BY created_at ASC LIMIT 1)
+   WHERE team_id IS NULL AND EXISTS (SELECT 1 FROM teams WHERE org_id = def_org);
+
+  INSERT INTO tenancy_repairs (name, details) VALUES ('split-legacy-organizations', jsonb_build_object('organizationsCreated', created));
+END $$;
