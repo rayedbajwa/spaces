@@ -48,6 +48,15 @@ jobs:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
         run: bun run db:migrate
 
+      # Provider keys belong to an organization now, not to the environment, so
+      # the paths that need one (creating a project) require a stored key.
+      - name: Seed a provider key for the default organization
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+          ALLOW_UNVERIFIED_PROVIDER_KEY: "1"
+        run: bun run scripts/seed-provider-key.ts anthropic ci-dummy-not-a-real-key-smoke-tests-skip-llm
+
       - name: Run tests (unit + DB integration, no HTTP server)
         env:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
