@@ -377,6 +377,24 @@ export class AIDLCFlow {
     return [renderAgentEnvironment(machine), reportsEvidence ? evidenceRules(machine) : '']
   }
 
+  /**
+   * A new feature after an earlier one: pull the latest code, learn what
+   * changed, rebuild memory with the feature history, and use the refreshed
+   * context for this run (lib/new-feature.ts). The first feature needs none of
+   * it — onboarding has just learned the code.
+   */
+  private async prepareNewFeature(): Promise<void> {
+    if (!(await findLatestFeatureDirAbsolute(this.options.cwd))) return
+    try {
+      const { prepareForNewFeature } = await import('./new-feature')
+      const refreshed = await prepareForNewFeature({ projectId: this.options.projectId, orgId: await this.orgId(), model: this.options.model, print: (line) => this.print(line) })
+      if (refreshed?.sharedContextPrompt) this.options.sharedContextPrompt = refreshed.sharedContextPrompt
+      if (refreshed?.projectMemory) this.options.projectMemory = refreshed.projectMemory
+    } catch (error) {
+      this.print(`\n[new feature] Preparing the next feature failed (${error instanceof Error ? error.message : String(error)}); specifying against the checkout as it is.\n`)
+    }
+  }
+
   /** Point every checkout at the assigned database, port and key before code stages run. */
   private async prepareCheckouts(): Promise<void> {
     const { describeAgentEnvironment, prepareCheckoutEnvironment } = await import('./agent-environment')
@@ -484,6 +502,7 @@ export class AIDLCFlow {
 
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
       this.sinks.onStageStart?.({ stage, index: this.stageIndex, total: this.stages.length })
+      if (stage === 'specify') await this.prepareNewFeature()
 
       const output = await this.runStage(stage)
       if (QUESTION_PATTERN.test(output)) {
