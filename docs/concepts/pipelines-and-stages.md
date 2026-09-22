@@ -76,7 +76,9 @@ Releasing → Done. A card's lane follows what the project has produced:
   orchestrate and verify.
 - **Releasing** starts once verification passes or a person accepts it. Code
   review and delivery (merge, deploy, UAT) are separate steps here: review
-  first, then deliver; review findings send the feature back to implement.
+  first, then deliver; review findings send the feature back to implement,
+  and once tasks.md records the fixes the next step is review again. The full
+  pipeline reviews before it verifies; that review still counts as Implementing.
 - **Done** means delivery reported `Delivery Status: MERGED`.
 
 A run in progress places its card by the stage it is on. Dropping a card on a
