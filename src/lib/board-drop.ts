@@ -38,8 +38,8 @@ export function stepForColumn(lane: BoardStatus): string | null {
     case 'planned':      return 'plan'
     case 'tasked':       return 'tasks'
     case 'implementing': return 'implement'
-    case 'releasing':    return 'review'
-    case 'done':         return 'deliver'
+    case 'releasing':    return 'deliver'
+    case 'done':         return null
     case 'backlog':      return null
     default:             return null
   }
@@ -61,11 +61,13 @@ export function stepsForColumn(lane: BoardStatus): string[] {
     case 'specified':    return ['specify']
     case 'planned':      return ['plan']
     case 'tasked':       return ['tasks']
-    case 'implementing': return ['testplan', 'parallelize', 'implement', 'verify']
-    // Deliver is what finishes a feature, so it is the drop onto Done; the card
-    // sits in Releasing while it runs.
-    case 'releasing':    return ['accept', 'review']
-    case 'done':         return ['deliver']
+    // Building the feature: code, then code review and QA (review first, or alongside).
+    case 'implementing': return ['testplan', 'parallelize', 'implement', 'review', 'verify']
+    // Releasing is delivery only: merge, deploy, UAT. Accepting a short
+    // verification is the other way in, since it closes QA.
+    case 'releasing':    return ['accept', 'deliver']
+    // Done is a result (delivery reported MERGED), not a step to run.
+    case 'done':         return []
     case 'backlog':      return []
     default:             return []
   }
@@ -100,9 +102,11 @@ export interface LaneEvidence {
   accepted?: boolean
   /** From delivery-report.md; only MERGED finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
+  /** From code-review.md; a feature is released only once its code review approved it. */
+  codeReviewStatus?: 'approved' | 'changes_requested'
 }
 
-const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestrate', 'verify']
+const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestrate', 'review', 'verify']
 
 /**
  * The lane a project belongs in.
@@ -113,19 +117,19 @@ const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestr
  * its last artifact named — "Tasked" — and look stuck. Implementation counts
  * as started once any task is ticked off or any later document exists.
  *
- * A verified feature — or one a person accepted at partial — is releasing:
- * code review and delivery (merge, deploy, UAT) are separate steps still to
- * come. It is done only once delivery reports MERGED. A run on a particular
- * stage right now places the card by that stage. Review counts as releasing
- * only for a verified or accepted feature: the full pipeline reviews before it
- * verifies, and that review is still part of building.
+ * Code review and QA are part of building it, review first (the order the
+ * pipeline runs them in: implement → review → verify). A feature is releasing
+ * once its code review approved it and verification passed or a person
+ * accepted it; what is left is delivery — merge, deploy, UAT. It is done only
+ * once delivery reports MERGED. A run on a particular stage right now places
+ * the card by that stage.
  */
 export function laneForProject(evidence: LaneEvidence): BoardStatus {
   if (evidence.deliveryStatus === 'merged') return 'done'
-  const settled = evidence.verificationStatus === 'pass' || Boolean(evidence.accepted)
-  if (evidence.activeStage === 'deliver' || (evidence.activeStage === 'review' && settled)) return 'releasing'
-  const buildingNow = Boolean(evidence.activeStage && [...IMPLEMENTATION_STAGES, 'review'].includes(evidence.activeStage))
-  if (!buildingNow && settled) return 'releasing'
+  if (evidence.activeStage === 'deliver') return 'releasing'
+  const buildingNow = Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
+  const qaDone = evidence.verificationStatus === 'pass' || Boolean(evidence.accepted)
+  if (!buildingNow && qaDone && evidence.codeReviewStatus === 'approved') return 'releasing'
 
   const implementing = Boolean(evidence.implementationArtifacts)
     || (evidence.tasksDone ?? 0) > 0

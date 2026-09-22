@@ -13,6 +13,12 @@ export interface BranchVariables {
   /** From code-review.md "Code Review Status: APPROVED|CHANGES_REQUESTED" (lowercased). */
   code_review_status?: 'approved' | 'changes_requested'
   last_review_decision?: 'approved' | 'changes_requested'
+  /**
+   * 'true' when verification is short of PASS but close enough to accept: more
+   * than 95% of criteria met and nothing critical open (the board's "Accept and
+   * finish" rule). Another pass would most likely land in the same place.
+   */
+  verification_near_pass?: 'true' | 'false'
   iteration?: string  // stringified count for the current step id
 }
 
@@ -82,6 +88,19 @@ export function evaluateBranchExpression(expr: string, vars: BranchVariables): b
   const actual = (vars as Record<string, string | undefined>)[name!]
   const eq = actual === literal
   return op === '==' ? eq : !eq
+}
+
+/** Whether the latest verification report is short of PASS but close enough to accept. */
+export async function readVerificationNearPass(cwd: string): Promise<'true' | 'false' | undefined> {
+  const specsDir = join(cwd, 'specs')
+  const latest = (await readdir(specsDir).catch(() => [] as string[])).sort().reverse()[0]
+  if (!latest) return undefined
+  const report = await readFile(join(specsDir, latest, 'verification-report.md'), 'utf8').catch(() => undefined)
+  if (!report) return undefined
+  const status = /Verification Status:\s*\**\s*(PASS|FAIL|PARTIAL)/i.exec(report)?.[1]?.toLowerCase() as 'pass' | 'fail' | 'partial' | undefined
+  if (!status) return undefined
+  const { acceptanceRecommended, summarizeVerification } = await import('./verification-summary')
+  return acceptanceRecommended(status, summarizeVerification(report)) ? 'true' : 'false'
 }
 
 /**

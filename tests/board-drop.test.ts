@@ -20,8 +20,8 @@ describe('stepForColumn', () => {
     { lane: 'planned',      expected: 'plan' },
     { lane: 'tasked',       expected: 'tasks' },
     { lane: 'implementing', expected: 'implement' },
-    { lane: 'releasing',    expected: 'review' },
-    { lane: 'done',         expected: 'deliver' },
+    { lane: 'releasing',    expected: 'deliver' },
+    { lane: 'done',         expected: null },
     { lane: 'backlog',      expected: null },
   ]
 
@@ -49,8 +49,8 @@ describe('isEligibleDrop', () => {
     expect(isEligibleDrop(card('specify'), 'specified')).toBe(true)
     expect(isEligibleDrop(card('plan'), 'planned')).toBe(true)
     expect(isEligibleDrop(card('implement'), 'implementing')).toBe(true)
-    expect(isEligibleDrop(card('review'), 'releasing')).toBe(true)
-    expect(isEligibleDrop(card('deliver'), 'done')).toBe(true)
+    expect(isEligibleDrop(card('review'), 'implementing')).toBe(true)
+    expect(isEligibleDrop(card('deliver'), 'releasing')).toBe(true)
   })
 
   test('mismatch → false (no lane-skipping)', () => {
@@ -108,23 +108,31 @@ describe('laneForProject', () => {
     expect(laneForProject({ ...base, tasksDone: 0 })).toBe('tasked')
   })
 
-  test('a verified feature is releasing until delivery merges it', () => {
-    expect(laneForProject({ ...base, verificationStatus: 'partial' })).toBe('implementing')
-    expect(laneForProject({ ...base, verificationStatus: 'pass' })).toBe('releasing')
-    expect(laneForProject({ ...base, verificationStatus: 'pass', deliveryStatus: 'partial' })).toBe('releasing')
-    expect(laneForProject({ ...base, verificationStatus: 'pass', deliveryStatus: 'merged' })).toBe('done')
+  test('a reviewed and verified feature is releasing until delivery merges it', () => {
+    const reviewed = { ...base, codeReviewStatus: 'approved' as const }
+    expect(laneForProject({ ...reviewed, verificationStatus: 'partial' })).toBe('implementing')
+    expect(laneForProject({ ...reviewed, verificationStatus: 'pass' })).toBe('releasing')
+    expect(laneForProject({ ...reviewed, verificationStatus: 'partial', accepted: true })).toBe('releasing')
+    expect(laneForProject({ ...reviewed, verificationStatus: 'pass', deliveryStatus: 'partial' })).toBe('releasing')
+    expect(laneForProject({ ...reviewed, verificationStatus: 'pass', deliveryStatus: 'merged' })).toBe('done')
+  })
+
+  test('verification alone does not release a feature: code review comes with QA', () => {
+    expect(laneForProject({ ...base, verificationStatus: 'pass' })).toBe('implementing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', codeReviewStatus: 'changes_requested' })).toBe('implementing')
+    expect(laneForProject({ ...base, accepted: true, verificationStatus: 'partial' })).toBe('implementing')
   })
 
   test('a run in flight places the card by its stage', () => {
     expect(laneForProject({ ...base, activeStage: 'implement' })).toBe('implementing')
     expect(laneForProject({ ...base, activeStage: 'testplan' })).toBe('implementing')
-    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'review' })).toBe('releasing')
-    expect(laneForProject({ ...base, accepted: true, verificationStatus: 'partial', activeStage: 'review' })).toBe('releasing')
-    expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('releasing')
-    // The full pipeline reviews before it verifies: that review is still building.
+    // Review and verify are building the feature, whatever came before.
     expect(laneForProject({ ...base, activeStage: 'review' })).toBe('implementing')
-    // Fixing review findings on a verified feature is building again.
-    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'implement' })).toBe('implementing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'review' })).toBe('implementing')
+    expect(laneForProject({ ...base, codeReviewStatus: 'approved', activeStage: 'verify' })).toBe('implementing')
+    expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('releasing')
+    // Fixing review findings on a reviewed, verified feature is building again.
+    expect(laneForProject({ ...base, codeReviewStatus: 'approved', verificationStatus: 'pass', activeStage: 'implement' })).toBe('implementing')
     expect(laneForProject({ ...base, activeStage: 'plan' })).toBe('tasked')
   })
 
@@ -139,17 +147,17 @@ describe('laneForProject', () => {
 describe('a lane is a phase, not one step', () => {
   const card = (step: string): DropCandidateCard => ({ recommendedAction: { step, label: `Run ${step}`, tab: 'specs', reason: 'next' } })
 
-  test('the steps that lead into Implementing all land there', () => {
-    for (const step of ['testplan', 'parallelize', 'implement', 'verify']) {
+  test('the steps that lead into Implementing all land there, review and QA included', () => {
+    for (const step of ['testplan', 'parallelize', 'implement', 'review', 'verify']) {
       expect(isEligibleDrop(card(step), 'implementing')).toBe(true)
     }
   })
 
-  test('accepting and review lead to Releasing; deliver leads to Done', () => {
+  test('Releasing takes only accept and deliver; nothing is dropped on Done', () => {
     expect(isEligibleDrop(card('accept'), 'releasing')).toBe(true)
-    expect(isEligibleDrop(card('review'), 'releasing')).toBe(true)
-    expect(isEligibleDrop(card('deliver'), 'done')).toBe(true)
-    expect(isEligibleDrop(card('verify'), 'done')).toBe(false)
+    expect(isEligibleDrop(card('deliver'), 'releasing')).toBe(true)
+    expect(isEligibleDrop(card('review'), 'releasing')).toBe(false)
+    for (const step of ['verify', 'review', 'deliver', 'accept']) expect(isEligibleDrop(card(step), 'done')).toBe(false)
   })
 
   test('a card whose next step is earlier still cannot skip ahead', () => {
