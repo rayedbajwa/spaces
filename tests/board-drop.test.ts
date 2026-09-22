@@ -118,8 +118,11 @@ describe('laneForProject', () => {
   test('a run in flight places the card by its stage', () => {
     expect(laneForProject({ ...base, activeStage: 'implement' })).toBe('implementing')
     expect(laneForProject({ ...base, activeStage: 'testplan' })).toBe('implementing')
-    expect(laneForProject({ ...base, activeStage: 'review' })).toBe('releasing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'review' })).toBe('releasing')
+    expect(laneForProject({ ...base, accepted: true, verificationStatus: 'partial', activeStage: 'review' })).toBe('releasing')
     expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('releasing')
+    // The full pipeline reviews before it verifies: that review is still building.
+    expect(laneForProject({ ...base, activeStage: 'review' })).toBe('implementing')
     // Fixing review findings on a verified feature is building again.
     expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'implement' })).toBe('implementing')
     expect(laneForProject({ ...base, activeStage: 'plan' })).toBe('tasked')

@@ -1670,9 +1670,9 @@ function App() {
 
   async function handleBoardDrop(card: BoardCard, targetLane: BoardStatus) {
     setDraggedProjectNamespace('')
-    // Dropping a feature whose verification came back short onto Done is a
+    // Dropping a feature whose verification came back short onto Releasing is a
     // person saying "this is good enough": record that instead of re-running QA.
-    if ((targetLane === 'releasing' || targetLane === 'done') && !card.accepted && ['partial', 'fail'].includes(card.verificationStatus)) {
+    if (targetLane === 'releasing' && !card.accepted && ['partial', 'fail'].includes(card.verificationStatus)) {
       await acceptFeature(card)
       return
     }

@@ -3043,7 +3043,9 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
     return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new feature.' }
   }
   if (artifacts.codeReviewStatus === 'changes_requested') {
-    return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
+    return artifacts.codeReviewStale
+      ? { step: 'review', label: 'Run review', tab: 'qa', reason: 'The requested changes were implemented after the last review. Review again.' }
+      : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
   }
   if (artifacts.codeReviewStatus !== 'approved') {
     return { step: 'review', label: 'Run review', tab: 'qa', reason: `${basis}. Code review comes next, before merging and deploying.` }
@@ -3066,6 +3068,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     accepted: await readAcceptance(projectRoot).catch(() => undefined) as Acceptance | undefined,
     verificationSummary: undefined as VerificationSummary | undefined,
     codeReviewStatus: undefined as 'approved' | 'changes_requested' | undefined,
+    codeReviewStale: false,
     deliveryStatus: undefined as 'merged' | 'partial' | 'blocked' | undefined,
     scope: {
       requirements: 0,
@@ -3116,6 +3119,15 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/code-review.md`, 'Review', `${featurePrefix} code review`)) {
     const review = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/code-review.md`)))?.[1]
     flags.codeReviewStatus = review ? (/^approved$/i.test(review) ? 'approved' : 'changes_requested') : undefined
+    // Implementing the findings updates tasks.md but leaves the review as it was,
+    // so a newer tasks.md means the requested changes are in and need reviewing.
+    if (flags.codeReviewStatus === 'changes_requested') {
+      const [reviewed, tasked] = await Promise.all([
+        stat(join(projectRoot, `${latestFeature.relativePath}/code-review.md`)).catch(() => undefined),
+        stat(join(projectRoot, `${latestFeature.relativePath}/tasks.md`)).catch(() => undefined),
+      ])
+      flags.codeReviewStale = Boolean(reviewed && tasked && tasked.mtimeMs > reviewed.mtimeMs)
+    }
   }
   if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/delivery-report.md`, 'Deliver', `${featurePrefix} delivery report`)) {
     const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/delivery-report.md`)))?.[1]
@@ -4066,6 +4078,8 @@ interface ProjectArtifacts {
   /** Criteria met and critical issues open, as the verification report states them. */
   verificationSummary?: VerificationSummary
   codeReviewStatus?: 'approved' | 'changes_requested'
+  /** Changes were requested and tasks.md has been updated since: the review needs running again. */
+  codeReviewStale?: boolean
   /** From delivery-report.md; MERGED is what finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
   scope: {

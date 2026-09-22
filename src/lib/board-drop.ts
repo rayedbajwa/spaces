@@ -103,8 +103,6 @@ export interface LaneEvidence {
 }
 
 const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestrate', 'verify']
-/** Review and deliver are releasing the feature, not building it. */
-const RELEASE_STAGES = ['review', 'deliver']
 
 /**
  * The lane a project belongs in.
@@ -118,13 +116,16 @@ const RELEASE_STAGES = ['review', 'deliver']
  * A verified feature — or one a person accepted at partial — is releasing:
  * code review and delivery (merge, deploy, UAT) are separate steps still to
  * come. It is done only once delivery reports MERGED. A run on a particular
- * stage right now places the card by that stage.
+ * stage right now places the card by that stage. Review counts as releasing
+ * only for a verified or accepted feature: the full pipeline reviews before it
+ * verifies, and that review is still part of building.
  */
 export function laneForProject(evidence: LaneEvidence): BoardStatus {
   if (evidence.deliveryStatus === 'merged') return 'done'
-  if (evidence.activeStage && RELEASE_STAGES.includes(evidence.activeStage)) return 'releasing'
-  const buildingNow = Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
-  if (!buildingNow && (evidence.verificationStatus === 'pass' || evidence.accepted)) return 'releasing'
+  const settled = evidence.verificationStatus === 'pass' || Boolean(evidence.accepted)
+  if (evidence.activeStage === 'deliver' || (evidence.activeStage === 'review' && settled)) return 'releasing'
+  const buildingNow = Boolean(evidence.activeStage && [...IMPLEMENTATION_STAGES, 'review'].includes(evidence.activeStage))
+  if (!buildingNow && settled) return 'releasing'
 
   const implementing = Boolean(evidence.implementationArtifacts)
     || (evidence.tasksDone ?? 0) > 0
