@@ -39,6 +39,7 @@ import { getWorkerId, heartbeatWorker, unregisterWorker } from './lib/worker-reg
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
+import { restoreRunSession, saveRunSession } from './lib/session-store'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -123,6 +124,13 @@ async function drainEvents(runId: string): Promise<void> {
   eventChains.delete(runId)
 }
 
+/** Keep the database copy of the run's session current; a failure here must never fail the run. */
+async function saveSessionCopy(runId: string, sessionFile?: string | null): Promise<void> {
+  if (!sessionFile) return
+  await saveRunSession(runId, sessionFile).catch((err) =>
+    workerLog.warn('saving the session copy failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+}
+
 /** A person's answer to a run paused at a gate, carried by the job that resumes it (see the answer route). */
 interface GateAnswer {
   text: string
@@ -188,6 +196,15 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
   // Rerun/resume: continue the previous attempt's agent session (its whole
   // conversation, tool results and files read) and seed the cross-stage handoff
   // thread from what earlier stages recorded, instead of starting from scratch.
+  // This worker's disk may not have the conversation (a new volume, another
+  // host): bring it back from the database copy before deciding how to resume.
+  if (startStage && run.sessionFile) {
+    const restored = await restoreRunSession(runId, run.sessionFile).catch((err) => {
+      workerLog.warn('restoring the session copy failed', { runId, error: err instanceof Error ? err.message : String(err) })
+      return false
+    })
+    if (restored) await queueEvent(runId, 'restored', { what: 'agent session', from: 'database' })
+  }
   const resumeSessionFile = startStage && run.sessionFile && (await fileExists(run.sessionFile)) ? run.sessionFile : undefined
   // Answering a gate reopens the paused conversation and continues it in place.
   // Without the session file that is impossible: an approval moves on to the
@@ -331,6 +348,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'log', { stream: 'stderr', chunk })
       },
       onStageHandoff: async (h) => {
+        // A stage finished: keep the database copy of the conversation current.
+        void saveSessionCopy(runId, engines.get(runId)?.getSessionFile())
         const sql = getDb()
         await sql`
           INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
@@ -406,6 +425,8 @@ async function finishCancelledRun(runId: string): Promise<void> {
 }
 
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {
+  // Paused or finished: the next step (an answer, a rerun) may happen on another worker.
+  await saveSessionCopy(runId, progress.sessionFile)
   if (progress.status === 'paused') {
     await updateRunStatus(runId, {
       status: 'paused',

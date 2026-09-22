@@ -944,3 +944,15 @@ DROP TRIGGER IF EXISTS project_responsibilities_touch ON project_responsibilitie
 CREATE TRIGGER project_responsibilities_touch
   BEFORE UPDATE ON project_responsibilities
   FOR EACH ROW EXECUTE FUNCTION touch_project();
+
+-- A copy of each run's agent session (the conversation), gzip-compressed, so a
+-- run can continue its conversation on a worker whose disk does not have the
+-- file (lib/session-store.ts). Goes away with the run.
+CREATE TABLE IF NOT EXISTS run_sessions (
+  run_id        UUID PRIMARY KEY REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+  session_file  TEXT NOT NULL,
+  content_gzip  BYTEA NOT NULL,
+  sha256        TEXT NOT NULL,
+  bytes         INTEGER NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
