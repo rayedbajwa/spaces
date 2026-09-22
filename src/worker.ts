@@ -131,6 +131,13 @@ async function saveSessionCopy(runId: string, sessionFile?: string | null): Prom
     workerLog.warn('saving the session copy failed', { runId, error: err instanceof Error ? err.message : String(err) }))
 }
 
+/**
+ * Answers being applied on this worker, until the flow moves on to its next
+ * stage. A transient failure before then retries with the answer again, so a
+ * person's answer is never dropped by a provider hiccup.
+ */
+const pendingAnswers = new Map<string, { answer: GateAnswer; stage: StageName }>()
+
 /** A person's answer to a run paused at a gate, carried by the job that resumes it (see the answer route). */
 interface GateAnswer {
   text: string
@@ -191,7 +198,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
 
   // Warm agent pool: reuse this project's primary session across runs so
   // the agent keeps context. Falls back to a fresh session if none warmed.
-  let releaseAgent: ((sessionFile?: string | null) => Promise<void>) | undefined
+  let releaseAgent: ((sessionFile?: string | null, options?: { detach?: boolean }) => Promise<void>) | undefined
   let poolInfo: { wasWarm: boolean; agentId: string } | undefined
   // Rerun/resume: continue the previous attempt's agent session (its whole
   // conversation, tool results and files read) and seed the cross-stage handoff
@@ -210,11 +217,17 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
   // Without the session file that is impossible: an approval moves on to the
   // next stage, and anything else re-runs the stage with the answer in context.
   const rehydrate = Boolean(answer && resumeSessionFile && startStage)
+  if (rehydrate) pendingAnswers.set(runId, { answer: answer!, stage: startStage! })
   let answerContext = ''
   if (answer && !rehydrate) {
     const approval = parseApprovalAnswer(answer.text)
     if (answer.pauseKind === 'review' && approval.approved) {
-      if (approval.note) await appendReviewerNote(runId, startStage ?? null, approval.note)
+      if (approval.note) {
+        await appendReviewerNote(runId, startStage ?? null, approval.note)
+        // The options below are built from this run row: pick up the note just stored.
+        const refreshed = await getRun(runId)
+        if (refreshed) run.optionsJson = refreshed.optionsJson
+      }
       const next = startStage ? templateStages[templateStages.indexOf(startStage) + 1] : undefined
       if (!next) {
         await updateRunStatus(runId, { status: 'completed', currentStage: null, pauseKind: null, errorMessage: null })
@@ -334,6 +347,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
       },
       onStageStart: ({ stage, index, total }) => {
+        // The answer has been applied once a stage starts: a later failure retries without it.
+        pendingAnswers.delete(runId)
         // A flow reports progress only when it pauses or finishes, so without this
         // the stored stage lags behind the one running — and a restart would then
         // resume at the wrong stage, or from the beginning when none was stored.
@@ -403,7 +418,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       await queueEvent(runId, 'agent_reused', { agentId: poolInfo.agentId, role: 'primary' })
     }
     await applyProgress(runId, result)
-    await releaseAgent?.(result.sessionFile ?? null)
+    // A run that stopped (at a gate, or paused) reopens this session later: it
+    // is not handed to the next run of the project in the meantime.
+    await releaseAgent?.(result.sessionFile ?? null, { detach: result.status === 'paused' })
+    pendingAnswers.delete(runId)
   } catch (error) {
     await releaseAgent?.(null)
     if (await runWasCancelled(runId)) {
@@ -540,10 +558,15 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
     const engine = engines.get(runId)
     await engine?.dispose()
     engines.delete(runId)
+    // Still at the gate the answer was for: retry with the answer, so it is applied, not lost.
+    const pending = pendingAnswers.get(runId)
+    const carry = pending && pending.stage === failedStage ? { answer: pending.answer } : {}
+    pendingAnswers.delete(runId)
     await requeueRunFromStage(runId, failedStage ?? null, note)
-    await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId, fromStage: failedStage }, runId })
+    await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId, fromStage: failedStage, ...carry }, runId })
     return
   }
+  pendingAnswers.delete(runId)
 
   if (retry && attempts < retry.max) {
     const nextAttempt = attempts + 1

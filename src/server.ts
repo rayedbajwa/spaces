@@ -82,7 +82,7 @@ import {
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
-import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, queueAnsweredRun } from './lib/run-store'
+import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
   addRepo as projAddRepo,
   createProject as projCreate,
@@ -2252,20 +2252,15 @@ async function route(req: Request): Promise<Response> {
 
     // No worker holds the paused run: the answer becomes a job any worker can
     // take, which reopens the paused conversation at this gate and continues it.
+    // Leaving 'paused', resolving the gate and queuing the job happen together.
     if (!row.projectId) return sendJson(409, { error: 'This run is not attached to a project, so it cannot be resumed.' })
-    const pauseKind = row.pauseKind === 'review' ? 'review' : 'clarification'
-    const stage = (row.currentStage as StageName | null) ?? null
-    // Only one answer wins: the run leaves 'paused' atomically, so a double click is refused.
-    if (!(await queueAnsweredRun(runId, stage))) return sendJson(409, { error: 'Run is not waiting for input.' })
-    const gate = await dbResolveOpenGate(runId, answer)
-    await dbAppendEvent({ runId, kind: 'gate_resolved', payload: { gateId: gate?.gateId, kind: gate?.kind, response: answer } })
-    await enqueueJob({
-      projectId: row.projectId,
-      kind: 'pipeline_run',
-      triggerSource: 'user',
-      payload: { runId, ...(stage ? { fromStage: stage } : {}), answer: { text: answer, pauseKind } },
-      runId,
-    })
+    if (row.pauseKind !== 'review' && row.pauseKind !== 'clarification') {
+      return sendJson(409, { error: 'This run was paused by a person, not waiting for an answer. Resume it instead.', code: 'resume_instead' })
+    }
+    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
+    if (!answered.ok) {
+      return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
+    }
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
   }
