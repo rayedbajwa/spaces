@@ -441,7 +441,7 @@ export class AIDLCFlow {
     while (this.stageIndex < this.stages.length) {
       const stage = this.stages[this.stageIndex]
       if (await this.options.shouldPauseBeforeStage?.({ stageIndex: this.stageIndex, stage })) {
-        this.print(`\n[paused] Project paused by a user before stage ${stage}. Resume the project to continue from here.\n`)
+        this.print(`\n[paused] Stopping before stage ${stage}: the project was paused, or the worker is restarting for a deploy and the new one continues from here.\n`)
         return this.pause('user', stage)
       }
       // Never open a second feature while the last one is unfinished: the new
