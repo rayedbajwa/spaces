@@ -238,6 +238,22 @@ export async function requeueRunFromStage(runId: string, fromStage: StageName | 
   return row?.retryCount ?? 0
 }
 
+/**
+ * Queue a run that a person just answered at a gate. Unlike a re-queue after a
+ * failure it does not count as a retry (retries are budgeted per run), and the
+ * stage stays the one that paused: the worker reopens the conversation there.
+ */
+export async function queueAnsweredRun(runId: string, stage: StageName | null): Promise<boolean> {
+  const sql = getDb()
+  const rows = await sql`
+    UPDATE pipeline_runs
+       SET status = 'queued', pause_kind = NULL, current_stage = ${stage}, error_message = NULL, owning_worker_id = NULL, updated_at = now()
+     WHERE run_id = ${runId} AND status = 'paused'
+     RETURNING run_id
+  `
+  return rows.length > 0
+}
+
 /** Forget which worker owns a run (its engine is gone), so answers fall back to re-queueing. */
 export async function clearRunOwner(runId: string): Promise<void> {
   const sql = getDb()

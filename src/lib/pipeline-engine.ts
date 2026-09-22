@@ -131,6 +131,11 @@ export class PipelineEngine {
     return await this.flow.answer(input)
   }
 
+  /** Continue a run that paused at a gate in another process (see FlowOptions.resumeWaiting). */
+  async resumeWithAnswer(input: string): Promise<FlowProgress> {
+    return await this.flow.resumeWithAnswer(input)
+  }
+
   async dispose(): Promise<void> {
     await this.flow.dispose()
   }

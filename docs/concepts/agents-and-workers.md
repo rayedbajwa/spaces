@@ -123,18 +123,23 @@ Two ways to run them:
   fleet; each worker is a Bun process holding live agent sessions
   (~300–500 MB).
 
-Workers register in a `workers` table. The server only routes an answer to the
-worker that owns a paused run when that worker is alive; otherwise it
-re-queues the paused stage so a new worker restarts it.
+Workers register in a `workers` table. **No worker holds a paused run.** When a
+run stops at an approval gate or a question, the worker records the pause,
+keeps the agent's session file on the run and lets the engine go, so it can go
+idle and free its slot. Answering queues a job that any worker takes: it
+reopens that session in the same paused state and continues from your answer,
+exactly as if the run had never stopped. If the session file is gone, an
+approval moves on to the next stage and any other answer re-runs the stage
+with the answer in its context.
 
 ## Failure handling
 
 | Situation | Behaviour |
 |---|---|
 | Worker restarts while a run is executing | Run re-queued from the interrupted stage |
-| Worker restarts while a run is paused | Stays paused; answering restarts the stage on a new worker |
+| Worker restarts while a run is paused | Nothing to lose: no worker holds it; answering continues it on any worker |
 | Transient provider error (socket closed, 5xx, overloaded) | Retried from the same stage, twice, before failing |
-| Second answer while the first is being processed | Ignored with a timeline note (previously failed the run) |
+| Second answer while the first is being processed | Refused: the first answer takes the run out of paused |
 | Job whose worker stopped heartbeating | Closed and its run handed off (no fixed 10-minute timeout) |
 | Failed or finished run | **Rerun from &lt;stage&gt;** / **Rerun from start**, resuming the previous session |
 
