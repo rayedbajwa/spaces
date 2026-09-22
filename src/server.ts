@@ -3092,16 +3092,16 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
   }
   if (artifacts.codeReviewStatus === 'changes_requested') {
     return artifacts.codeReviewStale
-      ? { step: 'review', label: 'Run review', tab: 'qa', reason: 'The requested changes were implemented after the last review. Review again.' }
+      ? { step: 'review', label: 'Run review', tab: 'overview', reason: 'The requested changes were implemented after the last review. Review again.' }
       : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
   }
   if (artifacts.codeReviewStatus !== 'approved') {
-    return { step: 'review', label: 'Run review', tab: 'qa', reason: `${basis}. Code review comes next, before merging and deploying.` }
+    return { step: 'review', label: 'Run review', tab: 'overview', reason: `${basis}. Code review comes next, before merging and deploying.` }
   }
   if (artifacts.deliveryStatus) {
-    return { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
+    return { step: 'deliver', label: 'Run deliver', tab: 'overview', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
   }
-  return { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: 'Review approved. Merge, deploy and run UAT.' }
+  return { step: 'deliver', label: 'Run deliver', tab: 'overview', reason: 'Review approved. Merge, deploy and run UAT.' }
 }
 
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
@@ -4151,7 +4151,8 @@ interface RecommendedActionRecord {
   /** A pipeline stage to run, or 'accept' to record that a person accepts the feature as it stands. */
   step: StageName | 'accept'
   label: string
-  tab: GateReadinessRecord['tab']
+  /** Review and deliver open the overview: releasing is not part of QA. */
+  tab: GateReadinessRecord['tab'] | 'overview'
   reason: string
 }
 
