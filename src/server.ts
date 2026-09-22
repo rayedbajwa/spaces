@@ -123,6 +123,7 @@ import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
 import { readTaskProgress } from './lib/run-resume'
 import { laneForProject } from './lib/board-drop'
+import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
@@ -1396,6 +1397,62 @@ async function route(req: Request): Promise<Response> {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
     return sendJson(200, await buildQAOverview(projectNamespace, projectMeta.path))
+  }
+
+  /**
+   * Accept a feature whose verification came back partial (or failed) and
+   * finish it. The decision belongs to a person, so it is recorded with their
+   * name, the verification status at the time and their reason, and the board
+   * treats the feature as done from then on. Merging and deploying stay with
+   * the ordinary deliver step, which the response points at.
+   */
+  if (method === 'POST' && /^\/api\/projects\/[^/]+\/accept$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const denied = requireProjectRole(project, 'member', 'Only team members can accept a feature.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+
+    const body = await readJson<{ note?: string }>(req)
+    const artifacts = await collectProjectArtifacts(projectNamespace, projectMeta.path)
+    if (artifacts.verificationStatus === 'missing') {
+      return sendJson(409, {
+        error: 'There is nothing to accept yet: this feature has no verification report. Run verify first.',
+        code: 'not_verified',
+      })
+    }
+    if (artifacts.verifiedPass) {
+      return sendJson(409, { error: 'Verification already passed, so this feature is done. Nothing to accept.', code: 'already_passed' })
+    }
+
+    const recorded = await recordAcceptance({
+      projectPath: projectMeta.path,
+      verificationStatus: artifacts.verificationStatus,
+      acceptedBy: auth?.user.name || auth?.user.email || 'local user',
+      note: body.note,
+    })
+    if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
+    serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
+
+    // The caller runs the final step itself through the ordinary execute-step
+    // route, so merging and deploying keep their own guards and approvals.
+    return sendJson(200, {
+      acceptance: recorded.acceptance,
+      nextStep: { step: 'deliver', label: 'Run deliver', reason: 'Accepted — merge and deploy when you are ready.' },
+    })
+  }
+
+  /** Undo an acceptance: the feature goes back to whatever its verification says. */
+  if (method === 'DELETE' && /^\/api\/projects\/[^/]+\/accept$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const denied = requireProjectRole(project, 'member', 'Only team members can withdraw an acceptance.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+    const withdrawn = await withdrawAcceptance(projectMeta.path)
+    return sendJson(200, { withdrawn })
   }
 
   if (method === 'POST' && /^\/api\/projects\/[^/]+\/tasks\/[^/]+\/run$/.test(url.pathname)) {
@@ -2908,6 +2965,7 @@ async function buildBoard(): Promise<BoardResponse> {
       planned: artifacts.planned,
       tasked: artifacts.tasked,
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
+      accepted: Boolean(artifacts.accepted),
       implementationArtifacts: hasLaterArtifact,
       tasksDone: tasks?.done ?? 0,
       activeStage: latestRun && ['running', 'paused'].includes(latestRun.status) ? latestRun.stage ?? null : null,
@@ -2960,6 +3018,11 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
   if (artifacts.verificationStatus === 'missing') return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'Ready to code — no verification report yet.' }
+  if (artifacts.accepted && !artifacts.verifiedPass) {
+    return has('Deliver')
+      ? { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: `Accepted at ${artifacts.accepted.verificationStatus} verification and delivered.` }
+      : { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Accepted by ${artifacts.accepted.acceptedBy} at ${artifacts.accepted.verificationStatus} verification. Ready to merge and deploy.` }
+  }
   if (!artifacts.verifiedPass) return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
   return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Verified and done. The next specify run starts a new feature.' }
 }
@@ -2973,6 +3036,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     tasked: false,
     verifiedPass: false,
     verificationStatus: 'missing' as 'pass' | 'partial' | 'fail' | 'missing',
+    accepted: await readAcceptance(projectRoot).catch(() => undefined) as Acceptance | undefined,
     scope: {
       requirements: 0,
       tasks: 0,
@@ -3954,6 +4018,8 @@ interface ProjectArtifacts {
   tasked: boolean
   verifiedPass: boolean
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
+  /** Set when a person accepted the feature despite a verification that did not pass. */
+  accepted?: Acceptance
   scope: {
     requirements: number
     tasks: number

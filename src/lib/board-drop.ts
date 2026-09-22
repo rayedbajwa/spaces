@@ -91,6 +91,8 @@ export interface LaneEvidence {
   tasksDone?: number
   /** The stage a run is on right now, when one is running or paused. */
   activeStage?: string | null
+  /** A person accepted the feature as delivered even though verification did not pass. */
+  accepted?: boolean
 }
 
 const IMPLEMENTATION_STAGES = ['implement', 'orchestrate', 'review', 'verify', 'deliver']
@@ -106,7 +108,9 @@ const IMPLEMENTATION_STAGES = ['implement', 'orchestrate', 'review', 'verify', '
  * project is done only when verification actually passed.
  */
 export function laneForProject(evidence: LaneEvidence): BoardStatus {
-  if (evidence.verificationStatus === 'pass') return 'done'
+  // Verification passing finishes a feature; so does a person accepting one
+  // that only came back partial, which is their call to make.
+  if (evidence.verificationStatus === 'pass' || evidence.accepted) return 'done'
 
   const implementing = Boolean(evidence.implementationArtifacts)
     || (evidence.tasksDone ?? 0) > 0

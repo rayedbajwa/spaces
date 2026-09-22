@@ -67,6 +67,20 @@ advisory context: Product Owner (specify/review), Lead Engineer
 an unresolved project asks for repair instead of selecting a person. This
 context does not modify the template's human gates or team-role authorization.
 
+## Accepting a partial verification
+
+Verification reports `PASS`, `PARTIAL` or `FAIL`, and only a pass finishes a
+feature on its own. Work often ends at partial for reasons that are nobody's
+fault — a browser suite that cannot run on this machine, a requirement deferred
+on purpose — so the person responsible can accept it instead: drag the card
+onto **Done**, or press **Accept and finish** in the project's QA tab.
+
+Accepting records `acceptance.md` beside the verification report with who
+accepted it, the verification status at that moment and the reason given. The
+board then treats the feature as done and offers `deliver` as the next step, so
+merging and deploying keep their own approvals. Withdrawing the acceptance puts
+the feature back where its verification left it.
+
 ## Development-environment setup
 
 Before `implement`, `orchestrate`, `review` and `verify` (and before parallel

@@ -81,6 +81,8 @@ own session, team creation and invites.
 | `POST /api/runs/:id/answer` | `{ answer }` for a paused run (`approve` / `continue` / text); falls back to re-queueing when the owning worker is gone |
 | `POST /api/runs/:id/rerun` | `{ fromStage?: string | 'start' }`; resumes the previous agent session |
 | `POST /api/projects/:slug/execute-step` | Run one stage: `{ step, force?, feature? }` |
+| `POST /api/projects/:slug/accept` | Accept a feature whose verification did not pass: `{ note? }`. Records who accepted it, the verification status at the time and the reason in `acceptance.md`, and the board counts the feature as done. `409 not_verified` when there is no report yet, `409 already_passed` when verification passed |
+| `DELETE /api/projects/:slug/accept` | Withdraw that acceptance; the feature returns to whatever its verification says |
 | `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status, tracker |
 
 ## Sub-agents
