@@ -49,6 +49,7 @@ import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usageFromMessage } from './lib/run-usage'
 import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
+import { drainBudget } from './lib/drain'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -69,6 +70,14 @@ const activeJobs = new Map<string, string>()
 const cancelledRuns = new Set<string>()
 /** Runs asked to pause (project paused); the flow stops before its next stage. */
 const pausedRuns = new Set<string>()
+/**
+ * Draining for a deploy (see lib/drain.ts): no new jobs are claimed, running
+ * stages finish, and each run is handed back to the queue at its next stage
+ * boundary instead of being killed mid-stage.
+ */
+let draining = false
+/** Runs the drain stopped at a stage boundary; they are re-queued, not paused. */
+const drainStopped = new Set<string>()
 
 /** A run_cancel NOTIFY: drop the live engine; the run row is already final. */
 async function handleRunCancel(runId: string): Promise<void> {
@@ -194,9 +203,16 @@ async function handleRunJob(runId: string, fromStage?: StageName): Promise<void>
     // Project paused (by NOTIFY here, or in the database): stop before the next stage.
     shouldPauseBeforeStage: async () => {
       if (pausedRuns.has(runId)) return true
-      if (!run.projectId) return false
-      const [row] = await getDb()<Array<{ pausedAt: string | null }>>`SELECT paused_at AS "pausedAt" FROM projects WHERE project_id = ${run.projectId}`
-      return Boolean(row?.pausedAt)
+      if (run.projectId) {
+        const [row] = await getDb()<Array<{ pausedAt: string | null }>>`SELECT paused_at AS "pausedAt" FROM projects WHERE project_id = ${run.projectId}`
+        if (row?.pausedAt) return true
+      }
+      // A deploy is draining this worker: stop here, between stages, and let the new one continue.
+      if (draining) {
+        drainStopped.add(runId)
+        return true
+      }
+      return false
     },
     ...(priorHandoffs.length ? { priorHandoffs } : {}),
     ...(resumeSessionFile
@@ -360,6 +376,15 @@ async function finishCancelledRun(runId: string): Promise<void> {
 }
 
 async function handleAnswerJob(runId: string, answer: string): Promise<void> {
+  // Draining: an answer must not start a stage here that the deploy would cut
+  // off. Let go of the engine and take the restart path below, which records
+  // the answer and re-queues the run for the new deployment.
+  if (draining && engines.has(runId)) {
+    const held = engines.get(runId)!
+    engines.delete(runId)
+    await held.dispose().catch(() => undefined)
+    await clearRunOwner(runId).catch(() => undefined)
+  }
   const engine = engines.get(runId)
   if (!engine) {
     // The engine that paused this run died with a previous worker process. We
@@ -429,6 +454,23 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
       currentStage: progress.stage,
       sessionFile: progress.sessionFile ?? null,
     })
+    if (progress.pauseKind === 'user' && drainStopped.delete(runId)) {
+      // Stopped by a deploy's drain, not by a person: the stage before this one
+      // finished here, so the new deployment picks the run up at this stage.
+      const run = await getRun(runId)
+      const note = `Deploy in progress: the previous stage finished before the restart; continuing from stage ${progress.stage ?? 'start'} on the new deployment.`
+      await requeueRunFromStage(runId, progress.stage ?? null, note)
+      await queueEvent(runId, 'requeued', { fromStage: progress.stage, reason: note, signal: 'drain' })
+      if (run?.projectId) {
+        await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId, fromStage: progress.stage ?? undefined }, runId })
+      }
+      const held = engines.get(runId)
+      engines.delete(runId)
+      await held?.dispose().catch(() => undefined)
+      await drainEvents(runId).catch(() => undefined)
+      workerLog.info('drain: run handed back at a stage boundary', { runId, fromStage: progress.stage })
+      return
+    }
     if (progress.pauseKind === 'user') {
       // Paused by a user at a stage boundary: no question to answer. Resuming the
       // project re-queues the run from `progress.stage`, so the engine can go.
@@ -640,7 +682,7 @@ const WORKER_IDLE_EXIT_SECONDS = Math.max(0, Number(process.env.WORKER_IDLE_EXIT
 let idleSince: number | undefined
 
 async function drainDispatcher(workerId: string): Promise<void> {
-  if (dispatcherRunning) return
+  if (dispatcherRunning || draining || shuttingDown) return
   dispatcherRunning = true
   try {
     // Claim runnable jobs until every slot is busy or nothing is runnable.
@@ -778,8 +820,31 @@ let priceCatalog: CatalogModel[] = []
 /** Periodic timers (heartbeat, polling floor, reapers); cleared first on shutdown so nothing queries a closing pool. */
 const timers: Array<ReturnType<typeof setInterval>> = []
 
+/**
+ * A deploy's SIGTERM with a drain budget: claim nothing new and wait for the
+ * running stages to finish (each run stops at its next stage boundary and is
+ * re-queued, or pauses at a gate, or completes). Returns when nothing is
+ * executing or the budget is spent; shutdown() then hands back whatever is left.
+ */
+async function drainRunningStages(budgetMs: number): Promise<void> {
+  draining = true
+  const deadline = Date.now() + budgetMs
+  workerLog.info('drain: finishing running stages before exit', { running: inFlightJobs.size, budgetSeconds: Math.round(budgetMs / 1000) })
+  while (inFlightJobs.size > 0 && Date.now() < deadline) {
+    await Promise.race([Promise.allSettled([...inFlightJobs]), new Promise((resolve) => setTimeout(resolve, 5_000))])
+  }
+  if (inFlightJobs.size > 0) workerLog.warn('drain: budget spent with stages still running; handing them back mid-stage', { running: inFlightJobs.size })
+  else workerLog.info('drain: nothing running; exiting')
+}
+
 async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return
+  // A second signal while draining is ignored, except Ctrl-C, which stops at once.
+  if (shuttingDown || (draining && signal !== 'SIGINT')) return
+  const budget = drainBudget()
+  if (signal === 'SIGTERM' && budget.workerMs > 0 && inFlightJobs.size > 0) {
+    await drainRunningStages(budget.workerMs)
+    if (shuttingDown) return
+  }
   shuttingDown = true
   for (const t of timers) clearInterval(t)
   workerLog.info('shutdown signal received; disposing engines', { signal })
