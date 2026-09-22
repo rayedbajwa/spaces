@@ -83,6 +83,9 @@ own session, team creation and invites.
 | `POST /api/projects/:slug/execute-step` | Run one stage: `{ step, force?, feature? }` |
 | `POST /api/projects/:slug/accept` | Accept a feature whose verification did not pass: `{ note? }`. Records who accepted it, the verification status at the time and the reason in `acceptance.md`, and the board counts the feature as done. `409 not_verified` when there is no report yet, `409 already_passed` when verification passed |
 | `DELETE /api/projects/:slug/accept` | Withdraw that acceptance; the feature returns to whatever its verification says |
+| `GET /api/projects/:slug/pull-requests` | The feature's pull requests in the project's repositories, open first, with CI and review state, plus the decisions recorded in Spaces and the overall decision (`approved`, `changes_requested` or `null`) |
+| `GET /api/projects/:slug/pull-requests/:owner/:repo/:number` | One pull request for review: changed files with their patches, review comments and reviews. `404` when the repository is not the project's |
+| `POST /api/projects/:slug/pull-requests/:owner/:repo/:number/review` | Post a review: `{ event: 'APPROVE' \| 'REQUEST_CHANGES' \| 'COMMENT', summary?, headSha?, comments?: [{ path, line, side: 'LEFT' \| 'RIGHT', body }] }`. Approve and request changes are recorded in `human-review.json` and, once they settle the feature, written to `code-review.md`. Returns `postedAs` (a comment when GitHub refuses the author's own review), `overall` and `nextStep`. `409 stale_head` when the pull request has new commits since `headSha` |
 | `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status, tracker |
 
 ## Sub-agents

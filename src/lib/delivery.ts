@@ -17,6 +17,8 @@ export interface TrackedPullRequest {
   url: string
   title: string
   head: string
+  /** Commit the head branch points at; a review decision holds only for this commit. */
+  headSha: string
   base: string
   state: 'open' | 'closed'
   merged: boolean
@@ -151,6 +153,7 @@ export async function inspectPullRequest(orgId: string, githubRepo: string, numb
     url: pr.html_url,
     title: pr.title,
     head: pr.head.ref,
+    headSha: pr.head.sha,
     base: pr.base.ref,
     state: pr.state,
     merged: pr.merged,

@@ -84,6 +84,33 @@ Code Review Status: CHANGES_REQUESTED
 blocker and major finding (and any failing CI) before continuing; `APPROVED`
 proceeds to `verify`.
 
+## Reviewing pull requests in Spaces
+
+The project page's **Code review** tab lists every pull request the feature
+opened, in each of the project's repositories, with CI and GitHub review
+state. Pick one to read its diff file by file, with existing review comments
+shown on their lines. Click **+** beside a line to draft an inline comment,
+then finish with **Approve**, **Request changes** or **Comment**. The review
+and its inline comments are posted to the pull request on GitHub.
+
+Approve and Request changes are also decisions the pipeline acts on. Each is
+kept in `human-review.json` in the feature directory, and holds only for the
+commit it was made on: a new push to the pull request voids it. Once the
+decisions settle the feature, `code-review.md` is rewritten with the usual
+status line:
+
+- changes requested on any open pull request → `CHANGES_REQUESTED`, with the
+  summary and inline comments as findings, so the next step is `implement`;
+- every open pull request approved → `APPROVED`, so the next step is
+  `deliver`.
+
+An automated review already in `code-review.md` is kept below the Spaces
+review. The pipeline's pull requests are authored by the GitHub App, and
+GitHub does not let an author approve or block its own pull request, so those
+reviews are posted as a comment that names the reviewer and their decision.
+The Spaces decision still counts; branch protection on GitHub still needs an
+approval from someone with access to the repository.
+
 ## Deliver stage
 
 `tasks` ends with a per-repository **## Delivery** group in dependency order.

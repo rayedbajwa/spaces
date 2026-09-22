@@ -9,6 +9,7 @@ import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
+import { CodeReviewPanel } from './code-review'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -17,6 +18,7 @@ const TAB_LABELS: Record<string, string> = {
   specs: 'Specs',
   testplan: 'Test plan',
   implementation: 'Implementation',
+  review: 'Code review',
   qa: 'QA',
   assistant: 'Assistant',
   context: 'Context',
@@ -48,7 +50,7 @@ type PauseKind = 'clarification' | 'review' | 'user'
 type TimelineStatus = 'running' | 'paused' | 'completed' | 'error'
 type TimelineKind = 'run' | 'stage' | 'review' | 'input'
 type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'releasing' | 'done'
-type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
+type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'review' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
 
 type TimelineEntry = {
   id: string
@@ -2278,7 +2280,7 @@ function App() {
             </header>
 
             <div className="tab-row project-tabs" role="tablist">
-              {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
+              {(['overview', 'specs', 'testplan', 'implementation', 'review', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
                 const needsAttention = tab === 'assistant' && selectedCardFresh.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(selectedCardFresh.automationState.state)
                 return (
                   <button
@@ -3210,6 +3212,16 @@ function App() {
                   <span className="field-hint" style={{ margin: 0 }}>⌘/Ctrl + Enter to send</span>
                 </div>
               </section>
+            )}
+
+            {activeProjectTab === 'review' && selectedProjectNamespace && (
+              <CodeReviewPanel
+                projectNamespace={selectedProjectNamespace}
+                onReviewed={(nextStep) => {
+                  void refreshBoard()
+                  if (nextStep) setStatusMessage(`Next step: ${nextStep.label}. ${nextStep.reason}`)
+                }}
+              />
             )}
 
             {activeProjectTab === 'promotions' && (

@@ -1401,6 +1401,95 @@ async function route(req: Request): Promise<Response> {
   }
 
   /**
+   * Code review of the feature's pull requests. GET lists them with the
+   * decisions recorded in Spaces; GET …/:owner/:repo/:number loads one PR's
+   * files, patches and comments; POST …/review posts a review (inline comments
+   * included) and records the decision the pipeline acts on — see
+   * lib/pr-review.ts.
+   */
+  if (/^\/api\/projects\/[^/]+\/pull-requests(\/[^/]+\/[^/]+\/\d+(\/review)?)?$/.test(url.pathname)) {
+    const [, , , projectNamespace, , owner, repoName, numberText, action] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace!))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const reviewing = method === 'POST' && action === 'review'
+    if (!reviewing && method !== 'GET') return sendJson(405, { error: 'Method not allowed.' })
+    const denied = requireProjectRole(project, 'member', reviewing ? 'Only team members can review pull requests.' : 'Only team members can view pull requests.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace!)
+    if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+    const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const hints = repos.map((r) => ({ githubRepo: r.githubRepo, localPath: r.localPath }))
+    const featureDir = await findLatestFeatureDirAbsolute(projectMeta.path).catch(() => null)
+    const reviewOrg = await orgIdForProject(project.projectId)
+    const prReview = await import('./lib/pr-review')
+    try {
+      if (!owner) {
+        if (!hints.some((h) => h.githubRepo)) return sendJson(200, { pullRequests: [], decisions: [], overall: null, reason: 'This project has no GitHub repository.' })
+        if (!featureDir) return sendJson(200, { pullRequests: [], decisions: [], overall: null, reason: 'No feature has been specified yet.' })
+        const pullRequests = await prReview.listFeaturePullRequests(reviewOrg, featureDir, hints)
+        const state = await prReview.readHumanReview(featureDir)
+        const open = pullRequests.filter((p) => p.state === 'open')
+        return sendJson(200, { pullRequests, decisions: state.decisions, overall: prReview.overallDecision(state, open) ?? null, feature: basename(featureDir) })
+      }
+
+      const githubRepo = `${owner}/${repoName}`
+      if (!hints.some((h) => h.githubRepo?.toLowerCase() === githubRepo.toLowerCase())) {
+        return sendJson(404, { error: `${githubRepo} is not one of this project's repositories.` })
+      }
+      const number = Number(numberText)
+      if (!reviewing) return sendJson(200, await prReview.loadPullRequestReview(reviewOrg, githubRepo, number))
+
+      const body = await readJson<{ event?: string; summary?: string; headSha?: string; comments?: Array<{ path?: string; line?: number; side?: string; body?: string }> }>(req)
+      const event = body.event === 'APPROVE' || body.event === 'REQUEST_CHANGES' || body.event === 'COMMENT' ? body.event : undefined
+      if (!event) return sendJson(400, { error: 'event must be APPROVE, REQUEST_CHANGES or COMMENT.' })
+      const comments = (body.comments ?? [])
+        .filter((c) => c.path && Number.isInteger(c.line) && c.body?.trim())
+        .map((c) => ({ path: c.path!, line: c.line!, side: c.side === 'LEFT' ? 'LEFT' as const : 'RIGHT' as const, body: c.body!.trim() }))
+      const summary = (body.summary ?? '').trim()
+      if (event !== 'APPROVE' && !summary && comments.length === 0) return sendJson(400, { error: 'Say what should change: add a summary or at least one inline comment.' })
+
+      // Review the code the person actually saw: a push since they loaded it changes what they would be approving.
+      const current = await prReview.loadPullRequestReview(reviewOrg, githubRepo, number)
+      if (current.state !== 'open') return sendJson(409, { error: `This pull request is ${current.merged ? 'merged' : 'closed'}; there is nothing to review.` })
+      if (body.headSha && body.headSha !== current.headSha) {
+        return sendJson(409, { error: 'The pull request has new commits since you opened it. Reload the diff and review again.', code: 'stale_head' })
+      }
+      const reviewer = auth?.user.name || auth?.user.email || 'local user'
+      const posted = await prReview.postPullRequestReview(reviewOrg, { githubRepo, number, headSha: current.headSha, event, reviewer, summary, comments })
+
+      let overall: string | undefined
+      if (event !== 'COMMENT' && featureDir) {
+        const open = (await prReview.listFeaturePullRequests(reviewOrg, featureDir, hints))
+          .filter((p) => p.state === 'open')
+          .map((p) => ({ githubRepo: p.githubRepo, number: p.number, headSha: p.headSha }))
+        // The PR just reviewed counts even if branch discovery missed it.
+        if (!open.some((p) => p.githubRepo.toLowerCase() === githubRepo.toLowerCase() && p.number === number)) open.push({ githubRepo, number, headSha: current.headSha })
+        overall = await prReview.recordHumanDecision(featureDir, {
+          githubRepo,
+          number,
+          decision: event === 'APPROVE' ? 'approved' : 'changes_requested',
+          reviewer,
+          at: new Date().toISOString(),
+          headSha: current.headSha,
+          summary,
+          comments,
+          url: posted.url,
+        }, open)
+      }
+      serverLog.info('pull request reviewed in Spaces', { project: projectNamespace, pr: `${githubRepo}#${number}`, event, postedAs: posted.postedAs, overall })
+      return sendJson(200, {
+        postedAs: posted.postedAs,
+        url: posted.url,
+        overall: overall ?? null,
+        nextStep: nextStepFor(await collectProjectArtifacts(projectNamespace!, projectMeta.path)),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      serverLog.warn('pull request review request failed', { project: projectNamespace, error: message })
+      return sendJson(502, { error: message })
+    }
+  }
+
+  /**
    * Accept a feature whose verification came back partial (or failed) and
    * finish it. The decision belongs to a person, so it is recorded with their
    * name, the verification status at the time and their reason, and the board
@@ -3044,11 +3133,11 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
   }
   if (artifacts.codeReviewStatus === 'changes_requested') {
     return artifacts.codeReviewStale
-      ? { step: 'review', label: 'Run review', tab: 'qa', reason: 'The requested changes were implemented after the last review. Review again.' }
+      ? { step: 'review', label: 'Run review', tab: 'review', reason: 'The requested changes were implemented after the last review. Review the pull request again in Code review, or run the automated review.' }
       : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
   }
   if (artifacts.codeReviewStatus !== 'approved') {
-    return { step: 'review', label: 'Run review', tab: 'qa', reason: `${basis}. Code review comes next, before merging and deploying.` }
+    return { step: 'review', label: 'Run review', tab: 'review', reason: `${basis}. Code review comes next, before merging and deploying: approve the pull requests in Code review, or run the automated review.` }
   }
   if (artifacts.deliveryStatus) {
     return { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
@@ -4103,7 +4192,8 @@ interface RecommendedActionRecord {
   /** A pipeline stage to run, or 'accept' to record that a person accepts the feature as it stands. */
   step: StageName | 'accept'
   label: string
-  tab: GateReadinessRecord['tab']
+  /** 'review' is the Code review tab: the pull requests' diffs, to approve or send back. */
+  tab: GateReadinessRecord['tab'] | 'review'
   reason: string
 }
 
