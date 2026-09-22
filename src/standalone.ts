@@ -14,6 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { drainBudget } from './lib/drain'
 
 const srcDir = path.dirname(fileURLToPath(import.meta.url))
 const children: Array<{ name: string; child: ChildProcess }> = []
@@ -34,17 +35,27 @@ function start(name: string, script: string): void {
   console.log(`[standalone] ${name} started (pid ${child.pid})`)
 }
 
+function stop(child: ChildProcess, signal: NodeJS.Signals, waitMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve()
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve() }, waitMs)
+    child.once('exit', () => { clearTimeout(timer); resolve() })
+    child.kill(signal)
+  })
+}
+
 async function shutdown(reason: string, exitCode = 0): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
-  console.log(`[standalone] shutting down (${reason})`)
-  for (const { child } of children) if (child.exitCode === null) child.kill('SIGTERM')
-  // The supervisor gives its workers up to 15 s to re-queue or pause their runs.
-  await Promise.all(children.map(({ child }) => new Promise<void>((resolve) => {
-    if (child.exitCode !== null) return resolve()
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve() }, 25_000)
-    child.once('exit', () => { clearTimeout(timer); resolve() })
-  })))
+  const budget = drainBudget()
+  const waitMs = reason === 'SIGTERM' ? budget.standaloneMs : 25_000
+  console.log(`[standalone] shutting down (${reason}); waiting up to ${Math.round(waitMs / 1000)}s for workers`)
+  // Workers first: with a drain budget they finish their running stages, and the
+  // server keeps serving (the old version) until they are gone.
+  const supervisor = children.find((c) => c.name === 'supervisor')?.child
+  const server = children.find((c) => c.name === 'server')?.child
+  if (supervisor) await stop(supervisor, reason === 'SIGINT' ? 'SIGINT' : 'SIGTERM', waitMs)
+  if (server) await stop(server, 'SIGTERM', 5_000)
   process.exit(exitCode)
 }
 
