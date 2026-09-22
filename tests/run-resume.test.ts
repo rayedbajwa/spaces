@@ -67,6 +67,20 @@ describe('resume point', () => {
     expect(point.stage).toBe('specify')
   })
 
+  test('Delivery tasks belong to deliver: they neither hold implement back nor show up as work to resume', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/001-feature/spec.md': '# Spec',
+      'specs/001-feature/plan.md': '# Plan',
+      'specs/001-feature/tasks.md': '## Phase 1\n- [x] T001 Build\n- [x] T002 Test\n## Delivery\n- [ ] T010 Open the PR\n- [ ] T011 Merge\n',
+      'specs/001-feature/test-plan.md': '# Tests',
+    })
+    const point = await resolveResumePoint({ projectPath: root, stages: STAGES })
+    expect(point.completed).toContain('implement')
+    expect(point.stage).toBe('verify')
+    expect(point.taskProgress?.remaining).toEqual([])
+  })
+
   test('implement is finished only when every task is ticked', async () => {
     const half = await project({
       '.specify/memory/constitution.md': '# Constitution',

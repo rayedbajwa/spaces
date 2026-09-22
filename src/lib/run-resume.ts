@@ -131,10 +131,12 @@ export async function resolveResumePoint(options: {
     }
   }
 
+  // The tasks implement owns: the "## Delivery" group is deliver's, so it neither
+  // keeps implement from counting as finished nor shows up as work to resume.
   const taskProgress = featureDir
-    ? await readFile(path.join(featureDir, 'tasks.md'), 'utf8').then((t) => parseTaskProgress(t)).catch(() => undefined)
+    ? await readFile(path.join(featureDir, 'tasks.md'), 'utf8').then((t) => implementationTaskProgress(t)).catch(() => undefined)
     : undefined
-  // Implementation counts as finished only when every task is ticked off.
+  // Implementation counts as finished only when every implementation task is ticked off.
   if (taskProgress && taskProgress.total > 0 && taskProgress.done === taskProgress.total) completed.push('implement')
 
   // The first stage of the pipeline whose artifact is missing.

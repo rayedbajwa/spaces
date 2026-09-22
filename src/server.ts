@@ -1954,6 +1954,14 @@ async function route(req: Request): Promise<Response> {
       // again starts the next feature in a new numbered directory, so it is never a duplicate.
       const startsNextFeature = body.step === 'specify'
         && (projectArtifacts.verifiedPass || Boolean(projectArtifacts.accepted) || projectArtifacts.deliveryStatus === 'merged')
+      // Delivery merges and deploys: only a reviewed feature whose QA passed or was accepted may start it.
+      if (body.step === 'deliver' && !(projectArtifacts.codeReviewStatus === 'approved' && !projectArtifacts.codeReviewStale && (projectArtifacts.verifiedPass || projectArtifacts.accepted))) {
+        return sendJson(409, {
+          error: 'This feature is not ready to deliver: the code review must approve it and verification must pass (or be accepted) first.',
+          code: 'not_ready_for_release',
+          hint: 'Run review and verify from the QA tab, or call again with {"force": true} to deliver anyway.',
+        })
+      }
       if (alreadyDone[body.step] && !startsNextFeature) {
         return sendJson(409, {
           error: `${body.step} already produced its artifact for this project.`,
@@ -3081,16 +3089,23 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   // steps to run when a loop stopped short, or to run one of them by hand.
   const qaDone = artifacts.verifiedPass || Boolean(artifacts.accepted)
   const implementation = artifacts.implementationTasks
-  const implementationLeft = !implementation || implementation.done === 0 || implementation.done < implementation.total
+  // Tasks outside the Delivery group still open. A task list with only Delivery
+  // tasks (or none) leaves nothing for implement to do.
+  const implementationLeft = Boolean(implementation && implementation.total > 0 && implementation.done < implementation.total)
   if (artifacts.codeReviewStatus === 'changes_requested') {
     return artifacts.codeReviewStale
       ? { step: 'review', label: 'Run review', tab: 'qa', reason: 'The requested changes were implemented after the last review. Review again.' }
       : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes. Implement works through the findings, then reviews and verifies again.' }
   }
+  // Implementation tasks still open come before review and QA. Once QA passed or
+  // a person accepted the feature, an unticked box no longer holds it back.
+  if (implementationLeft && !qaDone) {
+    const left = ` ${implementation!.total - implementation!.done} of ${implementation!.total} implementation tasks left.`
+    return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Ready to code.${left} Implement loops through code review and QA until both are nearly done.` }
+  }
   if (!artifacts.codeReviewStatus) {
-    if (!qaDone && artifacts.verificationStatus === 'missing' && implementationLeft) {
-      const left = implementation && implementation.total > 0 ? ` ${implementation.total - implementation.done} of ${implementation.total} implementation tasks left.` : ''
-      return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Ready to code.${left} Implement loops through code review and QA until both are nearly done.` }
+    if (!qaDone && artifacts.verificationStatus === 'missing' && !implementation) {
+      return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'Ready to code. Implement loops through code review and QA until both are nearly done.' }
     }
     return { step: 'review', label: 'Run review', tab: 'qa', reason: qaDone ? 'QA is done but the code has not been reviewed. Review it before releasing.' : 'Implementation is done. Review the code before QA.' }
   }

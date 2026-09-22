@@ -1898,6 +1898,11 @@ function App() {
         return hasArtifact('Tasked')
           ? { ok: true }
           : { ok: false, reason: 'Cannot verify before tasks exist.' }
+      // Delivery merges and deploys, so it waits for an approved review and passed (or accepted) QA.
+      case 'deliver':
+        return selectedCardFresh && (selectedCardFresh.status === 'releasing' || selectedCardFresh.status === 'done')
+          ? { ok: true }
+          : { ok: false, reason: 'Deliver starts once the code review approves the feature and verification passes or is accepted (QA tab).' }
       default: return { ok: true }
     }
   }
@@ -3019,7 +3024,7 @@ function App() {
                 </div>
                 <p className="panel-subtitle">
                   {qaOverview?.deliveryStatus === 'merged' ? 'Delivered and merged. The feature is done.'
-                    : selectedCardFresh.status === 'releasing' ? 'Reviewed and verified. Deliver merges the pull requests in order, confirms the deployment and runs UAT, asking before anything irreversible.'
+                    : selectedCardFresh.status === 'releasing' ? `${selectedCardFresh.accepted ? `Reviewed, and accepted at ${selectedCardFresh.accepted.verificationStatus} verification by ${selectedCardFresh.accepted.acceptedBy}.` : 'Reviewed and verified.'} Deliver merges the pull requests in order, confirms the deployment and runs UAT, asking before anything irreversible.`
                     : 'Releasing starts once the code review approves the feature and verification passes (or you accept it). Both happen in the QA tab.'}
                 </p>
                 {(projectPullRequests ?? selectedCardFresh.pullRequests ?? []).length > 0 && (
