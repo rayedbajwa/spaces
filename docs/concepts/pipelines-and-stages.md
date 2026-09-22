@@ -67,18 +67,34 @@ advisory context: Product Owner (specify/review), Lead Engineer
 an unresolved project asks for repair instead of selecting a person. This
 context does not modify the template's human gates or team-role authorization.
 
+## Board lanes
+
+Backlog → Initialized → Specified → Planned → Tasked → Implementing →
+Releasing → Done. A card's lane follows what the project has produced:
+
+- **Implementing** covers the test plan, workstream split, implement,
+  orchestrate and verify.
+- **Releasing** starts once verification passes or a person accepts it. Code
+  review and delivery (merge, deploy, UAT) are separate steps here: review
+  first, then deliver; review findings send the feature back to implement.
+- **Done** means delivery reported `Delivery Status: MERGED`.
+
+A run in progress places its card by the stage it is on. Dropping a card on a
+lane runs the next step that leads there: `accept` or `review` on Releasing,
+`deliver` on Done.
+
 ## Accepting a partial verification
 
 Verification reports `PASS`, `PARTIAL` or `FAIL`, and only a pass finishes a
 feature on its own. Work often ends at partial for reasons that are nobody's
 fault — a browser suite that cannot run on this machine, a requirement deferred
 on purpose — so the person responsible can accept it instead: drag the card
-onto **Done**, or press **Accept and finish** in the project's QA tab.
+onto **Releasing**, or press **Accept and finish** in the project's QA tab.
 
 Accepting records `acceptance.md` beside the verification report with who
 accepted it, the verification status at that moment and the reason given. The
-board then treats the feature as done and offers `deliver` as the next step, so
-merging and deploying keep their own approvals. Withdrawing the acceptance puts
+feature then moves to Releasing and continues with code review and deliver,
+so reviewing, merging and deploying keep their own approvals. Withdrawing the acceptance puts
 the feature back where its verification left it.
 
 When verification came close, **Accept and finish** is the recommended next

@@ -1424,7 +1424,7 @@ async function route(req: Request): Promise<Response> {
       })
     }
     if (artifacts.verifiedPass) {
-      return sendJson(409, { error: 'Verification already passed, so this feature is done. Nothing to accept.', code: 'already_passed' })
+      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The feature is releasing: review, then deliver.', code: 'already_passed' })
     }
 
     const recorded = await recordAcceptance({
@@ -1440,7 +1440,7 @@ async function route(req: Request): Promise<Response> {
     // route, so merging and deploying keep their own guards and approvals.
     return sendJson(200, {
       acceptance: recorded.acceptance,
-      nextStep: { step: 'deliver', label: 'Run deliver', reason: 'Accepted — merge and deploy when you are ready.' },
+      nextStep: nextStepFor(await collectProjectArtifacts(projectNamespace, projectMeta.path)),
     })
   }
 
@@ -1943,9 +1943,10 @@ async function route(req: Request): Promise<Response> {
         tasks: projectArtifacts.tasked,
         verify: projectArtifacts.verifiedPass,
       }
-      // A verified (done) feature is finished work: running specify again starts
-      // the next feature in a new numbered directory, so it is never a duplicate.
-      const startsNextFeature = body.step === 'specify' && projectArtifacts.verifiedPass
+      // A verified, accepted or delivered feature is finished work: running specify
+      // again starts the next feature in a new numbered directory, so it is never a duplicate.
+      const startsNextFeature = body.step === 'specify'
+        && (projectArtifacts.verifiedPass || Boolean(projectArtifacts.accepted) || projectArtifacts.deliveryStatus === 'merged')
       if (alreadyDone[body.step] && !startsNextFeature) {
         return sendJson(409, {
           error: `${body.step} already produced its artifact for this project.`,
@@ -2959,7 +2960,7 @@ async function buildBoard(): Promise<BoardResponse> {
     // project that had implemented and verified sitting in "Tasked".
     const tasks = await readTaskProgress(project.path).catch(() => undefined)
     const hasLaterArtifact = artifacts.links.some((link) =>
-      ['Orchestrate', 'Verify'].includes(link.stepLabel) || /code-review\.md$|delivery-status\.md$/.test(link.relativePath))
+      ['Orchestrate', 'Verify', 'Review', 'Deliver'].includes(link.stepLabel))
     const status = laneForProject({
       initialized: artifacts.initialized,
       specified: artifacts.specified,
@@ -2967,6 +2968,7 @@ async function buildBoard(): Promise<BoardResponse> {
       tasked: artifacts.tasked,
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
       accepted: Boolean(artifacts.accepted),
+      deliveryStatus: artifacts.deliveryStatus,
       implementationArtifacts: hasLaterArtifact,
       tasksDone: tasks?.done ?? 0,
       activeStage: latestRun && ['running', 'paused'].includes(latestRun.status) ? latestRun.stage ?? null : null,
@@ -3020,18 +3022,36 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
   if (artifacts.verificationStatus === 'missing') return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'Ready to code — no verification report yet.' }
-  if (artifacts.accepted && !artifacts.verifiedPass) {
-    return has('Deliver')
-      ? { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: `Accepted at ${artifacts.accepted.verificationStatus} verification and delivered.` }
-      : { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Accepted by ${artifacts.accepted.acceptedBy} at ${artifacts.accepted.verificationStatus} verification. Ready to merge and deploy.` }
-  }
+  if (artifacts.verifiedPass || artifacts.accepted) return releaseStepFor(artifacts)
   // Close enough that another verify run would land in the same place: suggest
   // the person accepts it. Accepting stays their decision and records why.
   if (acceptanceRecommended(artifacts.verificationStatus, artifacts.verificationSummary)) {
     return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(artifacts.verificationSummary!)}. Accept it as it stands, or run verify again.` }
   }
-  if (!artifacts.verifiedPass) return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
-  return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Verified and done. The next specify run starts a new feature.' }
+  return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
+}
+
+/**
+ * Releasing a verified (or accepted) feature: code review, then delivery —
+ * merge, deploy and UAT — as separate steps. Done once delivery reports MERGED.
+ */
+function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'] {
+  const basis = artifacts.verifiedPass
+    ? 'Verified'
+    : `Accepted by ${artifacts.accepted!.acceptedBy} at ${artifacts.accepted!.verificationStatus} verification`
+  if (artifacts.deliveryStatus === 'merged') {
+    return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new feature.' }
+  }
+  if (artifacts.codeReviewStatus === 'changes_requested') {
+    return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
+  }
+  if (artifacts.codeReviewStatus !== 'approved') {
+    return { step: 'review', label: 'Run review', tab: 'qa', reason: `${basis}. Code review comes next, before merging and deploying.` }
+  }
+  if (artifacts.deliveryStatus) {
+    return { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
+  }
+  return { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: 'Review approved. Merge, deploy and run UAT.' }
 }
 
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
@@ -3045,6 +3065,8 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     verificationStatus: 'missing' as 'pass' | 'partial' | 'fail' | 'missing',
     accepted: await readAcceptance(projectRoot).catch(() => undefined) as Acceptance | undefined,
     verificationSummary: undefined as VerificationSummary | undefined,
+    codeReviewStatus: undefined as 'approved' | 'changes_requested' | undefined,
+    deliveryStatus: undefined as 'merged' | 'partial' | 'blocked' | undefined,
     scope: {
       requirements: 0,
       tasks: 0,
@@ -3090,6 +3112,16 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     flags.verifiedPass = flags.verificationStatus === 'pass'
     flags.verificationSummary = summarizeVerification(await readTextIfExists(reportPath))
   }
+  // Releasing: the code review and the delivery each leave a report with a status line.
+  if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/code-review.md`, 'Review', `${featurePrefix} code review`)) {
+    const review = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/code-review.md`)))?.[1]
+    flags.codeReviewStatus = review ? (/^approved$/i.test(review) ? 'approved' : 'changes_requested') : undefined
+  }
+  if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/delivery-report.md`, 'Deliver', `${featurePrefix} delivery report`)) {
+    const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/delivery-report.md`)))?.[1]
+    flags.deliveryStatus = delivery ? (delivery.toLowerCase() as 'merged' | 'partial' | 'blocked') : undefined
+  }
+  await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/delivery-status.md`, 'Deliver', `${featurePrefix} delivery status`)
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/research.md`, 'Planned', `${featurePrefix} research`)
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/data-model.md`, 'Planned', `${featurePrefix} data model`)
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/quickstart.md`, 'Planned', `${featurePrefix} quickstart`)
@@ -3887,7 +3919,7 @@ function escapeHtml(value: string): string {
     .replaceAll("'", '&#39;')
 }
 
-const BOARD_COLUMNS = ['backlog', 'initialized', 'specified', 'planned', 'tasked', 'implementing', 'done'] as const
+const BOARD_COLUMNS = ['backlog', 'initialized', 'specified', 'planned', 'tasked', 'implementing', 'releasing', 'done'] as const
 const BOARD_TITLES: Record<BoardStatus, string> = {
   backlog: 'Backlog',
   initialized: 'Initialized',
@@ -3895,6 +3927,7 @@ const BOARD_TITLES: Record<BoardStatus, string> = {
   planned: 'Planned',
   tasked: 'Tasked',
   implementing: 'Implementing',
+  releasing: 'Releasing',
   done: 'Done',
 }
 
@@ -4032,6 +4065,9 @@ interface ProjectArtifacts {
   accepted?: Acceptance
   /** Criteria met and critical issues open, as the verification report states them. */
   verificationSummary?: VerificationSummary
+  codeReviewStatus?: 'approved' | 'changes_requested'
+  /** From delivery-report.md; MERGED is what finishes a feature. */
+  deliveryStatus?: 'merged' | 'partial' | 'blocked'
   scope: {
     requirements: number
     tasks: number

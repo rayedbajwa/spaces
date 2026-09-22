@@ -19,6 +19,7 @@ export type BoardStatus =
   | 'planned'
   | 'tasked'
   | 'implementing'
+  | 'releasing'
   | 'done'
 
 /** Just enough of the board card shape to decide drop eligibility. */
@@ -37,7 +38,8 @@ export function stepForColumn(lane: BoardStatus): string | null {
     case 'planned':      return 'plan'
     case 'tasked':       return 'tasks'
     case 'implementing': return 'implement'
-    case 'done':         return 'verify'
+    case 'releasing':    return 'review'
+    case 'done':         return 'deliver'
     case 'backlog':      return null
     default:             return null
   }
@@ -59,8 +61,11 @@ export function stepsForColumn(lane: BoardStatus): string[] {
     case 'specified':    return ['specify']
     case 'planned':      return ['plan']
     case 'tasked':       return ['tasks']
-    case 'implementing': return ['testplan', 'parallelize', 'implement']
-    case 'done':         return ['verify', 'accept', 'deliver']
+    case 'implementing': return ['testplan', 'parallelize', 'implement', 'verify']
+    // Deliver is what finishes a feature, so it is the drop onto Done; the card
+    // sits in Releasing while it runs.
+    case 'releasing':    return ['accept', 'review']
+    case 'done':         return ['deliver']
     case 'backlog':      return []
     default:             return []
   }
@@ -93,9 +98,13 @@ export interface LaneEvidence {
   activeStage?: string | null
   /** A person accepted the feature as delivered even though verification did not pass. */
   accepted?: boolean
+  /** From delivery-report.md; only MERGED finishes a feature. */
+  deliveryStatus?: 'merged' | 'partial' | 'blocked'
 }
 
-const IMPLEMENTATION_STAGES = ['implement', 'orchestrate', 'review', 'verify', 'deliver']
+const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestrate', 'verify']
+/** Review and deliver are releasing the feature, not building it. */
+const RELEASE_STAGES = ['review', 'deliver']
 
 /**
  * The lane a project belongs in.
@@ -104,18 +113,23 @@ const IMPLEMENTATION_STAGES = ['implement', 'orchestrate', 'review', 'verify', '
  * process. That matters because a finished run records no current stage: a
  * project that implemented and verified would otherwise fall back to the lane
  * its last artifact named — "Tasked" — and look stuck. Implementation counts
- * as started once any task is ticked off or any later document exists, and a
- * project is done only when verification actually passed.
+ * as started once any task is ticked off or any later document exists.
+ *
+ * A verified feature — or one a person accepted at partial — is releasing:
+ * code review and delivery (merge, deploy, UAT) are separate steps still to
+ * come. It is done only once delivery reports MERGED. A run on a particular
+ * stage right now places the card by that stage.
  */
 export function laneForProject(evidence: LaneEvidence): BoardStatus {
-  // Verification passing finishes a feature; so does a person accepting one
-  // that only came back partial, which is their call to make.
-  if (evidence.verificationStatus === 'pass' || evidence.accepted) return 'done'
+  if (evidence.deliveryStatus === 'merged') return 'done'
+  if (evidence.activeStage && RELEASE_STAGES.includes(evidence.activeStage)) return 'releasing'
+  const buildingNow = Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
+  if (!buildingNow && (evidence.verificationStatus === 'pass' || evidence.accepted)) return 'releasing'
 
   const implementing = Boolean(evidence.implementationArtifacts)
     || (evidence.tasksDone ?? 0) > 0
     || evidence.verificationStatus !== 'missing'
-    || Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
+    || buildingNow
   if (evidence.tasked && implementing) return 'implementing'
 
   if (evidence.tasked) return 'tasked'

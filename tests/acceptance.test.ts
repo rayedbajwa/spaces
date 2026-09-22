@@ -72,12 +72,13 @@ describe('acceptance records', () => {
   })
 })
 
-describe('an accepted feature is done', () => {
+describe('an accepted feature is releasing', () => {
   const base = { initialized: true, specified: true, planned: true, tasked: true, tasksDone: 4 }
 
-  test('partial verification plus an acceptance lands in Done', () => {
+  test('partial verification plus an acceptance moves on to Releasing, and Done once merged', () => {
     expect(laneForProject({ ...base, verificationStatus: 'partial' })).toBe('implementing')
-    expect(laneForProject({ ...base, verificationStatus: 'partial', accepted: true })).toBe('done')
-    expect(laneForProject({ ...base, verificationStatus: 'fail', accepted: true })).toBe('done')
+    expect(laneForProject({ ...base, verificationStatus: 'partial', accepted: true })).toBe('releasing')
+    expect(laneForProject({ ...base, verificationStatus: 'fail', accepted: true })).toBe('releasing')
+    expect(laneForProject({ ...base, verificationStatus: 'partial', accepted: true, deliveryStatus: 'merged' })).toBe('done')
   })
 })

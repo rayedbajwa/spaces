@@ -47,7 +47,7 @@ type RunStatus = 'running' | 'paused' | 'completed' | 'error' | 'cancelled'
 type PauseKind = 'clarification' | 'review' | 'user'
 type TimelineStatus = 'running' | 'paused' | 'completed' | 'error'
 type TimelineKind = 'run' | 'stage' | 'review' | 'input'
-type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'done'
+type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'releasing' | 'done'
 type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
 
 type TimelineEntry = {
@@ -1651,16 +1651,17 @@ function App() {
   /** Accept a feature whose verification did not pass, then offer to deliver it. */
   async function acceptFeature(card: BoardCard) {
     const note = window.prompt(
-      `Accept ${card.projectLabel} as done with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the feature's acceptance record.`,
+      `Accept ${card.projectLabel} with verification "${card.verificationStatus}" and move it on to releasing?\n\nSay why — it is recorded with your name in the feature's acceptance record.`,
       '',
     )
     if (note === null) return
     try {
-      await postJson(`/api/projects/${card.projectNamespace}/accept`, { note })
+      const { nextStep } = await postJson<{ nextStep?: { step: string; label: string; tab: ProjectModalTab; reason: string } }>(`/api/projects/${card.projectNamespace}/accept`, { note })
       setStatusMessage(`${card.projectLabel} accepted at ${card.verificationStatus} verification.`)
       await refreshBoard()
-      if (window.confirm(`Run deliver for ${card.projectLabel} now (merge and deploy)?`)) {
-        await executeStep('deliver', 'qa', card)
+      // Releasing continues with its own steps (review, then deliver), each with its own approvals.
+      if (nextStep && nextStep.step !== 'accept' && window.confirm(`${nextStep.reason}\n\n${nextStep.label} for ${card.projectLabel} now?`)) {
+        await executeStep(nextStep.step, nextStep.tab, card)
       }
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error))
@@ -1671,7 +1672,7 @@ function App() {
     setDraggedProjectNamespace('')
     // Dropping a feature whose verification came back short onto Done is a
     // person saying "this is good enough": record that instead of re-running QA.
-    if (targetLane === 'done' && !card.accepted && ['partial', 'fail'].includes(card.verificationStatus)) {
+    if ((targetLane === 'releasing' || targetLane === 'done') && !card.accepted && ['partial', 'fail'].includes(card.verificationStatus)) {
       await acceptFeature(card)
       return
     }
@@ -2940,8 +2941,8 @@ function App() {
                   <h3>Verification status</h3>
                   <p className="panel-subtitle">
                     {selectedCardFresh?.accepted
-                      ? `Accepted by ${selectedCardFresh.accepted.acceptedBy} at ${selectedCardFresh.accepted.verificationStatus} verification${selectedCardFresh.accepted.note ? `: ${selectedCardFresh.accepted.note}` : '.'} The feature counts as done; deliver it when you are ready.`
-                      : qaOverview?.verificationStatus === 'pass' ? 'Verification passed and project can be considered done.'
+                      ? `Accepted by ${selectedCardFresh.accepted.acceptedBy} at ${selectedCardFresh.accepted.verificationStatus} verification${selectedCardFresh.accepted.note ? `: ${selectedCardFresh.accepted.note}` : '.'} It is releasing now: code review, then deliver.`
+                      : qaOverview?.verificationStatus === 'pass' ? 'Verification passed. The feature is releasing: code review, then deliver.'
                       : qaOverview?.verificationStatus === 'partial' ? 'Verification is partial. Add the missing evidence, or accept it as it stands and finish.'
                       : qaOverview?.verificationStatus === 'fail' ? 'Verification failed and requires fixes.'
                       : 'Verification has not been completed yet.'}
@@ -3279,7 +3280,10 @@ function App() {
                   if (rec && (rec.step === 'accept' || selectedCardFresh.accepted)) return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
                   return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
                 }
-                return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Verified and done.' }
+                // Verified: releasing (review, then deliver) until delivery reports merged.
+                const rec = selectedCardFresh.recommendedAction
+                if (rec && rec.step !== 'specify') return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
+                return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Delivered and merged.' }
               })()}
               onRunNext={(step) => void executeStep(step, 'implementation')}
               canAnswer={canAnswer}
@@ -4287,6 +4291,8 @@ function mapStageToTab(stage: string): ProjectModalTab {
     case 'implement':
       return 'implementation'
     case 'verify':
+    case 'review':
+    case 'deliver':
       return 'qa'
     default:
       return 'overview'
