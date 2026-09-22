@@ -18,6 +18,7 @@ const TAB_LABELS: Record<string, string> = {
   testplan: 'Test plan',
   implementation: 'Implementation',
   qa: 'QA',
+  releasing: 'Releasing',
   assistant: 'Assistant',
   context: 'Context',
   memory: 'Memory',
@@ -48,7 +49,7 @@ type PauseKind = 'clarification' | 'review' | 'user'
 type TimelineStatus = 'running' | 'paused' | 'completed' | 'error'
 type TimelineKind = 'run' | 'stage' | 'review' | 'input'
 type BoardStatus = 'backlog' | 'initialized' | 'specified' | 'planned' | 'tasked' | 'implementing' | 'releasing' | 'done'
-type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
+type ProjectModalTab = 'overview' | 'specs' | 'testplan' | 'implementation' | 'qa' | 'releasing' | 'assistant' | 'context' | 'memory' | 'promotions' | 'tracker'
 
 type TimelineEntry = {
   id: string
@@ -254,6 +255,10 @@ type QAOverview = {
   verificationPassed: boolean
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
   artifacts: QAArtifactPreview[]
+  /** Code review, delivery status and delivery report. */
+  releaseArtifacts?: QAArtifactPreview[]
+  codeReviewStatus?: 'approved' | 'changes_requested'
+  deliveryStatus?: 'merged' | 'partial' | 'blocked'
   subagents: SubAgentResult[]
   currentJob: SubagentJobSnapshot
   jobHistory: SubagentJobSnapshot[]
@@ -2295,7 +2300,7 @@ function App() {
             </header>
 
             <div className="tab-row project-tabs" role="tablist">
-              {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
+              {(['overview', 'specs', 'testplan', 'implementation', 'qa', 'releasing', 'assistant', 'context', 'memory', 'promotions'] as ProjectModalTab[]).map((tab) => {
                 const needsAttention = tab === 'assistant' && selectedCardFresh.automationState && ['needs_approval', 'needs_clarification', 'error', 'blocked'].includes(selectedCardFresh.automationState.state)
                 return (
                   <button
@@ -2941,7 +2946,7 @@ function App() {
                     </div>
                     <div className="button-row">
                       <button className="primary-button" disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
-                      {/* Review and deliver belong to releasing: the next-step banner and the Releasing / Done lanes run them. */}
+                      {/* Review and deliver live in the Releasing tab. */}
                       {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
                         <button
                           className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
@@ -2992,6 +2997,47 @@ function App() {
                   ))}
                 </section>
               </div>
+            )}
+
+            {activeProjectTab === 'releasing' && (
+              <section className="card panel slim-panel">
+                <div className="section-header-row">
+                  <div className="context-stats">
+                    <span className={`mini-badge ${qaOverview?.codeReviewStatus === 'approved' ? 'completed' : qaOverview?.codeReviewStatus === 'changes_requested' ? 'error' : 'idle'}`}>
+                      review: {qaOverview?.codeReviewStatus?.replace('_', ' ') ?? 'not run'}
+                    </span>
+                    <span className={`mini-badge ${qaOverview?.deliveryStatus === 'merged' ? 'completed' : qaOverview?.deliveryStatus === 'blocked' ? 'error' : qaOverview?.deliveryStatus === 'partial' ? 'paused' : 'idle'}`}>
+                      delivery: {qaOverview?.deliveryStatus ?? 'not run'}
+                    </span>
+                  </div>
+                  <div className="button-row">
+                    <button className={selectedCardFresh.recommendedAction?.step === 'review' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'releasing')} type="button">Run review</button>
+                    <button className={selectedCardFresh.recommendedAction?.step === 'deliver' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'releasing')} type="button">Run deliver</button>
+                    <button className="secondary-button" disabled={qaBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectQA(selectedProjectNamespace)} type="button">Refresh</button>
+                  </div>
+                </div>
+                <p className="panel-subtitle">
+                  {qaOverview?.deliveryStatus === 'merged' ? 'Delivered and merged. The feature is done.'
+                    : qaOverview?.codeReviewStatus === 'changes_requested' ? 'The code review requested changes. Implement the findings, then review again.'
+                    : qaOverview?.codeReviewStatus === 'approved' ? 'Review approved. Deliver merges the pull requests in order, confirms the deployment and runs UAT, asking before anything irreversible.'
+                    : 'Once verification passes (or you accept it), review the code, then deliver it.'}
+                </p>
+                {(projectPullRequests ?? selectedCardFresh.pullRequests ?? []).length > 0 && (
+                  <>
+                    <h3>Open pull requests</h3>
+                    <PullRequestLinks pullRequests={projectPullRequests ?? selectedCardFresh.pullRequests} />
+                  </>
+                )}
+                <h3>Release artifacts</h3>
+                {(qaOverview?.releaseArtifacts ?? []).length === 0 && <p className="empty-state">No feature yet.</p>}
+                {(qaOverview?.releaseArtifacts ?? []).map((artifact) => (
+                  <details key={artifact.path} className="qa-artifact" open={artifact.exists && artifact.label === 'Delivery report'}>
+                    <summary>{artifact.label} {artifact.exists ? '' : '(not written yet)'}</summary>
+                    {artifact.exists && <a className="artifact-link inline-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(artifact.path)}`} target="_blank" rel="noreferrer">Open artifact</a>}
+                    <pre className="context-preview small-preview">{artifact.content || (artifact.label === 'Code review' ? 'Written by the review step.' : artifact.label === 'Delivery status' ? 'Refreshed from GitHub before review and deliver run.' : 'Written by the deliver step.')}</pre>
+                  </details>
+                ))}
+              </section>
             )}
 
             {activeProjectTab === 'context' && (
@@ -4332,10 +4378,9 @@ function mapStageToTab(stage: string): ProjectModalTab {
       return 'implementation'
     case 'verify':
       return 'qa'
-    // Releasing has no tab of its own; the overview shows the run and its reports.
     case 'review':
     case 'deliver':
-      return 'overview'
+      return 'releasing'
     default:
       return 'overview'
   }

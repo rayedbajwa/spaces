@@ -3092,16 +3092,16 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
   }
   if (artifacts.codeReviewStatus === 'changes_requested') {
     return artifacts.codeReviewStale
-      ? { step: 'review', label: 'Run review', tab: 'overview', reason: 'The requested changes were implemented after the last review. Review again.' }
+      ? { step: 'review', label: 'Run review', tab: 'releasing', reason: 'The requested changes were implemented after the last review. Review again.' }
       : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
   }
   if (artifacts.codeReviewStatus !== 'approved') {
-    return { step: 'review', label: 'Run review', tab: 'overview', reason: `${basis}. Code review comes next, before merging and deploying.` }
+    return { step: 'review', label: 'Run review', tab: 'releasing', reason: `${basis}. Code review comes next, before merging and deploying.` }
   }
   if (artifacts.deliveryStatus) {
-    return { step: 'deliver', label: 'Run deliver', tab: 'overview', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
+    return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
   }
-  return { step: 'deliver', label: 'Run deliver', tab: 'overview', reason: 'Review approved. Merge, deploy and run UAT.' }
+  return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: 'Review approved. Merge, deploy and run UAT.' }
 }
 
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
@@ -3283,6 +3283,7 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
       verificationPassed: false,
       verificationStatus: 'missing',
       artifacts: [],
+      releaseArtifacts: [],
       subagents: [],
       currentJob: subagentJobs.get(projectNamespace)?.snapshot ?? createIdleSubagentSnapshot(projectNamespace),
       jobHistory: [],
@@ -3305,11 +3306,28 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
 
   const verificationStatus = await getVerificationStatus(join(projectRoot, `${featureDir}/verification-report.md`))
 
+  // Releasing: the code review, the PR/CI/deploy state refreshed from GitHub, and the delivery report.
+  const releaseArtifacts = await Promise.all([
+    { label: 'Code review', path: `${featureDir}/code-review.md` },
+    { label: 'Delivery status', path: `${featureDir}/delivery-status.md` },
+    { label: 'Delivery report', path: `${featureDir}/delivery-report.md` },
+  ].map(async (artifact) => ({
+    label: artifact.label,
+    path: artifact.path,
+    exists: await pathExists(join(projectRoot, artifact.path)),
+    content: await readTextPreview(join(projectRoot, artifact.path)),
+  })))
+  const codeReview = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(releaseArtifacts[0]!.content ?? '')?.[1]
+  const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(releaseArtifacts[2]!.content ?? '')?.[1]
+
   return {
     featureDir,
     verificationPassed: verificationStatus === 'pass',
     verificationStatus,
     artifacts,
+    releaseArtifacts,
+    ...(codeReview ? { codeReviewStatus: /^approved$/i.test(codeReview) ? 'approved' as const : 'changes_requested' as const } : {}),
+    ...(delivery ? { deliveryStatus: delivery.toLowerCase() as 'merged' | 'partial' | 'blocked' } : {}),
     subagents: await readSubagentReports(projectRoot, featureDir),
     currentJob: subagentJobs.get(projectNamespace)?.snapshot ?? createIdleSubagentSnapshot(projectNamespace),
     jobHistory: await readSubagentJobHistory(projectRoot, featureDir),
@@ -4151,8 +4169,8 @@ interface RecommendedActionRecord {
   /** A pipeline stage to run, or 'accept' to record that a person accepts the feature as it stands. */
   step: StageName | 'accept'
   label: string
-  /** Review and deliver open the overview: releasing is not part of QA. */
-  tab: GateReadinessRecord['tab'] | 'overview'
+  /** Review and deliver open the Releasing tab: releasing is not part of QA. */
+  tab: GateReadinessRecord['tab'] | 'releasing'
   reason: string
 }
 
@@ -4224,6 +4242,10 @@ interface QAOverview {
   verificationPassed: boolean
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
   artifacts: QAArtifactPreview[]
+  /** Code review, delivery status and delivery report: the Releasing tab. */
+  releaseArtifacts: QAArtifactPreview[]
+  codeReviewStatus?: 'approved' | 'changes_requested'
+  deliveryStatus?: 'merged' | 'partial' | 'blocked'
   subagents: ParallelSubAgentResult[]
   currentJob: SubagentJobSnapshot
   jobHistory: SubagentJobSnapshot[]
