@@ -24,7 +24,7 @@ import { withExpiry } from './lib/integration-token'
 import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey, scrubProviderKeysFromEnv } from './lib/provider-keys'
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
-import { listLiveWorkers, sendAnswerToOwner } from './lib/worker-registry'
+import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
 import { checkProviderKeys } from './lib/provider-check'
@@ -84,7 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { implementLoopTemplate } from './lib/implement-loop'
-import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote } from './lib/run-store'
+import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
   addRepo as projAddRepo,
   createProject as projCreate,
@@ -2265,29 +2265,16 @@ async function route(req: Request): Promise<Response> {
       return sendJson(400, { error: 'Answer is required.' })
     }
 
-    const delivery = await sendAnswerToOwner(runId, answer)
-    if (!delivery.delivered) {
-      // The worker that paused this run is gone. Record the answer and restart the
-      // paused stage (or the next one, for an approved review) on any worker.
-      const stages = (row.templateJson?.steps ?? []).map((s) => s.stage as StageName)
-      const currentIdx = row.currentStage ? stages.indexOf(row.currentStage) : -1
-      const approval = parseApprovalAnswer(answer)
-      const approved = row.pauseKind === 'review' && approval.approved
-      const nextIdx = approved ? currentIdx + 1 : Math.max(0, currentIdx)
-      if (approved && approval.note) await appendReviewerNote(runId, row.currentStage ?? null, approval.note)
-      const gate = await dbResolveOpenGate(runId, answer)
-      await dbAppendEvent({ runId, kind: 'gate_resolved', payload: { gateId: gate?.gateId, kind: gate?.kind, response: answer, afterRestart: true } })
-      if (approved && nextIdx >= stages.length) {
-        await dbUpdateRunStatus(runId, { status: 'completed', currentStage: null, pauseKind: null, errorMessage: null })
-        await dbAppendEvent({ runId, kind: 'run_completed', payload: { afterRestart: true } })
-      } else {
-        const fromStage = stages[nextIdx]
-        const note = approved
-          ? `Approved after a worker restart; continuing from stage ${fromStage}.`
-          : `The worker that paused this run is gone; re-running stage ${fromStage} with your answer recorded in the timeline.`
-        const requeued = await requeueRun(row, fromStage, note, 'user')
-        if (!requeued.ok) return sendJson(409, { error: requeued.error })
-      }
+    // No worker holds the paused run: the answer becomes a job any worker can
+    // take, which reopens the paused conversation at this gate and continues it.
+    // Leaving 'paused', resolving the gate and queuing the job happen together.
+    if (!row.projectId) return sendJson(409, { error: 'This run is not attached to a project, so it cannot be resumed.' })
+    if (row.pauseKind !== 'review' && row.pauseKind !== 'clarification') {
+      return sendJson(409, { error: 'This run was paused by a person, not waiting for an answer. Resume it instead.', code: 'resume_instead' })
+    }
+    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
+    if (!answered.ok) {
+      return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
     }
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
