@@ -51,7 +51,7 @@ const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   github: 'Repository catalog, cloning, pull requests, issue search and GitHub sign-in.',
   atlassian: 'Jira issues and Confluence pages for agents and the knowledge base. One app covers both.',
   linear: 'Linear issues, projects and initiatives for agents and the knowledge base.',
-  slack: 'Reserved for notifications.',
+  slack: 'A channel per project (#spaces-<code>) with run updates, stage summaries and approval requests.',
 }
 
 export function IntegrationsPanel({ embedded = false, readOnly = false }: { embedded?: boolean; readOnly?: boolean }) {
