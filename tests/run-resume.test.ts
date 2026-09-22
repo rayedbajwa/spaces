@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { buildResumeNote, describeWorkInProgress, findUnfinishedFeature, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
+import { buildResumeNote, describeWorkInProgress, findUnfinishedFeature, implementationTaskProgress, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
 import type { StageName } from '../src/lib/aidlc'
 
 /**
@@ -65,6 +65,20 @@ describe('resume point', () => {
     const root = await project({ '.specify/memory/constitution.md': '# Constitution', 'specs/001-feature/spec.md': '   \n' })
     const point = await resolveResumePoint({ projectPath: root, stages: STAGES })
     expect(point.stage).toBe('specify')
+  })
+
+  test('Delivery tasks belong to deliver: they neither hold implement back nor show up as work to resume', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/001-feature/spec.md': '# Spec',
+      'specs/001-feature/plan.md': '# Plan',
+      'specs/001-feature/tasks.md': '## Phase 1\n- [x] T001 Build\n- [x] T002 Test\n## Delivery\n- [ ] T010 Open the PR\n- [ ] T011 Merge\n',
+      'specs/001-feature/test-plan.md': '# Tests',
+    })
+    const point = await resolveResumePoint({ projectPath: root, stages: STAGES })
+    expect(point.completed).toContain('implement')
+    expect(point.stage).toBe('verify')
+    expect(point.taskProgress?.remaining).toEqual([])
   })
 
   test('implement is finished only when every task is ticked', async () => {
@@ -171,5 +185,19 @@ describe('unfinished feature detection', () => {
   test('an empty feature directory is not work in progress', async () => {
     const root = await project({ 'specs/006-empty/.keep': '' })
     expect(await findUnfinishedFeature(root)).toBeUndefined()
+  })
+})
+
+describe('implementationTaskProgress', () => {
+  test('leaves out the Delivery group and everything nested under it', () => {
+    const md = [
+      '## Phase 1', '- [x] T001 build', '- [x] T002 test',
+      '## Delivery', '### app repo', '- [ ] T010 open PR', '- [ ] T011 merge',
+      '## Polish', '- [ ] T020 docs',
+    ].join('\n')
+    const p = implementationTaskProgress(md)
+    expect(p.done).toBe(2)
+    expect(p.total).toBe(3)
+    expect(p.remaining).toEqual(['T020'])
   })
 })

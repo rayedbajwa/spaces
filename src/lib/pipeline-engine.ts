@@ -11,7 +11,7 @@ import {
   type StepNavigatorResult,
 } from './aidlc'
 import type { PipelineStep, PipelineTemplate } from './pipeline-template'
-import { evaluateBranchExpression, readCodeReviewStatus, readDeliveryStatus, readVerificationStatus } from './pipeline-branch'
+import { evaluateBranchExpression, readCodeReviewStatus, readDeliveryStatus, readVerificationNearPass, readVerificationStatus } from './pipeline-branch'
 import { loadPersona } from './persona-loader'
 import { loadRoutingConfig, routeModel, type SpeedMode } from './model-router'
 import { getTierModels } from './model-policy'
@@ -392,9 +392,21 @@ export class PipelineEngine {
         this.visitCount.set(step.id, (this.visitCount.get(step.id) ?? 0) + 1)
       }
 
+      // Linear advance. A step a loop jumped back to sits past the template's
+      // own stages, where "the next index" is the end; it continues with its
+      // successor in the template instead (implement → review after a review
+      // sent the run back), or the loop would stop after one step.
+      const linear = (): StepNavigatorResult => {
+        const successor = step ? this.template.steps[this.template.steps.indexOf(step) + 1] : undefined
+        if (ctx.currentIndex + 1 >= ctx.stages.length && ctx.currentIndex >= this.template.steps.length && successor) {
+          return { nextIndex: ctx.stages.length, extendStages: [successor.stage] }
+        }
+        return { nextIndex: ctx.currentIndex + 1 }
+      }
+
       // No branch rules: linear advance.
       if (!step?.onComplete?.branch || step.onComplete.branch.length === 0) {
-        return { nextIndex: ctx.currentIndex + 1 }
+        return linear()
       }
 
       // Evaluate branch rules in order.
@@ -435,18 +447,20 @@ export class PipelineEngine {
       }
 
       // No rule matched: linear advance (fall-through).
-      return { nextIndex: ctx.currentIndex + 1 }
+      return linear()
     }
   }
 
   private async buildBranchVariables(currentStepId: string): Promise<Record<string, string | undefined>> {
-    const [verification, delivery, codeReview] = await Promise.all([
+    const [verification, delivery, codeReview, nearPass] = await Promise.all([
       readVerificationStatus(this.options.cwd).catch(() => undefined),
       readDeliveryStatus(this.options.cwd).catch(() => undefined),
       readCodeReviewStatus(this.options.cwd).catch(() => undefined),
+      readVerificationNearPass(this.options.cwd).catch(() => undefined),
     ])
     return {
       verification_status: verification,
+      verification_near_pass: nearPass,
       delivery_status: delivery,
       code_review_status: codeReview,
       iteration: String(this.visitCount.get(currentStepId) ?? 0),
