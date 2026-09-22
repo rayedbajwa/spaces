@@ -279,6 +279,40 @@ export async function listRunsForProject(projectNamespace: string, limit = 50): 
   `
 }
 
+/**
+ * The run that speaks for each project on the board: its active run (queued,
+ * running or paused) when it has one, else its most recently started run.
+ */
+export async function listBoardRuns(projectNamespaces: string[]): Promise<RunRow[]> {
+  if (projectNamespaces.length === 0) return []
+  const sql = getDb()
+  return await sql<RunRow[]>`
+    SELECT DISTINCT ON (project_namespace)
+      run_id            AS "runId",
+      project_namespace AS "projectNamespace",
+      project_label     AS "projectLabel",
+      project_path      AS "projectPath",
+      pipeline_name     AS "pipelineName",
+      feature           AS "feature",
+      status            AS "status",
+      pause_kind        AS "pauseKind",
+      current_stage     AS "currentStage",
+      session_file      AS "sessionFile",
+      error_message     AS "errorMessage",
+      options_json      AS "optionsJson",
+      template_json     AS "templateJson",
+      retry_count       AS "retryCount",
+      owning_worker_id  AS "owningWorkerId",
+      project_id        AS "projectId",
+      repo_id           AS "repoId",
+      created_at        AS "createdAt",
+      updated_at        AS "updatedAt"
+    FROM pipeline_runs
+    WHERE project_namespace = ANY(${projectNamespaces})
+    ORDER BY project_namespace, (status IN ('queued', 'running', 'paused')) DESC, created_at DESC
+  `
+}
+
 export async function listAllRuns(limit = 100): Promise<RunRow[]> {
   const sql = getDb()
   return await sql<RunRow[]>`
