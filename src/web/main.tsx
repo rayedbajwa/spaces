@@ -116,6 +116,8 @@ type ArtifactDiffEntry = {
   createdAt: string
 }
 
+type OpenPullRequestLink = { githubRepo: string; number: number; url: string; title: string; draft: boolean }
+
 type BoardCard = {
   projectNamespace: string
   projectLabel: string
@@ -128,6 +130,8 @@ type BoardCard = {
   estimate: string
   gateReadiness: GateReadiness[]
   usage?: UsageSummary
+  /** Open pull requests of the feature being implemented or released. */
+  pullRequests?: OpenPullRequestLink[]
   automationState?: {
     state: 'idle' | 'running' | 'needs_approval' | 'needs_clarification' | 'error' | 'blocked' | 'completed'
     message: string
@@ -460,6 +464,8 @@ function App() {
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null)
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
   const [activeProjectTab, setActiveProjectTab] = useState<ProjectModalTab>('overview')
+  // The open project's open pull requests, looked up on GitHub when it opens.
+  const [projectPullRequests, setProjectPullRequests] = useState<OpenPullRequestLink[] | null>(null)
   // Themed modal for stage-input prompts (feature/constitution/checklistDomain).
   // Set to a request object with a resolver Promise; the modal renders and
   // calls resolve(value|null) on submit/cancel. Replaces window.prompt().
@@ -824,6 +830,15 @@ function App() {
   }
 
   const selectedProjectNamespace = selectedCard?.projectNamespace
+  useEffect(() => {
+    setProjectPullRequests(null)
+    if (!selectedProjectNamespace) return
+    let cancelled = false
+    getJson<{ pullRequests: OpenPullRequestLink[] }>(`/api/projects/${selectedProjectNamespace}/pull-requests`)
+      .then((data) => { if (!cancelled) setProjectPullRequests(data.pullRequests) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [selectedProjectNamespace])
   const canAnswer = currentRun?.status === 'paused' && currentRun?.resumable !== false
 
   useEffect(() => {
@@ -2203,6 +2218,7 @@ function App() {
                       <div><span>Verify</span><strong>{card.verificationStatus}</strong></div>
                       {card.usage && card.usage.calls > 0 && <div><span>Spend</span><strong>{formatUsd(card.usage.costUsd)}</strong></div>}
                     </div>
+                    <PullRequestLinks pullRequests={card.pullRequests} />
                     {card.automationState && card.automationState.state !== 'idle' && card.automationState.state !== 'completed' && (
                       <button
                         className={`automation-badge ${card.automationState.state}`}
@@ -2268,6 +2284,7 @@ function App() {
                     </span>
                     <span className={`chip verify ${selectedCardFresh.verificationStatus}`}>verify <strong>{selectedCardFresh.verificationStatus}</strong></span>
                     <UsageChip usage={selectedCardFresh.usage} label="spend" />
+                    <PullRequestLinks pullRequests={projectPullRequests ?? selectedCardFresh.pullRequests} />
                     {projectDetail && <span className="chip"><strong>{projectDetail.repos.filter((r) => r.label !== 'governance').length}</strong> repositor{projectDetail.repos.filter((r) => r.label !== 'governance').length === 1 ? 'y' : 'ies'}</span>}
                     {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
                       <button className={`chip attention chip-button`} onClick={() => setActiveProjectTab('assistant')} type="button">{selectedCardFresh.automationState.state.replace('_', ' ')} →</button>
@@ -4274,6 +4291,30 @@ function parseTaskTracker(markdown?: string): TaskTrackerItem[] {
         updatedAt: new Date(0).toISOString(),
       }
     })
+}
+
+/** Links to a feature's open pull requests on GitHub; repository names appear when there is more than one. */
+function PullRequestLinks({ pullRequests }: { pullRequests?: OpenPullRequestLink[] }) {
+  if (!pullRequests?.length) return null
+  const manyRepos = new Set(pullRequests.map((pr) => pr.githubRepo)).size > 1
+  return (
+    <div className="pr-links">
+      {pullRequests.map((pr) => (
+        <a
+          key={`${pr.githubRepo}#${pr.number}`}
+          className="chip pr-link"
+          href={pr.url}
+          target="_blank"
+          rel="noreferrer"
+          draggable={false}
+          onClick={(event) => event.stopPropagation()}
+          title={`${pr.githubRepo}#${pr.number}: ${pr.title}`}
+        >
+          {manyRepos ? `${pr.githubRepo.split('/')[1]}#${pr.number}` : `PR #${pr.number}`}{pr.draft ? ' · draft' : ''} ↗
+        </a>
+      ))}
+    </div>
+  )
 }
 
 function mapStageToTab(stage: string): ProjectModalTab {

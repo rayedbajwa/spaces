@@ -81,6 +81,7 @@ import {
   type TeamRole,
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
+import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote } from './lib/run-store'
 import {
   addRepo as projAddRepo,
@@ -1389,6 +1390,11 @@ async function route(req: Request): Promise<Response> {
     const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days') ?? '30') || 30))
     const usageOrg = await orgIdOf()
     return sendJson(200, { days, ...(await summarizeOrgUsage(usageOrg, days)), actor: await describeGitHubActor(usageOrg).catch(() => null) })
+  }
+
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/pull-requests$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    return sendJson(200, { pullRequests: await openPullRequestsForProject(projectNamespace!) })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/qa$/.test(url.pathname)) {
@@ -2941,6 +2947,47 @@ async function listHistory(): Promise<HistoryResponse> {
   return { projects, runs }
 }
 
+/**
+ * The feature's open pull requests, for linking to them from the board and the
+ * project page. Looked up on GitHub by head branch and kept for a minute. The
+ * board never waits on GitHub: it shows what is cached and refreshes in the
+ * background, so a link appears on the next poll.
+ */
+const OPEN_PR_TTL_MS = 60_000
+const openPullRequestCache = new Map<string, { at: number; prs: OpenPullRequestLink[] }>()
+const openPullRequestLookups = new Map<string, Promise<OpenPullRequestLink[]>>()
+
+async function openPullRequestsForProject(projectNamespace: string): Promise<OpenPullRequestLink[]> {
+  const cached = openPullRequestCache.get(projectNamespace)
+  if (cached && Date.now() - cached.at < OPEN_PR_TTL_MS) return cached.prs
+  const inflight = openPullRequestLookups.get(projectNamespace)
+  if (inflight) return inflight
+  const lookup = (async () => {
+    const registry = await import('./lib/project-registry')
+    const project = await registry.getProjectBySlug(projectNamespace)
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (!project || !projectMeta) return []
+    const repos = (await registry.listRepos(project.projectId)).map((r) => ({ githubRepo: r.githubRepo, localPath: r.localPath }))
+    const featureDir = repos.some((r) => r.githubRepo) ? await findLatestFeatureDirAbsolute(projectMeta.path).catch(() => null) : null
+    const prs = featureDir ? await findOpenPullRequests(await orgIdForProject(project.projectId), featureDir, repos) : []
+    openPullRequestCache.set(projectNamespace, { at: Date.now(), prs })
+    return prs
+  })()
+    .catch((error) => {
+      serverLog.warn('open pull request lookup failed', { project: projectNamespace, error: error instanceof Error ? error.message : String(error) })
+      return openPullRequestCache.get(projectNamespace)?.prs ?? []
+    })
+    .finally(() => openPullRequestLookups.delete(projectNamespace))
+  openPullRequestLookups.set(projectNamespace, lookup)
+  return lookup
+}
+
+function cachedOpenPullRequests(projectNamespace: string): OpenPullRequestLink[] {
+  const cached = openPullRequestCache.get(projectNamespace)
+  if (!cached || Date.now() - cached.at >= OPEN_PR_TTL_MS) void openPullRequestsForProject(projectNamespace)
+  return cached?.prs ?? []
+}
+
 async function buildBoard(): Promise<BoardResponse> {
   const history = await listHistory()
   const cards: BoardCard[] = []
@@ -2998,6 +3045,7 @@ async function buildBoard(): Promise<BoardResponse> {
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
       usage: usageByProject.get(project.namespace) ?? EMPTY_USAGE,
+      ...(status === 'implementing' || status === 'releasing' ? { pullRequests: cachedOpenPullRequests(project.namespace) } : {}),
     })
   }
 
@@ -4120,6 +4168,8 @@ interface BoardCard {
   gateReadiness: GateReadinessRecord[]
   /** Tokens and cost across every run of the project. */
   usage?: UsageSummary
+  /** Open pull requests of the feature being implemented or released, to link to on GitHub. */
+  pullRequests?: OpenPullRequestLink[]
   automationState?: AutomationStateRecord
   recommendedAction?: RecommendedActionRecord
   updatedAt: string
