@@ -1096,15 +1096,26 @@ textarea {
   display: flex;
   align-items: stretch;
   gap: 10px;
-  overflow-x: hidden;
-  padding-bottom: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  padding-bottom: 10px;
   min-height: 360px;
 }
+.board-columns::-webkit-scrollbar { height: 8px; }
+.board-columns::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; }
+.board-columns::-webkit-scrollbar-track { background: transparent; }
 
+/* Lanes share the width when there is room and keep a readable minimum when
+   there is not; the board then scrolls sideways instead of squeezing them. */
 .board-column {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 0 220px;
+  min-width: 220px;
   max-width: none;
+  scroll-snap-align: start;
   min-height: 320px;
   padding: 10px;
   border-radius: var(--r-md);
@@ -1138,12 +1149,18 @@ textarea {
 .board-column-collapsed .column-count { padding: 2px 6px; }
 
 .board-column-header {
+  flex-wrap: nowrap;
+  gap: 8px;
   padding: 4px 6px 10px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 10px;
   align-items: center;
 }
 .board-column-header h3 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -2109,11 +2126,12 @@ textarea {
 }
 .dock-new-output:hover { background: rgba(94, 106, 210, 0.32); }
 
-/* Lanes always share the full width; cards shrink to fit. */
+/* Cards fill their lane; the summary pairs up label/value columns. */
 .board-column .board-card { min-width: 0; }
-.board-column .summary-grid { grid-template-columns: 1fr; gap: 4px 8px; }
+.board-column .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 10px; }
+.board-column .summary-grid strong { overflow-wrap: anywhere; }
 .board-column .board-card-top { flex-wrap: wrap; gap: 6px; }
-@media (max-width: 1100px) { .board-columns { overflow-x: auto; } .board-column { flex: 1 1 220px; min-width: 200px; } }
+@media (max-width: 640px) { .board-column { flex-basis: 78vw; min-width: 78vw; } }
 
 /* The log pane takes every pixel the sheet has left after the header and any notice. */
 .agent-dock .dock-body > .dock-log-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
