@@ -20,7 +20,8 @@ describe('stepForColumn', () => {
     { lane: 'planned',      expected: 'plan' },
     { lane: 'tasked',       expected: 'tasks' },
     { lane: 'implementing', expected: 'implement' },
-    { lane: 'done',         expected: 'verify' },
+    { lane: 'releasing',    expected: 'review' },
+    { lane: 'done',         expected: 'deliver' },
     { lane: 'backlog',      expected: null },
   ]
 
@@ -48,7 +49,8 @@ describe('isEligibleDrop', () => {
     expect(isEligibleDrop(card('specify'), 'specified')).toBe(true)
     expect(isEligibleDrop(card('plan'), 'planned')).toBe(true)
     expect(isEligibleDrop(card('implement'), 'implementing')).toBe(true)
-    expect(isEligibleDrop(card('verify'), 'done')).toBe(true)
+    expect(isEligibleDrop(card('review'), 'releasing')).toBe(true)
+    expect(isEligibleDrop(card('deliver'), 'done')).toBe(true)
   })
 
   test('mismatch → false (no lane-skipping)', () => {
@@ -82,8 +84,8 @@ describe('isEligibleDrop', () => {
     // Given a card recommending each real step, walk every lane and confirm
     // exactly one lane returns true. This is the single-source-of-truth
     // guarantee — no ambiguous drop targets.
-    const lanes: BoardStatus[] = ['backlog', 'initialized', 'specified', 'planned', 'tasked', 'implementing', 'done']
-    const realSteps = ['init', 'specify', 'plan', 'tasks', 'implement', 'verify']
+    const lanes: BoardStatus[] = ['backlog', 'initialized', 'specified', 'planned', 'tasked', 'implementing', 'releasing', 'done']
+    const realSteps = ['init', 'specify', 'plan', 'tasks', 'implement', 'verify', 'accept', 'review', 'deliver']
     for (const step of realSteps) {
       const c = card(step)
       const acceptingLanes = lanes.filter((lane) => isEligibleDrop(c, lane))
@@ -106,14 +108,23 @@ describe('laneForProject', () => {
     expect(laneForProject({ ...base, tasksDone: 0 })).toBe('tasked')
   })
 
-  test('done only when verification passed', () => {
-    expect(laneForProject({ ...base, verificationStatus: 'pass' })).toBe('done')
+  test('a verified feature is releasing until delivery merges it', () => {
     expect(laneForProject({ ...base, verificationStatus: 'partial' })).toBe('implementing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass' })).toBe('releasing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', deliveryStatus: 'partial' })).toBe('releasing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', deliveryStatus: 'merged' })).toBe('done')
   })
 
-  test('a run in flight on a code stage counts as implementing', () => {
+  test('a run in flight places the card by its stage', () => {
     expect(laneForProject({ ...base, activeStage: 'implement' })).toBe('implementing')
-    expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('implementing')
+    expect(laneForProject({ ...base, activeStage: 'testplan' })).toBe('implementing')
+    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'review' })).toBe('releasing')
+    expect(laneForProject({ ...base, accepted: true, verificationStatus: 'partial', activeStage: 'review' })).toBe('releasing')
+    expect(laneForProject({ ...base, activeStage: 'deliver' })).toBe('releasing')
+    // The full pipeline reviews before it verifies: that review is still building.
+    expect(laneForProject({ ...base, activeStage: 'review' })).toBe('implementing')
+    // Fixing review findings on a verified feature is building again.
+    expect(laneForProject({ ...base, verificationStatus: 'pass', activeStage: 'implement' })).toBe('implementing')
     expect(laneForProject({ ...base, activeStage: 'plan' })).toBe('tasked')
   })
 
@@ -129,19 +140,22 @@ describe('a lane is a phase, not one step', () => {
   const card = (step: string): DropCandidateCard => ({ recommendedAction: { step, label: `Run ${step}`, tab: 'specs', reason: 'next' } })
 
   test('the steps that lead into Implementing all land there', () => {
-    for (const step of ['testplan', 'parallelize', 'implement']) {
+    for (const step of ['testplan', 'parallelize', 'implement', 'verify']) {
       expect(isEligibleDrop(card(step), 'implementing')).toBe(true)
     }
   })
 
-  test('verify and deliver both lead to Done', () => {
-    expect(isEligibleDrop(card('verify'), 'done')).toBe(true)
+  test('accepting and review lead to Releasing; deliver leads to Done', () => {
+    expect(isEligibleDrop(card('accept'), 'releasing')).toBe(true)
+    expect(isEligibleDrop(card('review'), 'releasing')).toBe(true)
     expect(isEligibleDrop(card('deliver'), 'done')).toBe(true)
+    expect(isEligibleDrop(card('verify'), 'done')).toBe(false)
   })
 
   test('a card whose next step is earlier still cannot skip ahead', () => {
     expect(isEligibleDrop(card('plan'), 'implementing')).toBe(false)
     expect(isEligibleDrop(card('implement'), 'done')).toBe(false)
+    expect(isEligibleDrop(card('review'), 'done')).toBe(false)
     expect(isEligibleDrop(card('specify'), 'done')).toBe(false)
   })
 })

@@ -71,7 +71,7 @@ describe('acceptanceRecommended', () => {
     expect(describeSummary({ met: 48, total: 50, criticalOpen: 0 })).toBe('48/50 criteria met (96%), nothing critical open')
   })
 
-  test('the Done lane takes a card whose next step is accept', () => {
-    expect(isEligibleDrop({ recommendedAction: { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: '' } }, 'done')).toBe(true)
+  test('the Releasing lane takes a card whose next step is accept', () => {
+    expect(isEligibleDrop({ recommendedAction: { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: '' } }, 'releasing')).toBe(true)
   })
 })
