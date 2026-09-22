@@ -7,6 +7,7 @@ import { assertEnvOrExit } from './lib/env'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { getOrchestrator } from './lib/dispatcher'
 import { log } from './lib/logger'
+import { drainBudget } from './lib/drain'
 import { listLiveWorkers, pruneDeadWorkers } from './lib/worker-registry'
 
 assertEnvOrExit('supervisor')
@@ -184,13 +185,15 @@ ignoreShutdownDbErrors((reason) => supLog.error('unhandled rejection', reason in
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
-  supLog.info('shutdown; stopping managed workers', { signal, count: managed.size })
+  // A deploy with a drain budget gives workers time to finish their running
+  // stages (lib/drain.ts); otherwise just long enough to re-queue their runs.
+  const waitMs = signal === 'SIGTERM' ? drainBudget().supervisorMs : 15_000
+  supLog.info('shutdown; stopping managed workers', { signal, count: managed.size, waitSeconds: Math.round(waitMs / 1000) })
   const children = [...managed.values()]
-  for (const w of children) w.child.kill('SIGTERM')
-  // Give workers a moment to re-queue/pause their runs cleanly.
+  for (const w of children) w.child.kill(signal === 'SIGINT' ? 'SIGINT' : 'SIGTERM')
   await Promise.all(children.map((w) => new Promise<void>((resolve) => {
     if (w.exited) return resolve()
-    const timer = setTimeout(() => { w.child.kill('SIGKILL'); resolve() }, 15_000)
+    const timer = setTimeout(() => { w.child.kill('SIGKILL'); resolve() }, waitMs)
     w.child.once('exit', () => { clearTimeout(timer); resolve() })
   })))
   await closeDb()

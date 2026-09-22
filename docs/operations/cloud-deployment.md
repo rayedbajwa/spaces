@@ -177,6 +177,7 @@ service exits and Railway restarts it.
     PUBLIC_URL=https://<your-service>.up.railway.app
     SUPERVISOR_MAX_WORKERS=2
     WORKER_IDLE_EXIT_SECONDS=300
+    RAILWAY_DEPLOYMENT_DRAINING_SECONDS=900
     ```
 
     Railway mounts volumes owned by root; the image's entrypoint hands
@@ -197,9 +198,30 @@ service exits and Railway restarts it.
 
 Sizing: the container runs the web server, the supervisor and up to
 `SUPERVISOR_MAX_WORKERS` workers at roughly 300–500 MB each, so 2 GB covers
-two concurrent project runs and 4 GB covers four. Railway restarts the
-service on failure and on deploys; running runs are re-queued from their
-current stage and paused runs stay paused.
+two concurrent project runs and 4 GB covers four.
+
+**Deploys and running agents.** Every deploy stops the old container, and by
+default Railway gives it no time at all (SIGTERM, then SIGKILL at once). A run
+killed mid-stage starts that stage again on the new deployment, so a long
+review or implement stage repeats on every merge.
+`RAILWAY_DEPLOYMENT_DRAINING_SECONDS` gives the old container time to drain.
+With 60 seconds or more, a worker that gets SIGTERM:
+
+- stops claiming new jobs;
+- lets its running stages finish, then hands each run back to the queue at
+  its next stage (a run that reaches an approval gate stays paused; one that
+  finishes completes);
+- after the window, minus a margin, hands back anything still running from
+  its current stage, as before.
+
+The web server keeps serving the old version until the workers have gone. A
+service with a volume cannot run two deployments at once, so the new version
+starts only when the old container exits: a deploy waits for the longest
+running stage, up to the window. 900 seconds covers most stages; raise it if
+your implement stages run longer, lower it if deploys must land quickly.
+`SPACES_DRAIN_SECONDS` overrides the value on other platforms (for example,
+set it together with `docker stop --time`). Without either, runs are re-queued
+from their current stage right away, and paused runs stay paused.
 
 Railway CLI equivalent:
 
