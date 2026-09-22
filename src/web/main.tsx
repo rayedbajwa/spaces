@@ -122,6 +122,8 @@ type BoardCard = {
   projectPath: string
   status: BoardStatus
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
+  /** Set when someone accepted the feature although verification did not pass. */
+  accepted?: { verificationStatus: string; acceptedBy: string; acceptedAt: string; note?: string }
   currentAgent: string
   estimate: string
   gateReadiness: GateReadiness[]
@@ -1646,8 +1648,33 @@ function App() {
   // stepForColumn + isEligibleDrop moved to src/lib/board-drop.ts so they can
   // be unit-tested without a DOM. Both are pure functions imported at the top.
 
+  /** Accept a feature whose verification did not pass, then offer to deliver it. */
+  async function acceptFeature(card: BoardCard) {
+    const note = window.prompt(
+      `Accept ${card.projectLabel} as done with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the feature's acceptance record.`,
+      '',
+    )
+    if (note === null) return
+    try {
+      await postJson(`/api/projects/${card.projectNamespace}/accept`, { note })
+      setStatusMessage(`${card.projectLabel} accepted at ${card.verificationStatus} verification.`)
+      await refreshBoard()
+      if (window.confirm(`Run deliver for ${card.projectLabel} now (merge and deploy)?`)) {
+        await executeStep('deliver', 'qa', card)
+      }
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : String(error))
+    }
+  }
+
   async function handleBoardDrop(card: BoardCard, targetLane: BoardStatus) {
     setDraggedProjectNamespace('')
+    // Dropping a feature whose verification came back short onto Done is a
+    // person saying "this is good enough": record that instead of re-running QA.
+    if (targetLane === 'done' && !card.accepted && ['partial', 'fail'].includes(card.verificationStatus)) {
+      await acceptFeature(card)
+      return
+    }
     if (!isEligibleDrop(card, targetLane)) {
       setStatusMessage(`Can't move ${card.projectLabel} to ${targetLane} — that's not the next eligible step for this project.`)
       return
@@ -2891,12 +2918,26 @@ function App() {
                       <button className="primary-button" disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
                       <button className="secondary-button" disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'qa')} type="button">Run review</button>
                       <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
+                      {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
+                        <button
+                          className="secondary-button"
+                          disabled={busy}
+                          title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification, then deliver it`}
+                          onClick={() => void acceptFeature(selectedCardFresh)}
+                          type="button"
+                        >Accept and finish</button>
+                      )}
                       <button className="secondary-button" disabled={qaBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectQA(selectedProjectNamespace)} type="button">Refresh QA</button>
                     </div>
                   </div>
                   <h3>Verification status</h3>
                   <p className="panel-subtitle">
-                    {qaOverview?.verificationStatus === 'pass' ? 'Verification passed and project can be considered done.' : qaOverview?.verificationStatus === 'partial' ? 'Verification is partial and needs more evidence.' : qaOverview?.verificationStatus === 'fail' ? 'Verification failed and requires fixes.' : 'Verification has not been completed yet.'}
+                    {selectedCardFresh?.accepted
+                      ? `Accepted by ${selectedCardFresh.accepted.acceptedBy} at ${selectedCardFresh.accepted.verificationStatus} verification${selectedCardFresh.accepted.note ? `: ${selectedCardFresh.accepted.note}` : '.'} The feature counts as done; deliver it when you are ready.`
+                      : qaOverview?.verificationStatus === 'pass' ? 'Verification passed and project can be considered done.'
+                      : qaOverview?.verificationStatus === 'partial' ? 'Verification is partial. Add the missing evidence, or accept it as it stands and finish.'
+                      : qaOverview?.verificationStatus === 'fail' ? 'Verification failed and requires fixes.'
+                      : 'Verification has not been completed yet.'}
                   </p>
                   <h3>Job history</h3>
                   {(qaOverview?.jobHistory ?? []).length === 0 && <p className="empty-state">No sub-agent job history yet.</p>}
