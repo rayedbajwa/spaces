@@ -944,3 +944,19 @@ DROP TRIGGER IF EXISTS project_responsibilities_touch ON project_responsibilitie
 CREATE TRIGGER project_responsibilities_touch
   BEFORE UPDATE ON project_responsibilities
   FOR EACH ROW EXECUTE FUNCTION touch_project();
+
+-- What the board shows for a project, derived from its feature files
+-- (lib/project-state.ts). Recomputed when a run of the project changed since,
+-- when marked stale, or when older than a few minutes; never on every request.
+CREATE TABLE IF NOT EXISTS project_state (
+  project_id     UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  -- The checkout the artifacts were read from; a different one (a clone that
+  -- finished, a new primary repository) makes them out of date.
+  project_path   TEXT NOT NULL DEFAULT '',
+  artifacts_json JSONB NOT NULL,
+  tasks_done     INTEGER NOT NULL DEFAULT 0,
+  stale          BOOLEAN NOT NULL DEFAULT false,
+  stale_since    TIMESTAMPTZ,
+  computed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE project_state ADD COLUMN IF NOT EXISTS project_path TEXT NOT NULL DEFAULT '';

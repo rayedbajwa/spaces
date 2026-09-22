@@ -314,6 +314,20 @@ export async function listRepos(projectId: string): Promise<RepoRow[]> {
   `
 }
 
+/** Repositories of many projects in one query, grouped by project, primary first. */
+export async function listReposForProjects(projectIds: string[]): Promise<Map<string, RepoRow[]>> {
+  const grouped = new Map<string, RepoRow[]>()
+  if (projectIds.length === 0) return grouped
+  const sql = getDb()
+  const rows = await sql<RepoRow[]>`
+    SELECT ${sql.unsafe(REPO_COLS)} FROM project_repos
+     WHERE project_id = ANY(${projectIds}::uuid[])
+     ORDER BY is_primary DESC, added_at ASC
+  `
+  for (const row of rows) grouped.set(row.projectId, [...(grouped.get(row.projectId) ?? []), row])
+  return grouped
+}
+
 export async function getRepo(repoId: string): Promise<RepoRow | undefined> {
   const sql = getDb()
   const [row] = await sql<RepoRow[]>`
