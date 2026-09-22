@@ -87,6 +87,17 @@ function currentBranch(localPath: string): string | undefined {
   } catch { return undefined }
 }
 
+/** Head branches a feature's pull requests may come from: each checkout's feature branch and every branch the reports name. */
+async function candidateBranches(featureDirAbs: string, repo: DeliveryRepoHint): Promise<Set<string>> {
+  const branches = new Set<string>()
+  for (const name of ['parallel-workstreams.md', 'merge-orchestrator.md', 'tasks.md', 'code-review.md', 'verification-report.md']) {
+    try { for (const m of (await readFile(path.join(featureDirAbs, name), 'utf8')).matchAll(BRANCH_MENTION)) branches.add(m[0].replace(/[).,;:`'"]+$/, '')) } catch { /* optional */ }
+  }
+  const head = repo.localPath ? currentBranch(repo.localPath) : undefined
+  if (head) branches.add(head)
+  return branches
+}
+
 /**
  * Pull requests found by head branch on GitHub — the checkout's current
  * feature branch and every branch name the reports mention — so a PR the
@@ -94,22 +105,38 @@ function currentBranch(localPath: string): string | undefined {
  */
 export async function discoverPullRequestsByBranch(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[]): Promise<Array<{ githubRepo: string; number: number; source: string }>> {
   const found: Array<{ githubRepo: string; number: number; source: string }> = []
-  const mentioned = new Set<string>()
-  for (const name of ['parallel-workstreams.md', 'merge-orchestrator.md', 'tasks.md', 'code-review.md', 'verification-report.md']) {
-    try { for (const m of (await readFile(path.join(featureDirAbs, name), 'utf8')).matchAll(BRANCH_MENTION)) mentioned.add(m[0].replace(/[).,;:`'"]+$/, '')) } catch { /* optional */ }
-  }
   for (const repo of repos) {
     if (!repo.githubRepo) continue
     const owner = repo.githubRepo.split('/')[0]!
-    const branches = new Set<string>(mentioned)
-    const head = repo.localPath ? currentBranch(repo.localPath) : undefined
-    if (head) branches.add(head)
-    for (const branch of branches) {
+    for (const branch of await candidateBranches(featureDirAbs, repo)) {
       const pulls = await githubApi<Array<{ number: number }>>(orgId, `https://api.github.com/repos/${repo.githubRepo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=5`).catch(() => [])
       for (const pr of pulls) found.push({ githubRepo: repo.githubRepo, number: pr.number, source: `branch ${branch}` })
     }
   }
   return found
+}
+
+/** Just enough of an open pull request to link to it. */
+export interface OpenPullRequestLink {
+  githubRepo: string
+  number: number
+  url: string
+  title: string
+  draft: boolean
+}
+
+/** The feature's open pull requests, one GitHub call per candidate branch. */
+export async function findOpenPullRequests(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[]): Promise<OpenPullRequestLink[]> {
+  const found = new Map<string, OpenPullRequestLink>()
+  for (const repo of repos) {
+    if (!repo.githubRepo) continue
+    const owner = repo.githubRepo.split('/')[0]!
+    for (const branch of await candidateBranches(featureDirAbs, repo)) {
+      const pulls = await githubApi<Array<{ number: number; html_url: string; title: string; draft?: boolean }>>(orgId, `https://api.github.com/repos/${repo.githubRepo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=5`).catch(() => [])
+      for (const pr of pulls) found.set(`${repo.githubRepo}#${pr.number}`, { githubRepo: repo.githubRepo, number: pr.number, url: pr.html_url, title: pr.title, draft: Boolean(pr.draft) })
+    }
+  }
+  return [...found.values()].sort((a, b) => a.githubRepo.localeCompare(b.githubRepo) || a.number - b.number)
 }
 
 interface GitHubPull {

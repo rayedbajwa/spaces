@@ -2443,3 +2443,9 @@ textarea {
 .dock-tasks { display: grid; gap: 4px; margin-top: 8px; }
 .dock-tasks-bar { height: 4px; border-radius: 999px; background: var(--bg-elevated-2); overflow: hidden; }
 .dock-tasks-bar span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #5e6ad2); transition: width 400ms ease; }
+
+/* Links to a feature's open pull requests (board card, project header) */
+.pr-links { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.board-card .pr-links { display: flex; margin-top: 8px; }
+.chip.pr-link { color: var(--accent-text); border-color: rgba(94, 106, 210, 0.35); background: var(--accent-soft); text-decoration: none; font-family: var(--font-mono); }
+.chip.pr-link:hover { background: rgba(94, 106, 210, 0.24); color: var(--text-strong); }
