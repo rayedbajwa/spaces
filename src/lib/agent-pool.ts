@@ -69,6 +69,16 @@ export async function markAgentIdle(agentId: string, sessionFile?: string | null
   `
 }
 
+/** Idle again, with no session: its last one belongs to a paused run now. */
+export async function detachAgentSession(agentId: string): Promise<void> {
+  const sql = getDb()
+  await sql`
+    UPDATE project_agents
+       SET status='idle', current_job_id=NULL, last_used_at=now(), session_file=NULL
+     WHERE agent_id=${agentId}
+  `
+}
+
 export async function markAgentDead(agentId: string): Promise<void> {
   const sql = getDb()
   await sql`UPDATE project_agents SET status='dead' WHERE agent_id=${agentId}`
@@ -97,7 +107,7 @@ export async function acquireWarmSession(input: {
   role: string
   cwd: string
   jobId?: string
-}): Promise<{ manager: SessionManager; release: (sessionFile?: string | null) => Promise<void>; agentId: string; wasWarm: boolean }> {
+}): Promise<{ manager: SessionManager; release: (sessionFile?: string | null, options?: { detach?: boolean }) => Promise<void>; agentId: string; wasWarm: boolean }> {
   let agent = await getAgent(input.projectId, input.role)
 
   // If an existing agent is busy, don't steal it — create a fresh disposable one.
@@ -134,8 +144,14 @@ export async function acquireWarmSession(input: {
     manager,
     agentId: capturedId,
     wasWarm,
-    release: async (sessionFile) => {
-      try { await markAgentIdle(capturedId, sessionFile ?? null) } catch { /* ignore */ }
+    // detach: the run keeps its session for itself (it paused and will reopen
+    // it), so the agent goes back idle without it and the next run starts fresh
+    // instead of writing into a conversation that is still waiting for an answer.
+    release: async (sessionFile, options) => {
+      try {
+        if (options?.detach) await detachAgentSession(capturedId)
+        else await markAgentIdle(capturedId, sessionFile ?? null)
+      } catch { /* ignore */ }
     },
   }
 }

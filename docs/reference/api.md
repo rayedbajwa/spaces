@@ -78,7 +78,7 @@ own session, team creation and invites.
 | `POST /api/runs` | Start: `{ projectId, pipeline, feature?, constitution?, planContext?, checklistDomain?, model?, thinking?, targetRepoId? }` |
 | `GET /api/runs/:id` | Snapshot: status, stage, log, timeline, `interrupted`, `queued`, `rerunnable` |
 | `GET /api/runs/:id/events` | Server-sent events stream |
-| `POST /api/runs/:id/answer` | `{ answer }` for a paused run (`approve` / `continue` / text); falls back to re-queueing when the owning worker is gone |
+| `POST /api/runs/:id/answer` | `{ answer }` for a paused run (`approve` / `continue` / text); queues a job that reopens the paused session on any worker and continues from the answer. `409` once the run is no longer paused (a second answer) |
 | `POST /api/runs/:id/rerun` | `{ fromStage?: string | 'start' }`; resumes the previous agent session |
 | `POST /api/projects/:slug/execute-step` | Run one stage: `{ step, force?, feature? }` |
 | `POST /api/projects/:slug/accept` | Accept a feature whose verification did not pass: `{ note? }`. Records who accepted it, the verification status at the time and the reason in `acceptance.md`, and the board counts the feature as done. `409 not_verified` when there is no report yet, `409 already_passed` when verification passed |

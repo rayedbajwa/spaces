@@ -161,6 +161,13 @@ export interface FlowOptions {
    * are expected to already exist on disk.
    */
   startStage?: StageName
+  /**
+   * Rebuild a flow that paused at a gate in another process: it starts waiting
+   * for input at `stage` (with the paused conversation reopened through
+   * sessionManagerFactory), so resumeWithAnswer() continues exactly where the
+   * paused flow would have. Workers hold no engine while a run waits.
+   */
+  resumeWaiting?: { kind: 'clarification' | 'review'; stage: StageName }
   /** Owning project; scopes the knowledge tools (which integrations/repos agents may query). */
   projectId?: string
   /**
@@ -274,6 +281,22 @@ export class AIDLCFlow {
       const idx = stages.indexOf(options.startStage)
       if (idx > 0) this.stageIndex = idx
     }
+    if (options.resumeWaiting) {
+      const idx = stages.indexOf(options.resumeWaiting.stage)
+      if (idx >= 0) this.stageIndex = idx
+      this.waitState = { kind: options.resumeWaiting.kind, stage: options.resumeWaiting.stage }
+      this.activeStage = options.resumeWaiting.stage
+    }
+  }
+
+  /** Continue a flow rebuilt with resumeWaiting: reopen the session, then answer as the paused flow would. */
+  async resumeWithAnswer(input: string): Promise<FlowProgress> {
+    if (!this.waitState) throw new Error('This flow was not rebuilt at a gate (resumeWaiting is missing).')
+    // The model this stage runs on (a per-stage override, else the run's), over the reopened session.
+    await this.maybeSwapSessionForStage(this.waitState.stage)
+    this.sessionFile = this.session?.sessionFile
+    this.print(`\n[resume] Continuing ${this.waitState.stage} from its ${this.waitState.kind === 'review' ? 'approval gate' : 'question'} with your answer.\n`)
+    return this.answer(input)
   }
 
   async start(): Promise<FlowProgress> {
