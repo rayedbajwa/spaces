@@ -173,6 +173,14 @@ export async function summarizeProjectUsage(projectNamespace: string): Promise<U
 }
 
 /** Totals per project namespace, for board cards. */
+/** Usage of just these projects, for the board: never an aggregate over every tenant's rows. */
+export async function summarizeUsageForProjects(projectNamespaces: string[]): Promise<Map<string, UsageSummary>> {
+  if (projectNamespaces.length === 0) return new Map()
+  const sql = getDb()
+  const rows = await sql<Array<SumRow & { projectNamespace: string }>>`SELECT project_namespace AS "projectNamespace", ${sql.unsafe(SUM)} FROM run_usage WHERE project_namespace = ANY(${projectNamespaces}) GROUP BY 1`.catch(() => [])
+  return new Map(rows.map((r) => [r.projectNamespace, toSummary(r)]))
+}
+
 export async function summarizeUsageByProject(): Promise<Map<string, UsageSummary>> {
   const sql = getDb()
   const rows = await sql<Array<SumRow & { projectNamespace: string }>>`SELECT project_namespace AS "projectNamespace", ${sql.unsafe(SUM)} FROM run_usage GROUP BY 1`.catch(() => [])

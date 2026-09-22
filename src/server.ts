@@ -13,6 +13,7 @@ import { normalizeThinkingLevel, QUESTION_PATTERN, resolveCwd, runAIDLCAssistant
 import { PipelineEngine } from './lib/pipeline-engine'
 import { getTemplate, listTemplates } from './lib/pipeline-loader'
 import type { PipelineTemplate } from './lib/pipeline-template'
+import type { ProjectRow } from './lib/project-registry'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
@@ -83,7 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { implementLoopTemplate } from './lib/implement-loop'
-import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
+import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
   addRepo as projAddRepo,
   createProject as projCreate,
@@ -122,8 +123,9 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
-import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
+import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageForProjects, type UsageSummary } from './lib/run-usage'
 import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
+import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProjectState } from './lib/project-state'
 import { laneForProject } from './lib/board-drop'
 import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
@@ -1332,13 +1334,13 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET' && url.pathname === '/api/board') {
-    const board = await buildBoard()
-    // Archived projects leave the board unless ?archived=1 asks for them (marked as such).
+    // Only the caller's team, and archived projects only when ?archived=1 asks for them (marked as such).
     const projects = auth && !auth.activeTeam ? [] : await projList(auth?.activeTeam?.teamId)
     const archivedBySlug = new Map(projects.filter((p) => p.archivedAt).map((p) => [p.slug, p.archivedAt!]))
     const pausedBySlug = new Map(projects.filter((p) => p.pausedAt).map((p) => [p.slug, p.pausedAt!]))
     const codeBySlug = new Map(projects.filter((p) => p.code).map((p) => [p.slug, p.code!]))
     const showArchived = url.searchParams.get('archived') === '1'
+    const board = await buildBoard(projects.filter((p) => showArchived || !p.archivedAt))
     const slugs = auth ? new Set(projects.map((p) => p.slug)) : undefined
     const columns = board.columns.map((c) => ({
       ...c,
@@ -1440,6 +1442,7 @@ async function route(req: Request): Promise<Response> {
       acceptedBy: auth?.user.name || auth?.user.email || 'local user',
       note: body.note,
     })
+    await markProjectStateStale(project.projectId).catch(() => undefined)
     if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
     serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
 
@@ -1460,6 +1463,7 @@ async function route(req: Request): Promise<Response> {
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     const withdrawn = await withdrawAcceptance(projectMeta.path)
+    await markProjectStateStale(project.projectId).catch(() => undefined)
     return sendJson(200, { withdrawn })
   }
 
@@ -2905,6 +2909,22 @@ async function tryServeStaticAsset(pathname: string): Promise<Response | null> {
   return new Response(file, { headers: { 'content-type': getContentType(filePath) } })
 }
 
+function toHistoryRun(row: RunRow): HistoryRunSummary {
+  return {
+    runId: row.runId,
+    projectNamespace: row.projectNamespace,
+    projectLabel: row.projectLabel,
+    projectPath: row.projectPath,
+    feature: row.feature,
+    stages: (row.templateJson?.steps ?? []).map((s) => s.stage as StageName),
+    status: row.status === 'queued' ? 'running' : row.status,
+    stage: row.currentStage,
+    pauseKind: row.pauseKind,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
 async function listHistory(): Promise<HistoryResponse> {
   const [dbProjects, dbRuns] = await Promise.all([
     import('./lib/project-registry').then((m) => m.listProjects()),
@@ -2925,19 +2945,7 @@ async function listHistory(): Promise<HistoryResponse> {
     lastUpdated: p.updatedAt,
   }))
 
-  const runs: HistoryRunSummary[] = dbRuns.map((row) => ({
-    runId: row.runId,
-    projectNamespace: row.projectNamespace,
-    projectLabel: row.projectLabel,
-    projectPath: row.projectPath,
-    feature: row.feature,
-    stages: (row.templateJson?.steps ?? []).map((s) => s.stage as StageName),
-    status: row.status === 'queued' ? 'running' : row.status,
-    stage: row.currentStage,
-    pauseKind: row.pauseKind,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-  }))
+  const runs: HistoryRunSummary[] = dbRuns.map(toHistoryRun)
 
   projects.sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated))
   runs.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -2986,24 +2994,53 @@ function cachedOpenPullRequests(projectNamespace: string): OpenPullRequestLink[]
   return cached?.prs ?? []
 }
 
-async function buildBoard(): Promise<BoardResponse> {
-  const history = await listHistory()
+/**
+ * The board for a set of projects (the caller's team). Each project's run comes
+ * from one query, its repositories from another, and its file-derived artifacts
+ * from project_state, recomputed only when they can have changed
+ * (lib/project-state.ts) — never a scan of every project's files per request.
+ */
+async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
+  const registry = await import('./lib/project-registry')
+  const [reposByProject, boardRuns, usageByProject, states] = await Promise.all([
+    registry.listReposForProjects(projectRows.map((p) => p.projectId)),
+    listBoardRuns(projectRows.map((p) => p.slug)),
+    summarizeUsageForProjects(projectRows.map((p) => p.slug)),
+    loadProjectStates<ProjectArtifacts>(projectRows.map((p) => p.projectId)),
+  ])
+  const runBySlug = new Map(boardRuns.map((row) => [row.projectNamespace, row]))
   const cards: BoardCard[] = []
-  const usageByProject = await summarizeUsageByProject()
 
-  for (const project of history.projects) {
+  for (const row of projectRows) {
+    const project = {
+      namespace: row.slug,
+      label: row.name,
+      path: registry.pickRunnableRepo(reposByProject.get(row.projectId) ?? [])?.localPath ?? '',
+      lastUpdated: row.updatedAt,
+    }
     // A run in flight always speaks for the project. Otherwise the most recently
     // started one does — not the most recently *touched*, which let a reaper
     // bumping an old failed run paint a healthy project red.
-    const projectRuns = history.runs.filter((run) => run.projectNamespace === project.namespace)
-    const active = projectRuns.filter((run) => run.status === 'running' || run.status === 'paused').sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    const latestRun = active[0] ?? [...projectRuns].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
-    const artifacts = await collectProjectArtifacts(project.namespace, project.path)
+    const runRow = runBySlug.get(row.slug)
+    const latestRun = runRow ? toHistoryRun(runRow) : undefined
 
-    // The lane follows what the project has produced, not the state of a run
-    // process: a finished run records no current stage, so keying on that left a
-    // project that had implemented and verified sitting in "Tasked".
-    const tasks = await readTaskProgress(project.path).catch(() => undefined)
+    let artifacts: ProjectArtifacts
+    let tasksDone: number
+    const stored = states.get(row.projectId)
+    if (stored && isProjectStateFresh(stored, project.path, runRow?.updatedAt)) {
+      artifacts = stored.artifacts
+      tasksDone = stored.tasksDone
+    } else {
+      // Taken before reading, so a run that moves on meanwhile still reads as newer.
+      const computedAt = new Date(Date.now() - 5_000)
+      artifacts = await collectProjectArtifacts(project.namespace, project.path)
+      // The lane follows what the project has produced, not the state of a run
+      // process: a finished run records no current stage, so keying on that left a
+      // project that had implemented and verified sitting in "Tasked".
+      tasksDone = (await readTaskProgress(project.path).catch(() => undefined))?.done ?? 0
+      await saveProjectState(row.projectId, project.path, artifacts, tasksDone, computedAt)
+        .catch((error) => serverLog.warn('storing project state failed', { project: row.slug, error: error instanceof Error ? error.message : String(error) }))
+    }
     const hasLaterArtifact = artifacts.links.some((link) =>
       ['Orchestrate', 'Verify', 'Review', 'Deliver'].includes(link.stepLabel))
     const status = laneForProject({
@@ -3016,7 +3053,7 @@ async function buildBoard(): Promise<BoardResponse> {
       deliveryStatus: artifacts.deliveryStatus,
       codeReviewStatus: artifacts.codeReviewStatus === 'changes_requested' || artifacts.codeReviewStale ? 'changes_requested' : artifacts.codeReviewStatus,
       implementationArtifacts: hasLaterArtifact,
-      tasksDone: tasks?.done ?? 0,
+      tasksDone,
       activeStage: latestRun && ['running', 'paused'].includes(latestRun.status) ? latestRun.stage ?? null : null,
     })
 
