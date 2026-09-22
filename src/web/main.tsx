@@ -1694,6 +1694,13 @@ function App() {
   async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard) {
     const namespace = targetCard?.projectNamespace ?? selectedProjectNamespace
     if (!namespace) return
+    // "Accept and finish" is a recommended next step but not a pipeline stage:
+    // it records the person's decision instead of starting a run.
+    if (step === 'accept') {
+      const card = targetCard ?? board.columns.flatMap((column) => column.cards).find((c) => c.projectNamespace === namespace)
+      if (card) await acceptFeature(card)
+      return
+    }
     // If we're running for a different project than the one currently open,
     // switch the modal over so the user sees the log stream + status for the
     // right project.
@@ -2920,7 +2927,7 @@ function App() {
                       <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
                       {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
                         <button
-                          className="secondary-button"
+                          className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
                           disabled={busy}
                           title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification, then deliver it`}
                           onClick={() => void acceptFeature(selectedCardFresh)}
