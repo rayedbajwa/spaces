@@ -128,9 +128,15 @@ run stops at an approval gate or a question, the worker records the pause,
 keeps the agent's session file on the run and lets the engine go, so it can go
 idle and free its slot. Answering queues a job that any worker takes: it
 reopens that session in the same paused state and continues from your answer,
-exactly as if the run had never stopped. If the session file is gone, an
-approval moves on to the next stage and any other answer re-runs the stage
-with the answer in its context.
+exactly as if the run had never stopped.
+
+The session file lives on the worker's disk, so a gzip-compressed copy is kept
+in Postgres (`run_sessions`), refreshed after every stage and at every pause
+and finish. A run that resumes where the file is missing (a new volume, another
+worker host) gets it back from that copy first. Feature documents need no copy:
+the pipeline commits and pushes them with the feature branch. If there is no
+copy either, an approval moves on to the next stage and any other answer
+re-runs the stage with the answer in its context.
 
 ## Failure handling
 
@@ -138,6 +144,7 @@ with the answer in its context.
 |---|---|
 | Worker restarts while a run is executing | Run re-queued from the interrupted stage |
 | Worker restarts while a run is paused | Nothing to lose: no worker holds it; answering continues it on any worker |
+| Worker disk lost (new volume, other host) | The agent session is restored from its Postgres copy before the run continues |
 | Transient provider error (socket closed, 5xx, overloaded) | Retried from the same stage, twice, before failing |
 | Second answer while the first is being processed | Refused: the first answer takes the run out of paused |
 | Job whose worker stopped heartbeating | Closed and its run handed off (no fixed 10-minute timeout) |
