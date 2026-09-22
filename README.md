@@ -26,10 +26,12 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
 ### The board
 
 Every project is a card with a readable code (`COMP-1`) on a kanban board whose
-eight lanes always span the full width and derive from the artifacts each
-project has produced. A verified feature moves to **Releasing**, where code
-review and delivery run as separate steps, and reaches **Done** only once
-delivery reports it merged. Navigation lives in a sidebar: the team switcher at the
+eight lanes derive from the artifacts each project has produced (the board
+scrolls sideways when they do not fit). Running implement loops through code
+review and QA on its own until both are nearly done; a feature whose review
+approved it and whose verification passed (or was accepted) moves to
+**Releasing** for delivery, and reaches **Done** only once delivery reports it
+merged. Navigation lives in a sidebar: the team switcher at the
 top, then Projects (with search, `⌘K`), the shared Knowledge base, Memory,
 Integrations and Models, then People (team settings), Organization and
 Promotions, and your account at the bottom. The top strip shows what needs
