@@ -12,12 +12,15 @@ import { getDb } from './db'
  *     updated_at at every stage start, pause and finish);
  *   - something wrote feature files outside a run and marked them stale
  *     (accepting or withdrawing an acceptance);
+ *   - they were read from a different checkout than the project's current one
+ *     (a clone that finished after the first board read, a new primary repo);
  *   - they are older than MAX_AGE_MS, as a backstop for edits made elsewhere.
  */
 
 export const PROJECT_STATE_MAX_AGE_MS = 10 * 60_000
 
 export interface StoredProjectState<T> {
+  projectPath: string
   artifacts: T
   tasksDone: number
   stale: boolean
@@ -25,11 +28,13 @@ export interface StoredProjectState<T> {
 }
 
 export function isProjectStateFresh(
-  state: Pick<StoredProjectState<unknown>, 'stale' | 'computedAt'>,
+  state: Pick<StoredProjectState<unknown>, 'stale' | 'computedAt' | 'projectPath'>,
+  currentProjectPath: string,
   latestRunUpdatedAt?: string | null,
   now = Date.now(),
 ): boolean {
   if (state.stale) return false
+  if (state.projectPath !== currentProjectPath) return false
   const computed = Date.parse(state.computedAt)
   if (!Number.isFinite(computed) || now - computed > PROJECT_STATE_MAX_AGE_MS) return false
   if (latestRunUpdatedAt && Date.parse(latestRunUpdatedAt) >= computed) return false
@@ -38,28 +43,31 @@ export function isProjectStateFresh(
 
 export async function loadProjectStates<T>(projectIds: string[]): Promise<Map<string, StoredProjectState<T>>> {
   if (projectIds.length === 0) return new Map()
-  const rows = await getDb()<Array<{ projectId: string; artifacts: T; tasksDone: number; stale: boolean; computedAt: Date }>>`
-    SELECT project_id AS "projectId", artifacts_json AS artifacts, tasks_done AS "tasksDone", stale, computed_at AS "computedAt"
+  const rows = await getDb()<Array<{ projectId: string; projectPath: string; artifacts: T; tasksDone: number; stale: boolean; computedAt: Date }>>`
+    SELECT project_id AS "projectId", project_path AS "projectPath", artifacts_json AS artifacts, tasks_done AS "tasksDone", stale, computed_at AS "computedAt"
       FROM project_state WHERE project_id = ANY(${projectIds}::uuid[])
   `
-  return new Map(rows.map((r) => [r.projectId, { artifacts: r.artifacts, tasksDone: r.tasksDone, stale: r.stale, computedAt: new Date(r.computedAt).toISOString() }]))
+  return new Map(rows.map((r) => [r.projectId, { projectPath: r.projectPath, artifacts: r.artifacts, tasksDone: r.tasksDone, stale: r.stale, computedAt: new Date(r.computedAt).toISOString() }]))
 }
 
 /**
  * Store freshly computed artifacts. `computedAt` is when reading the files
  * started, so a run that changed while they were being read still counts as newer.
  */
-export async function saveProjectState(projectId: string, artifacts: unknown, tasksDone: number, computedAt: Date): Promise<void> {
+export async function saveProjectState(projectId: string, projectPath: string, artifacts: unknown, tasksDone: number, computedAt: Date): Promise<void> {
   const sql = getDb()
   await sql`
-    INSERT INTO project_state (project_id, artifacts_json, tasks_done, stale, computed_at)
-    VALUES (${projectId}, ${sql.json(artifacts as never)}, ${tasksDone}, false, ${computedAt})
+    INSERT INTO project_state (project_id, project_path, artifacts_json, tasks_done, stale, computed_at)
+    VALUES (${projectId}, ${projectPath}, ${sql.json(artifacts as never)}, ${tasksDone}, false, ${computedAt})
     ON CONFLICT (project_id) DO UPDATE
-      SET artifacts_json = EXCLUDED.artifacts_json,
+      SET project_path = EXCLUDED.project_path,
+          artifacts_json = EXCLUDED.artifacts_json,
           tasks_done = EXCLUDED.tasks_done,
           -- Marked stale after these files were read: keep it stale for the next read.
           stale = project_state.stale AND project_state.stale_since >= EXCLUDED.computed_at,
           computed_at = EXCLUDED.computed_at
+      -- Two board reads can compute at once; the one that started earlier must not overwrite the later one.
+      WHERE EXCLUDED.computed_at >= project_state.computed_at
   `
 }
 

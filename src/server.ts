@@ -123,7 +123,7 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
-import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
+import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageForProjects, type UsageSummary } from './lib/run-usage'
 import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
 import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProjectState } from './lib/project-state'
 import { laneForProject } from './lib/board-drop'
@@ -3010,7 +3010,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
   const [reposByProject, boardRuns, usageByProject, states] = await Promise.all([
     registry.listReposForProjects(projectRows.map((p) => p.projectId)),
     listBoardRuns(projectRows.map((p) => p.slug)),
-    summarizeUsageByProject(),
+    summarizeUsageForProjects(projectRows.map((p) => p.slug)),
     loadProjectStates<ProjectArtifacts>(projectRows.map((p) => p.projectId)),
   ])
   const runBySlug = new Map(boardRuns.map((row) => [row.projectNamespace, row]))
@@ -3032,7 +3032,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
     let artifacts: ProjectArtifacts
     let tasksDone: number
     const stored = states.get(row.projectId)
-    if (stored && isProjectStateFresh(stored, runRow?.updatedAt)) {
+    if (stored && isProjectStateFresh(stored, project.path, runRow?.updatedAt)) {
       artifacts = stored.artifacts
       tasksDone = stored.tasksDone
     } else {
@@ -3043,7 +3043,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       // process: a finished run records no current stage, so keying on that left a
       // project that had implemented and verified sitting in "Tasked".
       tasksDone = (await readTaskProgress(project.path).catch(() => undefined))?.done ?? 0
-      await saveProjectState(row.projectId, artifacts, tasksDone, computedAt)
+      await saveProjectState(row.projectId, project.path, artifacts, tasksDone, computedAt)
         .catch((error) => serverLog.warn('storing project state failed', { project: row.slug, error: error instanceof Error ? error.message : String(error) }))
     }
     const hasLaterArtifact = artifacts.links.some((link) =>
