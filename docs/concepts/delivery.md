@@ -17,6 +17,10 @@ Every commit message and PR title the pipeline writes follows
 period, header ≤ 72 characters. `implement` uses `feat`, `verify` uses `test`,
 `orchestrate` uses `chore`; the scope is the feature branch or workstream.
 
+While a feature is implementing or releasing, its board card and project page
+link to each open pull request on GitHub (`PR #12`, or `repo#12` when the
+feature spans repositories).
+
 ## Identity: the app bot opens pull requests
 
 With a GitHub App set up through Organization → Integrations, every push,
