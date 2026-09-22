@@ -944,3 +944,19 @@ DROP TRIGGER IF EXISTS project_responsibilities_touch ON project_responsibilitie
 CREATE TRIGGER project_responsibilities_touch
   BEFORE UPDATE ON project_responsibilities
   FOR EACH ROW EXECUTE FUNCTION touch_project();
+
+-- What the board shows for a project, derived from its feature files
+-- (lib/project-state.ts). Recomputed when a run of the project changed since,
+-- when marked stale, or when older than a few minutes; never on every request.
+CREATE TABLE IF NOT EXISTS project_state (
+  project_id     UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  artifacts_json JSONB NOT NULL,
+  tasks_done     INTEGER NOT NULL DEFAULT 0,
+  stale          BOOLEAN NOT NULL DEFAULT false,
+  stale_since    TIMESTAMPTZ,
+  computed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- The board reads each project's latest run.
+CREATE INDEX IF NOT EXISTS pipeline_runs_project_created_idx
+  ON pipeline_runs (project_namespace, created_at DESC);
