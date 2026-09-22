@@ -3272,7 +3272,13 @@ function App() {
                   if (tasksDone) return { step: 'verify', label: 'Run verification.', reason: `All ${taskTrackerItems.length} tasks are complete — no verification report yet.` }
                   return { step: 'implement', label: 'Run implementation.', reason: 'Ready to code — no verification report yet.' }
                 }
-                if (selectedCardFresh.verificationStatus !== 'pass') return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
+                if (selectedCardFresh.verificationStatus !== 'pass') {
+                  // Accepting (or delivering an accepted feature) is decided on the
+                  // server from the report's numbers; follow it rather than re-verify.
+                  const rec = selectedCardFresh.recommendedAction
+                  if (rec && (rec.step === 'accept' || selectedCardFresh.accepted)) return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
+                  return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
+                }
                 return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Verified and done.' }
               })()}
               onRunNext={(step) => void executeStep(step, 'implementation')}

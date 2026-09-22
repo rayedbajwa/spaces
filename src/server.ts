@@ -2978,6 +2978,7 @@ async function buildBoard(): Promise<BoardResponse> {
       projectPath: project.path,
       status,
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
+      accepted: artifacts.accepted,
       estimate: latestRun?.status === 'completed' ? 'complete' : 'in-progress',
       currentAgent: latestRun?.stage ?? (latestRun?.status === 'running' ? 'running' : ''),
       gateReadiness: [],
@@ -4062,6 +4063,8 @@ interface BoardCard {
   projectPath: string
   status: BoardStatus
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
+  /** Set when a person accepted the feature although verification did not pass. */
+  accepted?: Acceptance
   currentAgent: string
   estimate: string
   gateReadiness: GateReadinessRecord[]
