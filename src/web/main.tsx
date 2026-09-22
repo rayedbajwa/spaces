@@ -2941,13 +2941,12 @@ function App() {
                     </div>
                     <div className="button-row">
                       <button className="primary-button" disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
-                      <button className="secondary-button" disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'qa')} type="button">Run review</button>
-                      <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
+                      {/* Review and deliver belong to releasing: the next-step banner and the Releasing / Done lanes run them. */}
                       {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
                         <button
                           className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
                           disabled={busy}
-                          title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification, then deliver it`}
+                          title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification and move it on to releasing`}
                           onClick={() => void acceptFeature(selectedCardFresh)}
                           type="button"
                         >Accept and finish</button>
@@ -4332,9 +4331,11 @@ function mapStageToTab(stage: string): ProjectModalTab {
     case 'implement':
       return 'implementation'
     case 'verify':
+      return 'qa'
+    // Releasing has no tab of its own; the overview shows the run and its reports.
     case 'review':
     case 'deliver':
-      return 'qa'
+      return 'overview'
     default:
       return 'overview'
   }
