@@ -2531,6 +2531,10 @@ Requirements:
 - **Actually run the tests.** Read ${DEV_SETUP_FILE} first for the install/build/test commands that are known to work here and the test baseline; then use bash to execute the project's test suite (e.g. \`go test ./...\`, \`npm test\`, \`pytest\`, \`bun test\`, whatever the project uses). Capture pass/fail counts and error output. Do NOT just review code; execute.
 - Write verification-report.md in the active feature directory.
 - Start the document with an exact status line: \`Verification Status: PASS\`, \`Verification Status: FAIL\`, or \`Verification Status: PARTIAL\`. Use FAIL if any acceptance test fails or is missing; PARTIAL if some acceptance criteria are unverified but nothing is actively failing; PASS only when every acceptance criterion has a passing test.
+- Directly under the status line, write these two lines exactly (numbers only):
+  \`Acceptance Criteria Met: <met>/<total>\` — acceptance criteria / requirements with passing evidence, out of all of them in spec.md.
+  \`Critical Issues Open: <n>\` — failing or unverified items that would block release: data loss, security, a core user journey broken, or a requirement marked must-have. Minor gaps, environment-only limitations and deliberately deferred items are not critical.
+  The board uses these to suggest accepting a near-complete feature, so count honestly.
 - The report must cover:
   1. Test execution: command run, pass/fail counts, duration
   2. Requirement-by-requirement verification status (traceability table: requirement id → test id → pass/fail)

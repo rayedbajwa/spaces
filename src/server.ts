@@ -124,6 +124,7 @@ import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsag
 import { readTaskProgress } from './lib/run-resume'
 import { laneForProject } from './lib/board-drop'
 import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
+import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
@@ -2977,6 +2978,7 @@ async function buildBoard(): Promise<BoardResponse> {
       projectPath: project.path,
       status,
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
+      accepted: artifacts.accepted,
       estimate: latestRun?.status === 'completed' ? 'complete' : 'in-progress',
       currentAgent: latestRun?.stage ?? (latestRun?.status === 'running' ? 'running' : ''),
       gateReadiness: [],
@@ -3023,6 +3025,11 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
       ? { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: `Accepted at ${artifacts.accepted.verificationStatus} verification and delivered.` }
       : { step: 'deliver', label: 'Run deliver', tab: 'qa', reason: `Accepted by ${artifacts.accepted.acceptedBy} at ${artifacts.accepted.verificationStatus} verification. Ready to merge and deploy.` }
   }
+  // Close enough that another verify run would land in the same place: suggest
+  // the person accepts it. Accepting stays their decision and records why.
+  if (acceptanceRecommended(artifacts.verificationStatus, artifacts.verificationSummary)) {
+    return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(artifacts.verificationSummary!)}. Accept it as it stands, or run verify again.` }
+  }
   if (!artifacts.verifiedPass) return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
   return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Verified and done. The next specify run starts a new feature.' }
 }
@@ -3037,6 +3044,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     verifiedPass: false,
     verificationStatus: 'missing' as 'pass' | 'partial' | 'fail' | 'missing',
     accepted: await readAcceptance(projectRoot).catch(() => undefined) as Acceptance | undefined,
+    verificationSummary: undefined as VerificationSummary | undefined,
     scope: {
       requirements: 0,
       tasks: 0,
@@ -3077,8 +3085,10 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/parallel-workstreams.md`, 'Parallelize', `${featurePrefix} parallel workstreams`)
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/merge-orchestrator.md`, 'Orchestrate', `${featurePrefix} merge orchestrator`)
   if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/verification-report.md`, 'Verify', `${featurePrefix} verification report`)) {
-    flags.verificationStatus = await getVerificationStatus(join(projectRoot, `${latestFeature.relativePath}/verification-report.md`))
+    const reportPath = join(projectRoot, `${latestFeature.relativePath}/verification-report.md`)
+    flags.verificationStatus = await getVerificationStatus(reportPath)
     flags.verifiedPass = flags.verificationStatus === 'pass'
+    flags.verificationSummary = summarizeVerification(await readTextIfExists(reportPath))
   }
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/research.md`, 'Planned', `${featurePrefix} research`)
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/data-model.md`, 'Planned', `${featurePrefix} data model`)
@@ -4020,6 +4030,8 @@ interface ProjectArtifacts {
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
   /** Set when a person accepted the feature despite a verification that did not pass. */
   accepted?: Acceptance
+  /** Criteria met and critical issues open, as the verification report states them. */
+  verificationSummary?: VerificationSummary
   scope: {
     requirements: number
     tasks: number
@@ -4038,7 +4050,8 @@ interface GateReadinessRecord {
 }
 
 interface RecommendedActionRecord {
-  step: StageName
+  /** A pipeline stage to run, or 'accept' to record that a person accepts the feature as it stands. */
+  step: StageName | 'accept'
   label: string
   tab: GateReadinessRecord['tab']
   reason: string
@@ -4050,6 +4063,8 @@ interface BoardCard {
   projectPath: string
   status: BoardStatus
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
+  /** Set when a person accepted the feature although verification did not pass. */
+  accepted?: Acceptance
   currentAgent: string
   estimate: string
   gateReadiness: GateReadinessRecord[]
