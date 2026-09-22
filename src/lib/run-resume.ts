@@ -77,6 +77,27 @@ export function parseTaskProgress(tasksMarkdown: string): TaskProgress {
   return { done: completed.length, total: completed.length + remaining.length, remaining, completed }
 }
 
+/**
+ * Task checkboxes outside the "## Delivery" group — the tasks implement is
+ * responsible for. The delivery tasks (open the PR, merge, deploy, UAT) are
+ * the deliver step's, so they stay unticked until after review and QA.
+ */
+export function implementationTaskProgress(tasksMarkdown: string): TaskProgress {
+  const kept: string[] = []
+  let deliveryLevel: number | undefined
+  for (const line of tasksMarkdown.split('\n')) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      const level = heading[1]!.length
+      if (deliveryLevel !== undefined && level <= deliveryLevel) deliveryLevel = undefined
+      if (deliveryLevel === undefined && /\bdelivery\b/i.test(heading[2]!)) deliveryLevel = level
+      continue
+    }
+    if (deliveryLevel === undefined) kept.push(line)
+  }
+  return parseTaskProgress(kept.join('\n'))
+}
+
 /** Task progress of a project's latest feature, or undefined when it has no task list yet. */
 export async function readTaskProgress(projectPath: string): Promise<TaskProgress | undefined> {
   const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)

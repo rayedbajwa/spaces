@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { buildResumeNote, describeWorkInProgress, findUnfinishedFeature, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
+import { buildResumeNote, describeWorkInProgress, findUnfinishedFeature, implementationTaskProgress, parseTaskProgress, resolveResumePoint } from '../src/lib/run-resume'
 import type { StageName } from '../src/lib/aidlc'
 
 /**
@@ -171,5 +171,19 @@ describe('unfinished feature detection', () => {
   test('an empty feature directory is not work in progress', async () => {
     const root = await project({ 'specs/006-empty/.keep': '' })
     expect(await findUnfinishedFeature(root)).toBeUndefined()
+  })
+})
+
+describe('implementationTaskProgress', () => {
+  test('leaves out the Delivery group and everything nested under it', () => {
+    const md = [
+      '## Phase 1', '- [x] T001 build', '- [x] T002 test',
+      '## Delivery', '### app repo', '- [ ] T010 open PR', '- [ ] T011 merge',
+      '## Polish', '- [ ] T020 docs',
+    ].join('\n')
+    const p = implementationTaskProgress(md)
+    expect(p.done).toBe(2)
+    expect(p.total).toBe(3)
+    expect(p.remaining).toEqual(['T020'])
   })
 })

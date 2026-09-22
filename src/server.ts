@@ -82,6 +82,7 @@ import {
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
+import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote } from './lib/run-store'
 import {
   addRepo as projAddRepo,
@@ -122,7 +123,7 @@ import {
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageByProject, type UsageSummary } from './lib/run-usage'
-import { readTaskProgress } from './lib/run-resume'
+import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
 import { laneForProject } from './lib/board-drop'
 import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
@@ -1992,18 +1993,20 @@ async function route(req: Request): Promise<Response> {
       })
     }
 
-    const template: PipelineTemplate = {
-      name: `adhoc-${body.step}`,
-      version: 1,
-      description: `Ad-hoc single-step run of ${body.step} triggered from project detail UI.`,
-      steps: [{
-        id: body.step,
-        stage: body.step,
-        review: true,
-        humanGate: true,
-        ...(body.role ? { role: body.role as never } : {}),
-      }],
-    }
+    const template: PipelineTemplate = body.step === 'implement'
+      ? implementLoopTemplate(body.role)
+      : {
+          name: `adhoc-${body.step}`,
+          version: 1,
+          description: `Ad-hoc single-step run of ${body.step} triggered from project detail UI.`,
+          steps: [{
+            id: body.step,
+            stage: body.step,
+            review: true,
+            humanGate: true,
+            ...(body.role ? { role: body.role as never } : {}),
+          }],
+        }
 
     const cwd = resolveCwd(repo.localPath)
     const contextBundle = await buildContextBundle({ projectId: project.projectId, projectSlug: project.slug, projectPath: cwd })
@@ -3016,6 +3019,7 @@ async function buildBoard(): Promise<BoardResponse> {
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
       accepted: Boolean(artifacts.accepted),
       deliveryStatus: artifacts.deliveryStatus,
+      codeReviewStatus: artifacts.codeReviewStatus === 'changes_requested' || artifacts.codeReviewStale ? 'changes_requested' : artifacts.codeReviewStatus,
       implementationArtifacts: hasLaterArtifact,
       tasksDone: tasks?.done ?? 0,
       activeStage: latestRun && ['running', 'paused'].includes(latestRun.status) ? latestRun.stage ?? null : null,
@@ -3069,39 +3073,52 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!artifacts.tasked) return { step: 'tasks', label: 'Run tasks', tab: 'tracker', reason: 'Plan exists but no tasks.md.' }
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
-  if (artifacts.verificationStatus === 'missing') return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'Ready to code — no verification report yet.' }
-  if (artifacts.verifiedPass || artifacts.accepted) return releaseStepFor(artifacts)
-  // Close enough that another verify run would land in the same place: suggest
-  // the person accepts it. Accepting stays their decision and records why.
-  if (acceptanceRecommended(artifacts.verificationStatus, artifacts.verificationSummary)) {
-    return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(artifacts.verificationSummary!)}. Accept it as it stands, or run verify again.` }
-  }
-  return { step: 'verify', label: 'Run verify', tab: 'qa', reason: `Verification status: ${artifacts.verificationStatus}.` }
-}
-
-/**
- * Releasing a verified (or accepted) feature: code review, then delivery —
- * merge, deploy and UAT — as separate steps. Done once delivery reports MERGED.
- */
-function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'] {
-  const basis = artifacts.verifiedPass
-    ? 'Verified'
-    : `Accepted by ${artifacts.accepted!.acceptedBy} at ${artifacts.accepted!.verificationStatus} verification`
   if (artifacts.deliveryStatus === 'merged') {
     return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new feature.' }
   }
+  // Building the feature: implement, code review, then QA. Running implement
+  // loops through all three on its own (lib/implement-loop.ts); these are the
+  // steps to run when a loop stopped short, or to run one of them by hand.
+  const qaDone = artifacts.verifiedPass || Boolean(artifacts.accepted)
+  const implementation = artifacts.implementationTasks
+  const implementationLeft = !implementation || implementation.done === 0 || implementation.done < implementation.total
   if (artifacts.codeReviewStatus === 'changes_requested') {
     return artifacts.codeReviewStale
-      ? { step: 'review', label: 'Run review', tab: 'releasing', reason: 'The requested changes were implemented after the last review. Review again.' }
-      : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes; implement the findings, then review again.' }
+      ? { step: 'review', label: 'Run review', tab: 'qa', reason: 'The requested changes were implemented after the last review. Review again.' }
+      : { step: 'implement', label: 'Run implement', tab: 'implementation', reason: 'The code review requested changes. Implement works through the findings, then reviews and verifies again.' }
   }
-  if (artifacts.codeReviewStatus !== 'approved') {
-    return { step: 'review', label: 'Run review', tab: 'releasing', reason: `${basis}. Code review comes next, before merging and deploying.` }
+  if (!artifacts.codeReviewStatus) {
+    if (!qaDone && artifacts.verificationStatus === 'missing' && implementationLeft) {
+      const left = implementation && implementation.total > 0 ? ` ${implementation.total - implementation.done} of ${implementation.total} implementation tasks left.` : ''
+      return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Ready to code.${left} Implement loops through code review and QA until both are nearly done.` }
+    }
+    return { step: 'review', label: 'Run review', tab: 'qa', reason: qaDone ? 'QA is done but the code has not been reviewed. Review it before releasing.' : 'Implementation is done. Review the code before QA.' }
   }
+  // Review approved: QA decides.
+  if (!qaDone) {
+    // Close enough that another verify run would land in the same place: suggest
+    // the person accepts it. Accepting stays their decision and records why.
+    if (acceptanceRecommended(artifacts.verificationStatus, artifacts.verificationSummary)) {
+      return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(artifacts.verificationSummary!)}. Accept it as it stands, or run verify again.` }
+    }
+    if (artifacts.verificationStatus === 'missing') return { step: 'verify', label: 'Run verify', tab: 'qa', reason: 'Code review approved. QA comes next.' }
+    return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Verification ${artifacts.verificationStatus}${artifacts.verificationSummary ? ` (${describeSummary(artifacts.verificationSummary)})` : ''}. Implement fixes what it flagged, then reviews and verifies again.` }
+  }
+  return releaseStepFor(artifacts)
+}
+
+/**
+ * Releasing a reviewed, verified (or accepted) feature: delivery — merge,
+ * deploy and UAT. Done once delivery reports MERGED.
+ */
+function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'] {
+  const basis = artifacts.verifiedPass
+    ? 'Reviewed and verified'
+    : `Reviewed, and accepted by ${artifacts.accepted!.acceptedBy} at ${artifacts.accepted!.verificationStatus} verification`
   if (artifacts.deliveryStatus) {
     return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
   }
-  return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: 'Review approved. Merge, deploy and run UAT.' }
+  return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `${basis}. Merge, deploy and run UAT.` }
 }
 
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
@@ -3117,6 +3134,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     verificationSummary: undefined as VerificationSummary | undefined,
     codeReviewStatus: undefined as 'approved' | 'changes_requested' | undefined,
     codeReviewStale: false,
+    implementationTasks: undefined as { done: number; total: number } | undefined,
     deliveryStatus: undefined as 'merged' | 'partial' | 'blocked' | undefined,
     scope: {
       requirements: 0,
@@ -3152,6 +3170,8 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   }
   if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/tasks.md`, 'Tasked', `${featurePrefix} tasks`)) {
     flags.tasked = true
+    const progress = implementationTaskProgress(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/tasks.md`)))
+    flags.implementationTasks = { done: progress.done, total: progress.total }
   }
 
   await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/test-plan.md`, 'Test Plan', `${featurePrefix} test plan`)
@@ -3294,6 +3314,7 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
   const artifactPaths = [
     { label: 'Test plan', path: `${featureDir}/test-plan.md` },
     { label: 'Parallel workstreams', path: `${featureDir}/parallel-workstreams.md` },
+    { label: 'Code review', path: `${featureDir}/code-review.md` },
     { label: 'Verification report', path: `${featureDir}/verification-report.md` },
   ]
 
@@ -3306,9 +3327,8 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
 
   const verificationStatus = await getVerificationStatus(join(projectRoot, `${featureDir}/verification-report.md`))
 
-  // Releasing: the code review, the PR/CI/deploy state refreshed from GitHub, and the delivery report.
+  // Releasing is delivery: the PR/CI/deploy state refreshed from GitHub, and the delivery report.
   const releaseArtifacts = await Promise.all([
-    { label: 'Code review', path: `${featureDir}/code-review.md` },
     { label: 'Delivery status', path: `${featureDir}/delivery-status.md` },
     { label: 'Delivery report', path: `${featureDir}/delivery-report.md` },
   ].map(async (artifact) => ({
@@ -3317,8 +3337,8 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
     exists: await pathExists(join(projectRoot, artifact.path)),
     content: await readTextPreview(join(projectRoot, artifact.path)),
   })))
-  const codeReview = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(releaseArtifacts[0]!.content ?? '')?.[1]
-  const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(releaseArtifacts[2]!.content ?? '')?.[1]
+  const codeReview = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(artifacts.find((a) => a.label === 'Code review')?.content ?? '')?.[1]
+  const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(releaseArtifacts[1]!.content ?? '')?.[1]
 
   return {
     featureDir,
@@ -4146,6 +4166,8 @@ interface ProjectArtifacts {
   codeReviewStatus?: 'approved' | 'changes_requested'
   /** Changes were requested and tasks.md has been updated since: the review needs running again. */
   codeReviewStale?: boolean
+  /** Checkboxes in tasks.md outside the Delivery group: the work implement is responsible for. */
+  implementationTasks?: { done: number; total: number }
   /** From delivery-report.md; MERGED is what finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
   scope: {
@@ -4169,7 +4191,7 @@ interface RecommendedActionRecord {
   /** A pipeline stage to run, or 'accept' to record that a person accepts the feature as it stands. */
   step: StageName | 'accept'
   label: string
-  /** Review and deliver open the Releasing tab: releasing is not part of QA. */
+  /** Deliver opens the Releasing tab; review and verify open QA. */
   tab: GateReadinessRecord['tab'] | 'releasing'
   reason: string
 }
@@ -4242,7 +4264,7 @@ interface QAOverview {
   verificationPassed: boolean
   verificationStatus: 'pass' | 'partial' | 'fail' | 'missing'
   artifacts: QAArtifactPreview[]
-  /** Code review, delivery status and delivery report: the Releasing tab. */
+  /** Delivery status and delivery report: the Releasing tab. */
   releaseArtifacts: QAArtifactPreview[]
   codeReviewStatus?: 'approved' | 'changes_requested'
   deliveryStatus?: 'merged' | 'partial' | 'blocked'

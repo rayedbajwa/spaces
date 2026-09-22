@@ -43,7 +43,9 @@ harness, human gate and `onComplete` branch rules.
 - **Branch rules** (`onComplete.branch`) evaluate variables after a step:
   `verification_status` (`pass|fail|partial`), `code_review_status`
   (`approved|changes_requested`), `delivery_status` (`merged|partial|blocked`),
-  `iteration`. `goto` jumps to another step id or `end`; `maxIterations` caps loops.
+  `verification_near_pass` (`true` when a short verification is close enough to
+  accept), `iteration`. A step a loop jumped back to continues with its
+  successor in the template. `goto` jumps to another step id or `end`; `maxIterations` caps loops.
 
 The feature template's implementation harness:
 
@@ -73,17 +75,35 @@ Backlog → Initialized → Specified → Planned → Tasked → Implementing �
 Releasing → Done. A card's lane follows what the project has produced:
 
 - **Implementing** covers the test plan, workstream split, implement,
-  orchestrate and verify.
-- **Releasing** starts once verification passes or a person accepts it. Code
-  review and delivery (merge, deploy, UAT) are separate steps here: review
-  first, then deliver; review findings send the feature back to implement,
-  and once tasks.md records the fixes the next step is review again. The full
-  pipeline reviews before it verifies; that review still counts as Implementing.
+  orchestrate, **code review** and **QA (verify)**, in that order: review comes
+  before QA, or alongside it, never after release.
+- **Releasing** starts once the code review approved the feature and
+  verification passed, or a person accepted it. What is left is delivery:
+  merge, deploy, UAT.
 - **Done** means delivery reported `Delivery Status: MERGED`.
 
 A run in progress places its card by the stage it is on. Dropping a card on a
-lane runs the next step that leads there: `accept` or `review` on Releasing,
-`deliver` on Done.
+lane runs the next step that leads there: test plan, workstream split,
+implement, review or verify on Implementing; `accept` or `deliver` on
+Releasing. Done takes no drop: it is a result.
+
+### Implement is a loop
+
+Running implement from the board or the next-step banner does not stop after
+one pass. It runs implement, then the code review, and goes back to implement
+while the review requests changes; then QA, and goes back to implement until
+verification passes or comes close enough to accept (more than 95% of
+criteria met, nothing critical open). There are no approval gates inside the
+loop. A re-run works only on what the review or the verification report
+flagged, and implement runs at most four times; after that the loop stops and
+the board recommends the next step (review, verify, accept or implement
+again).
+
+Outside the loop, the next step follows the same order: implement until the
+implementation tasks are done (the `## Delivery` tasks in `tasks.md` belong to
+deliver and do not count), then review, then verify; a review that requested
+changes leads back to implement, and to review again once `tasks.md` records
+the fixes.
 
 ## Accepting a partial verification
 
@@ -95,8 +115,9 @@ onto **Releasing**, or press **Accept and finish** in the project's QA tab.
 
 Accepting records `acceptance.md` beside the verification report with who
 accepted it, the verification status at that moment and the reason given. The
-feature then moves to Releasing and continues with code review and deliver,
-so reviewing, merging and deploying keep their own approvals. Withdrawing the acceptance puts
+feature moves to Releasing once its code review has approved it (otherwise
+review is the next step), and deliver keeps its own approvals for merging and
+deploying. Withdrawing the acceptance puts
 the feature back where its verification left it.
 
 When verification came close, **Accept and finish** is the recommended next
