@@ -81,6 +81,14 @@ board then treats the feature as done and offers `deliver` as the next step, so
 merging and deploying keep their own approvals. Withdrawing the acceptance puts
 the feature back where its verification left it.
 
+When verification came close, **Accept and finish** is the recommended next
+step instead of another verify run: more than 95% of acceptance criteria met
+and no critical issues open. Verify writes both numbers under its status line
+(`Acceptance Criteria Met: 48/50`, `Critical Issues Open: 0`); older reports
+are read from the requirement traceability table, where any failing row or
+unsatisfied test case marked critical, blocker or P0 counts as critical.
+Accepting is still a person's decision and still asks why.
+
 ## Development-environment setup
 
 Before `implement`, `orchestrate`, `review` and `verify` (and before parallel

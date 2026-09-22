@@ -1694,6 +1694,13 @@ function App() {
   async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard) {
     const namespace = targetCard?.projectNamespace ?? selectedProjectNamespace
     if (!namespace) return
+    // "Accept and finish" is a recommended next step but not a pipeline stage:
+    // it records the person's decision instead of starting a run.
+    if (step === 'accept') {
+      const card = targetCard ?? board.columns.flatMap((column) => column.cards).find((c) => c.projectNamespace === namespace)
+      if (card) await acceptFeature(card)
+      return
+    }
     // If we're running for a different project than the one currently open,
     // switch the modal over so the user sees the log stream + status for the
     // right project.
@@ -2920,7 +2927,7 @@ function App() {
                       <button className="secondary-button" disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'qa')} type="button">Run deliver</button>
                       {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
                         <button
-                          className="secondary-button"
+                          className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
                           disabled={busy}
                           title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification, then deliver it`}
                           onClick={() => void acceptFeature(selectedCardFresh)}
@@ -3265,7 +3272,13 @@ function App() {
                   if (tasksDone) return { step: 'verify', label: 'Run verification.', reason: `All ${taskTrackerItems.length} tasks are complete — no verification report yet.` }
                   return { step: 'implement', label: 'Run implementation.', reason: 'Ready to code — no verification report yet.' }
                 }
-                if (selectedCardFresh.verificationStatus !== 'pass') return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
+                if (selectedCardFresh.verificationStatus !== 'pass') {
+                  // Accepting (or delivering an accepted feature) is decided on the
+                  // server from the report's numbers; follow it rather than re-verify.
+                  const rec = selectedCardFresh.recommendedAction
+                  if (rec && (rec.step === 'accept' || selectedCardFresh.accepted)) return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
+                  return { step: 'verify', label: 'Re-run verify.', reason: `Verification status: ${selectedCardFresh.verificationStatus ?? 'unknown'}.` }
+                }
                 return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Verified and done.' }
               })()}
               onRunNext={(step) => void executeStep(step, 'implementation')}

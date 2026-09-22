@@ -60,7 +60,7 @@ export function stepsForColumn(lane: BoardStatus): string[] {
     case 'planned':      return ['plan']
     case 'tasked':       return ['tasks']
     case 'implementing': return ['testplan', 'parallelize', 'implement']
-    case 'done':         return ['verify', 'deliver']
+    case 'done':         return ['verify', 'accept', 'deliver']
     case 'backlog':      return []
     default:             return []
   }
