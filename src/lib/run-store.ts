@@ -238,6 +238,58 @@ export async function requeueRunFromStage(runId: string, fromStage: StageName | 
   return row?.retryCount ?? 0
 }
 
+/**
+ * Take a person's answer to a run paused at a gate, in one transaction: the run
+ * leaves 'paused' (only one answer wins), the open gate is resolved, the event
+ * is recorded and the job that resumes the run is queued with the answer. If
+ * any step fails, none of it happened and the run is still waiting — the answer
+ * can never be lost between "no longer paused" and "a job carries it".
+ *
+ * Unlike a re-queue after a failure it does not count as a retry, and the stage
+ * stays the one that paused: the worker reopens the conversation there. Only
+ * review and clarification pauses take answers; a run a person paused is
+ * resumed, not answered.
+ */
+export async function answerPausedRun(input: {
+  runId: string
+  projectId: string
+  answer: string
+}): Promise<{ ok: true; stage: StageName | null; pauseKind: 'review' | 'clarification' } | { ok: false; reason: 'not_waiting' | 'archived' }> {
+  const sql = getDb()
+  return await sql.begin(async (tx) => {
+    const [project] = await tx<Array<{ archivedAt: string | null }>>`SELECT archived_at AS "archivedAt" FROM projects WHERE project_id = ${input.projectId}`
+    if (project?.archivedAt) return { ok: false as const, reason: 'archived' as const }
+    // Locked, so two answers arriving together cannot both pass this check.
+    const [run] = await tx<Array<{ stage: StageName | null; pauseKind: 'review' | 'clarification' }>>`
+      SELECT current_stage AS stage, pause_kind AS "pauseKind" FROM pipeline_runs
+       WHERE run_id = ${input.runId} AND status = 'paused' AND pause_kind IN ('review', 'clarification')
+       FOR UPDATE
+    `
+    if (!run) return { ok: false as const, reason: 'not_waiting' as const }
+    await tx`
+      UPDATE pipeline_runs
+         SET status = 'queued', pause_kind = NULL, error_message = NULL, owning_worker_id = NULL, updated_at = now()
+       WHERE run_id = ${input.runId}
+    `
+    const [gate] = await tx<Array<{ gateId: string; kind: string }>>`
+      UPDATE pipeline_gates
+         SET status = 'resolved', response = ${input.answer}, resolved_at = now()
+       WHERE gate_id = (SELECT gate_id FROM pipeline_gates WHERE run_id = ${input.runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1)
+       RETURNING gate_id AS "gateId", kind
+    `
+    await tx`
+      INSERT INTO pipeline_events (run_id, kind, payload)
+      VALUES (${input.runId}, 'gate_resolved', ${tx.json({ gateId: gate?.gateId, kind: gate?.kind, response: input.answer } as never)})
+    `
+    const payload = { runId: input.runId, ...(run.stage ? { fromStage: run.stage } : {}), answer: { text: input.answer, pauseKind: run.pauseKind } }
+    await tx`
+      INSERT INTO project_jobs (job_id, project_id, kind, payload_json, priority, status, trigger_source, run_id)
+      VALUES (${randomUUID()}, ${input.projectId}, 'pipeline_run', ${tx.json(payload as never)}, 0, 'queued', 'user', ${input.runId})
+    `
+    return { ok: true as const, stage: run.stage, pauseKind: run.pauseKind }
+  })
+}
+
 /** Forget which worker owns a run (its engine is gone), so answers fall back to re-queueing. */
 export async function clearRunOwner(runId: string): Promise<void> {
   const sql = getDb()
