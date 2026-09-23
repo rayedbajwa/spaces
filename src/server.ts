@@ -1399,6 +1399,8 @@ async function route(req: Request): Promise<Response> {
   // Every feature of the project, newest (current) first, with status and documents.
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/features$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace!))
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s features.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace!)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     return sendJson(200, { features: await listFeatures(projectMeta.path) })

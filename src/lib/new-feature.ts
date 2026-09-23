@@ -22,12 +22,17 @@ export interface NewFeaturePreparation {
   projectMemory?: string
 }
 
+const defaultDeps = { getProject, listRepos, syncDefaultBranch, refreshRepositoryKnowledge, composeProjectMemory, buildContextBundle }
+/** What preparation calls out to; tests pass fakes. */
+export type NewFeatureDeps = typeof defaultDeps
+
 export async function prepareForNewFeature(input: {
   projectId?: string
   orgId: string
   model?: string
   print: (line: string) => void
-}): Promise<NewFeaturePreparation | undefined> {
+}, overrides: Partial<NewFeatureDeps> = {}): Promise<NewFeaturePreparation | undefined> {
+  const { getProject, listRepos, syncDefaultBranch, refreshRepositoryKnowledge, composeProjectMemory, buildContextBundle } = { ...defaultDeps, ...overrides }
   if (!input.projectId) return undefined
   const project = await getProject(input.projectId)
   if (!project) return undefined

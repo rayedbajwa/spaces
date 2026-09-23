@@ -740,7 +740,7 @@ export class AIDLCFlow {
     // Stages that can scaffold (init, specify) are told what already exists, so an
     // interrupted project is continued instead of being created a second time.
     const { describeWorkInProgress } = await import('./run-resume')
-    const inProgress = await describeWorkInProgress(this.options.cwd, stage).catch(() => '')
+    const inProgress = await describeWorkInProgress(this.options.cwd, stage, { newFeature: this.options.allowNewFeature }).catch(() => '')
     if (inProgress) this.print(`\n[guard] ${stage}: existing work found; continuing it instead of starting over.\n`)
     // What the machine provides is a standing instruction on the session, not part
     // of the prompt. Each checkout is still pointed at the assigned database before

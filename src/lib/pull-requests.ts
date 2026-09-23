@@ -252,15 +252,16 @@ export async function syncDefaultBranch(orgId: string, cwd: string, githubRepo: 
   if (await git(cwd, ['status', '--porcelain'])) {
     return { branch, before, after: before, skipped: 'uncommitted changes in the checkout' }
   }
+  const hasLocal = await branchExistsLocally(cwd, branch)
+  // Checked before switching, so a skip leaves the checkout on the branch it was on.
+  if (hasLocal && !(await git(cwd, ['merge-base', '--is-ancestor', branch, `origin/${branch}`]).then(() => true, () => false))) {
+    return { branch, before, after: before, skipped: `local ${branch} has diverged from origin/${branch}` }
+  }
   if ((await currentBranch(cwd).catch(() => '')) !== branch) {
-    if (await branchExistsLocally(cwd, branch)) await git(cwd, ['checkout', '-q', branch])
+    if (hasLocal) await git(cwd, ['checkout', '-q', branch])
     else await git(cwd, ['checkout', '-q', '-b', branch, `origin/${branch}`])
   }
-  try {
-    await git(cwd, ['merge', '-q', '--ff-only', `origin/${branch}`])
-  } catch {
-    return { branch, before, after: await git(cwd, ['rev-parse', 'HEAD']).catch(() => undefined), skipped: `local ${branch} has diverged from origin/${branch}` }
-  }
+  await git(cwd, ['merge', '-q', '--ff-only', `origin/${branch}`])
   return { branch, before, after: await git(cwd, ['rev-parse', 'HEAD']) }
 }
 

@@ -100,7 +100,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
   }))
 }
 
-/** A current feature that is not finished yet (not delivered, accepted or verified): starting another parks it. */
+/** A current feature that is not finished yet (not merged, accepted or verified): starting another parks it. */
 export function isUnfinished(feature: FeatureSummary | undefined): boolean {
-  return Boolean(feature && !['delivered', 'delivering', 'accepted', 'verified'].includes(feature.status))
+  return Boolean(feature && !(feature.verification === 'pass' || feature.status === 'accepted' || feature.delivery === 'merged'))
 }

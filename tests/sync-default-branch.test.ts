@@ -61,4 +61,16 @@ describe('syncDefaultBranch', () => {
     const result = await syncDefaultBranch('org', work, 'acme/app')
     expect(result.skipped).toContain('diverged')
   })
+
+  test('a diverged main is not checked out: the checkout stays on its feature branch', async () => {
+    const { work, pushToOrigin } = await setup()
+    git(work, 'checkout', '-q', 'main')
+    await writeFile(path.join(work, 'b.txt'), 'local\n')
+    git(work, 'add', '.'); git(work, 'commit', '-q', '-m', 'local only')
+    git(work, 'checkout', '-q', 'feat/001-old')
+    await pushToOrigin('2\n')
+    const result = await syncDefaultBranch('org', work, 'acme/app')
+    expect(result.skipped).toContain('diverged')
+    expect(git(work, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('feat/001-old')
+  })
 })

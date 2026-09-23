@@ -126,6 +126,7 @@ type FeatureSummary = {
   status: 'specified' | 'planned' | 'tasked' | 'implementing' | 'verified' | 'accepted' | 'delivering' | 'delivered'
   codeReview?: 'approved' | 'changes_requested'
   verification?: 'pass' | 'partial' | 'fail'
+  delivery?: 'merged' | 'partial' | 'blocked'
   documents: Array<{ label: string; path: string }>
 }
 
@@ -936,9 +937,13 @@ function App() {
    */
   async function startNewFeature() {
     const current = projectFeatures[0]
-    const unfinished = Boolean(current && !['delivered', 'delivering', 'accepted', 'verified'].includes(current.status))
+    // Finished as the server counts it: verification passed, accepted, or merged.
+    // A delivery report alone (partial, blocked) is not.
+    const unfinished = Boolean(current && !(current.verification === 'pass' || current.status === 'accepted' || current.delivery === 'merged'))
     if (unfinished && !window.confirm(`"${current!.title}" is not finished (${current!.status}). Start a new feature anyway? It stays in the Features list, and the project moves on to the new one.`)) return
-    await executeStep('specify', 'specs', undefined, { force: unfinished })
+    // Always forced: this is an explicit request for a new feature, so neither the
+    // duplicate check nor the engine's unfinished-feature guard may turn it into a continuation.
+    await executeStep('specify', 'specs', undefined, { force: true })
   }
 
   async function refreshBoard() {
