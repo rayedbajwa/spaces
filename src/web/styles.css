@@ -2621,3 +2621,7 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
   .intent-nav-item { width: auto; white-space: nowrap; }
   .intent-timeline li { grid-template-columns: 1fr; gap: 2px; }
 }
+
+/* Log line stamps: local time dimmed, the agent as a small coloured tag. */
+.log-time { color: var(--text-subtle); margin-right: 6px; font-variant-numeric: tabular-nums; }
+.log-agent { display: inline-block; margin-right: 6px; padding: 0 5px; border: 1px solid; border-radius: 4px; font-size: 0.9em; line-height: 1.35; }
