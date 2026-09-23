@@ -763,6 +763,8 @@ async function route(req: Request): Promise<Response> {
     for (const r of body.repos ?? []) {
       await projAddRepo({ projectId: project.projectId, ...r })
     }
+    // Its Slack channel, when the organization has Slack connected (never blocks creating the project).
+    void import('./lib/slack').then((m) => m.ensureProjectChannel(project.projectId)).catch(() => undefined)
     for (const i of body.integrations ?? []) {
       await projUpsertIntegration({ projectId: project.projectId, ...i })
     }
@@ -1889,6 +1891,12 @@ async function route(req: Request): Promise<Response> {
       // topics, README use case) so plans can name repos without upfront selection.
       if (provider === 'github') {
         void syncGitHubRepoCatalog(callbackOrg).catch((error) => serverLog.warn('GitHub catalog sync failed', { error: error instanceof Error ? error.message : String(error) }))
+      }
+      // Slack connected → a channel for every project of the organization.
+      if (provider === 'slack') {
+        void import('./lib/slack').then((m) => m.ensureChannelsForOrg(callbackOrg))
+          .then((n) => serverLog.info('Slack project channels ready', { org: callbackOrg, channels: n }))
+          .catch((error) => serverLog.warn('creating Slack project channels failed', { error: error instanceof Error ? error.message : String(error) }))
       }
       if (pending.returnTo) return new Response(null, { status: 302, headers: { location: pending.returnTo } })
       return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><p><a href="/organization?section=integrations">Back to Spaces</a></p><script>window.close()</script></body></html>`)

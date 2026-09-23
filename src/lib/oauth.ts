@@ -94,7 +94,10 @@ export async function exchangeCode(cfg: OAuthProviderConfig, code: string, callb
     const text = await response.text().catch(() => '')
     throw new Error(`Token exchange failed (${response.status}): ${text.slice(0, 300)}`)
   }
-  return (await response.json()) as OAuthTokenResponse
+  const data = (await response.json()) as OAuthTokenResponse & { ok?: boolean; error?: string }
+  // Slack answers 200 with { ok: false, error } when the exchange fails.
+  if (data.ok === false) throw new Error(`Token exchange failed: ${data.error ?? 'unknown error'}`)
+  return data
 }
 
 // -------- Provider definitions --------
@@ -148,7 +151,8 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     kinds: ['slack'],
     authorizeUrl: 'https://slack.com/oauth/v2/authorize',
     tokenUrl: 'https://slack.com/api/oauth.v2.access',
-    scopes: ['channels:read', 'chat:write', 'users:read'],
+    // A channel per project with run updates and approvals (lib/slack.ts SLACK_BOT_SCOPES).
+    scopes: ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email'],
     consoleUrl: 'https://api.slack.com/apps',
   },
   linear: {
