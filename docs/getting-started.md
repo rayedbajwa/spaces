@@ -122,10 +122,12 @@ repositories and work areas → set up the development environments. When it is
 done you review the suggested repositories (Add & clone) and continue; the first
 run starts in real checkouts. When nothing registered or in the catalog fits,
 discovery proposes a **new repository** instead: a GitHub-safe name derived
-from the project, private by default. **Create on GitHub & attach** creates it
-through the connected account, clones it and makes it the primary repo, or
-**Create manually** opens GitHub's new-repository page prefilled so you can
-attach it afterwards.
+from the project, private by default. Spaces does not create repositories:
+**Create on GitHub** opens GitHub's new-repository page prefilled with the
+proposal. Come back to the tab and Spaces looks the new repository up (or
+press **I created it — select it**), offers it with your most recently updated
+repositories, and **Attach** adds it, clones it and makes it the primary repo
+when it is the project's first.
 
 ## Follow a run
 
