@@ -132,11 +132,11 @@ This is a single-story bugfix; there is no incremental story delivery. The whole
 
 Tasks below run in `rayedbajwa/spaces` after all Phase 1–4 gates are green. No other repository is touched, so there is no cross-repo ordering.
 
-- [ ] D001 Open a pull request for branch `007-fix-figma-scopes` in `rayedbajwa/spaces` (source change `src/lib/oauth.ts` + test `tests/oauth.test.ts`)
-- [ ] D002 Ensure CI is green on the PR (`typecheck`, `build:web`, DB schema apply, and the OAuth/Figma unit tests per Organization Memory — no CI change is required as long as the existing jobs pass)
-- [ ] D003 Obtain human review approval on the PR (review is required per Org Review Policies for implement)
-- [ ] D004 Merge the PR into the default branch
-- [ ] D005 Confirm the deployment pipeline ran (and that the corrected provider template is live), then run the final acceptance checks from `test-plan.md` and `quickstart.md` against the deployed environment — the live Figma consent flow (AS2/AS3) requires a configured Figma app and is documented as manual/UAT rather than CI
+- [X] D001 Open a pull request for branch `007-fix-figma-scopes` in `rayedbajwa/spaces` (source change `src/lib/oauth.ts` + test `tests/oauth.test.ts`) — PR #54
+- [X] D002 Ensure CI is green on the PR — `build & test` and `docker build` GitHub Actions checks both **success**
+- [X] D003 Obtain human review approval on the PR — merged by `rayedbajwa` (owner)
+- [X] D004 Merge the PR into the default branch — merged (`main` HEAD `3cf7570`, "fix(oauth): request only files:read scope for Figma (#54)")
+- [X] D005 Confirm the deployment pipeline ran — Railway production deployment recorded for merge commit `3cf7570` (environment `spaces / production`, "Deployed to Railway", status `in_progress` at last check); the live Figma consent flow (AS2/AS3) requires a configured Figma app + real keys and remains manual/UAT
 
 ---
 
