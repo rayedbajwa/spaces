@@ -19,7 +19,8 @@ describe('keeping long work from holding the machine', () => {
   test('each stage is told which tests to run', () => {
     expect(testTierInstruction('implement', { testPort: 3456 })).toContain('only what you changed')
     expect(testTierInstruction('implement', { testPort: 3456 })).toContain('Do not run the whole suite')
-    expect(testTierInstruction('review', { testPort: 3456 })).toContain('the full suite, once')
+    expect(testTierInstruction('review', { testPort: 3456 })).toContain('the impacted area')
+    expect(testTierInstruction('review', { testPort: 3456 })).toContain('Do not run the whole suite')
     expect(testTierInstruction('verify', { testPort: 3456 })).toContain('PORT=3456')
     expect(testTierInstruction('plan', { testPort: 3456 })).toBe('')
   })
