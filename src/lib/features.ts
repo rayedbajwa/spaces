@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { ACCEPTANCE_FILE } from './acceptance'
+import { activeFeatureId, featureDirNames } from './active-feature'
 
 /**
  * A project's features, one after another.
@@ -75,9 +76,9 @@ export function featureStatus(docs: {
 /** Every feature of the project, newest (the current one) first. */
 export async function listFeatures(projectRoot: string): Promise<FeatureSummary[]> {
   const specsDir = path.join(projectRoot, 'specs')
-  const entries = await readdir(specsDir, { withFileTypes: true }).catch(() => [])
-  const ids = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name).sort((a, b) => b.localeCompare(a))
-  return await Promise.all(ids.map(async (id, index) => {
+  const ids = featureDirNames(projectRoot)
+  const active = activeFeatureId(projectRoot)
+  return await Promise.all(ids.map(async (id) => {
     const dir = path.join(specsDir, id)
     const [spec, plan, tasks, review, verification, acceptance, delivery] = await Promise.all(
       ['spec.md', 'plan.md', 'tasks.md', 'code-review.md', 'verification-report.md', ACCEPTANCE_FILE, 'delivery-report.md'].map((f) => read(path.join(dir, f))))
@@ -92,7 +93,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
       id,
       relativePath: `specs/${id}`,
       title: featureTitle(spec, id),
-      current: index === 0,
+      current: id === active,
       ...featureStatus({ spec, plan, tasks, verification, acceptance, delivery, hasImplementation }),
       ...(codeReview ? { codeReview: /^approved$/i.test(codeReview) ? 'approved' as const : 'changes_requested' as const } : {}),
       documents,
