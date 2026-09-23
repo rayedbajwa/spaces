@@ -2412,49 +2412,37 @@ function App() {
                   <div className="stat card"><span className="stat-label">Verification</span><strong className="stat-value stat-text">{selectedCardFresh.verificationStatus}</strong><span className="stat-sub">{selectedCardFresh.estimate}</span></div>
                   <div className="stat card"><span className="stat-label">Jobs</span><strong className="stat-value">{projectJobs.filter((j) => ['running', 'queued', 'claimed'].includes(j.displayStatus)).length}</strong><span className="stat-sub">{projectJobs.filter((j) => j.displayStatus === 'paused').length} paused · {projectJobs.length} recent</span></div>
                 </div>
-                <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
-                <section className="card panel slim-panel">
+                <section className="card panel slim-panel overview-section overview-features">
                   <div className="panel-heading-row">
-                    <div><h3>Responsibilities</h3><p className="panel-subtitle">Project accountability is separate from team access roles.</p></div>
-                    {responsibilities?.repairNeeded && (me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin') && <button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void repairResponsibilities()}>{responsibilitiesBusy ? 'Repairing…' : 'Repair Owner assignments'}</button>}
-                  </div>
-                  {responsibilities?.responsibilities.map((item) => {
-                    const resolution = item.resolution
-                    const canManageResponsibilities = me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'
-                    const editing = editingResponsibility === item.responsibilityId
-                    return <div key={item.responsibilityId} className="repo-row">
-                      <div className="repo-row-main"><strong>{item.name}</strong><span className={`mini-badge ${resolution.status === 'unresolved' ? 'error' : resolution.status === 'owner-fallback' ? 'pending' : 'success'}`}>{resolution.status === 'owner-fallback' ? 'Owner fallback' : resolution.status}</span>{canManageResponsibilities && !editing && <button className="text-button" type="button" onClick={() => startResponsibilityEdit(item)}>Edit</button>}</div>
-                      {resolution.repairNeeded && <span className="error-text">Owner assignment needs repair.</span>}
-                      {!resolution.repairNeeded && resolution.assignees.length === 0 && <span className="repo-row-source">Unassigned</span>}
-                      {resolution.assignees.map((person) => <span key={person.userId} className="repo-row-source">{person.name}{person.primary ? ' · primary' : ''}</span>)}
-                      {editing && <div className="responsibility-editor" aria-label={`Edit ${item.name} assignments`}>
-                        <p className="panel-subtitle">Select active team members. Listed order controls primary and backups.</p>
-                        {responsibilityMembers.map((member) => {
-                          const selected = responsibilityDraft.includes(member.userId)
-                          const position = responsibilityDraft.indexOf(member.userId)
-                          return <div className="responsibility-editor-row" key={member.userId}>
-                            <label className="toggle"><input type="checkbox" checked={selected} onChange={() => setResponsibilityDraft((current) => selected ? current.filter((id) => id !== member.userId) : [...current, member.userId])} />{member.name} <span className="muted">{member.email}</span></label>
-                            {selected && <span><button className="text-button" type="button" disabled={position === 0} onClick={() => moveResponsibilityAssignee(member.userId, -1)}>↑</button><button className="text-button" type="button" disabled={position === responsibilityDraft.length - 1} onClick={() => moveResponsibilityAssignee(member.userId, 1)}>↓</button>{position === 0 && <span className="repo-row-source">primary</span>}</span>}
-                          </div>
-                        })}
-                        <div className="button-row"><button className="primary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void saveResponsibilityAssignments(item)}>Save assignments</button><button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => setEditingResponsibility(null)}>Cancel</button></div>
-                      </div>}
+                    <div><h3>Features</h3><p className="panel-subtitle">What this project has built and is building, newest first.</p></div>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={() => setActiveProjectTab('specs')} type="button">Open in Specs</button>
+                      <button className="primary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
                     </div>
-                  })}
-                  {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
+                  </div>
+                  {projectFeatures.length === 0 && <p className="empty-state">No features yet. Start one to write its spec.</p>}
+                  <div className="feature-rows">
+                    {projectFeatures.map((feature) => {
+                      // Six milestones: spec, plan, tasks, build, QA, delivered.
+                      const done = ({ specified: 1, planned: 2, tasked: 3, implementing: 4, verified: 5, accepted: 5, delivering: 5, delivered: 6 } as const)[feature.status]
+                      return (
+                        <div key={feature.id} className={`feature-row ${feature.current ? 'current' : ''}`}>
+                          <div className="feature-row-main">
+                            <code>{feature.id}</code>
+                            <strong>{feature.title}</strong>
+                            <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
+                            {feature.current && <span className="mini-badge running">current</span>}
+                            <span className="feature-row-meta">{[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ')}</span>
+                          </div>
+                          <div className="feature-steps" title={`${done} of 6: spec, plan, tasks, build, QA, delivered`} aria-label={`${done} of 6 milestones`}>
+                            {Array.from({ length: 6 }, (_, i) => <span key={i} className={i < done ? 'done' : ''} />)}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
                 </section>
-                <section className="card panel slim-panel">
-                  <h3>Summary</h3>
-                  <div className="auto-memory-box compact-box">
-                    <pre>{currentRun?.executiveSummary || 'No executive summary yet — it appears once a run completes a stage.'}</pre>
-                  </div>
-                  <label>
-                    Estimate
-                    <input value={estimateInput} onChange={(event) => setEstimateInput(event.target.value)} placeholder="e.g. 1-2 weeks" />
-                  </label>
-                  <div className="button-row">
-                    <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
-                  </div>
+                <section className="card panel slim-panel overview-section overview-repos">
                   <h3>Repositories</h3>
                   {projectDetail?.suggestionsJson?.newRepository && !projectDetail.repos.some((r) => r.kind === 'github' && r.githubRepo?.split('/')[1]?.toLowerCase() === projectDetail.suggestionsJson!.newRepository!.name.toLowerCase()) && (
                     <NewRepoCard
@@ -2613,93 +2601,21 @@ function App() {
                       </div>
                     )}
                   </div>
-                  <h3>Recent changes</h3>
-                  <div className="diff-group">
-                    {selectedCardFresh.artifactDiffs.length === 0 && <p className="empty-state">No artifact diffs yet.</p>}
-                    {selectedCardFresh.artifactDiffs.map((diff) => (
-                      <div key={diff.id} className="diff-chip"><span>{diff.change}</span><strong>{diff.label}</strong></div>
-                    ))}
-                  </div>
                 </section>
-                {projectDetail && (
-                  <section className="card panel slim-panel danger-zone">
-                    <h3>{projectDetail.archivedAt ? 'Archived project' : 'Pause, archive or delete'}</h3>
-                    {!projectDetail.archivedAt && (
-                      <div className="button-row" style={{ marginBottom: 8 }}>
-                        {projectDetail.pausedAt
-                          ? <button type="button" className="primary-button" disabled={deletion.busy} onClick={() => void setPaused(false)}>Resume project</button>
-                          : <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setPaused(true)}>Pause project</button>}
-                        <span className="panel-subtitle">
-                          {projectDetail.pausedAt
-                            ? `Paused ${new Date(projectDetail.pausedAt).toLocaleString()}. Queued jobs are held and runs stopped at a stage boundary; resuming picks them up where they left off.`
-                            : 'Holds queued jobs and lets running runs finish their current stage, then stops. Nothing is lost; resume any time.'}
-                        </span>
-                      </div>
-                    )}
-                    {projectDetail.archivedAt && (
-                      <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>Archived {new Date(projectDetail.archivedAt).toLocaleString()}. Hidden from the board; runs and jobs are refused until it is unarchived. Nothing has been removed.</p>
-                    )}
-                    {deletion.error && !deletion.open && <p className="error-text">{deletion.error}</p>}
-                    {!deletion.open && !projectDetail.archivedAt && (
-                      <div className="button-row">
-                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(true)}>Archive project</button>
-                        <span className="panel-subtitle">Recommended. Cancels anything queued, running or paused, keeps every run, artifact and memory, and moves the project to the Archived menu above the board. Reversible. Deletion is only offered for archived projects.</span>
-                      </div>
-                    )}
-                    {!deletion.open && projectDetail.archivedAt && (
-                      <div className="button-row">
-                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(false)}>Unarchive</button>
-                        <button type="button" className="danger-button" disabled={deletion.busy} onClick={() => void openDeletion()}>Delete permanently…</button>
-                        <span className="panel-subtitle">Deleting cannot be undone: runs, memory, snapshots, the governing workspace and clones only this project uses are removed.</span>
-                      </div>
-                    )}
-                    {deletion.open && (
-                      <div className="knowledge-inline-form">
-                        {deletion.loading && <span className="panel-subtitle">Checking what would be removed…</span>}
-                        {deletion.error && <p className="error-text">{deletion.error}</p>}
-                        {deletion.preview && !deletion.preview.allowed && <p className="error-text">Only owners or admins of this project's team can delete it.</p>}
-                        {deletion.preview && !deletion.preview.archived && <p className="error-text">Archive the project first. Deletion is permanent; archiving keeps everything and can be undone.</p>}
-                        {deletion.preview?.activity.active && (
-                          <p className="error-text">Still active: {deletion.preview.activity.reasons.join('; ')}. Finish or cancel that work first.</p>
-                        )}
-                        {deletion.preview && !deletion.preview.activity.active && (
-                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-                            <li>{deletion.preview.runs} run{deletion.preview.runs === 1 ? '' : 's'}, {deletion.preview.jobs} job{deletion.preview.jobs === 1 ? '' : 's'}, {deletion.preview.snapshots} imported snapshot{deletion.preview.snapshots === 1 ? '' : 's'}, memory, agents and orchestrator settings</li>
-                            {deletion.preview.repos.map((r) => (
-                              <li key={`${r.label}-${r.localPath ?? r.githubRepo ?? ''}`}>
-                                <strong>{r.label}</strong>{' '}
-                                {r.action === 'delete-workspace' && <>— governing workspace <code>{r.localPath}</code> will be removed</>}
-                                {r.action === 'delete-clone' && <>— clone <code>{r.localPath ?? r.githubRepo}</code> will be removed</>}
-                                {r.action === 'keep-shared' && <>— kept, another project also uses it</>}
-                                {r.action === 'keep-local' && <>— your local checkout <code>{r.localPath}</code> is kept (only its worktrees are removed)</>}
-                                {r.action === 'none' && <>— nothing on disk</>}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        {deletion.preview && deletion.preview.allowed && deletion.preview.archived && !deletion.preview.activity.active && (
-                          <div className="knowledge-inline-form">
-                            <p className="error-text" style={{ margin: 0 }}>This cannot be undone. There is no trash and no restore.</p>
-                            <div className="confirm-phrase">
-                              <span className="panel-subtitle" style={{ margin: 0 }}>Type this to confirm:</span>
-                              <code className="confirm-phrase-text" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }} title="Click to copy">{deletion.preview.confirmPhrase}</code>
-                              <button type="button" className="ghost-button" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }}>Copy</button>
-                            </div>
-                            <div className="button-row">
-                              <input value={deletion.confirm} onChange={(e) => setDeletion((d) => ({ ...d, confirm: e.target.value }))} placeholder={deletion.preview.confirmPhrase} autoFocus style={{ flex: 1 }} />
-                              <button type="button" className="danger-button" disabled={deletion.busy || deletion.confirm.trim().toLowerCase().replace(/\s+/g, ' ') !== deletion.preview.confirmPhrase} onClick={() => void confirmDeletion()}>{deletion.busy ? 'Deleting…' : 'Delete permanently'}</button>
-                            </div>
-                          </div>
-                        )}
-                        <div className="button-row">
-                          <button type="button" className="ghost-button" disabled={deletion.busy} onClick={() => setDeletion({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })}>Cancel</button>
-                        </div>
-                      </div>
-                    )}
-                  </section>
-                )}
-                <section className="card panel slim-panel">
+                <section className="card panel slim-panel overview-section overview-orchestrator">
                   <h3>Orchestrator</h3>
+                  {projectDetail && !projectDetail.archivedAt && (
+                    <div className="button-row" style={{ marginBottom: 8 }}>
+                      {projectDetail.pausedAt
+                        ? <button type="button" className="primary-button" disabled={deletion.busy} onClick={() => void setPaused(false)}>Resume project</button>
+                        : <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setPaused(true)}>Pause project</button>}
+                      <span className="panel-subtitle">
+                        {projectDetail.pausedAt
+                          ? `Paused ${new Date(projectDetail.pausedAt).toLocaleString()}. Queued jobs are held and runs stopped at a stage boundary; resuming picks them up where they left off.`
+                          : 'Holds queued jobs and lets running runs finish their current stage, then stops. Nothing is lost; resume any time.'}
+                      </span>
+                    </div>
+                  )}
                   {projectWorker && (
                     <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>
                       Worker:{' '}
@@ -2782,7 +2698,51 @@ function App() {
                     ))}
                   </div>
                 </section>
-                <section className="card panel slim-panel">
+                <section className="card panel slim-panel overview-section overview-responsibilities">
+                  <div className="panel-heading-row">
+                    <div><h3>Responsibilities</h3><p className="panel-subtitle">Project accountability is separate from team access roles.</p></div>
+                    {responsibilities?.repairNeeded && (me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin') && <button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void repairResponsibilities()}>{responsibilitiesBusy ? 'Repairing…' : 'Repair Owner assignments'}</button>}
+                  </div>
+                  {responsibilities?.responsibilities.map((item) => {
+                    const resolution = item.resolution
+                    const canManageResponsibilities = me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'
+                    const editing = editingResponsibility === item.responsibilityId
+                    return <div key={item.responsibilityId} className="repo-row">
+                      <div className="repo-row-main"><strong>{item.name}</strong><span className={`mini-badge ${resolution.status === 'unresolved' ? 'error' : resolution.status === 'owner-fallback' ? 'pending' : 'success'}`}>{resolution.status === 'owner-fallback' ? 'Owner fallback' : resolution.status}</span>{canManageResponsibilities && !editing && <button className="text-button" type="button" onClick={() => startResponsibilityEdit(item)}>Edit</button>}</div>
+                      {resolution.repairNeeded && <span className="error-text">Owner assignment needs repair.</span>}
+                      {!resolution.repairNeeded && resolution.assignees.length === 0 && <span className="repo-row-source">Unassigned</span>}
+                      {resolution.assignees.map((person) => <span key={person.userId} className="repo-row-source">{person.name}{person.primary ? ' · primary' : ''}</span>)}
+                      {editing && <div className="responsibility-editor" aria-label={`Edit ${item.name} assignments`}>
+                        <p className="panel-subtitle">Select active team members. Listed order controls primary and backups.</p>
+                        {responsibilityMembers.map((member) => {
+                          const selected = responsibilityDraft.includes(member.userId)
+                          const position = responsibilityDraft.indexOf(member.userId)
+                          return <div className="responsibility-editor-row" key={member.userId}>
+                            <label className="toggle"><input type="checkbox" checked={selected} onChange={() => setResponsibilityDraft((current) => selected ? current.filter((id) => id !== member.userId) : [...current, member.userId])} />{member.name} <span className="muted">{member.email}</span></label>
+                            {selected && <span><button className="text-button" type="button" disabled={position === 0} onClick={() => moveResponsibilityAssignee(member.userId, -1)}>↑</button><button className="text-button" type="button" disabled={position === responsibilityDraft.length - 1} onClick={() => moveResponsibilityAssignee(member.userId, 1)}>↓</button>{position === 0 && <span className="repo-row-source">primary</span>}</span>}
+                          </div>
+                        })}
+                        <div className="button-row"><button className="primary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void saveResponsibilityAssignments(item)}>Save assignments</button><button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => setEditingResponsibility(null)}>Cancel</button></div>
+                      </div>}
+                    </div>
+                  })}
+                  {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
+                </section>
+                <section className="card panel slim-panel overview-section overview-summary">
+                  <h3>Summary</h3>
+                  <div className="auto-memory-box compact-box">
+                    <pre>{currentRun?.executiveSummary || 'No executive summary yet — it appears once a run completes a stage.'}</pre>
+                  </div>
+                  <label>
+                    Estimate
+                    <input value={estimateInput} onChange={(event) => setEstimateInput(event.target.value)} placeholder="e.g. 1-2 weeks" />
+                  </label>
+                  <div className="button-row">
+                    <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
+                  </div>
+                </section>
+                <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
+                <section className="card panel slim-panel overview-section overview-artifacts">
                   <h3>Artifacts</h3>
                   <div className="artifact-group">
                     {selectedCardFresh.artifactLinks.map((artifact) => (
@@ -2792,7 +2752,79 @@ function App() {
                       </a>
                     ))}
                   </div>
+                  <h3>Recent changes</h3>
+                  <div className="diff-group">
+                    {selectedCardFresh.artifactDiffs.length === 0 && <p className="empty-state">No artifact diffs yet.</p>}
+                    {selectedCardFresh.artifactDiffs.map((diff) => (
+                      <div key={diff.id} className="diff-chip"><span>{diff.change}</span><strong>{diff.label}</strong></div>
+                    ))}
+                  </div>
                 </section>
+                {projectDetail && (
+                  <section className="card panel slim-panel danger-zone">
+                    <h3>{projectDetail.archivedAt ? 'Danger zone · archived project' : 'Danger zone'}</h3>
+                    {projectDetail.archivedAt && (
+                      <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>Archived {new Date(projectDetail.archivedAt).toLocaleString()}. Hidden from the board; runs and jobs are refused until it is unarchived. Nothing has been removed.</p>
+                    )}
+                    {deletion.error && !deletion.open && <p className="error-text">{deletion.error}</p>}
+                    {!deletion.open && !projectDetail.archivedAt && (
+                      <div className="button-row">
+                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(true)}>Archive project</button>
+                        <span className="panel-subtitle">Recommended. Cancels anything queued, running or paused, keeps every run, artifact and memory, and moves the project to the Archived menu above the board. Reversible. Deletion is only offered for archived projects.</span>
+                      </div>
+                    )}
+                    {!deletion.open && projectDetail.archivedAt && (
+                      <div className="button-row">
+                        <button type="button" className="secondary-button" disabled={deletion.busy} onClick={() => void setArchived(false)}>Unarchive</button>
+                        <button type="button" className="danger-button" disabled={deletion.busy} onClick={() => void openDeletion()}>Delete permanently…</button>
+                        <span className="panel-subtitle">Deleting cannot be undone: runs, memory, snapshots, the governing workspace and clones only this project uses are removed.</span>
+                      </div>
+                    )}
+                    {deletion.open && (
+                      <div className="knowledge-inline-form">
+                        {deletion.loading && <span className="panel-subtitle">Checking what would be removed…</span>}
+                        {deletion.error && <p className="error-text">{deletion.error}</p>}
+                        {deletion.preview && !deletion.preview.allowed && <p className="error-text">Only owners or admins of this project's team can delete it.</p>}
+                        {deletion.preview && !deletion.preview.archived && <p className="error-text">Archive the project first. Deletion is permanent; archiving keeps everything and can be undone.</p>}
+                        {deletion.preview?.activity.active && (
+                          <p className="error-text">Still active: {deletion.preview.activity.reasons.join('; ')}. Finish or cancel that work first.</p>
+                        )}
+                        {deletion.preview && !deletion.preview.activity.active && (
+                          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
+                            <li>{deletion.preview.runs} run{deletion.preview.runs === 1 ? '' : 's'}, {deletion.preview.jobs} job{deletion.preview.jobs === 1 ? '' : 's'}, {deletion.preview.snapshots} imported snapshot{deletion.preview.snapshots === 1 ? '' : 's'}, memory, agents and orchestrator settings</li>
+                            {deletion.preview.repos.map((r) => (
+                              <li key={`${r.label}-${r.localPath ?? r.githubRepo ?? ''}`}>
+                                <strong>{r.label}</strong>{' '}
+                                {r.action === 'delete-workspace' && <>— governing workspace <code>{r.localPath}</code> will be removed</>}
+                                {r.action === 'delete-clone' && <>— clone <code>{r.localPath ?? r.githubRepo}</code> will be removed</>}
+                                {r.action === 'keep-shared' && <>— kept, another project also uses it</>}
+                                {r.action === 'keep-local' && <>— your local checkout <code>{r.localPath}</code> is kept (only its worktrees are removed)</>}
+                                {r.action === 'none' && <>— nothing on disk</>}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {deletion.preview && deletion.preview.allowed && deletion.preview.archived && !deletion.preview.activity.active && (
+                          <div className="knowledge-inline-form">
+                            <p className="error-text" style={{ margin: 0 }}>This cannot be undone. There is no trash and no restore.</p>
+                            <div className="confirm-phrase">
+                              <span className="panel-subtitle" style={{ margin: 0 }}>Type this to confirm:</span>
+                              <code className="confirm-phrase-text" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }} title="Click to copy">{deletion.preview.confirmPhrase}</code>
+                              <button type="button" className="ghost-button" onClick={() => { void navigator.clipboard?.writeText(deletion.preview!.confirmPhrase); setStatusMessage('Confirmation phrase copied.') }}>Copy</button>
+                            </div>
+                            <div className="button-row">
+                              <input value={deletion.confirm} onChange={(e) => setDeletion((d) => ({ ...d, confirm: e.target.value }))} placeholder={deletion.preview.confirmPhrase} autoFocus style={{ flex: 1 }} />
+                              <button type="button" className="danger-button" disabled={deletion.busy || deletion.confirm.trim().toLowerCase().replace(/\s+/g, ' ') !== deletion.preview.confirmPhrase} onClick={() => void confirmDeletion()}>{deletion.busy ? 'Deleting…' : 'Delete permanently'}</button>
+                            </div>
+                          </div>
+                        )}
+                        <div className="button-row">
+                          <button type="button" className="ghost-button" disabled={deletion.busy} onClick={() => setDeletion({ open: false, loading: false, preview: null, confirm: '', busy: false, error: '' })}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                )}
               </div>
             )}
 

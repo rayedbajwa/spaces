@@ -2200,10 +2200,61 @@ textarea {
 /* Tabs stick just under the top strip while the page scrolls. */
 .project-page .project-tabs { position: sticky; top: var(--strip-h); z-index: 5; }
 .project-overview { display: grid; gap: 14px; }
-@media (min-width: 1100px) {
-  .project-overview { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
-  .project-overview > .project-stats { grid-column: 1 / -1; }
-  .project-overview > .danger-zone { grid-column: 1 / -1; }
+/* Overview: full-width sections, one after another, each with its title;
+   what is inside spreads across the width instead of a narrow column. */
+.project-overview { display: flex; flex-direction: column; gap: 16px; }
+.project-overview > * { width: 100%; margin: 0; box-sizing: border-box; }
+.project-overview > .overview-section > h3:first-child,
+.project-overview > .overview-section > .panel-heading-row h3,
+.project-overview > .usage-panel h3 { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+.project-overview > .overview-section > h3:first-child { margin: 0 0 14px; }
+/* Title (and its one-line description) on the left, the section's actions on the right. */
+.project-overview > .overview-section > .panel-heading-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 14px; }
+.project-overview > .overview-section > .panel-heading-row h3 { margin: 0 0 4px; }
+.project-overview > .overview-section > .panel-heading-row .panel-subtitle { margin: 0; }
+
+/* Features: every feature with its status, one row each. */
+.overview-features .feature-rows { display: grid; gap: 6px; }
+.overview-features .feature-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elevated-2); }
+.overview-features .feature-row.current { border-color: rgba(94, 106, 210, 0.45); background: var(--accent-soft); }
+.overview-features .feature-row-main { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; min-width: 0; }
+.overview-features .feature-row-main strong { color: var(--text-strong); }
+.overview-features .feature-row-meta { font-size: 12px; color: var(--text-muted); }
+.overview-features .feature-steps { display: flex; gap: 3px; }
+.overview-features .feature-steps span { width: 22px; height: 6px; border-radius: 999px; background: var(--border-strong); }
+.overview-features .feature-steps span.done { background: var(--green); }
+
+/* Repositories: registered repos as tiles, two or more per row. */
+.overview-repos .repo-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 8px; }
+.overview-repos .repo-list > .repo-row { margin: 0; }
+
+/* Orchestrator: its settings on one row; recent jobs as tiles. */
+.overview-orchestrator .details-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.overview-orchestrator .diff-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 8px; }
+
+/* Responsibilities: one card per role, several per row. */
+.overview-responsibilities { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; align-content: start; }
+.overview-responsibilities > .panel-heading-row,
+.overview-responsibilities > p { grid-column: 1 / -1; margin: 0; }
+.overview-responsibilities > .repo-row { margin: 0; }
+
+/* Summary beside the estimate. */
+.overview-summary { display: grid; grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr); gap: 10px 20px; align-items: start; }
+.overview-summary > h3 { grid-column: 1 / -1; }
+.overview-summary > .auto-memory-box { grid-row: span 2; margin: 0; }
+.overview-summary > label, .overview-summary > .button-row { grid-column: 2; margin: 0; }
+
+/* Artifacts as a grid of tiles. */
+.overview-artifacts .artifact-group { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.overview-artifacts .artifact-group > .artifact-link { margin: 0; }
+
+@media (max-width: 900px) {
+  .overview-repos .repo-list { grid-template-columns: minmax(0, 1fr); }
+  .overview-orchestrator .details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-summary { grid-template-columns: minmax(0, 1fr); }
+  .overview-summary > label, .overview-summary > .button-row { grid-column: 1; }
+  .overview-summary > .auto-memory-box { grid-row: auto; }
+  .overview-features .feature-row { grid-template-columns: minmax(0, 1fr); }
 }
 .project-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-text { font-size: 20px; text-transform: capitalize; }
@@ -2215,8 +2266,6 @@ textarea {
 .team-nav-group + .team-nav-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
 .team-nav-group-title { padding: 4px 12px 2px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-subtle); }
 .project-tabs { width: 100%; box-sizing: border-box; }
-/* Summary (with repositories and recent changes) spans the overview; orchestrator and artifacts share the row below. */
-@media (min-width: 1100px) { .project-overview > section.slim-panel:first-of-type { grid-column: 1 / -1; } }
 /* Lifecycle (pause / archive / delete) always closes the overview. */
 .project-overview > .danger-zone { order: 99; }
 
