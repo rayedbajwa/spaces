@@ -1,3 +1,4 @@
+import { createAgentSettings } from './agent-resources'
 import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent'
 import { defaultModel } from './model-policy'
 import { readFile } from 'node:fs/promises'
@@ -127,7 +128,7 @@ Rules: only list repositories that exist in the catalog or are already registere
   const resolved = resolveCliModel({ cliModel: modelSpec, modelRuntime })
   if (resolved.error) throw new Error(resolved.error)
   const cwd = pickRunnableRepo(repos)?.localPath ?? process.cwd()
-  const { session } = await createAgentSession({ cwd, modelRuntime, model: resolved.model, tools: [], sessionManager: SessionManager.inMemory(cwd) })
+  const { session } = await createAgentSession({ settingsManager: createAgentSettings(cwd), cwd, modelRuntime, model: resolved.model, tools: [], sessionManager: SessionManager.inMemory(cwd) })
   // AI data guardrails: secrets and personal data in the project's text never reach the model.
   await import('./guardrails-policy').then((m) => m.guardSession(session, orgId))
   let output = ''

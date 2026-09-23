@@ -139,7 +139,7 @@ export function renderAgentEnvironment(env: AgentEnvironment): string {
 
   if (env.testDatabaseUrl) {
     lines.push(
-      `- **Postgres for tests**: \`${env.testDatabaseUrl}\` — already running and yours to use. It is written into the checkout's \`.env\` as \`DATABASE_URL\` when the project declares that variable; check it before you migrate. The \`DATABASE_URL\` in your shell is the application's own and must never be migrated, seeded or tested against.`,
+      `- **Postgres for tests**: \`${env.testDatabaseUrl}\` — already running and yours to use. It is written into the checkout's \`.env\` as \`DATABASE_URL\` when the project declares that variable; check it before you migrate. Your shell has no \`DATABASE_URL\` of its own (the application's database and keys are kept out of it): use this one, from the checkout's \`.env\` or passed explicitly.`,
       `- **psql**: ${env.psql ? 'installed' : 'not installed — connect from the project\'s own tooling instead'}.`,
     )
   } else {
@@ -242,7 +242,7 @@ export function evidenceRules(env: AgentEnvironment): string {
   return [
     '## Evidence rules',
     '',
-    `- Run everything against the environment above. The \`DATABASE_URL\` in your shell belongs to the application running you${env.testDatabaseUrl ? ` — the database for this checkout is \`${env.testDatabaseUrl}\`` : ''}. Never migrate, seed or test against the application's own database, and say which database produced a result when you report it.`,
+    `- Run everything against the environment above. Your shell does not carry the application's own database or keys${env.testDatabaseUrl ? ` — the database for this checkout is \`${env.testDatabaseUrl}\`` : ''}. Never go looking for the application's database (its .env or environment), never migrate, seed or test against it, and say which database produced a result when you report it.`,
     '- Evidence has to be reproducible by someone else. A probe or script you relied on is committed with the work; if you will not commit it, mark what it showed as unverified rather than passing.',
     '- Every identifier in a results table maps to a real test name somewhere in the report. Remove legend entries you did not use.',
     '- Tick a task off only when all of it is done. If part of it ran, leave it unticked and say which part.',
