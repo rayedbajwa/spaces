@@ -834,7 +834,7 @@ export class AIDLCFlow {
     this.captureActiveFeatureBranch()
     // Whatever the stage wrote into the implementation checkouts is committed on
     // the feature branch, so it is attributable and survives an interruption.
-    this.commitStageWork(stage)
+    await this.commitStageWork(stage)
 
     // Notify PipelineEngine so it can capture handoff for downstream stages.
     if (this.options.afterStageComplete) {
@@ -918,13 +918,24 @@ export class AIDLCFlow {
   }
 
   private async maybePublishPullRequest(stage: StageName, output: string): Promise<void> {
+    if (!PULL_REQUEST_STAGES.includes(stage)) return
+    const primary = await this.publishGoverningPullRequest(stage, output)
+    // Implementation repositories get their own pull request, with the intent's
+    // documents synced in — even when the governing workspace has no GitHub repo.
+    await this.publishImplementationPullRequests(stage, output, primary)
+    // A failure to publish must not swallow the results: a review nobody can see
+    // on the pull request is a review that did not happen.
+    await this.postStageResultsToPullRequest(stage)
+  }
+
+  private async publishGoverningPullRequest(stage: StageName, output: string): Promise<{ url: string; githubRepo: string; number: number } | undefined> {
     const pr = this.options.pullRequests
-    if (!pr || !PULL_REQUEST_STAGES.includes(stage)) return
+    if (!pr) return undefined
 
     const branch = getCurrentGitBranch(this.options.cwd)
     if (!branch || !isFeatureBranchName(branch)) {
       this.print(`\n[pr] Skipped: ${branch ? `"${branch}" is not a feature branch` : 'detached HEAD'}; nothing published.\n`)
-      return
+      return undefined
     }
 
     try {
@@ -932,11 +943,7 @@ export class AIDLCFlow {
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       const featureDirRel = featureDirAbs ? path.relative(this.options.cwd, featureDirAbs) : undefined
       const specTitle = featureDirAbs ? await readSpecTitle(featureDirAbs) : undefined
-      const artifacts = featureDirAbs
-        ? (await Promise.all(['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'verification-report.md']
-            .map(async (f) => (await pathExistsAsync(path.join(featureDirAbs, f))) ? `${featureDirRel}/${f}` : undefined)))
-            .filter((f): f is string => Boolean(f))
-        : []
+      const artifacts = featureDirAbs ? await listIntentArtifacts(featureDirAbs, featureDirRel!) : []
       const tail = output.trim().split('\n').slice(-25).join('\n').slice(-1500)
       const ref = await publishBranchAsPullRequest({
         orgId: await this.orgId(),
@@ -957,15 +964,55 @@ export class AIDLCFlow {
       })
       if (ref) {
         this.print(`\n[pr] ${ref.created ? 'Opened' : 'Updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base})\n`)
-      } else {
-        this.print(`\n[pr] Nothing new to publish after ${stage} (branch ${branch} has no commits ahead of ${base}).\n`)
+        return { url: ref.url, githubRepo: pr.githubRepo, number: ref.number }
       }
+      this.print(`\n[pr] Nothing new to publish after ${stage} (branch ${branch} has no commits ahead of ${base}).\n`)
     } catch (error) {
       this.print(`\n[pr] Could not publish the branch after ${stage}: ${error instanceof Error ? error.message : String(error)}\n`)
     }
-    // A failure to publish must not swallow the results: a review nobody can see
-    // on the pull request is a review that did not happen.
-    await this.postStageResultsToPullRequest(stage)
+    return undefined
+  }
+
+  /**
+   * Push each implementation repository working on the intent and open (or
+   * update) its pull request. Its branch already carries the intent's
+   * documents (synced and committed with the stage's work); the body points
+   * at them and at the governing workspace's pull request.
+   */
+  private async publishImplementationPullRequests(stage: StageName, output: string, primary: { url: string; githubRepo: string; number: number } | undefined): Promise<void> {
+    const branch = this.activeFeatureBranch ?? getCurrentGitBranch(this.options.cwd)
+    if (!branch || !isFeatureBranchName(branch)) return
+    const governingRoot = this.governingRoot()
+    const featureDirAbs = await findLatestFeatureDirAbsolute(governingRoot).catch(() => null)
+    const featureDirRel = featureDirAbs ? path.relative(governingRoot, featureDirAbs) : undefined
+    const specTitle = featureDirAbs ? await readSpecTitle(featureDirAbs) : undefined
+    const tail = output.trim().split('\n').slice(-25).join('\n').slice(-1500)
+    for (const target of await this.implementationReposWithWork()) {
+      if (!target.githubRepo || target.githubRepo === this.options.pullRequests?.githubRepo) continue
+      try {
+        const base = await gitDefaultBranch(await this.orgId(), target.localPath, target.githubRepo)
+        const artifacts = featureDirAbs && featureDirRel ? await listIntentArtifacts(path.join(target.localPath, featureDirRel), featureDirRel) : []
+        const ref = await publishBranchAsPullRequest({
+          orgId: await this.orgId(),
+          cwd: target.localPath,
+          githubRepo: target.githubRepo,
+          branch,
+          base,
+          type: conventionalTypeForStage(stage),
+          scope: branch,
+          commitMessage: `${conventional(conventionalTypeForStage(stage), branch, `${specTitle ?? branch} (${stage})`)}\n\nGenerated by the AIDLC pipeline (${stage} stage).`,
+          title: conventional('feat', branch, specTitle ?? branch),
+          body: pullRequestBody({
+            summary: `The \`${target.label}\` part of feature \`${branch}\`, implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.${primary ? `\n\nSpecified and tracked in ${primary.githubRepo}#${primary.number} (${primary.url}).` : ''}\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
+            featureDir: featureDirRel,
+            artifacts,
+          }),
+        })
+        if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${featureDirRel ?? 'the intent\'s documents'}\n`)
+      } catch (error) {
+        this.print(`[pr] ${target.label}: could not publish ${branch} after ${stage}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
+      }
+    }
   }
 
   /**
@@ -1085,8 +1132,9 @@ export class AIDLCFlow {
    * write over it. One commit per stage keeps it attributable and recoverable.
    * Nothing is pushed here — publishing stays with the delivery stage.
    */
-  private commitStageWork(stage: StageName): void {
+  private async commitStageWork(stage: StageName): Promise<void> {
     if (!CODE_STAGES.includes(stage)) return
+    await this.syncIntentDocumentsToImplementationRepos(stage)
     for (const target of this.options.repoTargets ?? []) {
       if (!target.localPath || !hasUncommittedChanges(target.localPath)) continue
       const branch = getCurrentGitBranch(target.localPath)
@@ -1099,6 +1147,60 @@ export class AIDLCFlow {
         this.print(`[commit] ${target.label}: committed the ${stage} changes on ${branch}.\n`)
       } catch (error) {
         this.print(`[commit] ${target.label}: could not commit the ${stage} changes (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
+      }
+    }
+  }
+
+  /**
+   * The implementation checkouts working on this intent: every repository
+   * other than the governing workspace that is on the feature branch and has
+   * work there (uncommitted changes, or commits its default branch lacks).
+   */
+  private async implementationReposWithWork(): Promise<WorkstreamRepoTarget[]> {
+    const governing = path.resolve(this.governingRoot())
+    const branch = this.activeFeatureBranch ?? getCurrentGitBranch(this.options.cwd)
+    if (!branch || !isFeatureBranchName(branch)) return []
+    const out: WorkstreamRepoTarget[] = []
+    for (const t of this.options.repoTargets ?? []) {
+      if (!t.localPath || path.resolve(t.localPath) === governing || getCurrentGitBranch(t.localPath) !== branch) continue
+      if (hasUncommittedChanges(t.localPath) || (await this.commitsAheadOfDefault(t)) > 0) out.push(t)
+    }
+    return out
+  }
+
+  /**
+   * Where the intent's documents are written: the project's primary
+   * repository. A run can target another checkout (its cwd), so this is
+   * resolved from the repositories, not assumed to be the cwd.
+   */
+  private governingRoot(): string {
+    return this.options.repoTargets?.find((t) => t.isPrimary && t.localPath)?.localPath ?? this.options.cwd
+  }
+
+  /** Commits the checkout's HEAD has that its repository's default branch lacks (resolved as publishing does, via GitHub when needed). */
+  private async commitsAheadOfDefault(target: WorkstreamRepoTarget): Promise<number> {
+    const resolved = target.githubRepo ? await gitDefaultBranch(await this.orgId(), target.localPath, target.githubRepo).catch(() => undefined) : undefined
+    return commitsAheadOf(target.localPath, resolved)
+  }
+
+  /**
+   * Copy the intent's spec, plan, tasks and reports (specs/<intent>/) from
+   * the governing workspace into each implementation checkout working on it,
+   * so they are committed and published with its code (lib/spec-sync.ts).
+   */
+  private async syncIntentDocumentsToImplementationRepos(stage: StageName): Promise<void> {
+    const governingRoot = this.governingRoot()
+    const featureDirAbs = await findLatestFeatureDirAbsolute(governingRoot).catch(() => null)
+    if (!featureDirAbs) return
+    const { syncIntentDocuments } = await import('./spec-sync')
+    for (const target of await this.implementationReposWithWork()) {
+      try {
+        const { written, removed } = await syncIntentDocuments({ governingRoot, featureDirAbs, targetRoot: target.localPath })
+        if (written.length || removed.length) {
+          this.print(`[specs] ${target.label}: ${path.relative(governingRoot, featureDirAbs)} synced for ${stage} (${written.length} updated${removed.length ? `, ${removed.length} removed` : ''}).\n`)
+        }
+      } catch (error) {
+        this.print(`[specs] ${target.label}: could not sync the intent's documents (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
       }
     }
   }
@@ -1369,6 +1471,21 @@ function createBranch(cwd: string, branch: string): void {
   execFileSync('git', ['-C', cwd, 'checkout', '-b', branch], {
     stdio: ['ignore', 'ignore', 'pipe'],
   })
+}
+
+/**
+ * How many commits the checkout's HEAD has that its default branch lacks: the
+ * one given (as resolved for publishing), else origin's HEAD, else main/master.
+ */
+function commitsAheadOf(cwd: string, defaultBranchName?: string): number {
+  const run = (args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  const candidates: string[] = defaultBranchName ? [`origin/${defaultBranchName}`, defaultBranchName] : []
+  try { candidates.push(run(['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'])) } catch { /* no remote HEAD */ }
+  candidates.push('origin/main', 'origin/master', 'main', 'master')
+  for (const base of candidates) {
+    try { return Number(run(['rev-list', '--count', `${base}..HEAD`])) || 0 } catch { /* try the next */ }
+  }
+  return 0
 }
 
 function hasUncommittedChanges(cwd: string): boolean {
@@ -2877,16 +2994,21 @@ function extractSection(markdown: string, heading: string): string {
   return markdown.match(regex)?.[1]?.trim() ?? ''
 }
 
-async function pathExistsAsync(target: string): Promise<boolean> {
-  try {
-    await readFile(target)
-    return true
-  } catch {
-    return false
-  }
-}
 
 /** First "# " heading of spec.md, without the "Feature Specification:" prefix Spec Kit adds. */
+/**
+ * The intent's documents in a directory, as paths for a PR body — the same
+ * traversal the sync uses, so a PR lists exactly what it carries (contracts
+ * and research included), the main documents first.
+ */
+async function listIntentArtifacts(featureDirAbs: string, featureDirRel: string): Promise<string[]> {
+  const { listIntentDocuments } = await import('./spec-sync')
+  const order = ['spec.md', 'plan.md', 'tasks.md', 'test-plan.md', 'research.md', 'data-model.md', 'quickstart.md', 'parallel-workstreams.md', 'merge-orchestrator.md', 'code-review.md', 'verification-report.md']
+  const rank = (f: string) => (order.indexOf(f) === -1 ? order.length : order.indexOf(f))
+  const docs = await listIntentDocuments(featureDirAbs).catch(() => [])
+  return docs.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((f) => `${featureDirRel}/${f}`)
+}
+
 async function readSpecTitle(featureDirAbs: string): Promise<string | undefined> {
   try {
     const spec = await readFile(path.join(featureDirAbs, 'spec.md'), 'utf8')
