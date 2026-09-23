@@ -84,7 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, retitleSpec } from './lib/features'
-import { changeIntentDocuments, currentIntentDirId, IntentActionRefused, ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
+import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, ensureIntentsSynced, getIntentDocument, hasIntentRecords, isIntentDeleted, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
 import { activeFeatureId, featureDirNames, removeFeatureDir } from './lib/active-feature'
 import { featureDescriptionProblem } from './lib/feature-description'
 import { implementLoopTemplate } from './lib/implement-loop'
@@ -1513,29 +1513,27 @@ async function route(req: Request): Promise<Response> {
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
 
     const body = await readJson<{ note?: string }>(req)
-    // One intent, one snapshot: the target is resolved once, and the checks
-    // read the same locked record the acceptance is written to — another
-    // request switching intents cannot make this accept the wrong one.
+    // The intent is resolved once, and the verification checked on the same
+    // locked record the acceptance is written to: switching intents meanwhile
+    // cannot put one intent's verification into another's acceptance.
     const dirId = await currentIntentDirId(project.projectId, projectMeta.path)
     if (!dirId) return sendJson(409, { error: 'This project has no intent to accept.' })
     const acceptedBy = auth?.user.name || auth?.user.email || 'local user'
     let acceptance: Acceptance | undefined
     try {
       await changeIntentDocuments({
-        projectId: project.projectId, projectRoot: projectMeta.path, dirId, by: `person:${acceptedBy}`,
-        changes: (current) => {
-          if (!current.verificationStatus) {
-            throw new IntentActionRefused('There is nothing to accept yet: this intent has no verification report. Run verify first.', 'not_verified')
-          }
-          if (current.verificationStatus === 'pass') {
-            throw new IntentActionRefused('Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', 'already_passed')
-          }
-          acceptance = { verificationStatus: current.verificationStatus, acceptedBy, acceptedAt: new Date().toISOString(), note: body.note?.trim() || undefined }
+        projectId: project.projectId, projectRoot: projectMeta.path, dirId,
+        changes: (current, documents) => {
+          const status = documents.get('verification-report.md')?.trim() ? current.verificationStatus : null
+          if (!status) throw new IntentActionRefused('There is nothing to accept yet: this intent has no verification report. Run verify first.', 409, 'not_verified')
+          if (status === 'pass') throw new IntentActionRefused('Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', 409, 'already_passed')
+          acceptance = { verificationStatus: status, acceptedBy, acceptedAt: new Date().toISOString(), note: body.note?.trim() || undefined }
           return new Map([[ACCEPTANCE_FILE, renderAcceptance(acceptance, dirId)]])
         },
+        by: `person:${acceptedBy}`,
       })
     } catch (error) {
-      if (error instanceof IntentActionRefused) return sendJson(409, { error: error.message, code: error.code })
+      if (error instanceof IntentActionRefused) return sendJson(error.status, { error: error.message, ...(error.code ? { code: error.code } : {}) })
       throw error
     }
     const recorded = { acceptance: acceptance! }
@@ -1561,11 +1559,16 @@ async function route(req: Request): Promise<Response> {
     const dirId = await currentIntentDirId(project.projectId, projectMeta.path)
     const withdrawn = Boolean(dirId && await readIntentDocument(project.projectId, projectMeta.path, dirId, ACCEPTANCE_FILE))
     if (dirId && withdrawn) {
-      await changeIntentDocuments({
-        projectId: project.projectId, projectRoot: projectMeta.path, dirId,
-        changes: new Map([[ACCEPTANCE_FILE, null]]),
-        by: `person:${auth?.user.name || auth?.user.email || 'local user'}`,
-      })
+      try {
+        await changeIntentDocuments({
+          projectId: project.projectId, projectRoot: projectMeta.path, dirId,
+          changes: new Map([[ACCEPTANCE_FILE, null]]),
+          by: `person:${auth?.user.name || auth?.user.email || 'local user'}`,
+        })
+      } catch (error) {
+        if (error instanceof IntentActionRefused) return sendJson(error.status, { error: error.message, ...(error.code ? { code: error.code } : {}) })
+        throw error
+      }
     }
     await markProjectStateStale(project.projectId).catch(() => undefined)
     return sendJson(200, { withdrawn })
@@ -2248,6 +2251,10 @@ async function route(req: Request): Promise<Response> {
           return sendHtml(200, renderMarkdownPreview({ title: relativePath, markdown: recorded.content, rawHref: `${url.pathname}?path=${encodeURIComponent(relativePath)}&raw=1` }))
         }
         return new Response(recorded.content, { headers: { 'content-type': `${getContentType(relativePath)}; charset=utf-8` } })
+      }
+      // Deleted by a person: a copy of the directory on some branch is not served.
+      if (project && await isIntentDeleted(project.projectId, intentPath[1]!).catch(() => false)) {
+        return sendJson(404, { error: 'This intent was deleted.' })
       }
     }
 
@@ -3166,7 +3173,9 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       // The lane follows what the project has produced, not the state of a run
       // process: a finished run records no current stage, so keying on that left a
       // project that had implemented and verified sitting in "Tasked".
-      tasksDone = (await readTaskProgress(project.path).catch(() => undefined))?.done ?? 0
+      // The database's count when the intent is recorded there: tasks.md may be
+      // on another branch, or gone, while the record still holds the progress.
+      tasksDone = artifacts.tasksDone ?? (await readTaskProgress(project.path).catch(() => undefined))?.done ?? 0
       await saveProjectState(row.projectId, project.path, artifacts, tasksDone, computedAt)
         .catch((error) => serverLog.warn('storing project state failed', { project: row.slug, error: error instanceof Error ? error.message : String(error) }))
     }
@@ -3319,7 +3328,12 @@ async function collectProjectArtifactsFromDb(projectNamespace: string, projectRo
   await ensureIntentsSynced(project.projectId, projectRoot)
   const intents = await listIntents(project.projectId)
   const intent = intents.find((i) => i.active) ?? intents[0]
-  if (!intent) return undefined
+  if (!intent) {
+    // Never seen: the caller reads files. Every intent deleted: the database
+    // still decides, so a deleted directory left on disk stays off the board.
+    if (!(await hasIntentRecords(project.projectId))) return undefined
+    return emptyProjectArtifacts(projectNamespace, projectRoot)
+  }
   const docs = (await listDocumentIndex([intent.intentId])).get(intent.intentId) ?? []
   const docAt = new Map(docs.map((d) => [d.path, d.updatedAt]))
   const links: BoardArtifactLink[] = []
@@ -3356,11 +3370,27 @@ async function collectProjectArtifactsFromDb(projectNamespace: string, projectRo
     codeReviewStatus: intent.codeReviewStatus ?? undefined,
     codeReviewStale: intent.codeReviewStatus === 'changes_requested' && Boolean(reviewedAt && tasksAt && tasksAt > reviewedAt),
     implementationTasks: docAt.has('tasks.md') ? { done: intent.implementationDone, total: intent.implementationTotal } : undefined,
+    tasksDone: intent.tasksDone,
     currentFeature: { id: intent.dirId, title: intent.title },
     deliveryStatus: intent.deliveryStatus ?? undefined,
     scope: { requirements: 0, tasks: 0, contracts: contracts.length, workstreams: 0 },
     links,
     diffs: [],
+  }
+}
+
+/** A project with no live intent: only the project-level Spec Kit files. */
+async function emptyProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
+  const links: BoardArtifactLink[] = []
+  const initialized = await pathExists(join(projectRoot, '.specify'))
+  if (initialized) {
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, '.specify/memory/constitution.md', 'Initialized', 'Constitution')
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, '.specify/hooks.yml', 'Initialized', 'Hooks config')
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, 'AGENTS.md', 'Initialized', 'Agent context')
+  }
+  return {
+    initialized, specified: false, planned: false, tasked: false, verifiedPass: false, verificationStatus: 'missing',
+    tasksDone: 0, scope: { requirements: 0, tasks: 0, contracts: 0, workstreams: 0 }, links, diffs: [],
   }
 }
 
@@ -3532,7 +3562,12 @@ async function pushArtifactIfExists(
 
 
 async function buildQAOverview(projectNamespace: string, projectRoot: string): Promise<QAOverview> {
-  const latestFeature = await getLatestFeatureDir(projectRoot)
+  // The current intent as the database has it (the working copy only for a
+  // project the database has not seen), and its recorded verification.
+  const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace)).catch(() => undefined)
+  const currentId = project ? await currentIntentDirId(project.projectId, projectRoot).catch(() => activeFeatureId(projectRoot)) : activeFeatureId(projectRoot)
+  const record = project && currentId ? (await listIntents(project.projectId).catch(() => [])).find((i) => i.dirId === currentId) : undefined
+  const latestFeature = currentId ? { featureId: currentId, relativePath: `specs/${currentId}` } : null
   if (!latestFeature) {
     return {
       verificationPassed: false,
@@ -3559,7 +3594,10 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
     ...(await readIntentPreview(projectNamespace, projectRoot, artifact.path)),
   })))
 
-  const verificationStatus = await getVerificationStatus(join(projectRoot, `${featureDir}/verification-report.md`))
+  const verificationReport = artifacts.find((a) => a.label === 'Verification report')
+  const verificationStatus: 'pass' | 'partial' | 'fail' | 'missing' = record
+    ? (verificationReport?.exists ? record.verificationStatus ?? 'missing' : 'missing')
+    : await getVerificationStatus(join(projectRoot, `${featureDir}/verification-report.md`))
 
   // Releasing is delivery: the PR/CI/deploy state refreshed from GitHub, and the delivery report.
   const releaseArtifacts = await Promise.all([
@@ -4002,6 +4040,7 @@ async function readIntentPreview(projectNamespace: string, projectRoot: string, 
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace)).catch(() => undefined)
     const recorded = project ? await getIntentDocument(project.projectId, match[1]!, match[2]!).catch(() => undefined) : undefined
     if (recorded) return { exists: true, content: recorded.content.slice(0, 6000) }
+    if (project && await isIntentDeleted(project.projectId, match[1]!).catch(() => false)) return { exists: false }
   }
   const filePath = join(projectRoot, relativePath)
   return { exists: await pathExists(filePath), content: await readTextPreview(filePath) }
@@ -4415,6 +4454,8 @@ interface ProjectArtifacts {
   currentFeature?: { id: string; title: string }
   /** Checkboxes in tasks.md outside the Delivery group: the work implement is responsible for. */
   implementationTasks?: { done: number; total: number }
+  /** Every ticked task, as the database records it; files are read only when this is unset. */
+  tasksDone?: number
   /** From delivery-report.md; MERGED is what finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
   scope: {
