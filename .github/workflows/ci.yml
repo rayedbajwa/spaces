@@ -171,5 +171,7 @@ jobs:
           context: .
           push: false
           tags: spaces:ci
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -24,6 +24,38 @@ describe('resolveVersionMetadata', () => {
     expect(gitCalls).toBe(0)
   })
 
+  test('uses trimmed RAILWAY_GIT_COMMIT_SHA when GIT_COMMIT is absent without invoking Git', () => {
+    let gitCalls = 0
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: { RAILWAY_GIT_COMMIT_SHA: ' railway-commit-sha-123 ' },
+      resolveGitRevision: () => { gitCalls += 1; return 'git-head' },
+    })
+
+    expect(metadata.commit).toBe('railway-commit-sha-123')
+    expect(gitCalls).toBe(0)
+  })
+
+  test('GIT_COMMIT takes precedence over RAILWAY_GIT_COMMIT_SHA', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: { GIT_COMMIT: 'explicit-commit', RAILWAY_GIT_COMMIT_SHA: 'railway-commit' },
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.commit).toBe('explicit-commit')
+  })
+
+  test('falls back to RAILWAY_GIT_COMMIT_SHA when GIT_COMMIT is whitespace-only', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: { GIT_COMMIT: '   ', RAILWAY_GIT_COMMIT_SHA: 'railway-commit' },
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.commit).toBe('railway-commit')
+  })
+
   test('falls back to a trimmed Git revision when GIT_COMMIT is absent', () => {
     expect(resolveVersionMetadata({
       packageMetadata: packageIdentity,
@@ -127,6 +159,16 @@ describe('resolveVersionMetadata', () => {
         resolveGitRevision: noGit,
       })
       expect(metadata.commit).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f9012345678')
+      expect(metadata.commit).not.toBe('unknown')
+    })
+
+    test('S1b: packaged build with RAILWAY_GIT_COMMIT_SHA reports the platform commit and not unknown', () => {
+      const metadata = resolveVersionMetadata({
+        packageMetadata: packageIdentity,
+        env: { RAILWAY_GIT_COMMIT_SHA: 'railway-sha-abcdef' },
+        resolveGitRevision: noGit,
+      })
+      expect(metadata.commit).toBe('railway-sha-abcdef')
       expect(metadata.commit).not.toBe('unknown')
     })
 
