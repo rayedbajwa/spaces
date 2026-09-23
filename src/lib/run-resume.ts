@@ -203,8 +203,9 @@ export interface UnfinishedFeature {
 
 /**
  * The project's latest feature when it is still unfinished, i.e. it has
- * documents but has not passed verification. A feature that verified
- * successfully is finished work and the next one may start.
+ * documents and none of the finishing conditions holds. A feature is finished
+ * work, and the next one may start, when its verification passed, its delivery
+ * report says MERGED, or a person accepted it (acceptance.md).
  */
 export async function findUnfinishedFeature(projectPath: string): Promise<UnfinishedFeature | undefined> {
   const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)

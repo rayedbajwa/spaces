@@ -1488,12 +1488,12 @@ async function route(req: Request): Promise<Response> {
     const artifacts = await collectProjectArtifacts(projectNamespace, projectMeta.path)
     if (artifacts.verificationStatus === 'missing') {
       return sendJson(409, {
-        error: 'There is nothing to accept yet: this feature has no verification report. Run verify first.',
+        error: 'There is nothing to accept yet: this intent has no verification report. Run verify first.',
         code: 'not_verified',
       })
     }
     if (artifacts.verifiedPass) {
-      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The feature is releasing: review, then deliver.', code: 'already_passed' })
+      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', code: 'already_passed' })
     }
 
     const recorded = await recordAcceptance({
@@ -1503,7 +1503,7 @@ async function route(req: Request): Promise<Response> {
       note: body.note,
     })
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
+    if (!recorded) return sendJson(409, { error: 'This project has no intent to accept.' })
     serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
 
     // The caller runs the final step itself through the ordinary execute-step
@@ -2030,7 +2030,7 @@ async function route(req: Request): Promise<Response> {
       // Delivery merges and deploys: only a reviewed feature whose QA passed or was accepted may start it.
       if (body.step === 'deliver' && !(projectArtifacts.codeReviewStatus === 'approved' && !projectArtifacts.codeReviewStale && (projectArtifacts.verifiedPass || projectArtifacts.accepted))) {
         return sendJson(409, {
-          error: 'This feature is not ready to deliver: the code review must approve it and verification must pass (or be accepted) first.',
+          error: 'This intent is not ready to deliver: the code review must approve it and verification must pass (or be accepted) first.',
           code: 'not_ready_for_release',
           hint: 'Run review and verify from the QA tab, or call again with {"force": true} to deliver anyway.',
         })
