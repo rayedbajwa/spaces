@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChangePlan } from './repo-change'
+import { initiativeIdFor, planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChangePlan } from './repo-change'
 import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
 import { PROVIDER_ENV_KEYS } from './default-model'
 import { mkdir, readFile } from 'node:fs/promises'
@@ -1034,7 +1034,9 @@ export class AIDLCFlow {
       if (!target.githubRepo || target.githubRepo === this.options.pullRequests?.githubRepo) continue
       try {
         const base = await gitDefaultBranch(await this.orgId(), target.localPath, target.githubRepo)
-        const artifacts = featureDirAbs && featureDirRel ? await listIntentArtifacts(path.join(target.localPath, featureDirRel), featureDirRel) : []
+        // What this repository carries: its repo-local change.
+        const changeDir = featureDirAbs ? path.join('specs', initiativeIdFor(path.basename(featureDirAbs))) : undefined
+        const artifacts = changeDir ? await listIntentArtifacts(path.join(target.localPath, changeDir), changeDir) : []
         const ref = await publishBranchAsPullRequest({
           orgId: await this.orgId(),
           cwd: target.localPath,
@@ -1047,11 +1049,11 @@ export class AIDLCFlow {
           title: conventional('feat', branch, specTitle ?? branch),
           body: pullRequestBody({
             summary: `The \`${target.label}\` part of feature \`${branch}\`, implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.${primary ? `\n\nSpecified and tracked in ${primary.githubRepo}#${primary.number} (${primary.url}).` : ''}\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
-            featureDir: featureDirRel,
+            featureDir: changeDir,
             artifacts,
           }),
         })
-        if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${featureDirRel ?? 'the intent\'s documents'}\n`)
+        if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${changeDir ?? 'its repo-local change'}\n`)
       } catch (error) {
         this.print(`[pr] ${target.label}: could not publish ${branch} after ${stage}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
       }
@@ -1227,23 +1229,52 @@ export class AIDLCFlow {
   }
 
   /**
-   * Copy the intent's spec, plan, tasks and reports (specs/<intent>/) from
-   * the governing workspace into each implementation checkout working on it,
-   * so they are committed and published with its code (lib/spec-sync.ts).
+   * Put the intent's **repo-local change** in each implementation checkout
+   * working on it: `specs/<initiative-id>/` with `change.yaml`, the tasks this
+   * repository owns (ticked as they are in the governing tasks.md) and its
+   * delta spec — committed and published with its code. Everything else (plan,
+   * test plan, research, contracts, reviews, reports) stays in the governing
+   * workspace and in Spaces. Documents an earlier version mirrored into the
+   * same directory are pruned (exact copies only).
    */
   private async syncIntentDocumentsToImplementationRepos(stage: StageName): Promise<void> {
     const governingRoot = this.governingRoot()
     const featureDirAbs = await findLatestFeatureDirAbsolute(governingRoot).catch(() => null)
     if (!featureDirAbs) return
-    const { syncIntentDocuments } = await import('./spec-sync')
-    for (const target of await this.implementationReposWithWork()) {
+    const targets = await this.implementationReposWithWork()
+    if (!targets.length) return
+    const { pruneMirroredDocuments } = await import('./spec-sync')
+    const governingTasks = await readFile(path.join(featureDirAbs, 'tasks.md'), 'utf8').catch(() => '')
+    const parsed = await readWorkstreams(governingRoot, featureDirAbs).catch(() => [] as ParsedWorkstream[])
+    const assigned = new Map<string, ParsedWorkstream[]>()
+    for (const ws of parsed) {
+      const repo = resolveWorkstreamRepo(ws.repository, targets)
+      if (!repo) continue
+      const key = path.resolve(repo.localPath)
+      assigned.set(key, [...(assigned.get(key) ?? []), ws])
+    }
+    // A repository no workstream names gets the governing tasks that mention it, else all of them.
+    const workstreams: ParsedWorkstream[] = []
+    for (const target of targets) {
+      const own = assigned.get(path.resolve(target.localPath))
+      if (own?.length) { workstreams.push(...own.map((ws) => ({ ...ws, repository: target.label, tasks: withGoverningTicks(ws.tasks, governingTasks) }))); continue }
+      const names = [target.label, target.githubRepo, target.githubRepo?.split('/')[1], path.basename(target.localPath)].filter((n): n is string => Boolean(n)).map((n) => n.toLowerCase())
+      const lines = governingTasks.split('\n').filter((l) => /^\s*-\s+\[[ xX]\]/.test(l))
+      // Whole names only: `api` names a repository in "api/src/…" or "the api service", not in "rapidly".
+      const mentioning = lines.filter((l) => names.some((n) => new RegExp(`(^|[^a-z0-9_-])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9_-])`, 'i').test(l)))
+      workstreams.push({ title: `Tasks in ${target.label}`, tasks: (mentioning.length ? mentioning : lines).join('\n'), inputs: '', outputs: '', dependencies: '', qaFocus: '', scopedFiles: '', repository: target.label })
+    }
+    const project = this.options.projectId ? await import('./project-registry').then((m) => m.getProject(this.options.projectId!)).then((p) => (p ? { name: p.name, code: p.code } : undefined)).catch(() => undefined) : undefined
+    const plan = await planRepoChanges({ featureDir: featureDirAbs, workstreams, repoFor: (ws) => targets.find((t) => t.label === (ws as ParsedWorkstream).repository), project })
+    for (const change of plan.changes) {
+      const target = targets.find((t) => path.resolve(t.localPath) === path.resolve(change.repo.localPath))
+      if (!target) continue
       try {
-        const { written, removed } = await syncIntentDocuments({ governingRoot, featureDirAbs, targetRoot: target.localPath })
-        if (written.length || removed.length) {
-          this.print(`[specs] ${target.label}: ${path.relative(governingRoot, featureDirAbs)} synced for ${stage} (${written.length} updated${removed.length ? `, ${removed.length} removed` : ''}).\n`)
-        }
+        const written = await writeRepoChange({ cwd: target.localPath, featureDir: featureDirAbs, plan, change, project })
+        const removed = await pruneMirroredDocuments({ governingFeatureDir: featureDirAbs, targetRoot: target.localPath, changeDir: written.relativeDir })
+        this.print(`[specs] ${target.label}: ${written.relativeDir} (change.yaml, tasks.md, spec.md) updated for ${stage}${removed.length ? `; removed ${removed.length} mirrored document${removed.length === 1 ? '' : 's'} that belong in Spaces` : ''}.\n`)
       } catch (error) {
-        this.print(`[specs] ${target.label}: could not sync the intent's documents (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
+        this.print(`[specs] ${target.label}: could not write the repo-local change (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
       }
     }
   }
@@ -2661,6 +2692,29 @@ export interface WorkstreamRepoTarget {
   githubRepo?: string
   localPath: string
   isPrimary?: boolean
+}
+
+/**
+ * A workstream's tasks as they stand in the governing tasks.md: each task id
+ * it names (T001…) becomes that task's line there, ticked or not. Tasks with
+ * no id are kept as written.
+ */
+export function withGoverningTicks(workstreamTasks: string, governingTasks: string): string {
+  const lineFor = new Map<string, string>()
+  for (const line of governingTasks.split('\n')) {
+    const id = /^\s*-\s+\[[ xX]\]\s+(T\d+)\b/.exec(line)?.[1]
+    if (id && !lineFor.has(id)) lineFor.set(id, line.trim())
+  }
+  // Each line of the workstream's tasks: a line naming task ids becomes those
+  // tasks' governing lines (ticked or not); a line without an id stays as written.
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const line of workstreamTasks.split('\n')) {
+    const ids = [...line.matchAll(/\bT\d{2,}\b/g)].map((m) => m[0]).filter((id) => lineFor.has(id))
+    if (!ids.length) { if (line.trim()) out.push(line); continue }
+    for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(lineFor.get(id)!) }
+  }
+  return out.length ? out.join('\n') : workstreamTasks
 }
 
 function resolveWorkstreamRepo(repository: string, targets: WorkstreamRepoTarget[] | undefined): WorkstreamRepoTarget | undefined {

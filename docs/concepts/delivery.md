@@ -53,7 +53,7 @@ gets a **repo-local change**, committed with the code on the same branch and
 pull request, in the same `specs/` directory Spec Kit uses:
 
 ```
-<repo>/specs/<initiative-id>/
+<repo>/specs/<NNN-intent>/
   change.yaml   schema, created, initiative, repository, links to sibling changes
   tasks.md      the tasks this repository owns (its workstreams), as a checklist
   spec.md       the delta spec as seen from this repository
@@ -71,25 +71,35 @@ decisions (initiative-first planning with linked repo-local changes).
 
 ## The intent's documents in implementation repositories
 
-At every code stage (implement, orchestrate, review, verify) the intent's
-directory in the governing workspace, `specs/<intent>/` (spec, plan, tasks,
-test plan, contracts, research, review and verification reports), is mirrored
-into each implementation repository that is on the feature branch and has work
-there, and committed with that stage's changes. Only that directory is touched,
-and documents no longer in the governing workspace are removed from the copy.
-If the source directory cannot be listed, nothing changes; a single document
-that cannot be read is skipped (the others still sync). Nothing is written or
-removed through a symbolic link.
+An implementation repository carries **only its repo-local change**, never the
+whole intent. At every code stage (implement, orchestrate, review, verify),
+each implementation repository that is on the feature branch and has work there
+gets `specs/<intent>/`, under the same numbered name as in the governing
+workspace (e.g. `specs/003-search/`), committed with that stage's changes:
+
+| File | Contents |
+|---|---|
+| `change.yaml` | schema, created, initiative, project, repository, links to sibling changes |
+| `tasks.md` | the tasks this repository owns: its workstreams from `parallel-workstreams.md`, else the governing tasks that name it, else all of them, each ticked as it is in the governing `tasks.md` |
+| `spec.md` | the delta spec as seen from this repository: its scope, then the initiative's specification |
+
+The plan, test plan, research, data model, contracts, code review, verification
+and delivery reports stay in the governing workspace and in Spaces (the
+[intent record](intents.md)). Documents an earlier version mirrored into that
+directory are pruned, only those that are exact copies of the governing ones
+(anything written in the repository stays), and nothing is removed through a
+symbolic link. A project without a separate governing workspace keeps the real
+intent in that directory, so no repo-local change is written over it.
 
 Those repositories are then pushed and get their own pull request
 (`feat(<intent>): <spec title>`), which links to the governing workspace's pull
-request and lists exactly the documents it carries. This also happens when the
+request and lists the repo-local change it carries. This also happens when the
 governing workspace has no GitHub repository. Review and verification results
 are posted to every pull request on the feature branch. Work on the branch is
 measured against each repository's real default branch (as GitHub reports it),
 so `develop` or `trunk` repositories are included. The run log shows
-`[specs] <repo>: specs/<intent> synced for implement (3 updated)` and
-`[pr] <repo>: opened pull request #N …`.
+`[specs] <repo>: specs/003-search (change.yaml, tasks.md, spec.md) updated for
+implement` and `[pr] <repo>: opened pull request #N …`.
 
 ## Code review loop
 

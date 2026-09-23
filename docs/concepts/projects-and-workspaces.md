@@ -23,7 +23,7 @@ primary repo. It owns:
 |---|---|
 | `.specify/` | The Spec Kit workspace (templates, scripts, constitution) |
 | `specs/<feature>/` | `spec.md`, `plan.md`, `tasks.md`, `test-plan.md`, `parallel-workstreams.md`, `code-review.md`, `verification-report.md`, `delivery-status.md`, `delivery-report.md`, sub-agent reports |
-| `specs/<feature>/initiative.yaml`, `links.yaml` | The feature as an **initiative**: which implementation repositories carry a repo-local change (`<repo>/specs/<initiative-id>/`) and how they link — see [Delivery](delivery.md) |
+| `specs/<feature>/initiative.yaml`, `links.yaml` | The feature as an **initiative**: which implementation repositories carry a repo-local change (`<repo>/specs/<NNN-intent>/`) and how they link — see [Delivery](delivery.md) |
 | `memory/` | Exported project memory (auto summary + manual notes) |
 | `knowledge/` | Imported tickets and docs |
 | `project.json` | Repositories, knowledge scope and status |
