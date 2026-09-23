@@ -194,6 +194,8 @@ export class PipelineEngine {
         sharedContextPrompt: this.options.sharedContextPrompt,
         maxAgents: step.parallel.maxConcurrency,
         onProgress: (event) => this.sinks.onParallelProgress?.(step.id, event),
+        // Sub-agents' work shows in the run's output, each line marked with its workstream.
+        onActivity: (_workstream, text) => this.sinks.stdout?.(text),
       })
       outputs.push({ stepId: step.id, results })
     }
