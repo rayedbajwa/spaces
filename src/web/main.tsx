@@ -2448,8 +2448,7 @@ function App() {
                     <NewRepoCard
                       projectId={projectDetail.projectId}
                       proposal={projectDetail.suggestionsJson.newRepository}
-                      onCreated={async (fullName) => { setStatusMessage(`Created ${fullName} on GitHub — cloning in the background.`); await refreshProjectRepos() }}
-                      onAttachExisting={(fullName) => setRepoForm((c) => ({ ...c, open: true, kind: 'github', githubRepo: fullName, label: fullName.split('/').pop() ?? fullName }))}
+                      onAttached={async (fullName) => { setStatusMessage(`Attached ${fullName} — cloning in the background.`); await refreshProjectRepos() }}
                     />
                   )}
                   {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
@@ -3757,7 +3756,7 @@ function App() {
                         compact
                         projectId={onboardingReview.projectId}
                         proposal={onboardingReview.suggestions.newRepository}
-                        onCreated={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Created during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
+                        onAttached={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Attached during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
                       />
                     )}
                     {onboardingReview.suggestions.repositories.length > 0 && (
