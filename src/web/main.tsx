@@ -9,6 +9,7 @@ import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
+import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -482,6 +483,21 @@ function App() {
   const modelsReady = me?.modelsReady !== false
   const serverDefaultModel = me?.defaultModel ? `auto: ${me.defaultModel}` : 'auto (organization routing)'
   const [board, setBoard] = useState<BoardResponse>({ columns: [] })
+  // Which loads are in flight, a key per loader. A panel shows its skeleton
+  // while its first load runs and it has nothing yet; background refreshes and
+  // polls never replace real content with a skeleton.
+  const [loadingKeys, setLoadingKeys] = useState<ReadonlySet<string>>(() => new Set(['board']))
+  /** The step whose run is being started (its buttons show a spinner until the request answers). */
+  const [startingStep, setStartingStep] = useState<string | null>(null)
+  async function track<T>(key: string, task: () => Promise<T>): Promise<T> {
+    setLoadingKeys((current) => (current.has(key) ? current : new Set(current).add(key)))
+    try {
+      return await task()
+    } finally {
+      setLoadingKeys((current) => { if (!current.has(key)) return current; const next = new Set(current); next.delete(key); return next })
+    }
+  }
+  const isLoading = (key: string) => loadingKeys.has(key)
   const [selectedCard, setSelectedCard] = useState<BoardCard | null>(null)
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
   const [activeProjectTab, setActiveProjectTab] = useState<ProjectModalTab>('overview')
@@ -614,29 +630,33 @@ function App() {
   const [repoForm, setRepoForm] = useState<{ open: boolean; kind: 'github' | 'local'; label: string; githubRepo: string; localPath: string; busy: boolean; note: string }>({ open: false, kind: 'github', label: '', githubRepo: '', localPath: '', busy: false, note: '' })
 
   async function loadPlanRepos(namespace: string) {
-    try {
-      const payload = await getJson<{ repositories: PlanRepo[] }>(`/api/projects/${namespace}/plan-repos`)
-      setPlanRepos(payload.repositories ?? [])
-    } catch { setPlanRepos([]) }
+    return track('plan-repos', async () => {
+      try {
+        const payload = await getJson<{ repositories: PlanRepo[] }>(`/api/projects/${namespace}/plan-repos`)
+        setPlanRepos(payload.repositories ?? [])
+      } catch { setPlanRepos([]) }
+    })
   }
 
   async function loadResponsibilities(projectId: string) {
-    try {
-      const data = await getJson<ProjectResponsibilities>(`/api/projects/${projectId}/responsibilities`)
-      setResponsibilities(data)
-    } catch {
-      setResponsibilities(null)
-    }
-    // Team membership is only needed for the editor; a failure to load it must
-    // not hide the read-only responsibility status.
-    if (me?.activeTeam?.teamId) {
+    return track('responsibilities', async () => {
       try {
-        const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
-        setResponsibilityMembers(team.members)
+        const data = await getJson<ProjectResponsibilities>(`/api/projects/${projectId}/responsibilities`)
+        setResponsibilities(data)
       } catch {
-        setResponsibilityMembers([])
+        setResponsibilities(null)
       }
-    }
+      // Team membership is only needed for the editor; a failure to load it must
+      // not hide the read-only responsibility status.
+      if (me?.activeTeam?.teamId) {
+        try {
+          const team = await getJson<{ members: ResponsibilityMember[] }>(`/api/teams/${me.activeTeam.teamId}`)
+          setResponsibilityMembers(team.members)
+        } catch {
+          setResponsibilityMembers([])
+        }
+      }
+    })
   }
 
   async function startResponsibilityEdit(item: ResponsibilityView) {
@@ -694,12 +714,14 @@ function App() {
   }
 
   async function refreshProjectRepos() {
-    if (!projectDetail) return
-    try {
-      const detail = await getJson<ProjectDetailRecord>(`/api/projects/${projectDetail.projectId}`)
-      setProjectDetail(detail)
-    } catch { /* keep current */ }
-    if (selectedProjectNamespace) await loadPlanRepos(selectedProjectNamespace)
+    return track('repos', async () => {
+      if (!projectDetail) return
+      try {
+        const detail = await getJson<ProjectDetailRecord>(`/api/projects/${projectDetail.projectId}`)
+        setProjectDetail(detail)
+      } catch { /* keep current */ }
+      if (selectedProjectNamespace) await loadPlanRepos(selectedProjectNamespace)
+    })
   }
 
   /** Register a repo on the open project; GitHub repos start cloning immediately. */
@@ -733,16 +755,20 @@ function App() {
   }
 
   async function loadProjectWorker(projectId: string) {
-    try {
-      setProjectWorker(await getJson<NonNullable<typeof projectWorker>>(`/api/projects/${projectId}/worker`))
-    } catch { setProjectWorker(null) }
+    return track('worker', async () => {
+      try {
+        setProjectWorker(await getJson<NonNullable<typeof projectWorker>>(`/api/projects/${projectId}/worker`))
+      } catch { setProjectWorker(null) }
+    })
   }
   const [knowledgeScopeNote, setKnowledgeScopeNote] = useState('')
 
   async function loadProjectKnowledge(projectId: string) {
-    try {
-      setKnowledgeScope(await getJson<NonNullable<typeof knowledgeScope>>(`/api/projects/${projectId}/knowledge`))
-    } catch { setKnowledgeScope(null) }
+    return track('knowledge-scope', async () => {
+      try {
+        setKnowledgeScope(await getJson<NonNullable<typeof knowledgeScope>>(`/api/projects/${projectId}/knowledge`))
+      } catch { setKnowledgeScope(null) }
+    })
   }
 
   async function saveProjectKnowledge() {
@@ -776,10 +802,12 @@ function App() {
   }
 
   async function loadKnowledgeSources() {
-    try {
-      const payload = await getJson<{ sources: string[] }>('/api/knowledge/sources')
-      setKnowledgeSources(payload.sources)
-    } catch { setKnowledgeSources([]) }
+    return track('knowledge-sources', async () => {
+      try {
+        const payload = await getJson<{ sources: string[] }>('/api/knowledge/sources')
+        setKnowledgeSources(payload.sources)
+      } catch { setKnowledgeSources([]) }
+    })
   }
 
   async function runImportSearch() {
@@ -927,7 +955,7 @@ function App() {
   useEffect(() => {
     if (!selectedProjectNamespace) { setProjectFeatures([]); return }
     let cancelled = false
-    getJson<{ features: FeatureSummary[] }>(`/api/projects/${selectedProjectNamespace}/features`)
+    void track('features', () => getJson<{ features: FeatureSummary[] }>(`/api/projects/${selectedProjectNamespace}/features`))
       .then((data) => { if (!cancelled) setProjectFeatures(data.features) })
       .catch(() => undefined)
     return () => { cancelled = true }
@@ -1002,21 +1030,23 @@ function App() {
   }
 
   async function refreshBoard() {
-    try {
-      const nextBoard = await getJson<BoardResponse>('/api/board')
-      setBoard(nextBoard)
-      if (selectedProjectNamespace) {
-        for (const column of nextBoard.columns) {
-          const match = column.cards.find((card) => card.projectNamespace === selectedProjectNamespace)
-          if (match) {
-            setSelectedCard(match)
-            break
+    return track('board', async () => {
+      try {
+        const nextBoard = await getJson<BoardResponse>('/api/board')
+        setBoard(nextBoard)
+        if (selectedProjectNamespace) {
+          for (const column of nextBoard.columns) {
+            const match = column.cards.find((card) => card.projectNamespace === selectedProjectNamespace)
+            if (match) {
+              setSelectedCard(match)
+              break
+            }
           }
         }
+      } catch (error) {
+        setStatusMessage(`Could not load board: ${toMessage(error)}`)
       }
-    } catch (error) {
-      setStatusMessage(`Could not load board: ${toMessage(error)}`)
-    }
+    })
   }
 
   /** Leave the project page: back to the board, URL reset to /. */
@@ -1082,28 +1112,30 @@ function App() {
   }
 
   async function loadOrchestrator(namespace: string) {
-    try {
-      setOrchestrator(await getJson<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' }>(`/api/projects/${namespace}/orchestrator`))
-    } catch {
-      setOrchestrator(null)
-    }
-    // Resolve the DB projectId + integrations by looking up project by slug.
-    try {
-      const projects = await getJson<Array<{ projectId: string; slug: string }>>('/api/projects')
-      const proj = projects.find((p) => p.slug === namespace)
-      if (proj) {
-        const detail = await getJson<ProjectDetailRecord>(`/api/projects/${proj.projectId}`)
-        setProjectDetail(detail)
-        void loadResponsibilities(detail.projectId)
-        void loadProjectKnowledge(detail.projectId)
-        void loadProjectWorker(detail.projectId)
-        void loadPlanRepos(namespace)
-      } else {
+    return track('orchestrator', async () => {
+      try {
+        setOrchestrator(await getJson<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' }>(`/api/projects/${namespace}/orchestrator`))
+      } catch {
+        setOrchestrator(null)
+      }
+      // Resolve the DB projectId + integrations by looking up project by slug.
+      try {
+        const projects = await getJson<Array<{ projectId: string; slug: string }>>('/api/projects')
+        const proj = projects.find((p) => p.slug === namespace)
+        if (proj) {
+          const detail = await getJson<ProjectDetailRecord>(`/api/projects/${proj.projectId}`)
+          setProjectDetail(detail)
+          void loadResponsibilities(detail.projectId)
+          void loadProjectKnowledge(detail.projectId)
+          void loadProjectWorker(detail.projectId)
+          void loadPlanRepos(namespace)
+        } else {
+          setProjectDetail(null)
+        }
+      } catch {
         setProjectDetail(null)
       }
-    } catch {
-      setProjectDetail(null)
-    }
+    })
   }
 
   async function openDeletion() {
@@ -1187,9 +1219,11 @@ function App() {
   }
 
   async function loadAppIntegrations() {
-    try {
-      setAppIntegrations(await getJson<Array<{ kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }>>('/api/integrations'))
-    } catch { setAppIntegrations([]) }
+    return track('integrations', async () => {
+      try {
+        setAppIntegrations(await getJson<Array<{ kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }>>('/api/integrations'))
+      } catch { setAppIntegrations([]) }
+    })
   }
 
   const githubConnected = appIntegrations.some((i) => i.kind === 'github' && i.status === 'connected')
@@ -1238,25 +1272,29 @@ function App() {
 
 
   async function loadProjectJobs(namespace: string) {
-    try {
-      setProjectJobs(await getJson<typeof projectJobs>(`/api/projects/${namespace}/jobs`))
-    } catch {
-      setProjectJobs([])
-    }
-    try {
-      setProjectAgents(await getJson<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>(`/api/projects/${namespace}/agents`))
-    } catch {
-      setProjectAgents([])
-    }
+    return track('jobs', async () => {
+      try {
+        setProjectJobs(await getJson<typeof projectJobs>(`/api/projects/${namespace}/jobs`))
+      } catch {
+        setProjectJobs([])
+      }
+      try {
+        setProjectAgents(await getJson<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>(`/api/projects/${namespace}/agents`))
+      } catch {
+        setProjectAgents([])
+      }
+    })
   }
 
   async function loadRunLog(runId: string) {
-    try {
-      const snap = await getJson<RunSnapshot>(`/api/runs/${runId}`)
-      setInspectedRun(snap)
-    } catch (error) {
-      setStatusMessage(`Could not load run ${runId.slice(0, 8)}: ${toMessage(error)}`)
-    }
+    return track('run-log', async () => {
+      try {
+        const snap = await getJson<RunSnapshot>(`/api/runs/${runId}`)
+        setInspectedRun(snap)
+      } catch (error) {
+        setStatusMessage(`Could not load run ${runId.slice(0, 8)}: ${toMessage(error)}`)
+      }
+    })
   }
 
   async function toggleAutonomousMode() {
@@ -1289,94 +1327,108 @@ function App() {
   }
 
   async function loadProjectMemory(namespace: string) {
-    setMemoryBusy(true)
-    try {
-      const memory = await getJson<ProjectMemoryResponse>(`/api/projects/${namespace}/memory`)
-      setProjectMemory(memory.manualText)
-      setAutoMemorySummary(memory.autoSummary)
-      setMemoryStatus(memory.updatedAt ? `Updated ${formatTimestamp(memory.updatedAt)}` : 'No project memory yet.')
-    } catch (error) {
-      setProjectMemory('')
-      setAutoMemorySummary('')
-      setMemoryStatus(`Could not load memory: ${toMessage(error)}`)
-    } finally {
-      setMemoryBusy(false)
-    }
+    return track('memory', async () => {
+      setMemoryBusy(true)
+      try {
+        const memory = await getJson<ProjectMemoryResponse>(`/api/projects/${namespace}/memory`)
+        setProjectMemory(memory.manualText)
+        setAutoMemorySummary(memory.autoSummary)
+        setMemoryStatus(memory.updatedAt ? `Updated ${formatTimestamp(memory.updatedAt)}` : 'No project memory yet.')
+      } catch (error) {
+        setProjectMemory('')
+        setAutoMemorySummary('')
+        setMemoryStatus(`Could not load memory: ${toMessage(error)}`)
+      } finally {
+        setMemoryBusy(false)
+      }
+    })
   }
 
   async function loadProjectContext(namespace: string) {
-    try {
-      setSharedContext(await getJson<ContextBundle>(`/api/projects/${namespace}/context`))
-    } catch {
-      setSharedContext(null)
-    }
+    return track('context', async () => {
+      try {
+        setSharedContext(await getJson<ContextBundle>(`/api/projects/${namespace}/context`))
+      } catch {
+        setSharedContext(null)
+      }
+    })
   }
 
   async function loadProjectQA(namespace: string) {
-    setQaBusy(true)
-    try {
-      const qa = await getJson<QAOverview>(`/api/projects/${namespace}/qa`)
-      setQaOverview(qa)
-      if (qa.currentJob.status === 'running') {
-        connectSubagentEvents(namespace)
+    return track('qa', async () => {
+      setQaBusy(true)
+      try {
+        const qa = await getJson<QAOverview>(`/api/projects/${namespace}/qa`)
+        setQaOverview(qa)
+        if (qa.currentJob.status === 'running') {
+          connectSubagentEvents(namespace)
+        }
+      } catch {
+        setQaOverview(null)
+      } finally {
+        setQaBusy(false)
       }
-    } catch {
-      setQaOverview(null)
-    } finally {
-      setQaBusy(false)
-    }
+    })
   }
 
   async function loadPromotions() {
-    try {
-      setPromotions(await getJson<PromotionProposal[]>('/api/org/promotions'))
-    } catch {
-      setPromotions([])
-    }
+    return track('promotions', async () => {
+      try {
+        setPromotions(await getJson<PromotionProposal[]>('/api/org/promotions'))
+      } catch {
+        setPromotions([])
+      }
+    })
   }
 
   async function loadAssistantHistory(namespace: string) {
-    // The server keeps the conversation per project (in memory) so the
-    // assistant has continuity; reload it when the project opens.
-    try {
-      const payload = await getJson<{ history: ChatEntry[] }>(`/api/projects/${namespace}/assistant/history`)
-      setChatEntries(payload.history ?? [])
-    } catch {
-      setChatEntries([])
-    }
+    return track('assistant', async () => {
+      // The server keeps the conversation per project (in memory) so the
+      // assistant has continuity; reload it when the project opens.
+      try {
+        const payload = await getJson<{ history: ChatEntry[] }>(`/api/projects/${namespace}/assistant/history`)
+        setChatEntries(payload.history ?? [])
+      } catch {
+        setChatEntries([])
+      }
+    })
   }
 
   async function loadLatestRun(namespace: string) {
-    try {
-      const snap = await getJson<RunSnapshot | null>(`/api/projects/${namespace}/latest-run`)
-      setCurrentRun(snap)
-      // Wire up SSE only for active runs. If there's no active run, we MUST
-      // still tear down any pre-existing SSE (from a previous project) —
-      // otherwise its stream keeps writing into currentRun, showing another
-      // project's logs in this one's modal.
-      if (snap && (snap.status === 'running' || snap.status === 'paused')) {
-        connectRunEvents(snap.runId)
-      } else {
+    return track('latest-run', async () => {
+      try {
+        const snap = await getJson<RunSnapshot | null>(`/api/projects/${namespace}/latest-run`)
+        setCurrentRun(snap)
+        // Wire up SSE only for active runs. If there's no active run, we MUST
+        // still tear down any pre-existing SSE (from a previous project) —
+        // otherwise its stream keeps writing into currentRun, showing another
+        // project's logs in this one's modal.
+        if (snap && (snap.status === 'running' || snap.status === 'paused')) {
+          connectRunEvents(snap.runId)
+        } else {
+          disconnectRunEvents()
+        }
+      } catch {
+        setCurrentRun(null)
         disconnectRunEvents()
       }
-    } catch {
-      setCurrentRun(null)
-      disconnectRunEvents()
-    }
+    })
   }
 
   async function loadTaskTracker(namespace: string) {
-    // Server parses tasks.md from the project's primary local repo and returns
-    // grouped items. No persistence — checkbox/status changes are display-only
-    // (see updateTaskTracker no-op below).
-    try {
-      const response = await getJson<{ featureDir?: string; items: TaskTrackerItem[]; graph?: { nodes: Array<{ id: string; label: string; phase: string; story?: string; parallel: boolean; status: string }>; edges: Array<{ from: string; to: string }> } }>(`/api/projects/${namespace}/task-tracker`)
-      setTaskTrackerItems(response.items ?? [])
-      setTaskGraph(response.graph ?? { nodes: [], edges: [] })
-    } catch {
-      setTaskTrackerItems([])
-      setTaskGraph({ nodes: [], edges: [] })
-    }
+    return track('tasks', async () => {
+      // Server parses tasks.md from the project's primary local repo and returns
+      // grouped items. No persistence — checkbox/status changes are display-only
+      // (see updateTaskTracker no-op below).
+      try {
+        const response = await getJson<{ featureDir?: string; items: TaskTrackerItem[]; graph?: { nodes: Array<{ id: string; label: string; phase: string; story?: string; parallel: boolean; status: string }>; edges: Array<{ from: string; to: string }> } }>(`/api/projects/${namespace}/task-tracker`)
+        setTaskTrackerItems(response.items ?? [])
+        setTaskGraph(response.graph ?? { nodes: [], edges: [] })
+      } catch {
+        setTaskTrackerItems([])
+        setTaskGraph({ nodes: [], edges: [] })
+      }
+    })
   }
 
   async function saveProjectMemory() {
@@ -1855,6 +1907,7 @@ function App() {
       extraBody.checklistDomain = value
     }
     setBusy(true)
+    setStartingStep(step)
     try {
       const raw = await fetch(`/api/projects/${namespace}/execute-step`, {
         method: 'POST',
@@ -1912,6 +1965,7 @@ function App() {
       setStatusMessage(`Could not execute ${step}: ${toMessage(error)}`)
     } finally {
       setBusy(false)
+      setStartingStep(null)
     }
   }
 
@@ -2175,6 +2229,7 @@ function App() {
           </div>
         </div>
 
+        {boardView === 'list' && isLoading('board') && board.columns.length === 0 && <SkeletonRows count={5} label="Loading projects…" />}
         {boardView === 'list' && (
           <div className="table-wrap">
             <table className="project-table">
@@ -2245,6 +2300,16 @@ function App() {
           </div>
         )}
 
+        {boardView === 'board' && isLoading('board') && board.columns.length === 0 && (
+          <div className="board-columns board-skeleton" role="status" aria-busy="true" aria-label="Loading the board…">
+            {['Backlog', 'Initialized', 'Specified', 'Planned', 'Tasked', 'Implementing', 'Releasing', 'Done'].map((title, i) => (
+              <section key={title} className="board-column">
+                <div className="board-column-header"><h3>{title}</h3></div>
+                <SkeletonTiles count={i % 3 === 0 ? 2 : 1} minWidth={160} label={`Loading ${title}`} />
+              </section>
+            ))}
+          </div>
+        )}
         {boardView === 'board' && (
         <div className="board-columns">
           {board.columns.map((column) => {
@@ -2439,6 +2504,7 @@ function App() {
                     onClick={() => void executeStep(selectedCardFresh.recommendedAction!.step, selectedCardFresh.recommendedAction!.tab)}
                     type="button"
                   >
+                    {startingStep === selectedCardFresh.recommendedAction.step && <Spinner />}
                     {selectedCardFresh.recommendedAction.label}
                   </button>
                   <button className="secondary-button" onClick={() => setActiveProjectTab(selectedCardFresh.recommendedAction!.tab)} type="button">
@@ -2480,7 +2546,8 @@ function App() {
                       <button className="primary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
                     </div>
                   </div>
-                  {projectFeatures.length === 0 && (
+                  {projectFeatures.length === 0 && isLoading('features') && <SkeletonRows count={2} label="Loading features…" />}
+                  {projectFeatures.length === 0 && !isLoading('features') && (
                     // A New feature run can end without a spec (the agent will not invent one from
                     // a vague description): say so instead of a bare "no features".
                     selectedCardFresh.latestRun && selectedCardFresh.latestRun.stages?.includes('specify') && ['completed', 'error'].includes(selectedCardFresh.latestRun.status)
@@ -2599,7 +2666,8 @@ function App() {
                     </div>
                   )}
                   <div className="repo-list">
-                    {(projectDetail?.repos ?? []).length === 0 && <p className="empty-state">No repositories registered.</p>}
+                    {!projectDetail && <SkeletonRows count={2} label="Loading repositories…" />}
+                    {projectDetail && projectDetail.repos.length === 0 && <p className="empty-state">No repositories registered.</p>}
                     {(projectDetail?.repos ?? []).map((repo) => (
                       <div key={repo.repoId} className="repo-row">
                         <div className="repo-row-main">
@@ -2755,7 +2823,7 @@ function App() {
                   <h3 style={{ marginTop: 12 }}>Recent jobs</h3>
                   <p className="panel-subtitle" style={{ marginTop: 0 }}>Click a job to open its log in a modal.</p>
                   <div className="diff-group">
-                    {projectJobs.length === 0 && <p className="empty-state">No jobs yet.</p>}
+                    {projectJobs.length === 0 && (isLoading('jobs') ? <SkeletonTiles count={4} minWidth={340} label="Loading jobs…" /> : <p className="empty-state">No jobs yet.</p>)}
                     {projectJobs.slice(0, 8).map((j) => (
                       <button
                         key={j.jobId}
@@ -2808,7 +2876,7 @@ function App() {
                       </div>}
                     </div>
                   })}
-                  {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
+                  {!responsibilities && (isLoading('responsibilities') ? <SkeletonTiles count={6} minWidth={280} label="Loading responsibilities…" /> : <p className="empty-state">Responsibility data is unavailable.</p>)}
                 </section>
                 <section className="card panel slim-panel overview-section overview-summary">
                   <h3>Summary</h3>
@@ -2915,8 +2983,8 @@ function App() {
                 <div className="section-header-row">
                   <h3>Specification workspace</h3>
                   <div className="button-row">
-                    <button className="secondary-button" disabled={busy || !stepEligibility('specify').ok} title={stepEligibility('specify').reason} onClick={() => void executeStep('specify', 'specs')} type="button">Run specify</button>
-                    <button className="primary-button" disabled={busy || !stepEligibility('plan').ok} title={stepEligibility('plan').reason} onClick={() => void executeStep('plan', 'specs')} type="button">Run plan</button>
+                    <button className="secondary-button" disabled={busy || !stepEligibility('specify').ok} title={stepEligibility('specify').reason} onClick={() => void executeStep('specify', 'specs')} type="button">{startingStep === 'specify' && <Spinner />}Run specify</button>
+                    <button className="primary-button" disabled={busy || !stepEligibility('plan').ok} title={stepEligibility('plan').reason} onClick={() => void executeStep('plan', 'specs')} type="button">{startingStep === 'plan' && <Spinner />}Run plan</button>
                   </div>
                 </div>
                 <div className="artifact-group">
@@ -2936,7 +3004,7 @@ function App() {
                 <div className="section-header-row">
                   <h3>Test planning workspace</h3>
                   <div className="button-row">
-                    <button className="primary-button" disabled={busy || !stepEligibility('testplan').ok} title={stepEligibility('testplan').reason} onClick={() => void executeStep('testplan', 'testplan')} type="button">Run test plan</button>
+                    <button className="primary-button" disabled={busy || !stepEligibility('testplan').ok} title={stepEligibility('testplan').reason} onClick={() => void executeStep('testplan', 'testplan')} type="button">{startingStep === 'testplan' && <Spinner />}Run test plan</button>
                   </div>
                 </div>
                 <div className="artifact-group">
@@ -2973,12 +3041,12 @@ function App() {
                       <p className="panel-subtitle">Read-only view of tasks.md, grouped by story/phase.</p>
                     </div>
                     <div className="button-row">
-                      <button className="secondary-button" disabled={busy || !stepEligibility('tasks').ok} title={stepEligibility('tasks').reason} onClick={() => void executeStep('tasks', 'implementation')} type="button">Run tasks</button>
-                      <button className="secondary-button" disabled={busy || !stepEligibility('parallelize').ok} title={stepEligibility('parallelize').reason} onClick={() => void executeStep('parallelize', 'implementation')} type="button">Run parallelize</button>
+                      <button className="secondary-button" disabled={busy || !stepEligibility('tasks').ok} title={stepEligibility('tasks').reason} onClick={() => void executeStep('tasks', 'implementation')} type="button">{startingStep === 'tasks' && <Spinner />}Run tasks</button>
+                      <button className="secondary-button" disabled={busy || !stepEligibility('parallelize').ok} title={stepEligibility('parallelize').reason} onClick={() => void executeStep('parallelize', 'implementation')} type="button">{startingStep === 'parallelize' && <Spinner />}Run parallelize</button>
                     </div>
                   </div>
                   <div className="tracker-list">
-                    {groupedTasks.length === 0 && <p className="empty-state">No tasks parsed from tasks.md yet.</p>}
+                    {groupedTasks.length === 0 && (isLoading('tasks') ? <SkeletonRows count={4} label="Loading tasks…" /> : <p className="empty-state">No tasks parsed from tasks.md yet.</p>)}
                     {groupedTasks.map((group) => (
                       <section key={group.group} className="tracker-group">
                         <div className="tracker-group-header">
@@ -3047,8 +3115,8 @@ function App() {
                   <div className="section-header-row">
                     <h3>Implementation workstreams</h3>
                     <div className="button-row">
-                      <button className="primary-button" disabled={busy || !stepEligibility('implement').ok} title={stepEligibility('implement').reason} onClick={() => void executeStep('implement', 'implementation')} type="button">Run implementation</button>
-                      <button className="secondary-button" disabled={busy || !stepEligibility('orchestrate').ok} title={stepEligibility('orchestrate').reason} onClick={() => void executeStep('orchestrate', 'implementation')} type="button">Run orchestrate</button>
+                      <button className="primary-button" disabled={busy || !stepEligibility('implement').ok} title={stepEligibility('implement').reason} onClick={() => void executeStep('implement', 'implementation')} type="button">{startingStep === 'implement' && <Spinner />}Run implementation</button>
+                      <button className="secondary-button" disabled={busy || !stepEligibility('orchestrate').ok} title={stepEligibility('orchestrate').reason} onClick={() => void executeStep('orchestrate', 'implementation')} type="button">{startingStep === 'orchestrate' && <Spinner />}Run orchestrate</button>
                     </div>
                   </div>
                   <div className="artifact-group">
@@ -3071,7 +3139,7 @@ function App() {
                   {qaOverview?.currentJob.status === 'error' && qaOverview.currentJob.error && (
                     <p className="error-text">Sub-agent job failed: {qaOverview.currentJob.error}</p>
                   )}
-                  {(qaOverview?.currentJob.workstreams ?? []).length === 0 && <p className="empty-state">No active implementation workstreams.</p>}
+                  {(qaOverview?.currentJob.workstreams ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={2} label="Loading workstreams…" /> : <p className="empty-state">No active implementation workstreams.</p>)}
                   {(qaOverview?.currentJob.workstreams ?? []).map((item) => (
                     <details key={`${item.workstream}-${item.outputFile ?? ''}`} className="qa-artifact" open={item.status === 'running' || item.status === 'error'}>
                       <summary>{item.workstream} • {item.status}</summary>
@@ -3106,8 +3174,8 @@ function App() {
                     </div>
                     <div className="button-row">
                       {/* Code review comes first, then verification; implement loops through both on its own. */}
-                      <button className={selectedCardFresh?.recommendedAction?.step === 'review' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'qa')} type="button">Run review</button>
-                      <button className={selectedCardFresh?.recommendedAction?.step === 'review' ? 'secondary-button' : 'primary-button'} disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">Run verify</button>
+                      <button className={selectedCardFresh?.recommendedAction?.step === 'review' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('review').ok} title={stepEligibility('review').reason ?? 'Code-review the implementation against spec/plan/tests and CI state; posts the review on the PR and requests changes or approves.'} onClick={() => void executeStep('review', 'qa')} type="button">{startingStep === 'review' && <Spinner />}Run review</button>
+                      <button className={selectedCardFresh?.recommendedAction?.step === 'review' ? 'secondary-button' : 'primary-button'} disabled={busy || !stepEligibility('verify').ok} title={stepEligibility('verify').reason} onClick={() => void executeStep('verify', 'qa')} type="button">{startingStep === 'verify' && <Spinner />}Run verify</button>
                       {selectedCardFresh && !selectedCardFresh.accepted && ['partial', 'fail'].includes(selectedCardFresh.verificationStatus) && (
                         <button
                           className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
@@ -3133,7 +3201,7 @@ function App() {
                       : 'Verification has not been completed yet.'}
                   </p>
                   <h3>Job history</h3>
-                  {(qaOverview?.jobHistory ?? []).length === 0 && <p className="empty-state">No sub-agent job history yet.</p>}
+                  {(qaOverview?.jobHistory ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={2} label="Loading job history…" /> : <p className="empty-state">No sub-agent job history yet.</p>)}
                   {(qaOverview?.jobHistory ?? []).map((job, index) => (
                     <details key={`${job.startedAt ?? 'job'}-${index}`} className="qa-artifact">
                       <summary>{job.startedAt ? formatTimestamp(job.startedAt) : 'Job'} • {job.status}</summary>
@@ -3172,7 +3240,7 @@ function App() {
                     </span>
                   </div>
                   <div className="button-row">
-                    <button className={selectedCardFresh.recommendedAction?.step === 'deliver' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'releasing')} type="button">Run deliver</button>
+                    <button className={selectedCardFresh.recommendedAction?.step === 'deliver' ? 'primary-button' : 'secondary-button'} disabled={busy || !stepEligibility('deliver').ok} title={stepEligibility('deliver').reason ?? 'Track PRs through review, merge (in stack order), deploy and UAT; pauses for approval before merging or deploying.'} onClick={() => void executeStep('deliver', 'releasing')} type="button">{startingStep === 'deliver' && <Spinner />}Run deliver</button>
                     <button className="secondary-button" disabled={qaBusy || !selectedProjectNamespace} onClick={() => selectedProjectNamespace && void loadProjectQA(selectedProjectNamespace)} type="button">Refresh</button>
                   </div>
                 </div>
@@ -3188,7 +3256,7 @@ function App() {
                   </>
                 )}
                 <h3>Release artifacts</h3>
-                {(qaOverview?.releaseArtifacts ?? []).length === 0 && <p className="empty-state">No feature yet.</p>}
+                {(qaOverview?.releaseArtifacts ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={3} label="Loading release documents…" /> : <p className="empty-state">No feature yet.</p>)}
                 {(qaOverview?.releaseArtifacts ?? []).map((artifact) => (
                   <details key={artifact.path} className="qa-artifact" open={artifact.exists && artifact.label === 'Delivery report'}>
                     <summary>{artifact.label} {artifact.exists ? '' : '(not written yet)'}</summary>
@@ -3205,7 +3273,7 @@ function App() {
                 <p className="panel-subtitle">
                   Pick which connected integrations and repositories this project's agents may query. Narrow each source so searches stay relevant and cheap; leave a scope blank for "everything in that source".
                 </p>
-                {!knowledgeScope && <p className="empty-state">Loading knowledge scope…</p>}
+                {!knowledgeScope && <SkeletonRows count={3} label="Loading knowledge scope…" />}
                 {knowledgeScope && knowledgeScope.connected.length === 0 && (
                   <p className="empty-state">No knowledge integrations are connected. Connect Jira, Linear, Confluence or GitHub under Integrations.</p>
                 )}
@@ -3293,6 +3361,7 @@ function App() {
 
             {activeProjectTab === 'memory' && (
               <section className="card panel slim-panel">
+                {isLoading('memory') && !projectMemory && !autoMemorySummary && <LoadingBlock label="Loading project memory…" />}
                 <textarea className="memory-editor" value={projectMemory} onChange={(event) => setProjectMemory(event.target.value)} placeholder="Capture durable product context, conventions, reviewer preferences, architecture decisions, and rollout rules here." />
                 <div className="auto-memory-box">
                   <h3>Auto summary</h3>
@@ -3381,7 +3450,7 @@ function App() {
                   </select>
                 </div>
                 <div className="chat-log modal-chat-log grouped-chat-log">
-                  {groupedChatEntries.length === 0 && <p className="empty-state">Ask AI to explain artifacts, failures, or next steps.</p>}
+                  {groupedChatEntries.length === 0 && (isLoading('assistant') ? <SkeletonRows count={3} label="Loading conversation…" /> : <p className="empty-state">Ask AI to explain artifacts, failures, or next steps.</p>)}
                   {groupedChatEntries.map((group) => (
                     <section key={group.key} className="chat-group">
                       <div className="chat-group-header">
@@ -3447,7 +3516,7 @@ function App() {
                   <button className="primary-button" disabled={promotionBusy || !selectedProjectNamespace} onClick={() => void createPromotion()} type="button">Submit proposal</button>
                 </div>
                 <div className="promotion-list">
-                  {filteredPromotions.length === 0 && <p className="empty-state">No proposals for this project.</p>}
+                  {filteredPromotions.length === 0 && (isLoading('promotions') ? <SkeletonRows count={2} label="Loading lessons…" /> : <p className="empty-state">No proposals for this project.</p>)}
                   {filteredPromotions.map((proposal) => (
                     <article key={proposal.id} className="promotion-item">
                       <div className="review-card-header">
@@ -3529,6 +3598,13 @@ function App() {
         </div>
       )}
 
+      {!inspectedRun && isLoading('run-log') && (
+        <div className="modal-overlay">
+          <div className="modal-shell" style={{ maxWidth: 900, width: '90vw' }}>
+            <LoadingBlock label="Loading the run's log…" />
+          </div>
+        </div>
+      )}
       {inspectedRun && (
         <div className="modal-overlay" onClick={() => setInspectedRun(null)}>
           <div className="modal-shell" style={{ maxWidth: 900, width: '90vw' }} onClick={(e) => e.stopPropagation()}>

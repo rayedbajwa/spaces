@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { LoadingBlock, SkeletonRows, SkeletonTiles } from './loading'
 import { json, navigate, useAuth, type MeTeam } from './auth'
 import { OrgKnowledgePanel } from './knowledge'
 import { IntegrationsPanel } from './integrations'
@@ -129,7 +130,8 @@ export function OrgPage() {
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
 
       <div className="team-content">
-          {section === 'overview' && (
+          {section === 'overview' && org === null && promotions === null && <SkeletonTiles count={5} minWidth={160} label="Loading the organization…" />}
+          {section === 'overview' && !(org === null && promotions === null) && (
             <>
               <div className="stat-grid">
                 <Stat label="Teams" value={teams.length} sub={`${teams.filter((t) => t.role === 'owner' || t.role === 'admin').length} you manage`} />
@@ -184,6 +186,7 @@ export function OrgPage() {
             </>
           )}
 
+          {section === 'memory' && !org && <LoadingBlock label="Loading organization memory…" />}
           {section === 'memory' && org && (
             <MemorySection initial={org.manualText} updatedAt={org.updatedAt} name={org.name} readOnly={!canEdit} busy={busy} act={act} />
           )}
@@ -194,7 +197,8 @@ export function OrgPage() {
 
           {section === 'models' && <ModelsSection canEdit={canEdit} />}
 
-          {section === 'promotions' && (
+          {section === 'promotions' && promotions === null && <SkeletonRows count={3} label="Loading promotions…" />}
+          {section === 'promotions' && promotions !== null && (
             <PromotionsSection proposals={promotions ?? []} canDecide={canEdit} busy={busy} act={act} />
           )}
 

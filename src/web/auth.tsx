@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { LoadingBlock } from './loading'
 
 /**
  * Authentication + teams for the web UI.
@@ -75,7 +76,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
     window.location.reload()
   }, [refresh])
 
-  if (loading) return <div className="auth-screen"><div className="auth-card"><p className="panel-subtitle">Loading…</p></div></div>
+  if (loading) return <div className="auth-screen"><div className="auth-card"><LoadingBlock label="Loading Spaces…" /></div></div>
   if (status?.authEnabled && (signedOut || !me?.user)) {
     return <SignInScreen needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} onSignedIn={refresh} />
   }

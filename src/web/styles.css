@@ -2522,3 +2522,34 @@ textarea {
 .board-card .pr-links { display: flex; margin-top: 8px; }
 .chip.pr-link { color: var(--accent-text); border-color: rgba(94, 106, 210, 0.35); background: var(--accent-soft); text-decoration: none; font-family: var(--font-mono); }
 .chip.pr-link:hover { background: rgba(94, 106, 210, 0.24); color: var(--text-strong); }
+
+/* ============================================================
+   Loading states (src/web/loading.tsx)
+   ============================================================ */
+.spinner {
+  display: inline-block; flex: 0 0 auto; box-sizing: border-box;
+  border: 2px solid var(--border-strong); border-top-color: var(--accent-text); border-radius: 50%;
+  animation: spin 0.7s linear infinite; vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-block { display: flex; align-items: center; gap: 10px; padding: 18px 4px; color: var(--text-muted); font-size: 13px; }
+.loading-block.compact { padding: 6px 0; font-size: 12.5px; }
+.skeleton-rows { display: grid; gap: 8px; }
+.skeleton-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elevated-2); }
+.skeleton-tiles { display: grid; gap: 8px; }
+.skeleton-tile { display: grid; gap: 8px; padding: 12px; min-height: 44px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elevated-2); }
+.skeleton-line {
+  display: block; height: 10px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--bg-hover) 0%, var(--border-strong) 50%, var(--bg-hover) 100%);
+  background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite;
+}
+.skeleton-line.short { height: 8px; width: 30%; opacity: 0.7; }
+.skeleton-tile .skeleton-line.short { width: 40%; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+/* A button doing its work shows a spinner in place of nothing happening. */
+button .spinner { margin-right: 6px; width: 12px; height: 12px; }
+.board-skeleton { display: flex; gap: 10px; }
+.board-skeleton .board-column { flex: 1 0 220px; }
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .skeleton-line { animation: none; }
+}
