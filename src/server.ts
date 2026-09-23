@@ -84,6 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, renameFeature } from './lib/features'
+import { markIntentDeleted, syncProjectIntentsQuietly } from './lib/intent-store'
 import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
@@ -215,6 +216,16 @@ void (async () => {
 }
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
 void ensureProjectCodes().then((n) => { if (n > 0) serverLog.info('assigned project codes', { count: n }) }).catch((error) => serverLog.warn('project code backfill failed', { error: error instanceof Error ? error.message : String(error) }))
+// Intents live in the database; the first boot with it imports every project's
+// intent directories (later syncs happen after each stage and each action).
+void (async () => {
+  const { listProjects, listRepos, pickRunnableRepo } = await import('./lib/project-registry')
+  const { syncProjectIntentsQuietly } = await import('./lib/intent-store')
+  for (const project of await listProjects()) {
+    const primary = pickRunnableRepo(await listRepos(project.projectId))
+    await syncProjectIntentsQuietly(project.projectId, primary?.localPath, 'import')
+  }
+})().catch((error) => serverLog.warn('intent import failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
 // must not look like they are still running.
 void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked interrupted knowledge imports as failed', { count: n }) }).catch(() => undefined)
@@ -1432,6 +1443,7 @@ async function route(req: Request): Promise<Response> {
         return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
       }
       await markProjectStateStale(project.projectId).catch(() => undefined)
+      await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
       return sendJson(200, { features: await listFeatures(projectMeta.path) })
     }
@@ -1449,6 +1461,7 @@ async function route(req: Request): Promise<Response> {
         return sendJson(409, { error: `${feature.title} has been delivered${feature.status === 'delivering' ? ' in part' : ''}; its record stays as project history and cannot be deleted.`, code: 'delivered' })
       }
       await removeFeatureDir(projectMeta.path, featureId)
+      await markIntentDeleted(project.projectId, featureId, `person:${auth?.user.name || auth?.user.email || 'local user'}`).catch(() => undefined)
       await markProjectStateStale(project.projectId).catch(() => undefined)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
       serverLog.info('feature deleted', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
@@ -1473,6 +1486,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: `Switched branches, but ${featureId} is not on disk in the project workspace: ${error instanceof Error ? error.message : String(error)}`, branches })
     }
     await markProjectStateStale(project.projectId).catch(() => undefined)
+    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     serverLog.info('feature made active', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
     return sendJson(200, { features: await listFeatures(projectMeta.path), branches })
   }
@@ -1525,6 +1539,7 @@ async function route(req: Request): Promise<Response> {
       note: body.note,
     })
     await markProjectStateStale(project.projectId).catch(() => undefined)
+    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
     serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
 
@@ -1546,6 +1561,7 @@ async function route(req: Request): Promise<Response> {
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     const withdrawn = await withdrawAcceptance(projectMeta.path)
     await markProjectStateStale(project.projectId).catch(() => undefined)
+    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     return sendJson(200, { withdrawn })
   }
 

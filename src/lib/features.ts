@@ -1,6 +1,6 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { ACCEPTANCE_FILE } from './acceptance'
+import { ACCEPTANCE_FILE } from './acceptance-file'
 import { activeFeatureId, featureDirNames } from './active-feature'
 
 /**
