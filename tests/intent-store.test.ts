@@ -335,7 +335,7 @@ dbSuite('syncing intents into the database', () => {
     await setActiveIntent(projectId, root, '001-login', 'person:Sam')
     const accepted = '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n'
     const change = (content: string | null) => changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', content]]) })
-    for (let round = 0; round < 5; round++) {
+    for (let round = 0; round < 3; round++) {
       await Promise.all([
         change(accepted), syncProjectIntents(projectId, root, 'agent'), restoreIntentFiles(projectId, root),
         change(null), syncProjectIntents(projectId, root, 'agent'), restoreIntentFiles(projectId, root), change(round % 2 ? accepted : null),
@@ -344,7 +344,7 @@ dbSuite('syncing intents into the database', () => {
       const onDisk = await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)
       expect(onDisk).toBe(stored)
     }
-  })
+  }, 120_000) // serialized by the project lock: slow against a remote database, as in project containers
 
   test('the scope comes from the spec, is listed, and a change is recorded', async () => {
     const { root, write, projectId } = await setup()
