@@ -102,7 +102,7 @@ export async function exchangeCode(cfg: OAuthProviderConfig, code: string, callb
 
 // -------- Provider definitions --------
 
-export type OAuthProviderId = 'github' | 'atlassian' | 'slack' | 'linear'
+export type OAuthProviderId = 'github' | 'atlassian' | 'slack' | 'linear' | 'figma'
 
 export interface OAuthProviderTemplate extends Omit<OAuthProviderConfig, 'clientId' | 'clientSecret' | 'provider'> {
   provider: OAuthProviderId
@@ -165,6 +165,16 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     scopes: ['read', 'write'],
     extraAuthorizeParams: { prompt: 'consent' },
     consoleUrl: 'https://linear.app/settings/api/applications',
+  },
+  figma: {
+    provider: 'figma',
+    label: 'Figma',
+    kinds: ['figma'],
+    authorizeUrl: 'https://www.figma.com/oauth',
+    tokenUrl: 'https://www.figma.com/api/oauth/token',
+    scopes: ['files:read', 'file_variables:read'],
+    consoleUrl: 'https://www.figma.com/developers/apps',
+    notes: 'OAuth 2.0 app. Enable files:read and file_variables:read scopes in your Figma app settings.',
   },
 }
 

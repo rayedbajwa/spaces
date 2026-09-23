@@ -14,7 +14,7 @@ import { json, type MeTeam } from './auth'
  *  Search        try a question against the base the way agents do.
  */
 
-type Kind = 'confluence' | 'jira' | 'linear' | 'github_repo' | 'github_issues' | 'url' | 'manual'
+type Kind = 'confluence' | 'jira' | 'linear' | 'github_repo' | 'github_issues' | 'url' | 'manual' | 'figma'
 
 interface Source {
   sourceId: string
@@ -49,13 +49,14 @@ interface Hit { chunkId: number; title: string; url: string | null; sourceLabel:
 
 interface Doc { documentId: string; title: string; url: string | null; externalId: string; chunkCount: number; embeddingStatus: string; fetchedAt: string }
 
-type ImportTab = 'confluence' | 'jira' | 'linear' | 'github' | 'url' | 'manual'
+type ImportTab = 'confluence' | 'jira' | 'linear' | 'github' | 'figma' | 'url' | 'manual'
 
 const TABS: Array<{ id: ImportTab; label: string }> = [
   { id: 'confluence', label: 'Confluence spaces' },
   { id: 'jira', label: 'Jira projects' },
   { id: 'linear', label: 'Linear' },
   { id: 'github', label: 'GitHub repositories' },
+  { id: 'figma', label: 'Figma design systems' },
   { id: 'url', label: 'Web pages' },
   { id: 'manual', label: 'Notes' },
 ]
@@ -68,6 +69,7 @@ const KIND_LABEL: Record<Kind, string> = {
   github_issues: 'GitHub issues & PRs',
   url: 'Web pages',
   manual: 'Notes',
+  figma: 'Figma',
 }
 
 export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams: MeTeam[] }) {
@@ -188,6 +190,7 @@ export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams:
           {(tab === 'confluence' || tab === 'jira' || tab === 'linear' || tab === 'github') && (
             <CatalogImport integration={tab} onImport={createSource} />
           )}
+          {tab === 'figma' && <FigmaImport onImport={createSource} />}
           {tab === 'url' && <UrlImport onImport={createSource} />}
           {tab === 'manual' && <NoteImport teamId={scopeTeam || null} onDone={async (m) => { flash(m); await reload() }} onError={setError} />}
         </div>
@@ -260,6 +263,7 @@ function describeConfig(s: Source): string {
     case 'github_repo': return `${String(s.config.repo)}${s.config.branch ? `@${String(s.config.branch)}` : ''}${list(s.config.include) ? ` · ${list(s.config.include)}` : ' · docs files'}`
     case 'github_issues': return `${String(s.config.repo)} · issues & pull requests`
     case 'url': return list(s.config.urls)
+    case 'figma': return [list(s.config.fileUrls) || list(s.config.fileKeys), s.config.extractTokens !== false ? 'tokens' : '', s.config.extractComponents !== false ? 'components' : ''].filter(Boolean).join(' · ') || 'Figma design system'
     case 'manual': return 'Typed or pasted notes'
   }
 }
@@ -388,6 +392,83 @@ function CatalogImport({ integration, onImport }: { integration: 'confluence' | 
           {busy ? 'Starting…' : `Import ${selected.size || ''}`.trim()}
         </button>
         <span className="panel-subtitle">{integration === 'linear' ? 'Initiatives bring their projects; projects and teams bring their issues.' : integration === 'github' ? 'One source per repository.' : 'Imports run in the background; re-import later picks up changes.'}</span>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Figma design systems
+// ---------------------------------------------------------------------------
+
+function FigmaImport({ onImport }: { onImport: (body: { kind: Kind; label: string; config: Record<string, unknown> }) => Promise<void> }) {
+  const [url, setUrl] = useState('')
+  const [label, setLabel] = useState('')
+  const [extractTokens, setExtractTokens] = useState(true)
+  const [extractComponents, setExtractComponents] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const canSubmit = url.trim().length > 0 && (extractTokens || extractComponents)
+
+  return (
+    <div className="knowledge-inline-form">
+      <input
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="Figma file URL (e.g. https://www.figma.com/design/Vf123Abc456/Acme-Design-System)"
+        required
+      />
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', margin: '4px 0', fontSize: 13, flexWrap: 'wrap' }}>
+        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={extractTokens}
+            onChange={(e) => setExtractTokens(e.target.checked)}
+          />
+          <span>Extract design tokens (colors, typography scales, elevation)</span>
+        </label>
+        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={extractComponents}
+            onChange={(e) => setExtractComponents(e.target.checked)}
+          />
+          <span>Extract published components &amp; variants</span>
+        </label>
+      </div>
+      <div className="button-row">
+        <input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Source label (optional, e.g. Acme UI Design System)"
+        />
+        <button
+          type="button"
+          className="primary-button"
+          disabled={busy || !canSubmit}
+          onClick={async () => {
+            setBusy(true)
+            try {
+              const cleanUrl = url.trim()
+              const defaultLabel = cleanUrl.split('/')[5]?.replace(/[-_]/g, ' ') || 'Figma Design System'
+              await onImport({
+                kind: 'figma',
+                label: label.trim() || `Figma: ${defaultLabel}`,
+                config: {
+                  fileUrls: [cleanUrl],
+                  extractTokens,
+                  extractComponents,
+                },
+              })
+              setUrl('')
+              setLabel('')
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          {busy ? 'Starting import…' : 'Import design system'}
+        </button>
       </div>
     </div>
   )

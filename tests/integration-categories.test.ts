@@ -13,11 +13,12 @@ import type { AppIntegrationKind } from '../src/lib/app-integrations'
 
 describe('Integration Categories Domain Model', () => {
   describe('TC-CAT-001: Canonical Categories Ordering & Definitions', () => {
-    test('contains exactly 3 categories in canonical order', () => {
-      expect(INTEGRATION_CATEGORIES).toHaveLength(3)
+    test('contains exactly 4 categories in canonical order', () => {
+      expect(INTEGRATION_CATEGORIES).toHaveLength(4)
       expect(INTEGRATION_CATEGORIES.map((c) => c.id)).toEqual([
         'source_control',
         'project_management',
+        'design',
         'communication',
       ])
     })
@@ -60,7 +61,7 @@ describe('Integration Categories Domain Model', () => {
   })
 
   describe('TC-CAT-003: Kind Exhaustiveness', () => {
-    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear']
+    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma']
 
     test('every AppIntegrationKind maps to exactly one category', () => {
       for (const kind of allKinds) {
@@ -77,6 +78,7 @@ describe('Integration Categories Domain Model', () => {
       expect(getCategoryForKind('jira')?.id).toBe('project_management')
       expect(getCategoryForKind('confluence')?.id).toBe('project_management')
       expect(getCategoryForKind('linear')?.id).toBe('project_management')
+      expect(getCategoryForKind('figma')?.id).toBe('design')
       expect(getCategoryForKind('slack')?.id).toBe('communication')
     })
   })
@@ -203,12 +205,14 @@ describe('Integration Categories Domain Model', () => {
         { provider: 'github', configured: true, kinds: ['github'] },
         { provider: 'atlassian', configured: false, kinds: ['jira', 'confluence'] },
         { provider: 'linear', configured: false, kinds: ['linear'] },
+        { provider: 'figma', configured: true, kinds: ['figma'] },
         { provider: 'slack', configured: true, kinds: ['slack'] },
       ]
 
       const grouped: Record<string, AppLike[]> = {
         source_control: [],
         project_management: [],
+        design: [],
         communication: [],
       }
       const orphaned: AppLike[] = []
@@ -225,6 +229,7 @@ describe('Integration Categories Domain Model', () => {
       expect(orphaned).toHaveLength(0)
       expect(grouped.source_control.map((a) => a.provider)).toEqual(['github'])
       expect(grouped.project_management.map((a) => a.provider)).toEqual(['atlassian', 'linear'])
+      expect(grouped.design.map((a) => a.provider)).toEqual(['figma'])
       expect(grouped.communication.map((a) => a.provider)).toEqual(['slack'])
     })
   })
@@ -254,6 +259,37 @@ describe('Integration Categories Domain Model', () => {
         expect(cat.emptyGuidance.length).toBeGreaterThan(20)
         expect(typeof cat.emptyGuidance).toBe('string')
       }
+    })
+
+    test('design category status correctly transitions through all states', () => {
+      const designCat = INTEGRATION_CATEGORIES.find((c) => c.id === 'design')!
+
+      // 1. Empty state
+      const emptyStatus = calculateCategoryStatus(designCat, [], [])
+      expect(emptyStatus.state).toBe('empty')
+      expect(emptyStatus.summaryBadge).toBe('Not connected')
+      expect(emptyStatus.badgeVariant).toBe('idle')
+
+      // 2. Configured app but not connected
+      const configuredApp: AppLike[] = [{ provider: 'figma', configured: true, kinds: ['figma'] }]
+      const configuredStatus = calculateCategoryStatus(designCat, configuredApp, [])
+      expect(configuredStatus.state).toBe('configured_unconnected')
+      expect(configuredStatus.summaryBadge).toBe('App set up')
+      expect(configuredStatus.badgeVariant).toBe('idle')
+
+      // 3. Connected
+      const connectedConns: ConnectionLike[] = [{ kind: 'figma', status: 'connected', credentialsOk: true }]
+      const connectedStatus = calculateCategoryStatus(designCat, configuredApp, connectedConns)
+      expect(connectedStatus.state).toBe('connected')
+      expect(connectedStatus.summaryBadge).toBe('Connected')
+      expect(connectedStatus.badgeVariant).toBe('completed')
+
+      // 4. Reconnect needed
+      const brokenConns: ConnectionLike[] = [{ kind: 'figma', status: 'connected', credentialsOk: false }]
+      const brokenStatus = calculateCategoryStatus(designCat, configuredApp, brokenConns)
+      expect(brokenStatus.state).toBe('needs_reconnect')
+      expect(brokenStatus.summaryBadge).toBe('Reconnect needed')
+      expect(brokenStatus.badgeVariant).toBe('error')
     })
 
     test('communication category status correctly transitions through all states', () => {

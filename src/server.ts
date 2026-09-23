@@ -23,7 +23,7 @@ import { consumeManifestState, convertGitHubAppManifest, githubAppManifestPage }
 import { withExpiry } from './lib/integration-token'
 import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey, scrubProviderKeysFromEnv } from './lib/provider-keys'
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
-import { disconnectAppIntegration, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
+import { disconnectAppIntegration, getAppIntegration, getAppIntegrationCredentials, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
@@ -1980,6 +1980,80 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { ok: true })
   }
 
+  if (method === 'POST' && url.pathname === '/api/integrations/figma/verify') {
+    const denied = requireOrgAdmin('Only team owners or admins can verify Figma credentials.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { token?: string }
+    let token = body.token?.trim()
+    let isPat: boolean | undefined
+    const orgId = await orgIdOf()
+    if (!token) {
+      const creds = await getAppIntegrationCredentials(orgId, 'figma')
+      if (typeof creds?.access_token === 'string') {
+        token = creds.access_token
+        isPat = creds.isPat !== false
+      }
+    }
+    if (!token) {
+      return sendJson(400, { ok: false, error: 'No Figma credentials found. Provide a token or connect Figma first.' })
+    }
+    const { verifyFigmaToken } = await import('./lib/figma-tools')
+    const result = await verifyFigmaToken(token, isPat)
+    if (!result.ok) {
+      return sendJson(400, result)
+    }
+    const existing = await getAppIntegration(orgId, 'figma')
+    if (existing && existing.status === 'connected') {
+      await upsertAppIntegration({ orgId, kind: 'figma', status: 'connected' })
+    }
+    return sendJson(200, result)
+  }
+
+  if (method === 'POST' && url.pathname === '/api/integrations/figma/token') {
+    const denied = requireOrgAdmin('Only team owners or admins can connect Figma via token.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { token?: string; displayName?: string }
+    const token = body.token?.trim()
+    if (!token) return sendJson(400, { ok: false, error: 'Token is required.' })
+
+    const { verifyFigmaToken } = await import('./lib/figma-tools')
+    const verification = await verifyFigmaToken(token, true)
+    if (!verification.ok) {
+      return sendJson(400, { ok: false, error: verification.error || 'Failed to verify Figma personal access token.' })
+    }
+
+    const orgId = await orgIdOf()
+    const user = verification.user
+    const autoName = user?.email ? `Figma (${user.email})` : user?.handle ? `Figma (${user.handle})` : 'Figma (PAT)'
+    const displayName = body.displayName?.trim() || autoName
+
+    const row = await upsertAppIntegration({
+      orgId,
+      kind: 'figma',
+      status: 'connected',
+      displayName,
+      config: {
+        authType: 'pat',
+        userId: user?.id,
+        userHandle: user?.handle || user?.email,
+      },
+      credentials: {
+        access_token: token,
+        token_type: 'bearer',
+        isPat: true,
+      },
+    })
+
+    return sendJson(200, {
+      ok: true,
+      integration: {
+        kind: 'figma',
+        status: 'connected',
+        displayName: row.displayName,
+        credentialsOk: true,
+        lastSyncedAt: new Date().toISOString(),
+      },
+    })
+  }
+
   // ---- OAuth authorize + callback (app-level, no projectId) ----
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
@@ -2069,7 +2143,21 @@ async function route(req: Request): Promise<Response> {
       // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
       const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
       for (const kind of kinds) {
-        await upsertAppIntegration({ orgId: callbackOrg, kind, status: 'connected', credentials })
+        let displayName: string | undefined
+        let config: Record<string, unknown> | undefined
+        if (kind === 'figma') {
+          try {
+            const { verifyFigmaToken } = await import('./lib/figma-tools')
+            const info = await verifyFigmaToken(tokens.access_token, false)
+            if (info.ok && info.user) {
+              displayName = info.user.email ? `Figma (${info.user.email})` : info.user.handle ? `Figma (${info.user.handle})` : 'Figma'
+              config = { authType: 'oauth', userId: info.user.id, userHandle: info.user.email || info.user.handle }
+            }
+          } catch {
+            displayName = 'Figma'
+          }
+        }
+        await upsertAppIntegration({ orgId: callbackOrg, kind, status: 'connected', displayName, config, credentials })
       }
       // GitHub connected → index every visible repository (name, language,
       // topics, README use case) so plans can name repos without upfront selection.

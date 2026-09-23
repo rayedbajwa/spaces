@@ -294,7 +294,14 @@ ALTER TABLE project_repos ADD COLUMN IF NOT EXISTS clone_error  TEXT;
 -- enum can grow (constraint name is Postgres' default for an inline CHECK).
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma'));
+
+-- Figma joins the app-level integrations as a Design & Prototyping provider.
+-- Re-create the knowledge_sources kind CHECK so it can grow (the inline CHECK
+-- on the table is Postgres' default name).
+ALTER TABLE knowledge_sources DROP CONSTRAINT IF EXISTS knowledge_sources_kind_check;
+ALTER TABLE knowledge_sources ADD CONSTRAINT knowledge_sources_kind_check
+  CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual','figma'));
 
 -- Per-project knowledge scope: which connected integrations agents may query for
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
@@ -512,7 +519,7 @@ CREATE TRIGGER pipeline_runs_touch
 CREATE TABLE IF NOT EXISTS knowledge_sources (
   source_id              UUID PRIMARY KEY,
   team_id                UUID REFERENCES teams(team_id) ON DELETE CASCADE,
-  kind                   TEXT NOT NULL CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual')),
+  kind                   TEXT NOT NULL CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual','figma')),
   label                  TEXT NOT NULL,
   config_json            JSONB NOT NULL DEFAULT '{}'::jsonb,
   enabled                BOOLEAN NOT NULL DEFAULT true,

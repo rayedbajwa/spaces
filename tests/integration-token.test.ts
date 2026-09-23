@@ -21,5 +21,6 @@ describe('integration tokens', () => {
     expect(KIND_PROVIDER.jira).toBe('atlassian')
     expect(KIND_PROVIDER.confluence).toBe('atlassian')
     expect(KIND_PROVIDER.github).toBe('github')
+    expect(KIND_PROVIDER.figma).toBe('figma')
   })
 })
