@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { LoadingBlock, SkeletonRows } from './loading'
 import { json, type MeTeam } from './auth'
 
 /**
@@ -72,6 +73,7 @@ const KIND_LABEL: Record<Kind, string> = {
 export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams: MeTeam[] }) {
   const [status, setStatus] = useState<Status | null>(null)
   const [sources, setSources] = useState<Source[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [tab, setTab] = useState<ImportTab>('confluence')
@@ -87,6 +89,8 @@ export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams:
       setSources(list.sources)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setLoaded(true)
     }
   }, [])
 
@@ -193,7 +197,8 @@ export function OrgKnowledgePanel({ canEdit, teams }: { canEdit: boolean; teams:
         <div className="ks-row ks-head" role="row">
           <span>Source</span><span>Type</span><span>Owner</span><span>Content</span><span>Last import</span><span className="ks-actions">{canEdit ? 'Actions' : ''}</span>
         </div>
-        {sources.length === 0 && <div className="ks-empty">Nothing imported yet. Pick something above to get started.</div>}
+        {sources.length === 0 && !loaded && <SkeletonRows count={3} label="Loading knowledge sources…" />}
+        {sources.length === 0 && loaded && <div className="ks-empty">Nothing imported yet. Pick something above to get started.</div>}
         {sources.map((s) => {
           const open = openDocs?.sourceId === s.sourceId
           return (
@@ -332,7 +337,7 @@ function CatalogImport({ integration, onImport }: { integration: 'confluence' | 
   return (
     <div className="knowledge-inline-form">
       {error && <p className="error-text">{error}</p>}
-      {entries === null && !error && <span className="panel-subtitle">Loading catalog…</span>}
+      {entries === null && !error && <LoadingBlock compact label="Loading catalog…" />}
       {entries && entries.length > 0 && (
         <>
           <div className="button-row">

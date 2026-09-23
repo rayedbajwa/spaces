@@ -124,6 +124,23 @@ current feature isn't delivered, accepted or verified, Spaces asks first: the
 unfinished feature stays in the list and the project moves on. A delivered
 project's next step is **Start a new feature**.
 
+### Continuing or deleting a feature
+
+Each feature in the list has its own actions:
+
+- **Continue this feature** (earlier, undelivered features) makes it the
+  active feature: the board, lanes, next step, stage reports and runs work on
+  it instead of the newest. Each repository switches to the feature's branch
+  (named like its directory, `001-login`) when that branch exists and the
+  checkout has no uncommitted changes; the others are listed as left alone.
+  The choice is kept in `specs/.active-feature`, which is excluded from git,
+  and starting a new feature clears it.
+- **Delete** (features not delivered) removes the feature's directory: spec,
+  plan, tasks and reports. Git branches and pull requests on GitHub are left as
+  they are. Delivered features stay as history and can't be deleted.
+
+Both wait while a run is queued, running or waiting at a gate.
+
 ### Starting a new feature refreshes the project
 
 Before `specify` opens a feature after an earlier one, the run:

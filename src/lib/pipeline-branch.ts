@@ -1,5 +1,6 @@
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { activeFeatureId } from './active-feature'
 
 /**
  * Variables available to `when` expressions in template branch rules.
@@ -24,15 +25,9 @@ export interface BranchVariables {
 
 /** Read the latest feature's code-review.md status line, if the review stage has run. */
 export async function readCodeReviewStatus(cwd: string): Promise<'approved' | 'changes_requested' | undefined> {
-  const { readdir, readFile } = await import('node:fs/promises')
+  const { readFile } = await import('node:fs/promises')
   const specsDir = join(cwd, 'specs')
-  let features: string[]
-  try {
-    features = (await readdir(specsDir)).sort((a, b) => b.localeCompare(a))
-  } catch {
-    return undefined
-  }
-  const latest = features[0]
+  const latest = activeFeatureId(cwd)
   if (!latest) return undefined
   try {
     const review = await readFile(join(specsDir, latest, 'code-review.md'), 'utf8')
@@ -45,25 +40,12 @@ export async function readCodeReviewStatus(cwd: string): Promise<'approved' | 'c
 
 /** Read the latest feature's delivery-report.md status line, if the deliver stage has run. */
 export async function readDeliveryStatus(cwd: string): Promise<'merged' | 'partial' | 'blocked' | undefined> {
-  const { readdir, readFile } = await import('node:fs/promises')
-  const specsDir = join(cwd, 'specs')
-  let features: string[]
-  try {
-    features = (await readdir(specsDir)).sort((a, b) => b.localeCompare(a))
-  } catch {
-    return undefined
-  }
-  for (const feature of features) {
-    try {
-      const report = await readFile(join(specsDir, feature, 'delivery-report.md'), 'utf8')
-      const match = /Delivery Status:\s*(MERGED|PARTIAL|BLOCKED)/i.exec(report)
-      if (match) return match[1]!.toLowerCase() as 'merged' | 'partial' | 'blocked'
-    } catch {
-      // try the next feature dir
-    }
-    break // only the latest feature counts
-  }
-  return undefined
+  const { readFile } = await import('node:fs/promises')
+  const feature = activeFeatureId(cwd)
+  if (!feature) return undefined
+  const report = await readFile(join(cwd, 'specs', feature, 'delivery-report.md'), 'utf8').catch(() => '')
+  const match = /Delivery Status:\s*(MERGED|PARTIAL|BLOCKED)/i.exec(report)
+  return match ? match[1]!.toLowerCase() as 'merged' | 'partial' | 'blocked' : undefined
 }
 
 /**
@@ -93,7 +75,7 @@ export function evaluateBranchExpression(expr: string, vars: BranchVariables): b
 /** Whether the latest verification report is short of PASS but close enough to accept. */
 export async function readVerificationNearPass(cwd: string): Promise<'true' | 'false' | undefined> {
   const specsDir = join(cwd, 'specs')
-  const latest = (await readdir(specsDir).catch(() => [] as string[])).sort().reverse()[0]
+  const latest = activeFeatureId(cwd)
   if (!latest) return undefined
   const report = await readFile(join(specsDir, latest, 'verification-report.md'), 'utf8').catch(() => undefined)
   if (!report) return undefined
@@ -109,13 +91,7 @@ export async function readVerificationNearPass(cwd: string): Promise<'true' | 'f
  */
 export async function readVerificationStatus(cwd: string): Promise<'pass' | 'fail' | 'partial' | undefined> {
   const specsDir = join(cwd, 'specs')
-  let features: string[]
-  try {
-    features = await readdir(specsDir)
-  } catch {
-    return undefined
-  }
-  const latest = features.sort().reverse()[0]
+  const latest = activeFeatureId(cwd)
   if (!latest) return undefined
 
   const reportPath = join(specsDir, latest, 'verification-report.md')
