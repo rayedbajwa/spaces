@@ -17,6 +17,10 @@ export interface OAuthProviderConfig {
   extraAuthorizeParams?: Record<string, string>
   /** Header to use for the token request; some providers require Basic auth. */
   tokenAuth?: 'body' | 'basic'
+  /** Separate endpoint for refreshing tokens; defaults to tokenUrl (Figma uses /v1/oauth/refresh). */
+  tokenRefreshUrl?: string
+  /** Omit `grant_type` from the refresh request (Figma's refresh endpoint takes only `refresh_token`). */
+  refreshOmitsGrantType?: boolean
 }
 
 export interface OAuthState {
@@ -171,7 +175,13 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     label: 'Figma',
     kinds: ['figma'],
     authorizeUrl: 'https://www.figma.com/oauth',
-    tokenUrl: 'https://www.figma.com/api/oauth/token',
+    tokenUrl: 'https://api.figma.com/v1/oauth/token',
+    // Figma authenticates the token exchange and refresh with HTTP Basic auth
+    // (client_id:client_secret), not credentials in the body, and refreshes
+    // tokens on a separate endpoint that takes only `refresh_token`.
+    tokenAuth: 'basic',
+    tokenRefreshUrl: 'https://api.figma.com/v1/oauth/refresh',
+    refreshOmitsGrantType: true,
     // Granular read-only scopes. The legacy files:read umbrella scope is
     // deprecated by Figma (https://developers.figma.com/docs/rest-api/scopes/):
     //   current_user:read    -> GET /v1/me (identity check)
@@ -222,11 +232,13 @@ export function resolveGitHubLoginProvider(): OAuthProviderConfig | undefined {
  * do not expire but may be revoked). Returns the new token response.
  */
 export async function refreshAccessToken(cfg: OAuthProviderConfig, refreshToken: string): Promise<OAuthTokenResponse> {
-  const body = new URLSearchParams({
-    grant_type: 'refresh_token',
-    refresh_token: refreshToken,
-    ...(cfg.tokenAuth === 'basic' ? {} : { client_id: cfg.clientId, client_secret: cfg.clientSecret }),
-  })
+  const params: Record<string, string> = { refresh_token: refreshToken }
+  if (!cfg.refreshOmitsGrantType) params.grant_type = 'refresh_token'
+  if (cfg.tokenAuth !== 'basic') {
+    params.client_id = cfg.clientId
+    params.client_secret = cfg.clientSecret
+  }
+  const body = new URLSearchParams(params)
   const headers: Record<string, string> = {
     accept: 'application/json',
     'content-type': 'application/x-www-form-urlencoded',
@@ -234,7 +246,7 @@ export async function refreshAccessToken(cfg: OAuthProviderConfig, refreshToken:
   if (cfg.tokenAuth === 'basic') {
     headers.authorization = 'Basic ' + Buffer.from(`${cfg.clientId}:${cfg.clientSecret}`).toString('base64')
   }
-  const response = await fetch(cfg.tokenUrl, { method: 'POST', headers, body: body.toString() })
+  const response = await fetch(cfg.tokenRefreshUrl ?? cfg.tokenUrl, { method: 'POST', headers, body: body.toString() })
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     throw new Error(`Token refresh failed (${response.status}): ${text.slice(0, 300)}`)
