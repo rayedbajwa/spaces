@@ -69,6 +69,7 @@ requests and across restarts of the same artifact.
 | `GET /api/projects/:id` | Detail with repos, integrations and suggestions |
 | `PATCH /api/projects/:id` | Update |
 | `POST /api/runs/:id/pause` · `POST …/resume` · `POST …/cancel` | Pause a running run at its next stage boundary (a queued run is held before start), resume a user-paused run, or cancel a queued/running/paused run; each returns the run snapshot |
+| `POST /api/runs/:id/feedback` | Interrupt a running run with feedback: `{ message }` (up to 4,000 characters). Stored as the run's `feedback` event; the worker holding the run steers it into the agent after its current step (or gives it to the next stage) and records `feedback_delivered` (`when`: `now` or `next stage`). `409` unless the run is running (a paused run is answered instead) |
 | `POST /api/projects/:id/pause` · `POST …/resume` | Pause: queued jobs are held, running runs stop before their next stage (`pausingRuns`, `heldJobs`) / resume: dispatch continues and user-paused runs are re-queued (`resumedRuns`) |
 | `POST /api/projects/:id/archive` · `POST …/unarchive` | Archive: cancels queued, running and paused work (`cancelled` on the response), hides the project from the board, refuses new runs and jobs, keeps everything / restore |
 | `GET /api/projects/:id/deletion-check` | What deleting would remove (runs, jobs, snapshots, per-repository action), whether the project is archived, the confirmation phrase, and whether the caller may delete |

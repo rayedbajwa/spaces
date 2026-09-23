@@ -140,6 +140,11 @@ export class PipelineEngine {
     await this.flow.dispose()
   }
 
+  /** A person's feedback for the running agent (AIDLCFlow.steer). */
+  async steer(message: string, by: string): Promise<'now' | 'next stage'> {
+    return await this.flow.steer(message, by)
+  }
+
   getLog(): string {
     return this.flow.getLog()
   }

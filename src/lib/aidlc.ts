@@ -373,6 +373,27 @@ export class AIDLCFlow {
     return this.log
   }
 
+  /**
+   * A person interrupts with feedback while the run works. Mid-stage it is
+   * steered into the agent's session: delivered after its current tool calls
+   * finish, before its next model call, so it changes course without the
+   * stage being stopped. Between stages it goes with the next stage's prompt.
+   * Masked by the guardrails like any prompt, and written to the log.
+   */
+  async steer(message: string, by: string): Promise<'now' | 'next stage'> {
+    const text = message.trim()
+    if (!text) throw new Error('Feedback is empty.')
+    this.print(`\n[feedback from ${by}] ${text}\n`)
+    const note = `The person running this pipeline (${by}) interrupted with feedback. Take it into account for what you do next; if it changes what you were doing, say so in one line and adjust.\n\n> ${text.replace(/\n/g, '\n> ')}`
+    const session = this.session as (AgentSession & { isStreaming?: boolean }) | undefined
+    if (session?.isStreaming) {
+      await session.steer(this.guard ? this.guard.mask(note) : note)
+      return 'now'
+    }
+    this.pendingStageNote = [this.pendingStageNote, note].filter(Boolean).join('\n\n---\n\n')
+    return 'next stage'
+  }
+
   /** True while the flow is paused at a clarification/review gate and can accept an answer. */
   isWaitingForInput(): boolean {
     return Boolean(this.waitState)

@@ -1744,6 +1744,19 @@ function App() {
     }
   }
 
+  /** Interrupt the running agent with feedback; it reads it after its current step. */
+  async function sendFeedback(message: string): Promise<boolean> {
+    if (!currentRun || !message.trim()) return false
+    try {
+      await postJson<{ ok: boolean }>(`/api/runs/${currentRun.runId}/feedback`, { message })
+      setStatusMessage('Feedback sent — the agent reads it after its current step (or with the next stage).')
+      return true
+    } catch (error) {
+      setStatusMessage(`Could not send feedback: ${toMessage(error)}`)
+      return false
+    }
+  }
+
   async function sendAnswer(answer: string) {
     if (!currentRun || !answer.trim()) return
     setBusy(true)
@@ -3633,6 +3646,7 @@ function App() {
               onPause={() => void controlRun('pause')}
               onResume={() => void controlRun('resume')}
               onCancel={() => void controlRun('cancel')}
+              onSendFeedback={sendFeedback}
               projectPaused={Boolean(projectDetail?.pausedAt)}
               busy={busy}
             />
@@ -4218,6 +4232,7 @@ function AiAgentOutputBar({
   onPause,
   onResume,
   onCancel,
+  onSendFeedback,
   projectPaused,
   busy,
 }: {
@@ -4231,10 +4246,23 @@ function AiAgentOutputBar({
   onPause?: () => void
   onResume?: () => void
   onCancel?: () => void
+  /** Interrupt a running agent with feedback; resolves true once sent. */
+  onSendFeedback?: (message: string) => Promise<boolean>
   projectPaused?: boolean
   busy?: boolean
 }) {
   const [answerDraft, setAnswerDraft] = useState('')
+  const [feedbackOpen, setFeedbackOpen] = useState(false)
+  const [feedbackDraft, setFeedbackDraft] = useState('')
+  const [sendingFeedback, setSendingFeedback] = useState(false)
+  const canInterrupt = currentRun?.status === 'running' && Boolean(onSendFeedback)
+  useEffect(() => { if (!canInterrupt) setFeedbackOpen(false) }, [canInterrupt])
+  const submitFeedback = async () => {
+    if (!onSendFeedback || !feedbackDraft.trim() || sendingFeedback) return
+    setSendingFeedback(true)
+    const sent = await onSendFeedback(feedbackDraft.trim()).finally(() => setSendingFeedback(false))
+    if (sent) { setFeedbackDraft(''); setFeedbackOpen(false) }
+  }
   const logRef = useRef<HTMLPreElement>(null)
   const isActive = currentRun?.status === 'running' || currentRun?.status === 'paused'
   const needsInput = currentRun?.status === 'paused'
@@ -4363,6 +4391,7 @@ function AiAgentOutputBar({
               )}
             </div>
             <div className="entry-links" onClick={(e) => e.stopPropagation()}>
+              {canInterrupt && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={() => { setOpenChoice(true); setFeedbackOpen((v) => !v) }} title="Tell the agent something while it works: it reads it after its current step, without stopping the stage" aria-expanded={feedbackOpen}>Interrupt</button>}
               {(canPause || canPauseQueued) && onPause && <button type="button" className="secondary-button dock-button" disabled={busy} onClick={onPause} title={canPauseQueued ? 'Hold this run before it starts' : 'Finish the current stage, then pause'}>Pause</button>}
               {canResume && onResume && <button type="button" className="primary-button dock-button" disabled={busy} onClick={onResume}>Resume</button>}
               {canCancel && onCancel && <button type="button" className="danger-button dock-button" disabled={busy} onClick={onCancel}>Cancel</button>}
@@ -4401,6 +4430,34 @@ function AiAgentOutputBar({
             {projectPaused ? 'The whole project is paused. Resume it from the Overview tab; this run continues from the stage shown.' : 'This run is paused. Resume to continue from the stage shown, or cancel it.'}
           </p>
           {!projectPaused && onResume && <div className="button-row" style={{ marginTop: 8 }}><button type="button" className="primary-button" disabled={busy} onClick={onResume}>Resume run</button></div>}
+        </div>
+      )}
+      {expanded && canInterrupt && feedbackOpen && (
+        <div className="notice dock-feedback">
+          <div className="notice-title">
+            <strong>Interrupt with feedback</strong>
+            <span className="mini-badge running">stage: {currentRun?.stage ?? 'running'}</span>
+          </div>
+          <p className="text-subtle" style={{ margin: '2px 0 6px' }}>
+            The agent reads this after the step it is on and adjusts; the stage keeps going. Use Pause or Cancel to stop it instead.
+          </p>
+          <textarea
+            autoFocus
+            value={feedbackDraft}
+            onChange={(e) => setFeedbackDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submitFeedback() }
+              if (e.key === 'Escape') { e.stopPropagation(); setFeedbackOpen(false) }
+            }}
+            maxLength={4000}
+            placeholder='e.g. "Don’t touch the billing module — the fix belongs in api/src/search.ts." or "Skip the Docker build; CI covers it."'
+            style={{ minHeight: 60 }}
+          />
+          <div className="button-row" style={{ marginTop: 8 }}>
+            <button type="button" className="primary-button" disabled={!feedbackDraft.trim() || sendingFeedback} onClick={() => void submitFeedback()}>{sendingFeedback ? 'Sending…' : 'Send feedback'}</button>
+            <button type="button" className="secondary-button" onClick={() => setFeedbackOpen(false)}>Close</button>
+            <span className="text-subtle" style={{ fontSize: 11 }}>⌘/Ctrl+Enter to send</span>
+          </div>
         </div>
       )}
       {expanded && canAnswer && currentRun?.status === 'paused' && currentRun.pauseKind !== 'user' && onSendAnswer && !streamSettled && (
