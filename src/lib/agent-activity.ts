@@ -18,12 +18,23 @@ const MAX_LINE = 160
 /** Mask tokens and passwords that commands and outputs can carry. */
 export function redactSecrets(text: string): string {
   return text
+    // Private key blocks, whole.
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted private key]')
+    // Provider tokens by shape.
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted]')
     .replace(/\b(sk-(?:ant-|or-|proj-)?[A-Za-z0-9_-]{16,})\b/g, '[redacted]')
     .replace(/\b(xox[abpr]-[A-Za-z0-9-]{10,})\b/g, '[redacted]')
-    .replace(/(https?:\/\/)[^\s/:@]+:[^\s/@]+@/g, '$1[redacted]@')
+    .replace(/\b((?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted jwt]')
+    // Credentials in any URL (postgres://, mysql://, redis://, https://…): keep the user, mask the password.
+    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@"'`]+):([^\s/@"'`]+)@/gi, '$1$2:[redacted]@')
+    // Secrets passed as query parameters.
+    .replace(/([?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|sig|signature|key)=)[^&\s"'`#]+/gi, '$1[redacted]')
     .replace(/\b(Bearer|token)\s+[A-Za-z0-9._~+/=-]{16,}/gi, '$1 [redacted]')
-    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, '$1=[redacted]')
+    // NAME=value where the name says it is secret (TOKEN, SECRET, PASSWORD, PASS, PWD, *_KEY, CREDENTIAL, AUTH).
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|API_?KEY|_KEY|CREDENTIALS?|AUTH)[A-Z0-9_]*)=("[^"]*"|'[^']*'|[^\s"'`]+)/g, '$1=[redacted]')
+    // "password": "…" in JSON or YAML-ish output.
+    .replace(/(["']?(?:password|passwd|secret|client_secret|token|access_token|refresh_token|api_?key|private_key)["']?\s*[:=]\s*)(["'])(?:(?!\2).)+\2/gi, '$1$2[redacted]$2')
 }
 
 function clip(text: string, max = MAX_LINE): string {
