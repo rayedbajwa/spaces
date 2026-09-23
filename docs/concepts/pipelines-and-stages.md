@@ -105,7 +105,9 @@ deliver and do not count), then review, then verify; a review that requested
 changes leads back to implement, and to review again once `tasks.md` records
 the fixes.
 
-## Features
+## Intents
+
+In the interface these are **intents**; underneath they are Spec Kit features.
 
 A project works through features one at a time. Each is a numbered directory
 under `specs/` (`001-login`, `002-billing`) with its own spec, plan, tasks,
@@ -113,22 +115,22 @@ reviews, verification and delivery record. The highest number is the
 **current feature**: the board, lanes, next step and runs work on it. Earlier
 features are history.
 
-The project page lists every feature under **Specs → Features**, newest first,
+The project page lists every feature under **Overview → Intents**, newest first,
 with its status (specified → planned → tasked → implementing → verified or
 accepted → delivered), its review and verification outcome, and its documents.
 The board card shows the current feature's title.
 
-**＋ New feature** (project header or the Features list) asks what the feature
+**＋ New intent** (project header or the Intents list) asks what the feature
 is and runs `specify`, which opens the next numbered directory. When the
 current feature isn't delivered, accepted or verified, Spaces asks first: the
 unfinished feature stays in the list and the project moves on. A delivered
-project's next step is **Start a new feature**.
+project's next step is **Start a new intent**.
 
-### Continuing or deleting a feature
+### Continuing, renaming or deleting an intent
 
 Each feature in the list has its own actions:
 
-- **Continue this feature** (earlier, undelivered features) makes it the
+- **Continue** (earlier, undelivered features) makes it the
   active feature: the board, lanes, next step, stage reports and runs work on
   it instead of the newest. Each repository switches to the feature's branch
   (named like its directory, `001-login`) when that branch exists and the
@@ -141,7 +143,7 @@ Each feature in the list has its own actions:
 
 Both wait while a run is queued, running or waiting at a gate.
 
-### Starting a new feature refreshes the project
+### Starting a new intent refreshes the project
 
 Before `specify` opens a feature after an earlier one, the run:
 

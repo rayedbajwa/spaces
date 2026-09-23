@@ -38,7 +38,7 @@ export async function prepareForNewFeature(input: {
   if (!project) return undefined
   const repos = (await listRepos(input.projectId)).filter((r) => Boolean(r.localPath))
 
-  input.print(`\n[new feature] Pulling the latest code and refreshing what Spaces knows about ${project.name} before the next feature…\n`)
+  input.print(`\n[new intent] Pulling the latest code and refreshing what Spaces knows about ${project.name} before the next intent…\n`)
   const changed: typeof repos = []
   for (const repo of repos) {
     // The governing workspace holds specs and memory, not application code.
@@ -46,23 +46,23 @@ export async function prepareForNewFeature(input: {
     try {
       const sync = await syncDefaultBranch(input.orgId, repo.localPath!, repo.githubRepo)
       if (sync.skipped) {
-        input.print(`[new feature] ${repo.githubRepo}: left as it is (${sync.skipped}).\n`)
+        input.print(`[new intent] ${repo.githubRepo}: left as it is (${sync.skipped}).\n`)
       } else if (sync.before !== sync.after) {
-        input.print(`[new feature] ${repo.githubRepo}: updated ${sync.branch} ${sync.before?.slice(0, 7) ?? '?'} → ${sync.after?.slice(0, 7)}.\n`)
+        input.print(`[new intent] ${repo.githubRepo}: updated ${sync.branch} ${sync.before?.slice(0, 7) ?? '?'} → ${sync.after?.slice(0, 7)}.\n`)
         changed.push(repo)
       } else {
-        input.print(`[new feature] ${repo.githubRepo}: ${sync.branch} is already up to date.\n`)
+        input.print(`[new intent] ${repo.githubRepo}: ${sync.branch} is already up to date.\n`)
       }
     } catch (error) {
-      input.print(`[new feature] ${repo.githubRepo}: could not pull (${error instanceof Error ? error.message.split('\n')[0] : String(error)}); continuing with the checkout as it is.\n`)
+      input.print(`[new intent] ${repo.githubRepo}: could not pull (${error instanceof Error ? error.message.split('\n')[0] : String(error)}); continuing with the checkout as it is.\n`)
     }
   }
 
   // Learn again only what changed: a brief is an agent run per repository.
   for (const repo of changed) {
-    input.print(`[new feature] Learning ${repo.githubRepo ?? repo.label} again (its code changed)…\n`)
+    input.print(`[new intent] Learning ${repo.githubRepo ?? repo.label} again (its code changed)…\n`)
     await refreshRepositoryKnowledge(input.projectId, repo.repoId, { model: input.model }).catch((error) => {
-      input.print(`[new feature] Learning ${repo.githubRepo ?? repo.label} failed: ${error instanceof Error ? error.message : String(error)}\n`)
+      input.print(`[new intent] Learning ${repo.githubRepo ?? repo.label} failed: ${error instanceof Error ? error.message : String(error)}\n`)
     })
   }
   // Memory is rebuilt either way: it carries the feature history.
@@ -71,6 +71,6 @@ export async function prepareForNewFeature(input: {
   const primary = pickRunnableRepo(await listRepos(input.projectId))
   if (!primary?.localPath) return undefined
   const bundle = await buildContextBundle({ projectId: input.projectId, projectSlug: project.slug, projectPath: primary.localPath }).catch(() => undefined)
-  input.print(`[new feature] Memory and context refreshed${changed.length ? `; ${changed.length} repositor${changed.length === 1 ? 'y' : 'ies'} learned again` : ''}.\n`)
+  input.print(`[new intent] Memory and context refreshed${changed.length ? `; ${changed.length} repositor${changed.length === 1 ? 'y' : 'ies'} learned again` : ''}.\n`)
   return bundle ? { sharedContextPrompt: bundle.promptBundle, projectMemory: bundle.project.memory } : undefined
 }

@@ -391,7 +391,7 @@ export class AIDLCFlow {
       if (refreshed?.sharedContextPrompt) this.options.sharedContextPrompt = refreshed.sharedContextPrompt
       if (refreshed?.projectMemory) this.options.projectMemory = refreshed.projectMemory
     } catch (error) {
-      this.print(`\n[new feature] Preparing the next feature failed (${error instanceof Error ? error.message : String(error)}); specifying against the checkout as it is.\n`)
+      this.print(`\n[new intent] Preparing the next intent failed (${error instanceof Error ? error.message : String(error)}); specifying against the checkout as it is.\n`)
     }
   }
 
@@ -407,14 +407,14 @@ export class AIDLCFlow {
     const newest = inferLatestFeatureBranch(cwd)
     if (current !== continued || !newest || newest === current) return
     if (hasUncommittedChanges(cwd)) {
-      this.print(`[new feature] The workspace is still on ${current} (uncommitted changes); the new feature is numbered from there.\n`)
+      this.print(`[new intent] The workspace is still on ${current} (uncommitted changes); the new intent is numbered from there.\n`)
       return
     }
     try {
       checkoutBranch(cwd, newest)
-      this.print(`[new feature] Left ${current} (continued earlier) for ${newest}, the newest feature branch.\n`)
+      this.print(`[new intent] Left ${current} (continued earlier) for ${newest}, the newest intent branch.\n`)
     } catch (error) {
-      this.print(`[new feature] Could not leave ${current}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
+      this.print(`[new intent] Could not leave ${current}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
     }
   }
 
@@ -517,7 +517,7 @@ export class AIDLCFlow {
         const unfinished = await findUnfinishedFeature(this.options.cwd).catch(() => undefined)
         if (unfinished) {
           const progress = unfinished.tasks ? `, ${unfinished.tasks.done} of ${unfinished.tasks.total} tasks done` : ''
-          this.print(`\n[guard] Skipping specify: feature ${unfinished.name} is unfinished (${unfinished.artifacts.join(', ')}${progress}). The run continues that feature instead of starting another one.\n`)
+          this.print(`\n[guard] Skipping specify: intent ${unfinished.name} is unfinished (${unfinished.artifacts.join(', ')}${progress}). The run continues that intent instead of starting another one.\n`)
           this.stageIndex += 1
           continue
         }
@@ -971,12 +971,12 @@ export class AIDLCFlow {
     const chosen = chosenFeatureId(this.options.cwd)
     if (chosen && currentBranch !== chosen) {
       if (!branchExists(this.options.cwd, chosen)) {
-        this.print(`[branch] ${stage}: continuing feature ${chosen}, which has no branch here; staying on ${currentBranch ?? 'the current checkout'}.\n`)
+        this.print(`[branch] ${stage}: continuing intent ${chosen}, which has no branch here; staying on ${currentBranch ?? 'the current checkout'}.\n`)
         return
       }
       checkoutBranch(this.options.cwd, chosen)
       this.activeFeatureBranch = chosen
-      this.print(`Checked out ${chosen} for ${stage}: it is the feature being continued.\n`)
+      this.print(`Checked out ${chosen} for ${stage}: it is the intent being continued.\n`)
       this.alignRepoTargetsToFeatureBranch(chosen, stage)
       return
     }

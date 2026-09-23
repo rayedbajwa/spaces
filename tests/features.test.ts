@@ -72,8 +72,8 @@ describe('features', () => {
 
 describe('feature description', () => {
   test('specify needs a sentence, not a word', () => {
-    expect(featureDescriptionProblem(undefined)).toContain('requires a feature description')
-    expect(featureDescriptionProblem('  ')).toContain('requires a feature description')
+    expect(featureDescriptionProblem(undefined)).toContain('requires an intent description')
+    expect(featureDescriptionProblem('  ')).toContain('requires an intent description')
     expect(featureDescriptionProblem('tst')).toContain('too short')
     expect(featureDescriptionProblem('Users can reset passwords')).toBeUndefined()
   })
