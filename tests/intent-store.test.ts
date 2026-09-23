@@ -6,7 +6,7 @@ import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { changeIntentDocuments, currentIntentDirId, documentKind, IntentActionRefused, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -228,5 +228,53 @@ dbSuite('syncing intents into the database', () => {
     expect(await readdir(outside)).toEqual([])
     await changeIntentDocuments({ projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam', changes: new Map([['subagents/ws-2.md', '# Workstream 2\n']]) })
     expect(await readdir(outside)).toEqual([])
+  })
+
+  const ACCEPTED = '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n'
+
+  test('a refused change writes nothing; checks read the locked record', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    const refuse = (dirId: string) => changeIntentDocuments({
+      projectId, projectRoot: root, dirId, by: 'person:Sam',
+      changes: (current) => {
+        if (!current.verificationStatus) throw new IntentActionRefused('nothing to accept', 'not_verified')
+        return new Map([['acceptance.md', ACCEPTED]])
+      },
+    })
+    await expect(refuse('002-billing')).rejects.toBeInstanceOf(IntentActionRefused)
+    expect(await getIntentDocument(projectId, '002-billing', 'acceptance.md')).toBeUndefined()
+    expect(await readFile(path.join(root, 'specs/002-billing/acceptance.md'), 'utf8').catch(() => null)).toBeNull()
+    expect((await refuse('001-login')).status).toBe('accepted')
+  })
+
+  test('a deleted intent cannot be changed, and its files are not brought back', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await markIntentDeleted(projectId, '001-login', 'person:Sam')
+    await rm(path.join(root, 'specs/001-login'), { recursive: true })
+    await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', ACCEPTED]]) })).rejects.toThrow('does not exist')
+    await expect(setActiveIntent(projectId, root, '001-login', 'person:Sam')).rejects.toThrow('does not exist')
+    expect(await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('with every intent deleted there is no current one, even with a folder left behind', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await markIntentDeleted(projectId, '001-login', 'person:Sam')
+    await markIntentDeleted(projectId, '002-billing', 'person:Sam')
+    expect(await currentIntentDirId(projectId, root)).toBeNull()
+  })
+
+  test('concurrent syncs and person actions leave the files matching the database', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    const change = (content: string | null) => changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', content]]) })
+    for (let round = 0; round < 5; round++) {
+      await Promise.all([change(ACCEPTED), syncProjectIntents(projectId, root, 'agent'), change(null), syncProjectIntents(projectId, root, 'agent'), change(ACCEPTED)])
+      const stored = (await getIntentDocument(projectId, '001-login', 'acceptance.md'))?.content ?? null
+      const onDisk = await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)
+      expect(onDisk).toBe(stored)
+    }
   })
 })
