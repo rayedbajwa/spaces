@@ -6,7 +6,7 @@ import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, readIntentDocument, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -152,5 +152,21 @@ dbSuite('syncing intents into the database', () => {
     expect(await currentIntentDirId(projectId, root)).toBe('002-billing')
     await setActiveIntent(projectId, root, '001-login', 'person:Sam')
     expect(await currentIntentDirId(projectId, root)).toBe('001-login')
+  })
+
+  test('before a stage, the current intent\'s missing files come back from the database; existing files are kept', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    // A fresh working copy: the current intent's directory is gone, the pointer too.
+    await rm(path.join(root, 'specs'), { recursive: true })
+    await write('specs/001-login/spec.md', '# Login, edited since\n')
+    expect(await restoreIntentFiles(projectId, root)).toBe(1)
+    expect(await readFile(path.join(root, 'specs/001-login/verification-report.md'), 'utf8')).toBe('Verification Status: PARTIAL\n')
+    expect(await readFile(path.join(root, 'specs/001-login/spec.md'), 'utf8')).toBe('# Login, edited since\n')
+    // Another intent's directory belongs to its own branch: not restored.
+    expect(await readFile(path.join(root, 'specs/002-billing/spec.md'), 'utf8').catch(() => null)).toBeNull()
+    expect(activeFeatureId(root)).toBe('001-login')
+    expect(await restoreIntentFiles(projectId, root)).toBe(0)
   })
 })

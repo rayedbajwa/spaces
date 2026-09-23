@@ -462,3 +462,40 @@ export async function projectActiveIntent(projectId: string, projectRoot: string
     : rm(file, { force: true })
   ).catch((error) => storeLog.warn('active intent file not written', { projectId, error: error instanceof Error ? error.message : String(error) }))
 }
+
+/**
+ * Before a stage: put back the current intent's documents missing from the
+ * working copy (a fresh clone, a new worker, a lost volume) and the
+ * active-intent pointer, from the database. Only the current intent — other
+ * intents' directories belong to their own branches. Files that exist are
+ * never overwritten: they may hold work newer than the last sync. Returns how
+ * many files were restored.
+ */
+export async function restoreIntentFiles(projectId: string, projectRoot: string): Promise<number> {
+  await ensureIntentsSynced(projectId, projectRoot)
+  const dirId = await currentIntentDirId(projectId, projectRoot)
+  let restored = 0
+  if (dirId && /^[\w.-]+$/.test(dirId) && !dirId.startsWith('.')) {
+    const rows = await getDb()<Array<{ path: string; content: string }>>`
+      SELECT d.path, d.content FROM intent_documents d JOIN intents i ON i.intent_id = d.intent_id
+       WHERE i.project_id = ${projectId} AND i.dir_id = ${dirId} AND i.deleted_at IS NULL
+    `
+    for (const row of rows) {
+      if (row.path.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) continue
+      const file = path.join(projectRoot, 'specs', dirId, row.path)
+      if (await stat(file).then(() => true, () => false)) continue
+      await mkdir(path.dirname(file), { recursive: true })
+      await writeFile(file, row.content, { flag: 'wx' }).then(() => { restored += 1 }, () => undefined)
+    }
+  }
+  await projectActiveIntent(projectId, projectRoot)
+  if (restored) storeLog.info('intent files restored from the database', { projectId, intent: dirId, restored })
+  return restored
+}
+
+/** Restore without letting a database or disk problem stop the stage. */
+export async function restoreIntentFilesQuietly(projectId: string | null | undefined, projectRoot: string | null | undefined): Promise<void> {
+  if (!projectId || !projectRoot) return
+  await restoreIntentFiles(projectId, projectRoot).catch((error) =>
+    storeLog.warn('intent files not restored', { projectId, error: error instanceof Error ? error.message : String(error) }))
+}

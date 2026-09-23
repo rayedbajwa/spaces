@@ -39,7 +39,7 @@ import { getWorkerId, heartbeatWorker, unregisterWorker } from './lib/worker-reg
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
-import { syncProjectIntentsQuietly } from './lib/intent-store'
+import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
@@ -157,6 +157,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
     workerLog.info('run already claimed, skipping', { runId, status: run.status })
     return
   }
+
+  // The database holds the intents; the working copy may be a fresh clone or a
+  // new worker's disk. Put back missing documents before anything reads them.
+  await restoreIntentFilesQuietly(run.projectId, run.projectPath)
 
   // Rerun/resume: start at the requested stage when it exists in this template.
   const templateStages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
