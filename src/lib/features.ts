@@ -1,6 +1,7 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ACCEPTANCE_FILE } from './acceptance-file'
+import { parseScope } from './intent-scope'
 import { activeFeatureId, featureDirNames, isFeatureId } from './active-feature'
 
 /**
@@ -26,6 +27,8 @@ export interface FeatureSummary {
   id: string
   relativePath: string
   title: string
+  /** What kind of work it is (bugfix, feature, mvp, …): lib/intent-scope.ts. */
+  scope?: string
   current: boolean
   status: FeatureStatus
   codeReview?: 'approved' | 'changes_requested'
@@ -93,6 +96,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
       id,
       relativePath: `specs/${id}`,
       title: featureTitle(spec, id),
+      ...(parseScope(spec) ? { scope: parseScope(spec) } : {}),
       current: id === active,
       ...featureStatus({ spec, plan, tasks, verification, acceptance, delivery, hasImplementation }),
       ...(codeReview ? { codeReview: /^approved$/i.test(codeReview) ? 'approved' as const : 'changes_requested' as const } : {}),

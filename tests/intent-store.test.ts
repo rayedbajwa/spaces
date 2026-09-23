@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
+import { setScopeInSpec } from '../src/lib/intent-scope'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
 import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, documentKind, ensureIntentsSynced, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
@@ -344,5 +345,19 @@ dbSuite('syncing intents into the database', () => {
       const onDisk = await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)
       expect(onDisk).toBe(stored)
     }
+  })
+
+  test('the scope comes from the spec, is listed, and a change is recorded', async () => {
+    const { root, write, projectId } = await setup()
+    await write('specs/002-billing/spec.md', '# Billing\n\n**Scope**: MVP\n')
+    await syncProjectIntents(projectId, root, 'import')
+    expect((await listIntentSummaries(projectId, root)).map((f) => [f.id, f.scope])).toEqual([['002-billing', 'mvp'], ['001-login', undefined]])
+    await changeIntentDocuments({
+      projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam',
+      changes: (_current, documents) => new Map([['spec.md', setScopeInSpec(documents.get('spec.md')!, 'feature')]]),
+    })
+    expect((await listIntents(projectId)).find((i) => i.dirId === '002-billing')?.scope).toBe('feature')
+    const [event] = await getDb()`SELECT e.from_value, e.to_value, e.by FROM intent_status_events e JOIN intents i USING (intent_id) WHERE i.project_id = ${projectId} AND e.field = 'scope' AND e.by <> 'import'`
+    expect(event).toMatchObject({ from_value: 'mvp', to_value: 'feature', by: 'person:Sam' })
   })
 })
