@@ -68,7 +68,10 @@ export async function embedTexts(texts: string[], env: Env = process.env): Promi
   if (!endpoint) throw new Error(`No stored key can serve the embedding model "${embeddingModel(env)}". Add an OpenAI or OpenRouter key under Organization → Models.`)
 
   const out: number[][] = []
-  for (const batch of batches(texts)) {
+  // AI data guardrails: no secrets or personal data go to the embedding provider
+  // (the default policy: embeddings are made for knowledge shared across the organization).
+  const { maskOutput } = await import('./guardrails')
+  for (const batch of batches(texts.map((t) => maskOutput(t)))) {
     const vectors = await requestWithRetry(endpoint, batch)
     out.push(...vectors)
   }

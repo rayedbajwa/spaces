@@ -655,6 +655,8 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE teams              ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+-- AI data guardrails (lib/guardrails.ts): { mode: off|warn|mask|strict, allow: [...] }; unset means mask.
+ALTER TABLE organizations      ADD COLUMN IF NOT EXISTS ai_guardrails JSONB;
 ALTER TABLE org_memory         ADD COLUMN IF NOT EXISTS org_id UUID;
 ALTER TABLE provider_keys      ADD COLUMN IF NOT EXISTS org_id UUID;
 ALTER TABLE oauth_apps         ADD COLUMN IF NOT EXISTS org_id UUID;

@@ -18,6 +18,8 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
 import { createActivityLog } from './agent-activity'
+import { AgentGuard, maskOutput } from './guardrails'
+import { guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
@@ -261,6 +263,12 @@ export class AIDLCFlow {
   private readonly modelRuntimePromise: Promise<ModelRuntime>
   private orgIdPromise?: Promise<string>
   private session?: AgentSession
+  /**
+   * The run's AI data guardrails (lib/guardrails.ts). One for the whole run,
+   * installed on every session it opens: a session opened on another model
+   * carries the history, and the tokens in it must still map to their values.
+   */
+  private guard?: AgentGuard
   private currentModelSpec?: string
   private stageIndex = 0
   private waitState?: WaitState
@@ -486,6 +494,8 @@ export class AIDLCFlow {
       sessionManager,
     })
 
+    this.guard ??= new AgentGuard(await loadGuardPolicy(await this.orgId()))
+    this.guard.install(session)
     this.session = session
     this.currentModelSpec = modelSelection.model?.id ? `${modelSelection.model.provider}/${modelSelection.model.id}` : (overrideModel ?? this.options.model)
   }
@@ -792,6 +802,9 @@ export class AIDLCFlow {
     const prompt = [inProgress, note, preamble, scope, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
+    // What the guardrails kept from the model (or blocked) during this stage.
+    const guarded = this.guard?.report()
+    if (guarded) this.print(`\n${guarded}`)
     this.captureActiveFeatureBranch()
     // Whatever the stage wrote into the implementation checkouts is committed on
     // the feature branch, so it is attributable and survives an interruption.
@@ -1109,7 +1122,8 @@ export class AIDLCFlow {
 
     const unsubscribe = this.session!.subscribe((event) => {
       const logged = activity.onEvent(event as unknown as { type: string })
-      if (logged) this.print(logged)
+      // The log shows what the model saw: tool output carries real values until masked.
+      if (logged) this.print(this.guard ? this.guard.mask(logged) : logged)
       if (event.type === 'message_update') {
         if (event.assistantMessageEvent.type === 'text_delta') {
           assistantOutput += event.assistantMessageEvent.delta
@@ -1605,6 +1619,8 @@ export async function runAIDLCAssistantChat(options: {
     customTools: [...knowledgeTools, ...buildWebTools(), ...(options.actionTools ?? [])],
     sessionManager: SessionManager.inMemory(options.cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
 
   let output = ''
   let providerError: string | undefined
@@ -1643,7 +1659,8 @@ ${options.operationsContext ? `## Live operations snapshot\n${options.operations
   try {
     await session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
     if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
-    return output.trim()
+    // The person asking may see their own data again; secrets stay as tokens.
+    return guard.unmask(output.trim(), { secrets: false })
   } finally {
     unsubscribe()
     session.dispose()
@@ -1682,6 +1699,8 @@ export async function summarizeCodebaseForMemory(options: {
     customTools: buildWebTools(),
     sessionManager: SessionManager.inMemory(cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
 
   let output = ''
   let providerError: string | undefined
@@ -1765,6 +1784,8 @@ export async function runAIDLCMergeOrchestrator(options: {
     resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -1773,7 +1794,7 @@ export async function runAIDLCMergeOrchestrator(options: {
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
-    if (logged) transcript += logged
+    if (logged) transcript += guard.mask(logged)
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -1849,6 +1870,8 @@ export async function runAIDLCSpecificTask(options: {
     resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -1857,7 +1880,7 @@ export async function runAIDLCSpecificTask(options: {
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
-    if (logged) transcript += logged
+    if (logged) transcript += guard.mask(logged)
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -1934,6 +1957,8 @@ export async function runAIDLCSpecificWorkstream(options: {
     resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: await standingAgentInstructions(cwd) }),
     sessionManager: SessionManager.inMemory(cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -1941,7 +1966,7 @@ export async function runAIDLCSpecificWorkstream(options: {
   const activity = createActivityLog({ label: workstream.title })
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
-    if (logged) transcript += logged
+    if (logged) transcript += guard.mask(logged)
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -2150,6 +2175,8 @@ export async function runAIDLCParallelSubAgents(options: {
           resourceLoader: await createAgentResourceLoader(workstreamCwd, { appendSystemPrompt: await standingAgentInstructions(workstreamCwd, { label: workstream.title }) }),
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
+        // AI data guardrails: secrets and personal data never reach the model.
+        const guard = await guardSession(session, orgId)
 
         const outputFile = path.join(outputDir, `${String(index + 1).padStart(2, '0')}-${slugify(workstream.title)}.md`)
         options.registerSession?.(workstream.title, session)
@@ -2167,10 +2194,10 @@ export async function runAIDLCParallelSubAgents(options: {
             log += event.assistantMessageEvent.delta
           }
           const mirrored = mirror?.onEvent(event as unknown as { type: string })
-          if (mirrored) options.onActivity?.(workstream.title, mirrored)
+          if (mirrored) options.onActivity?.(workstream.title, guard.mask(mirrored))
           const logged = activity.onEvent(event as unknown as { type: string })
           if (logged) {
-            transcript += logged
+            transcript += guard.mask(logged)
             options.onProgress?.({
               type: 'workstream_update',
               featureDir,
@@ -2567,6 +2594,8 @@ export async function runDevSetup(options: {
     resourceLoader: await createAgentResourceLoader(cwd, { appendSystemPrompt: standingInstructions }),
     sessionManager: SessionManager.inMemory(cwd),
   })
+  // AI data guardrails: secrets and personal data never reach the model.
+  const guard = await guardSession(session, orgId)
   let output = ''
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {

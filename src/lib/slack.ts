@@ -280,7 +280,10 @@ export async function notifyProject(projectId: string | null | undefined, notice
     const channel = await ensureProjectChannel(projectId)
     const project = await loadProject(projectId)
     if (!channel || !project) return
-    const message = renderNotice(project, notice)
+    // AI data guardrails: summaries written by agents are posted without secrets or personal data.
+    const { loadGuardPolicy } = await import('./guardrails-policy')
+    const { maskOutputDeep } = await import('./guardrails')
+    const message = maskOutputDeep(renderNotice(project, notice), await loadGuardPolicy(orgId))
     await slackApi(token, 'chat.postMessage', { channel: channel.channelId, text: message.text, blocks: message.blocks, unfurl_links: false })
   } catch (error) {
     if (error instanceof SlackApiError && ['channel_not_found', 'is_archived'].includes(error.code)) {

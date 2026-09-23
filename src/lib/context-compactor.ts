@@ -98,7 +98,11 @@ const OPENROUTER_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENROUTER || 'openro
  * call is enough for a summary, and it must not depend on one provider, since
  * a tenant routing through OpenRouter has no Anthropic key at all.
  */
-async function summarizeOnce(prompt: string, orgId?: string): Promise<string> {
+async function summarizeOnce(rawPrompt: string, orgId?: string): Promise<string> {
+  // AI data guardrails: the handoff is summarized without its secrets and personal data.
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput } = await import('./guardrails')
+  const prompt = maskOutput(rawPrompt, await loadGuardPolicy(orgId))
   // Keys belong to the organization whose run is being compacted; nothing is read from the process environment.
   const { loadProviderKeys } = await import('./provider-keys')
   const keys = orgId ? await loadProviderKeys(orgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>)) : {}

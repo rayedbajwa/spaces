@@ -324,6 +324,11 @@ export async function openOrUpdatePullRequest(options: {
   body: string
   draft?: boolean
 }): Promise<PullRequestRef> {
+  // AI data guardrails: titles and bodies (often agent summaries) leave without secrets or personal data.
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput } = await import('./guardrails')
+  const policy = await loadGuardPolicy(options.orgId)
+  options = { ...options, title: maskOutput(options.title, policy), body: maskOutput(options.body, policy) }
   const existing = await findOpenPullRequest(options.orgId, options.githubRepo, options.head)
   if (existing) {
     const updated = await githubApi<GitHubPull>(options.orgId, 'PATCH', `https://api.github.com/repos/${options.githubRepo}/pulls/${existing.number}`, {
