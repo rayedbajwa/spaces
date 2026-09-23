@@ -1,11 +1,12 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { setActiveFeature } from '../src/lib/active-feature'
+import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
+import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, readIntentDocument, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -85,9 +86,16 @@ dbSuite('syncing intents into the database', () => {
   test('the active flag follows the chosen intent; a deleted intent is never brought back by a sync', async () => {
     const { root, projectId } = await setup()
     await syncProjectIntents(projectId, root, 'import')
-    await setActiveFeature(root, '001-login')
-    await syncProjectIntents(projectId, root, 'person:Sam')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
     expect((await listIntents(projectId)).filter((i) => i.active).map((i) => i.dirId)).toEqual(['001-login'])
+    // The working copy follows the database.
+    expect(activeFeatureId(root)).toBe('001-login')
+    // ...and a stray pointer file does not override the database's choice.
+    await setActiveFeature(root, null)
+    await syncProjectIntents(projectId, root, 'agent')
+    expect((await listIntents(projectId)).filter((i) => i.active).map((i) => i.dirId)).toEqual(['001-login'])
+    const [event] = await getDb()`SELECT e.from_value, e.to_value, e.by FROM intent_status_events e JOIN intents i USING (intent_id) WHERE i.project_id = ${projectId} AND e.field = 'active'`
+    expect(event).toMatchObject({ from_value: '002-billing', to_value: '001-login', by: 'person:Sam' })
     await markIntentDeleted(projectId, '002-billing', 'person:Sam')
     await syncProjectIntents(projectId, root, 'agent') // the directory is still on disk
     expect((await listIntents(projectId)).map((i) => i.dirId)).toEqual(['001-login'])
@@ -102,5 +110,47 @@ dbSuite('syncing intents into the database', () => {
     await rm(path.join(root, 'specs', '001-login'), { recursive: true })
     expect((await getIntentDocument(projectId, '001-login', 'spec.md'))?.content).toBe('# Login\n')
     expect((await listIntentSummaries(projectId, root)).map((f) => f.id)).toEqual(['002-billing', '001-login'])
+  })
+
+  test('a new intent the agent starts becomes active', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await setActiveFeature(root, null) // what starting a new intent does
+    await write('specs/003-search/spec.md', '# Search\n')
+    await syncProjectIntents(projectId, root, 'agent')
+    expect((await listIntents(projectId)).filter((i) => i.active).map((i) => i.dirId)).toEqual(['003-search'])
+  })
+
+  test('person changes write the database first, then the working file', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    const accepted = await changeIntentDocuments({
+      projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam',
+      changes: new Map([['acceptance.md', '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n']]),
+    })
+    expect(accepted).toMatchObject({ status: 'accepted', acceptedBy: 'Sam' })
+    expect(await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8')).toContain('Accepted by: Sam')
+    const [event] = await getDb()`SELECT e.to_value, e.by FROM intent_status_events e JOIN intents i USING (intent_id) WHERE i.project_id = ${projectId} AND e.field = 'status' AND i.dir_id = '001-login' AND e.by <> 'import' ORDER BY e.at LIMIT 1`
+    expect(event).toMatchObject({ to_value: 'accepted', by: 'person:Sam' })
+
+    const withdrawn = await changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', null]]) })
+    expect(withdrawn).toMatchObject({ status: 'implementing', acceptedBy: null })
+    expect(await getIntentDocument(projectId, '001-login', 'acceptance.md')).toBeUndefined()
+
+    // Rename from the stored spec even when the working file is gone; the file comes back.
+    await rm(path.join(root, 'specs/002-billing/spec.md'))
+    const spec = await readIntentDocument(projectId, root, '002-billing', 'spec.md')
+    const renamed = await changeIntentDocuments({ projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam', changes: new Map([['spec.md', retitleSpec(spec!, 'Invoices')]]) })
+    expect(renamed.title).toBe('Invoices')
+    expect(await readFile(path.join(root, 'specs/002-billing/spec.md'), 'utf8')).toBe('# Invoices\n')
+    await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '002-billing', by: 'x', changes: new Map([['../escape.md', 'no']]) })).rejects.toThrow('Invalid document path')
+  })
+
+  test('the current intent: the active one, else the newest', async () => {
+    const { root, projectId } = await setup()
+    expect(await currentIntentDirId(projectId, root)).toBe('002-billing')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    expect(await currentIntentDirId(projectId, root)).toBe('001-login')
   })
 })

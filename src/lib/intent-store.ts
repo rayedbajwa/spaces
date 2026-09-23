@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import type { TransactionSql } from 'postgres'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseAcceptance } from './acceptance'
 import { ACCEPTANCE_FILE } from './acceptance-file'
-import { activeFeatureId, featureDirNames } from './active-feature'
+import { ACTIVE_FEATURE_FILE, activeFeatureId, featureDirNames } from './active-feature'
 import { getDb } from './db'
 import { featureStatus, featureTitle, type FeatureStatus } from './features'
 import { log } from './logger'
@@ -176,6 +177,49 @@ export async function getIntentDocuments(intentId: string): Promise<IntentDocume
   return rows.map((r) => ({ ...r, updatedAt: new Date(r.updatedAt).toISOString() }))
 }
 
+type Tx = TransactionSql<Record<string, never>>
+
+async function hasActiveIntent(tx: Tx, projectId: string): Promise<boolean> {
+  const [row] = await tx`SELECT 1 FROM intents WHERE project_id = ${projectId} AND active AND deleted_at IS NULL`
+  return Boolean(row)
+}
+
+/**
+ * Write an intent's statuses from its summary and record each change. `active`
+ * is left alone when undefined. Returns how many tracked statuses changed.
+ */
+async function writeSummary(
+  tx: Tx,
+  intentId: string,
+  existing: Record<string, unknown> | undefined,
+  summary: ReturnType<typeof summarizeIntent>,
+  by: string,
+  active?: boolean,
+): Promise<number> {
+  await tx`
+    UPDATE intents SET
+      number = ${summary.number}, title = ${summary.title}, status = ${summary.status},
+      code_review_status = ${summary.codeReviewStatus}, verification_status = ${summary.verificationStatus},
+      verification_summary = ${summary.verificationSummary ? tx.json(summary.verificationSummary as never) : null},
+      delivery_status = ${summary.deliveryStatus}, accepted_by = ${summary.acceptedBy}, accepted_at = ${summary.acceptedAt},
+      accepted_note = ${summary.acceptedNote}, accepted_verification = ${summary.acceptedVerification},
+      tasks_done = ${summary.tasksDone}, tasks_total = ${summary.tasksTotal},
+      implementation_done = ${summary.implementationDone}, implementation_total = ${summary.implementationTotal},
+      active = COALESCE(${active ?? null}::boolean, active), synced_at = now(), updated_at = now()
+    WHERE intent_id = ${intentId}
+  `
+  let changes = 0
+  for (const field of TRACKED_FIELDS) {
+    const before = existing ? (existing[field] as string | null) ?? null : null
+    const after = summary[field] ?? null
+    if (before !== after && (existing || after !== null)) {
+      await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${intentId}, ${COLUMN[field]}, ${before}, ${after}, ${by})`
+      changes += 1
+    }
+  }
+  return changes
+}
+
 export interface SyncResult { intents: number; documentsChanged: number; statusChanges: number }
 
 /**
@@ -201,27 +245,12 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
       if (!existing) {
         await tx`INSERT INTO intents (intent_id, project_id, dir_id, title, status) VALUES (${intentId}, ${projectId}, ${dirId}, ${summary.title}, ${summary.status})`
       }
-      if (dirId === active) await tx`UPDATE intents SET active = false WHERE project_id = ${projectId} AND active AND intent_id <> ${intentId}`
-      await tx`
-        UPDATE intents SET
-          number = ${summary.number}, title = ${summary.title}, status = ${summary.status},
-          code_review_status = ${summary.codeReviewStatus}, verification_status = ${summary.verificationStatus},
-          verification_summary = ${summary.verificationSummary ? tx.json(summary.verificationSummary as never) : null},
-          delivery_status = ${summary.deliveryStatus}, accepted_by = ${summary.acceptedBy}, accepted_at = ${summary.acceptedAt},
-          accepted_note = ${summary.acceptedNote}, accepted_verification = ${summary.acceptedVerification},
-          tasks_done = ${summary.tasksDone}, tasks_total = ${summary.tasksTotal},
-          implementation_done = ${summary.implementationDone}, implementation_total = ${summary.implementationTotal},
-          active = ${dirId === active}, synced_at = now(), updated_at = now()
-        WHERE intent_id = ${intentId}
-      `
-      for (const field of TRACKED_FIELDS) {
-        const before = existing ? (existing[field] as string | null) ?? null : null
-        const after = summary[field] ?? null
-        if (before !== after && (existing || after !== null)) {
-          await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${intentId}, ${COLUMN[field]}, ${before}, ${after}, ${existing ? by : 'import'})`
-          statusChanges += 1
-        }
-      }
+      // The active intent is the database's to say (a person's choice). A sync
+      // only sets it when nothing is active yet, or when this directory is a
+      // new intent the agent just started — starting one makes it current.
+      const makeActive = dirId === active && (!existing || !(await hasActiveIntent(tx, projectId)))
+      if (makeActive) await tx`UPDATE intents SET active = false WHERE project_id = ${projectId} AND active AND intent_id <> ${intentId}`
+      statusChanges += await writeSummary(tx, intentId, existing, summary, existing ? by : 'import', makeActive || undefined)
       const stored = new Map((await tx<Array<{ path: string; sha256: string }>>`SELECT path, sha256 FROM intent_documents WHERE intent_id = ${intentId}`).map((d) => [d.path, d.sha256]))
       for (const [rel, content] of docs) {
         const hash = sha256(content)
@@ -321,4 +350,115 @@ export async function listIntentSummaries(projectId: string, projectRoot: string
       documents: DOCUMENT_LABELS.filter(([file]) => present.has(file)).map(([file, label]) => ({ label, path: `specs/${i.dirId}/${file}` })),
     }
   })
+}
+
+/**
+ * Person actions write the database first; the files are then brought in line
+ * (the working copy agents read). A file that cannot be written is logged, not
+ * fatal: the record is already right, and the next stage restores it.
+ */
+
+/** The intent the project is working on: the active one, else the newest, else what the files say. */
+export async function currentIntentDirId(projectId: string, projectRoot: string): Promise<string | null> {
+  await ensureIntentsSynced(projectId, projectRoot).catch(() => undefined)
+  const [row] = await getDb()<Array<{ dirId: string }>>`
+    SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL
+     ORDER BY active DESC, dir_id DESC LIMIT 1
+  `.catch(() => [] as Array<{ dirId: string }>)
+  return row?.dirId ?? activeFeatureId(projectRoot)
+}
+
+async function intentRowFor(projectId: string, projectRoot: string, dirId: string): Promise<{ intentId: string } | undefined> {
+  const find = async () => (await getDb()<Array<{ intentId: string }>>`
+    SELECT intent_id AS "intentId" FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId} AND deleted_at IS NULL
+  `)[0]
+  // Not in the database yet (a directory created since the last sync): bring it in.
+  return (await find()) ?? (await syncProjectIntents(projectId, projectRoot, 'import').then(find))
+}
+
+/** One of an intent's documents: the database copy, else the working file. */
+export async function readIntentDocument(projectId: string, projectRoot: string, dirId: string, relativePath: string): Promise<string | undefined> {
+  const stored = await getIntentDocument(projectId, dirId, relativePath).catch(() => undefined)
+  if (stored) return stored.content
+  return readFile(path.join(projectRoot, 'specs', dirId, relativePath), 'utf8').catch(() => undefined)
+}
+
+/**
+ * Change an intent's documents (`null` removes one) as a person: stored and
+ * the statuses recomputed in one transaction, then the files written.
+ */
+export async function changeIntentDocuments(input: {
+  projectId: string
+  projectRoot: string
+  dirId: string
+  changes: Map<string, string | null>
+  by: string
+}): Promise<IntentRecord> {
+  const { projectId, projectRoot, dirId, changes, by } = input
+  if (!/^[\w.-]+$/.test(dirId) || dirId.startsWith('.')) throw new Error('Invalid intent id.')
+  for (const rel of changes.keys()) {
+    if (rel.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) throw new Error(`Invalid document path ${rel}.`)
+  }
+  const row = await intentRowFor(projectId, projectRoot, dirId)
+  if (!row) throw new Error(`Intent ${dirId} does not exist.`)
+  const sql = getDb()
+  await sql.begin(async (tx) => {
+    const [existing] = await tx`SELECT ${tx.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId} FOR UPDATE`
+    for (const [rel, content] of changes) {
+      if (content === null) {
+        await tx`DELETE FROM intent_documents WHERE intent_id = ${row.intentId} AND path = ${rel}`
+        continue
+      }
+      await tx`
+        INSERT INTO intent_documents (intent_id, path, kind, content, sha256, bytes, updated_by)
+        VALUES (${row.intentId}, ${rel}, ${documentKind(rel)}, ${content}, ${sha256(content)}, ${Buffer.byteLength(content)}, ${by})
+        ON CONFLICT (intent_id, path) DO UPDATE
+          SET kind = EXCLUDED.kind, content = EXCLUDED.content, sha256 = EXCLUDED.sha256, bytes = EXCLUDED.bytes,
+              updated_by = EXCLUDED.updated_by, updated_at = now()
+      `
+    }
+    const docs = new Map((await tx<Array<{ path: string; content: string }>>`SELECT path, content FROM intent_documents WHERE intent_id = ${row.intentId}`).map((d) => [d.path, d.content]))
+    await writeSummary(tx, row.intentId, existing as Record<string, unknown>, summarizeIntent(dirId, docs), by)
+  })
+  const dir = path.join(projectRoot, 'specs', dirId)
+  for (const [rel, content] of changes) {
+    const file = path.join(dir, rel)
+    await (content === null
+      ? rm(file, { force: true })
+      : mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
+    ).catch((error) => storeLog.warn('intent file not written', { projectId, file, error: error instanceof Error ? error.message : String(error) }))
+  }
+  const [updated] = await sql`SELECT ${sql.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId}`
+  return toRecord(updated as Record<string, unknown>)
+}
+
+/**
+ * Make an intent the one the project works on (`null`: none chosen, the newest
+ * is current). The database holds the choice; specs/.active-feature follows it
+ * for the agents and branch rules that read the working directory.
+ */
+export async function setActiveIntent(projectId: string, projectRoot: string, dirId: string | null, by: string): Promise<void> {
+  const row = dirId ? await intentRowFor(projectId, projectRoot, dirId) : undefined
+  if (dirId && !row) throw new Error(`Intent ${dirId} does not exist.`)
+  await getDb().begin(async (tx) => {
+    const [before] = await tx<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND active FOR UPDATE`
+    await tx`UPDATE intents SET active = false, updated_at = now() WHERE project_id = ${projectId} AND active`
+    if (row) await tx`UPDATE intents SET active = true, updated_at = now() WHERE intent_id = ${row.intentId}`
+    if ((before?.dirId ?? null) !== dirId) {
+      const target = row?.intentId ?? (before ? (await tx<Array<{ intentId: string }>>`SELECT intent_id AS "intentId" FROM intents WHERE project_id = ${projectId} AND dir_id = ${before.dirId}`)[0]?.intentId : undefined)
+      if (target) await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${target}, 'active', ${before?.dirId ?? null}, ${dirId}, ${by})`
+    }
+  })
+  await projectActiveIntent(projectId, projectRoot)
+}
+
+/** Write specs/.active-feature from the database (the working copy of the choice). */
+export async function projectActiveIntent(projectId: string, projectRoot: string): Promise<void> {
+  const [row] = await getDb()<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND active AND deleted_at IS NULL`
+  const file = path.join(projectRoot, 'specs', ACTIVE_FEATURE_FILE)
+  const newest = featureDirNames(projectRoot)[0]
+  await (row && row.dirId !== newest
+    ? mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, `${row.dirId}\n`))
+    : rm(file, { force: true })
+  ).catch((error) => storeLog.warn('active intent file not written', { projectId, error: error instanceof Error ? error.message : String(error) }))
 }

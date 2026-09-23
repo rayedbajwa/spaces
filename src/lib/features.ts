@@ -112,12 +112,17 @@ export function isUnfinished(feature: FeatureSummary | undefined): boolean {
  * and branch keep their names — pull requests and history point at them.
  */
 export async function renameFeature(projectRoot: string, id: string, title: string): Promise<void> {
-  const clean = title.replace(/\s+/g, ' ').trim()
-  if (!clean) throw new Error('A title is required.')
-  if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
   const file = path.join(projectRoot, 'specs', id, 'spec.md')
   const spec = await readFile(file, 'utf8').catch(() => undefined)
   if (spec === undefined) throw new Error(`Intent ${id} has no spec.md to rename.`)
+  await writeFile(file, retitleSpec(spec, title))
+}
+
+/** The spec with its first heading replaced by `title` (validated: required, under 200 characters). */
+export function retitleSpec(spec: string, title: string): string {
+  const clean = title.replace(/\s+/g, ' ').trim()
+  if (!clean) throw new Error('A title is required.')
+  if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
   const lines = spec.split('\n')
   const index = lines.findIndex((line) => line.startsWith('# '))
   if (index === -1) {
@@ -126,5 +131,5 @@ export async function renameFeature(projectRoot: string, id: string, title: stri
     const prefixed = /^#\s+Feature Specification:/i.test(lines[index]!)
     lines[index] = `# ${prefixed ? 'Feature Specification: ' : ''}${clean}`
   }
-  await writeFile(file, lines.join('\n'))
+  return lines.join('\n')
 }

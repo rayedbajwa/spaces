@@ -83,9 +83,9 @@ import {
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
-import { featureTitle, listFeatures, renameFeature } from './lib/features'
-import { ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, syncProjectIntentsQuietly } from './lib/intent-store'
-import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
+import { featureTitle, listFeatures, retitleSpec } from './lib/features'
+import { changeIntentDocuments, currentIntentDirId, ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
+import { activeFeatureId, featureDirNames, removeFeatureDir } from './lib/active-feature'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -130,7 +130,7 @@ import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsag
 import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
 import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProjectState } from './lib/project-state'
 import { laneForProject } from './lib/board-drop'
-import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
+import { ACCEPTANCE_FILE, readAcceptance, renderAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
@@ -1439,12 +1439,17 @@ async function route(req: Request): Promise<Response> {
     if (renaming) {
       const body = await readJson<{ title?: string }>(req)
       try {
-        await renameFeature(projectMeta.path, featureId, body.title ?? '')
+        const spec = await readIntentDocument(project.projectId, projectMeta.path, featureId, 'spec.md')
+        if (spec === undefined) throw new Error(`Intent ${featureId} has no spec.md to rename.`)
+        await changeIntentDocuments({
+          projectId: project.projectId, projectRoot: projectMeta.path, dirId: featureId,
+          changes: new Map([['spec.md', retitleSpec(spec, body.title ?? '')]]),
+          by: `person:${auth?.user.name || auth?.user.email || 'local user'}`,
+        })
       } catch (error) {
         return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
       }
       await markProjectStateStale(project.projectId).catch(() => undefined)
-      await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
       return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
     }
@@ -1461,8 +1466,11 @@ async function route(req: Request): Promise<Response> {
       if (feature.status === 'delivered' || feature.status === 'delivering') {
         return sendJson(409, { error: `${feature.title} has been delivered${feature.status === 'delivering' ? ' in part' : ''}; its record stays as project history and cannot be deleted.`, code: 'delivered' })
       }
-      await removeFeatureDir(projectMeta.path, featureId)
-      await markIntentDeleted(project.projectId, featureId, `person:${auth?.user.name || auth?.user.email || 'local user'}`).catch(() => undefined)
+      // The record goes first (kept with its history); then the working directory.
+      await markIntentDeleted(project.projectId, featureId, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
+      await removeFeatureDir(projectMeta.path, featureId).catch((error) =>
+        serverLog.warn('intent directory not removed', { project: projectNamespace, feature: featureId, error: error instanceof Error ? error.message : String(error) }))
+      await projectActiveIntent(project.projectId, projectMeta.path).catch(() => undefined)
       await markProjectStateStale(project.projectId).catch(() => undefined)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
       serverLog.info('feature deleted', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
@@ -1481,13 +1489,11 @@ async function route(req: Request): Promise<Response> {
         .catch((error) => ({ switched: false, reason: error instanceof Error ? error.message.split('\n')[0] : String(error) }))
       branches.push({ repo: repo.githubRepo ?? repo.label, ...result })
     }
-    try {
-      await setActiveFeature(projectMeta.path, featureId)
-    } catch (error) {
-      return sendJson(409, { error: `Switched branches, but ${featureId} is not on disk in the project workspace: ${error instanceof Error ? error.message : String(error)}`, branches })
+    if (!featureDirNames(projectMeta.path).includes(featureId)) {
+      return sendJson(409, { error: `Switched branches, but ${featureId} is not on disk in the project workspace.`, branches })
     }
+    await setActiveIntent(project.projectId, projectMeta.path, featureId, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     serverLog.info('feature made active', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
     return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path), branches })
   }
@@ -1533,15 +1539,22 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The feature is releasing: review, then deliver.', code: 'already_passed' })
     }
 
-    const recorded = await recordAcceptance({
-      projectPath: projectMeta.path,
+    // Recorded in the database first; acceptance.md in the working copy follows.
+    const dirId = await currentIntentDirId(project.projectId, projectMeta.path)
+    if (!dirId) return sendJson(409, { error: 'This project has no feature directory to accept.' })
+    const acceptance = {
       verificationStatus: artifacts.verificationStatus,
       acceptedBy: auth?.user.name || auth?.user.email || 'local user',
-      note: body.note,
+      acceptedAt: new Date().toISOString(),
+      note: body.note?.trim() || undefined,
+    }
+    await changeIntentDocuments({
+      projectId: project.projectId, projectRoot: projectMeta.path, dirId,
+      changes: new Map([[ACCEPTANCE_FILE, renderAcceptance(acceptance, dirId)]]),
+      by: `person:${acceptance.acceptedBy}`,
     })
+    const recorded = { acceptance }
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
-    if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
     serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
 
     // The caller runs the final step itself through the ordinary execute-step
@@ -1560,9 +1573,16 @@ async function route(req: Request): Promise<Response> {
     const denied = requireProjectRole(project, 'member', 'Only team members can withdraw an acceptance.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
-    const withdrawn = await withdrawAcceptance(projectMeta.path)
+    const dirId = await currentIntentDirId(project.projectId, projectMeta.path)
+    const withdrawn = Boolean(dirId && await readIntentDocument(project.projectId, projectMeta.path, dirId, ACCEPTANCE_FILE))
+    if (dirId && withdrawn) {
+      await changeIntentDocuments({
+        projectId: project.projectId, projectRoot: projectMeta.path, dirId,
+        changes: new Map([[ACCEPTANCE_FILE, null]]),
+        by: `person:${auth?.user.name || auth?.user.email || 'local user'}`,
+      })
+    }
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     return sendJson(200, { withdrawn })
   }
 
