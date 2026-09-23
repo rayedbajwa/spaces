@@ -1,0 +1,61 @@
+# Feature Specification: Fix Invalid Figma OAuth Scopes
+
+**Scope**: bugfix
+
+**Feature Branch**: `007-fix-figma-scopes`  
+**Created**: 2026-09-23  
+**Status**: Draft  
+**Input**: User description: "Figma app is not working, shows scopes not valid even thought I have seleceed everyting on figma side"
+
+## Problem Statement *(mandatory)*
+
+When an organization administrator tries to connect Figma through the OAuth flow, Figma rejects the request with a "scopes not valid" (invalid scope) error — even though the administrator selected every available scope on the Figma app side. The connection therefore cannot be established, blocking the entire Figma integration (authentication, design-system ingestion, and agent design inspection tools) described in `006-figma-integration`.
+
+The root cause is that the Figma OAuth provider definition requests scope identifiers that Figma does not recognize. The provider template in the product requests three scopes — `current_user:read`, `file_content:read`, and `library_assets:read` — but `file_content:read` and `current_user:read` are not valid Figma OAuth scope names. Because the authorization URL contains unrecognized scope names, Figma rejects the consent request regardless of which scopes are enabled on the Figma app itself. The intended (and researched) read-only scopes were documented in `006-figma-integration` as `files:read` and `file_variables:read`, but the implementation drifted from that plan.
+
+The goal of this fix is to correct the requested scopes so that the Figma OAuth consent flow succeeds and the integration can connect, without changing any other behavior.
+
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 - Connect Figma via OAuth without an invalid-scope error (Priority: P1)
+
+As an organization administrator, I want the Figma OAuth consent flow to complete successfully, so that I can connect our organization's Figma account and use the design integration.
+
+**Why this priority**: Authentication is the foundation of the Figma integration. Without a valid consent request, nothing downstream (knowledge ingestion, agent tools) can function.
+
+**Independent Test**: As an administrator with a Figma OAuth app configured, begin the Figma connect flow. The authorization URL that the browser is redirected to must contain only valid Figma scopes, and Figma must present the consent screen instead of an "invalid scope" error. After consent, the token exchange succeeds and the Figma integration reports "Connected".
+
+**Acceptance Scenarios**:
+
+1. **Given** an administrator has configured a Figma OAuth app, **When** they click "Connect" for Figma, **Then** the generated Figma authorization URL requests only valid Figma read-only scopes and contains no unrecognized scope identifier.
+2. **Given** a valid Figma authorization request, **When** the administrator approves consent on the Figma side, **Then** Figma returns an authorization code and the token exchange completes without an "invalid scope" or "scope not valid" error.
+3. **Given** a completed token exchange, **When** the integration is validated, **Then** the Figma integration card reports a connected, healthy status and displays the authenticated account handle.
+4. **Given** the corrected scope list, **When** an agent or knowledge sync uses the stored OAuth token, **Then** reading files, nodes, published styles, and published components still works (no regression in the read-only tools).
+
+---
+
+### Edge Cases
+
+- **Legacy/deprecated scope names**: The fix must not request the deprecated `file_read` scope or any other retired identifier that Figma may reject.
+- **Enterprise-only scopes**: The fix must not make the read-only integration depend on `file_variables:read` (Enterprise-only) unless explicitly required, so that standard Figma plans can still connect.
+- **Wrong-but-recognized scopes**: If a scope is syntactically valid but not enabled on the Figma app, Figma's error message ("scope does not match" / "inactive scope") must be distinguishable from the "scope not valid" case this fix resolves.
+- **Administrator guidance**: The instructions shown to administrators about which scopes to enable in their Figma app must match the scopes actually requested, so they are not asked to enable nonexistent scopes.
+
+## Requirements *(mandatory)*
+
+### Functional Requirements
+
+- **FR-001**: The system MUST request only valid Figma OAuth scope identifiers when constructing the Figma authorization URL, such that Figma never receives an unrecognized scope name.
+- **FR-002**: The system MUST include the read scope required to read file contents, nodes, published styles, and published components (`files:read`) for the read-only design tools.
+- **FR-003**: The system MUST NOT request the invalid scope identifiers `file_content:read` or `current_user:read` in the Figma authorization request.
+- **FR-004**: The system MUST NOT require the Enterprise-only `file_variables:read` scope as a precondition for connecting Figma on standard plans.
+- **FR-005**: The administrator-facing guidance for the Figma OAuth app MUST list exactly the scopes the system requests, so administrators enable only real, matching scopes.
+- **FR-006**: After applying the corrected scopes, all existing Figma read capabilities (identity verification, file/node inspection, published styles, published components) MUST continue to function without regressions.
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-001**: A Figma OAuth consent request contains zero unrecognized scope identifiers, and Figma presents the consent screen instead of returning an "invalid scope" error in 100% of connection attempts with a correctly configured Figma app.
+- **SC-002**: Administrators can complete the Figma OAuth connection in under 2 minutes once their Figma app is configured.
+- **SC-003**: 100% of the existing Figma read-only tool paths (identity verification, file/node inspection, styles, components) function unchanged after the scope correction, as verified by the automated test suite.
