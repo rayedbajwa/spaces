@@ -64,7 +64,7 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
     No model is named anywhere: for the provider in use the catalog is scored
     by cost and speed into small / medium / large tiers, tuned by an
     organization policy; with OpenRouter, OpenRouter routes each request. See
-    [Configuration](reference/configuration.md#models).
+    [Configuration](reference/configuration.md#models-bring-your-own-key).
 
 -   **Research before specify, changes committed with the code**
 
@@ -80,6 +80,25 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
     Every workstream gets a branch and a Conventional-Commits PR (stacked when
     dependent); the `review` and `deliver` stages drive CI, review, merge,
     deploy and UAT. See [Delivery](concepts/delivery.md).
+
+-   **Intents, recorded**
+
+    Each piece of work (bug fix, feature, MVP…) is an intent with a scope, its
+    documents and every status change kept in the database; open one to page
+    through everything it produced and its history. See [Intents](concepts/intents.md).
+
+-   **Secrets and personal data kept from models**
+
+    Keys, passwords, connection strings, emails, phone numbers and card
+    numbers become tokens before anything reaches a model, and real values are
+    put back only in the commands and files agents write. See
+    [Data guardrails](concepts/data-guardrails.md).
+
+-   **Logs you can follow**
+
+    Every tool call an agent (or sub-agent) makes is a line in the log,
+    stamped with the time and the agent's name. See
+    [Agents, workers & context](concepts/agents-and-workers.md#what-the-log-shows).
 
 -   **Resilient runs**
 

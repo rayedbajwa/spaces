@@ -54,7 +54,9 @@ nav:
       - Organization, teams & access: concepts/organization-teams-and-access.md
       - Projects & governing workspace: concepts/projects-and-workspaces.md
       - Pipelines & stages: concepts/pipelines-and-stages.md
+      - Intents: concepts/intents.md
       - Agents, workers & context: concepts/agents-and-workers.md
+      - Data guardrails: concepts/data-guardrails.md
       - Integrations as knowledge: concepts/integrations-and-knowledge.md
       - "Delivery: PRs, review, merge, UAT": concepts/delivery.md
   - Reference:

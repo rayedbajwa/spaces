@@ -419,3 +419,39 @@ export async function upsertOrchestrator(input: {
   `
   return row
 }
+
+/**
+ * Force kill a stuck job (Recent jobs → Force kill): the job and every other
+ * active job of its run are cancelled, the run is cancelled (its open gates
+ * resolved), and the workers holding them are returned so the caller can tell
+ * them to die. Who holds a job is read under the lock the cancellation takes,
+ * so a worker cannot claim it in between (claims skip locked rows, and a
+ * cancelled job is not claimable). Undefined when the job is not the project's.
+ */
+export async function forceKillJob(projectId: string, jobId: string, by: string): Promise<{ runId: string | null; claimants: string[] } | undefined> {
+  const sql = getDb()
+  const [job] = await sql<Array<{ jobId: string; runId: string | null }>>`
+    SELECT job_id AS "jobId", run_id AS "runId" FROM project_jobs WHERE job_id = ${jobId} AND project_id = ${projectId}
+  `
+  if (!job) return undefined
+  const reason = `Force killed by ${by}`
+  const claimants = await sql.begin(async (tx) => {
+    const holders = await tx<Array<{ claimedBy: string }>>`
+      SELECT claimed_by AS "claimedBy" FROM project_jobs
+       WHERE (job_id = ${jobId} OR (${job.runId}::uuid IS NOT NULL AND run_id = ${job.runId}::uuid))
+         AND claimed_by IS NOT NULL AND status IN ('queued', 'claimed', 'running')
+       FOR UPDATE
+    `
+    await tx`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = ${reason} WHERE job_id = ${jobId} AND status IN ('queued', 'claimed', 'running')`
+    if (job.runId) {
+      await tx`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = ${reason} WHERE run_id = ${job.runId} AND status IN ('queued', 'claimed', 'running')`
+      await tx`UPDATE pipeline_runs SET status = 'cancelled', error_message = ${reason}, pause_kind = NULL, owning_worker_id = NULL, updated_at = now() WHERE run_id = ${job.runId} AND status IN ('queued', 'running', 'paused')`
+      await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ${job.runId} AND status = 'open'`
+      await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${job.runId}, 'cancelled', ${tx.json({ by, reason, forced: true } as never)})`
+    }
+    return [...new Set(holders.map((h) => h.claimedBy))]
+  })
+  if (job.runId) await sql`SELECT pg_notify('run_cancel', ${job.runId})`
+  for (const workerId of claimants) await sql`SELECT pg_notify('worker_kill', ${workerId})`
+  return { runId: job.runId, claimants }
+}

@@ -442,13 +442,27 @@ export class AIDLCFlow {
 
   /** Point every checkout at the assigned database, port and key before code stages run. */
   private async prepareCheckouts(): Promise<void> {
-    const { describeAgentEnvironment, prepareCheckoutEnvironment } = await import('./agent-environment')
-    const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
-    if (!machine) return
-    for (const target of [{ localPath: this.options.cwd }, ...(this.options.repoTargets ?? [])]) {
-      const applied = await prepareCheckoutEnvironment(target.localPath, machine).catch(() => [])
-      if (applied.length) this.print(`[env] ${path.basename(target.localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
+    const { prepareCheckoutEnvironment } = await import('./agent-environment')
+    for (const { localPath, env } of await this.checkoutEnvironments()) {
+      const applied = await prepareCheckoutEnvironment(localPath, env).catch(() => [])
+      if (applied.length) this.print(`[env] ${path.basename(localPath)}: set ${applied.join(', ')} in .env for this checkout.\n`)
     }
+  }
+
+  /**
+   * Every checkout this run works in (the governing one and each registered
+   * repository), each with its own test database and port — so the tests of
+   * one repository never share a database or a port with another's.
+   */
+  private async checkoutEnvironments(): Promise<Array<{ localPath: string; env: import('./agent-environment').AgentEnvironment }>> {
+    const { describeAgentEnvironment } = await import('./agent-environment')
+    const paths = [...new Set([this.options.cwd, ...(this.options.repoTargets ?? []).map((t) => t.localPath).filter(Boolean)].map((p) => path.resolve(p)))]
+    const out: Array<{ localPath: string; env: import('./agent-environment').AgentEnvironment }> = []
+    for (const localPath of paths) {
+      const env = await describeAgentEnvironment({ label: path.basename(localPath) }).catch(() => undefined)
+      if (env) out.push({ localPath, env })
+    }
+    return out
   }
 
   /** Organization the run belongs to (explicit, else through the project, else the default). */
@@ -831,9 +845,14 @@ export class AIDLCFlow {
       ? await import('./intent-scope').then((m) => m.scopeInstruction(m.normalizeScope(this.options.intentScope)))
       : ''
     // Which tests this stage runs (only what changed while implementing; everything at verify).
-    const tiers = CODE_STAGES.includes(stage)
-      ? await import('./agent-environment').then((m) => m.describeAgentEnvironment({ label: path.basename(this.options.cwd) })).then((env) => testTierInstruction(stage, env)).catch(() => '')
-      : ''
+    const tiers = CODE_STAGES.includes(stage) ? await this.checkoutEnvironments().then((checkouts) => {
+      const own = checkouts.find((c) => c.localPath === path.resolve(this.options.cwd)) ?? checkouts[0]
+      if (!own) return ''
+      const others = checkouts.length > 1
+        ? `\n\nEach checkout has its own test database and port (already in its \`.env\` where the project declares them) — use each one's own:\n${checkouts.map((c) => `- ${path.basename(c.localPath)}: port ${c.env.testPort}${c.env.testDatabaseUrl ? `, database \`${new URL(c.env.testDatabaseUrl).pathname.slice(1)}\`` : ''}`).join('\n')}`
+        : ''
+      return testTierInstruction(stage, own.env) + others
+    }).catch(() => '') : ''
     const prompt = [inProgress, note, preamble, scope, tiers, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
@@ -1219,10 +1238,10 @@ export class AIDLCFlow {
 
   private async stopStageLeftovers(stage: StageName): Promise<void> {
     try {
-      const { describeAgentEnvironment } = await import('./agent-environment')
-      const env = await describeAgentEnvironment({ label: path.basename(this.options.cwd) })
-      const checkouts = [this.options.cwd, ...(this.options.repoTargets ?? []).map((t) => t.localPath).filter(Boolean)]
-      const stopped = await stopStageLeftovers({ testPort: env.testPort, containerProjects: checkouts.map(checkoutContainerName), docker: env.docker })
+      const stopped: string[] = []
+      for (const { localPath, env } of await this.checkoutEnvironments()) {
+        stopped.push(...await stopStageLeftovers({ testPort: env.testPort, containerProjects: [checkoutContainerName(localPath)], docker: env.docker }))
+      }
       if (stopped.length) this.print(`\n[cleanup] ${stage}: stopped ${stopped.join(', ')}.\n`)
     } catch (error) {
       this.print(`\n[cleanup] ${stage}: could not stop leftovers (${error instanceof Error ? error.message : String(error)}).\n`)

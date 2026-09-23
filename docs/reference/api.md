@@ -111,7 +111,8 @@ requests and across restarts of the same artifact.
 | `PATCH /api/projects/:slug/features/:id` | Rename an intent or change its scope: `{ title?, scope? }`. A title (up to 200 characters) rewrites the first heading of its `spec.md`; the directory and branch keep their names. A scope (`bugfix`, `feature`, `mvp`, `improvement`, `chore`, `spike` or a short custom label) rewrites its `**Scope**:` line. Returns `features`, each with its `scope`. `400` for an empty or too long title, an empty scope or an unknown intent |
 | `DELETE /api/projects/:slug/features/:id` | Delete a feature that is not delivered (its directory under `specs/`). `409 delivered`, `409 project_busy` |
 | `GET /api/projects/:slug/pull-requests` | The current feature's open pull requests (`githubRepo`, `number`, `url`, `title`, `draft`), found on GitHub by head branch and cached for a minute. Board cards in Implementing and Releasing carry the same list as `pullRequests` |
-| `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status, tracker |
+| `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status (each job with `lastActivityAt`, its run's newest event, and `workerHeartbeatAt`), tracker |
+| `POST /api/projects/:slug/jobs/:jobId/kill` | Force kill a stuck job: the job, every active job of its run and the run are cancelled (as `POST /api/runs/:id/cancel`), and each worker holding them is killed. Under the supervisor a fresh worker starts when the project has work; a standalone worker (`bun run worker`) exits and must be restarted. Returns `jobs`. Members only |
 
 ## Sub-agents
 

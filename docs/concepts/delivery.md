@@ -69,6 +69,28 @@ leave `change.yaml` and `spec.md` alone; PR bodies name the change and the
 initiative. The pattern follows OpenSpec's workspace architecture design
 decisions (initiative-first planning with linked repo-local changes).
 
+## The intent's documents in implementation repositories
+
+At every code stage (implement, orchestrate, review, verify) the intent's
+directory in the governing workspace, `specs/<intent>/` (spec, plan, tasks,
+test plan, contracts, research, review and verification reports), is mirrored
+into each implementation repository that is on the feature branch and has work
+there, and committed with that stage's changes. Only that directory is touched,
+and documents no longer in the governing workspace are removed from the copy.
+If the source directory cannot be listed, nothing changes; a single document
+that cannot be read is skipped (the others still sync). Nothing is written or
+removed through a symbolic link.
+
+Those repositories are then pushed and get their own pull request
+(`feat(<intent>): <spec title>`), which links to the governing workspace's pull
+request and lists exactly the documents it carries. This also happens when the
+governing workspace has no GitHub repository. Review and verification results
+are posted to every pull request on the feature branch. Work on the branch is
+measured against each repository's real default branch (as GitHub reports it),
+so `develop` or `trunk` repositories are included. The run log shows
+`[specs] <repo>: specs/<intent> synced for implement (3 updated)` and
+`[pr] <repo>: opened pull request #N …`.
+
 ## Code review loop
 
 The `review` stage refreshes CI and PR state from GitHub, reviews the diff
