@@ -186,3 +186,11 @@ Re-confirmed the state in `rayedbajwa/spaces` (branch `007-fix-figma-scopes`, HE
 - `src/lib/oauth.ts` figma block → `scopes: ['files:read']`; comment + `notes` name `file_variables:read` as the removed Enterprise-only scope.
 
 **Outcome**: nothing further to fix. The only open work is delivery (D001–D005: push/PR → CI → review → merge → deploy), which is the separate delivery stage and requires human approval (no authenticated push origin, merge/deploy are irreversible).
+
+## Regression caught & reverted (2026-09-23, later loop)
+
+A later stage's WIP commit (`3f8b12d chore(007-fix-figma-scopes): verify work in progress`) **reverted the correct fix** on the stale feature branch, replacing `scopes: ['files:read']` with phantom "granular" scopes `['file_content:read', 'library_content:read', 'current_user:read']` (and rewriting `tests/oauth.test.ts` to assert them). These identifiers never existed in Figma's scope model and contradict the spec (FR-002/FR-003 require `files:read` only) and the already-merged, deployed `main` (`3cf7570`).
+
+**Action taken**: restored `src/lib/oauth.ts` + `tests/oauth.test.ts` from `origin/main` (commit `ee654fc fix(oauth): restore files:read scope for Figma`). Re-verified: `scopes: ['files:read']` (line 178); `git diff origin/main HEAD -- src/ tests/` empty; `oauth.test.ts` 11 pass/1 skip/0 fail; Figma regression 20/0/0; typecheck clean.
+
+**Root cause**: the harness's verify/implement loop keeps emitting "work in progress" commits against the stale, already-squash-merged branch; one such commit hallucinated a granular-scope model. This is why the terminal cleanup (delete `origin/007-fix-figma-scopes`) is the correct fix — main is correct and deployed, and the stale branch only invites corruption.
