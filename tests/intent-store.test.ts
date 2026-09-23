@@ -328,4 +328,21 @@ dbSuite('syncing intents into the database', () => {
     expect((await loadProjectStates([projectId])).get(projectId)?.stale).toBe(true)
   })
 
+
+  test('concurrent syncs, restores and person actions leave the files matching the database', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    const accepted = '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n'
+    const change = (content: string | null) => changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', content]]) })
+    for (let round = 0; round < 5; round++) {
+      await Promise.all([
+        change(accepted), syncProjectIntents(projectId, root, 'agent'), restoreIntentFiles(projectId, root),
+        change(null), syncProjectIntents(projectId, root, 'agent'), restoreIntentFiles(projectId, root), change(round % 2 ? accepted : null),
+      ])
+      const stored = (await getIntentDocument(projectId, '001-login', 'acceptance.md'))?.content ?? null
+      const onDisk = await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)
+      expect(onDisk).toBe(stored)
+    }
+  })
 })

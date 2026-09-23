@@ -627,26 +627,35 @@ export async function restoreIntentFiles(projectId: string, projectRoot: string)
   const known = new Set((await getDb()<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId}`).map((r) => r.dirId))
   const unsynced = featureDirNames(projectRoot).filter((d) => !known.has(d))
   if (unsynced.length) await syncProjectIntents(projectId, projectRoot, 'agent', unsynced)
-  const dirId = await currentIntentDirId(projectId, projectRoot)
-  let restored = 0
-  if (dirId && isFeatureId(dirId)) {
-    const rows = await getDb()<Array<{ path: string; content: string }>>`
-      SELECT d.path, d.content FROM intent_documents d JOIN intents i ON i.intent_id = d.intent_id
-       WHERE i.project_id = ${projectId} AND i.dir_id = ${dirId} AND i.deleted_at IS NULL
+  // Under the project lock, so a person's change (a withdrawn acceptance, say)
+  // cannot land between reading the documents here and writing them back.
+  return getDb().begin(async (tx) => {
+    await lockProject(tx, projectId)
+    const [current] = await tx<Array<{ dirId: string }>>`
+      SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL
+       ORDER BY active DESC, dir_id DESC LIMIT 1
     `
-    for (const row of rows) {
-      // Never through a symlinked folder, which could point outside the project.
-      const file = await intentFileWithoutLinks(projectRoot, dirId, row.path)
-      if (!file) continue
-      // lstat: an existing symlink (even a dangling one) counts as present and is never written through.
-      if (await lstat(file).then(() => true, () => false)) continue
-      await mkdir(path.dirname(file), { recursive: true })
-      await writeFile(file, row.content, { flag: 'wx' }).then(() => { restored += 1 }, () => undefined)
+    const dirId = current?.dirId
+    let restored = 0
+    if (dirId && isFeatureId(dirId)) {
+      const rows = await tx<Array<{ path: string; content: string }>>`
+        SELECT d.path, d.content FROM intent_documents d JOIN intents i ON i.intent_id = d.intent_id
+         WHERE i.project_id = ${projectId} AND i.dir_id = ${dirId} AND i.deleted_at IS NULL
+      `
+      for (const row of rows) {
+        // Never through a symlinked folder, which could point outside the project.
+        const file = await intentFileWithoutLinks(projectRoot, dirId, row.path)
+        if (!file) continue
+        // lstat: an existing symlink (even a dangling one) counts as present and is never written through.
+        if (await lstat(file).then(() => true, () => false)) continue
+        await mkdir(path.dirname(file), { recursive: true })
+        await writeFile(file, row.content, { flag: 'wx' }).then(() => { restored += 1 }, () => undefined)
+      }
     }
-  }
-  await projectActiveIntent(projectId, projectRoot)
-  if (restored) storeLog.info('intent files restored from the database', { projectId, intent: dirId, restored })
-  return restored
+    await writeActivePointer(tx, projectId, projectRoot)
+    if (restored) storeLog.info('intent files restored from the database', { projectId, intent: dirId, restored })
+    return restored
+  })
 }
 
 /** Restore without letting a database or disk problem stop the stage. */
