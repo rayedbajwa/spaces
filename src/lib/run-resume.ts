@@ -186,8 +186,9 @@ export function buildResumeNote(point: ResumePoint): string {
  * unfinished are the two ways a run destroys work: one rewrites the project
  * scaffold, the other opens a new feature directory and leaves the half-built
  * one behind. Both stages get a plain statement of what already exists and an
- * instruction to read it first. When the latest feature has passed
- * verification, starting the next one is legitimate and nothing is added.
+ * instruction to read it first. When the latest feature is finished — its
+ * verification passed, its delivery report says MERGED, or a person accepted
+ * it (acceptance.md) — starting the next one is legitimate and nothing is added.
  */
 export interface UnfinishedFeature {
   /** Directory name, e.g. "003-project-responsibilities". */
@@ -203,8 +204,9 @@ export interface UnfinishedFeature {
 
 /**
  * The project's latest feature when it is still unfinished, i.e. it has
- * documents but has not passed verification. A feature that verified
- * successfully is finished work and the next one may start.
+ * documents and none of the finishing conditions holds. A feature is finished
+ * work, and the next one may start, when its verification passed, its delivery
+ * report says MERGED, or a person accepted it (acceptance.md).
  */
 export async function findUnfinishedFeature(projectPath: string): Promise<UnfinishedFeature | undefined> {
   const featureDir = await findLatestFeatureDirAbsolute(projectPath).catch(() => null)
@@ -219,6 +221,11 @@ export async function findUnfinishedFeature(projectPath: string): Promise<Unfini
   const verification = await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '')
   const verified = /(^|\n)#{0,3}\s*(overall\s+)?(status|result)\s*[:|-]?\s*\**\s*pass/i.test(verification)
   if (verified) return undefined
+  // Delivered (merged) or accepted by a person is finished too, whatever the
+  // verification said: otherwise a new feature after it was silently refused.
+  const delivery = await readFile(path.join(featureDir, 'delivery-report.md'), 'utf8').catch(() => '')
+  if (/Delivery Status:\s*\**\s*MERGED/i.test(delivery)) return undefined
+  if (await nonEmpty(path.join(featureDir, 'acceptance.md'))) return undefined
 
   const tasks = await readFile(path.join(featureDir, 'tasks.md'), 'utf8')
     .then((t) => parseTaskProgress(t))

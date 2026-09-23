@@ -1378,7 +1378,7 @@ async function route(req: Request): Promise<Response> {
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/features$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace!))
-    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s features.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s intents.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace!)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     return sendJson(200, { features: await listFeatures(projectMeta.path) })
@@ -1395,7 +1395,7 @@ async function route(req: Request): Promise<Response> {
     const registry = await import('./lib/project-registry')
     const project = await registry.getProjectBySlug(projectNamespace)
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch features.' : renaming ? 'Only team members can rename features.' : 'Only team members can delete features.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch intents.' : renaming ? 'Only team members can rename intents.' : 'Only team members can delete intents.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     // Renaming only rewrites the spec's title line: no need to wait for runs.
@@ -1415,9 +1415,9 @@ async function route(req: Request): Promise<Response> {
       SELECT status, current_stage AS stage FROM pipeline_runs
        WHERE project_namespace = ${projectNamespace} AND status IN ('queued', 'running', 'paused') ORDER BY created_at DESC LIMIT 1
     `
-    if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching features' : 'deleting a feature'}.`, code: 'project_busy' })
+    if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching intents' : 'deleting an intent'}.`, code: 'project_busy' })
     const feature = (await listFeatures(projectMeta.path)).find((f) => f.id === featureId)
-    if (!feature) return sendJson(404, { error: `Feature ${featureId} does not exist.` })
+    if (!feature) return sendJson(404, { error: `Intent ${featureId} does not exist.` })
 
     if (!activating) {
       if (feature.status === 'delivered' || feature.status === 'delivering') {
@@ -1430,7 +1430,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(200, { features: await listFeatures(projectMeta.path) })
     }
 
-    if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new feature instead.`, code: 'delivered' })
+    if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new intent instead.`, code: 'delivered' })
     // Continue on the feature's own branch where it exists (Spec Kit finds the
     // feature from the branch), never over uncommitted work.
     const orgId = await orgIdForProject(project.projectId)
@@ -1480,7 +1480,7 @@ async function route(req: Request): Promise<Response> {
     const [, , , projectNamespace] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const denied = requireProjectRole(project, 'member', 'Only team members can accept a feature.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', 'Only team members can accept an intent.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
 
@@ -1488,12 +1488,12 @@ async function route(req: Request): Promise<Response> {
     const artifacts = await collectProjectArtifacts(projectNamespace, projectMeta.path)
     if (artifacts.verificationStatus === 'missing') {
       return sendJson(409, {
-        error: 'There is nothing to accept yet: this feature has no verification report. Run verify first.',
+        error: 'There is nothing to accept yet: this intent has no verification report. Run verify first.',
         code: 'not_verified',
       })
     }
     if (artifacts.verifiedPass) {
-      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The feature is releasing: review, then deliver.', code: 'already_passed' })
+      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', code: 'already_passed' })
     }
 
     const recorded = await recordAcceptance({
@@ -1503,7 +1503,7 @@ async function route(req: Request): Promise<Response> {
       note: body.note,
     })
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    if (!recorded) return sendJson(409, { error: 'This project has no feature directory to accept.' })
+    if (!recorded) return sendJson(409, { error: 'This project has no intent to accept.' })
     serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
 
     // The caller runs the final step itself through the ordinary execute-step
@@ -2030,7 +2030,7 @@ async function route(req: Request): Promise<Response> {
       // Delivery merges and deploys: only a reviewed feature whose QA passed or was accepted may start it.
       if (body.step === 'deliver' && !(projectArtifacts.codeReviewStatus === 'approved' && !projectArtifacts.codeReviewStale && (projectArtifacts.verifiedPass || projectArtifacts.accepted))) {
         return sendJson(409, {
-          error: 'This feature is not ready to deliver: the code review must approve it and verification must pass (or be accepted) first.',
+          error: 'This intent is not ready to deliver: the code review must approve it and verification must pass (or be accepted) first.',
           code: 'not_ready_for_release',
           hint: 'Run review and verify from the QA tab, or call again with {"force": true} to deliver anyway.',
         })
@@ -2439,7 +2439,7 @@ async function route(req: Request): Promise<Response> {
     // 400 the client can react to (prompt for the missing field + retry).
     if (stages.includes('specify') && !mergedOptions.feature) {
       return sendJson(400, {
-        error: 'This run includes the specify stage but no feature was provided. Rerun with { "feature": "..." } to supply one.',
+        error: 'This run includes the specify stage but no intent was described. Rerun with { "feature": "..." } to describe one.',
         field: 'feature',
       })
     }
@@ -3178,7 +3178,7 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
   if (artifacts.deliveryStatus === 'merged') {
-    return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new feature.' }
+    return { step: 'specify', label: 'Start a new intent', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new intent.' }
   }
   // Building the feature: implement, code review, then QA. Running implement
   // loops through all three on its own (lib/implement-loop.ts); these are the
@@ -3269,7 +3269,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     return { ...flags, links, diffs: artifactState.diffs.slice(0, 8) }
   }
 
-  const featurePrefix = `Feature ${latestFeature.featureId}`
+  const featurePrefix = `Intent ${latestFeature.featureId}`
   flags.currentFeature = { id: latestFeature.featureId, title: featureTitle(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/spec.md`)), latestFeature.featureId) }
   const specPath = join(projectRoot, `${latestFeature.relativePath}/spec.md`)
   const tasksPath = join(projectRoot, `${latestFeature.relativePath}/tasks.md`)
