@@ -878,13 +878,15 @@ export class AIDLCFlow {
       ? await import('./intent-scope').then((m) => m.scopeInstruction(m.normalizeScope(this.options.intentScope)))
       : ''
     // Which tests this stage runs (only what changed while implementing; everything at verify).
-    const tiers = CODE_STAGES.includes(stage) ? await this.checkoutEnvironments().then((checkouts) => {
+    const tiers = CODE_STAGES.includes(stage) ? await this.checkoutEnvironments().then(async (checkouts) => {
       const own = checkouts.find((c) => c.localPath === path.resolve(this.options.cwd)) ?? checkouts[0]
       if (!own) return ''
       const others = checkouts.length > 1
         ? `\n\nEach checkout has its own test database and port (already in its \`.env\` where the project declares them) — use each one's own:\n${checkouts.map((c) => `- ${path.basename(c.localPath)}: port ${c.env.testPort}${c.env.testDatabaseUrl ? `, database \`${new URL(c.env.testDatabaseUrl).pathname.slice(1)}\`` : ''}`).join('\n')}`
         : ''
-      return testTierInstruction(stage, own.env) + others
+      // Review and verify test the impacted area: what this intent changed in each checkout.
+      const scope = stage === 'review' || stage === 'verify' ? await this.changeScope() : undefined
+      return testTierInstruction(stage, own.env, scope) + others
     }).catch(() => '') : ''
     const prompt = [inProgress, note, preamble, scope, tiers, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
@@ -1298,6 +1300,19 @@ export class AIDLCFlow {
         this.print(`[specs] ${target.label}: could not write the repo-local change (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
       }
     }
+  }
+
+  /** What this intent changed in each checkout (lib/change-scope.ts), against each repository's default branch. */
+  private async changeScope(): Promise<import('./test-tiers').ChangeScope[]> {
+    const { changedFiles } = await import('./change-scope')
+    const targets = new Map((this.options.repoTargets ?? []).map((t) => [path.resolve(t.localPath), t]))
+    const out: import('./test-tiers').ChangeScope[] = []
+    for (const { localPath } of await this.checkoutEnvironments()) {
+      const target = targets.get(localPath)
+      const base = target?.githubRepo ? await gitDefaultBranch(await this.orgId(), localPath, target.githubRepo).catch(() => undefined) : undefined
+      out.push({ label: target?.label ?? path.basename(localPath), files: changedFiles(localPath, base) })
+    }
+    return out
   }
 
   private async stopStageLeftovers(stage: StageName): Promise<void> {

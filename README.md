@@ -157,8 +157,10 @@ inspectable artifacts each stage produces.
   `✓ 2.1s · 12 pass`), stamped with the time and the agent's name, for stages
   and sub-agents alike
 - **Cheaper long tests** — implement runs only the tests covering what
-  changed, review the full suite, verify the full suite plus the app,
-  end-to-end tests and the container build; each checkout has its own test
+  changed; review and verify test only the intent's impacted area (the files it
+  changed, listed for them), verify adds smoke/end-to-end tests for the affected
+  flows and builds the image only when its inputs changed, and CI runs the full
+  suite; each checkout has its own test
   database and port, package caches persist on the volume, commands are
   capped (default 20 minutes) and what a stage leaves running is stopped
 - **Force kill** — a job idle for 10 minutes gets a Force kill in Recent jobs
