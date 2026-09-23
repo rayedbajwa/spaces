@@ -42,8 +42,15 @@ export interface AgentEnvironment {
   testPort: number
 }
 
-let cached: { at: number; value: AgentEnvironment } | undefined
+/** What the machine offers (Docker, psql, a browser): the same for everyone, probed once a minute. */
+let cachedMachine: { at: number; value: Omit<AgentEnvironment, 'testDatabaseUrl' | 'testPort'> } | undefined
+/** Each checkout's own database and port, kept for the life of the process so every stage sees the same ones. */
+const assigned = new Map<string, { testDatabaseUrl?: string; testPort: number }>()
+/** Ports handed out by this process that no app may be listening on yet. */
+const reservedPorts = new Set<number>()
 const CACHE_MS = 60_000
+const PORT_BASE = 3100
+const PORT_SPAN = 800
 
 async function commandWorks(command: string, args: string[]): Promise<boolean> {
   return await run(command, args, { timeout: 10_000 }).then(() => true).catch(() => false)
@@ -58,12 +65,22 @@ async function portIsFree(port: number): Promise<boolean> {
   })
 }
 
-/** The first free port at or after `from`, so an app under test never fights the one serving Spaces. */
-async function freePort(from = 3100, attempts = 40): Promise<number> {
-  for (let port = from; port < from + attempts; port += 1) {
-    if (await portIsFree(port)) return port
+/**
+ * A port for one checkout's app under test. Checkouts start at different
+ * points of the range (from their label), so two workers — which cannot see
+ * each other's plans — rarely probe the same port; a port this process already
+ * handed out is skipped even while nothing listens on it yet.
+ */
+export async function freePortFor(label: string, attempts = 60): Promise<number> {
+  let hash = 0
+  for (const c of label) hash = (hash * 31 + c.charCodeAt(0)) >>> 0
+  const start = PORT_BASE + (hash % PORT_SPAN)
+  for (let i = 0; i < attempts; i += 1) {
+    const port = PORT_BASE + ((start - PORT_BASE + i) % PORT_SPAN)
+    if (reservedPorts.has(port)) continue
+    if (await portIsFree(port)) { reservedPorts.add(port); return port }
   }
-  return from
+  return start
 }
 
 /**
@@ -102,11 +119,22 @@ export async function provisionTestDatabase(label: string): Promise<string | und
 
 /** Probe the environment (cached for a minute — the answers do not change often). */
 export async function describeAgentEnvironment(options: { label?: string } = {}): Promise<AgentEnvironment> {
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.value
+  const label = options.label ?? 'tests'
+  const machine = await describeMachine()
+  let own = assigned.get(label)
+  if (!own) {
+    own = { testDatabaseUrl: await provisionTestDatabase(label), testPort: await freePortFor(label) }
+    assigned.set(label, own)
+    envLog.info('agent environment assigned', { label, testDatabase: Boolean(own.testDatabaseUrl), testPort: own.testPort })
+  }
+  return { ...machine, ...own }
+}
 
+async function describeMachine(): Promise<Omit<AgentEnvironment, 'testDatabaseUrl' | 'testPort'>> {
+  if (cachedMachine && Date.now() - cachedMachine.at < CACHE_MS) return cachedMachine.value
   const dockerInstalled = await commandWorks('docker', ['--version'])
   const dockerUsable = dockerInstalled && (await commandWorks('docker', ['info', '--format', '{{.ServerVersion}}']))
-  const value: AgentEnvironment = {
+  const value: Omit<AgentEnvironment, 'testDatabaseUrl' | 'testPort'> = {
     docker: dockerUsable,
     dockerCompose: dockerInstalled && (await commandWorks('docker', ['compose', 'version'])),
     dockerDetail: dockerUsable
@@ -116,17 +144,17 @@ export async function describeAgentEnvironment(options: { label?: string } = {})
         : 'docker is not installed here',
     psql: await commandWorks('psql', ['--version']),
     browser: resolveBrowserExecutable() ?? (process.env.PLAYWRIGHT_BROWSERS_PATH?.trim() || undefined),
-    testDatabaseUrl: await provisionTestDatabase(options.label ?? 'tests'),
-    testPort: await freePort(),
   }
-  cached = { at: Date.now(), value }
-  envLog.info('agent environment probed', { docker: value.docker, compose: value.dockerCompose, psql: value.psql, browser: Boolean(value.browser), testDatabase: Boolean(value.testDatabaseUrl), testPort: value.testPort })
+  cachedMachine = { at: Date.now(), value }
+  envLog.info('agent environment probed', { docker: value.docker, compose: value.dockerCompose, psql: value.psql, browser: Boolean(value.browser) })
   return value
 }
 
 /** Forget the probe (after installing something, or in tests). */
 export function forgetAgentEnvironment(): void {
-  cached = undefined
+  cachedMachine = undefined
+  assigned.clear()
+  reservedPorts.clear()
 }
 
 /** The environment written for an agent to read, as markdown. */
