@@ -9,7 +9,14 @@
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # Baked into the image so /api/version reports the exact source.
+        # Set these in the environment before `docker compose build`, e.g.:
+        #   GIT_COMMIT="$(git rev-parse HEAD)" SPACES_VERSION="1.2.3" docker compose -f docker-compose.prod.yml build
+        GIT_COMMIT: "${GIT_COMMIT:-}"
+        SPACES_VERSION: "${SPACES_VERSION:-}"
     image: spaces:latest
     container_name: spaces-app
     restart: unless-stopped
@@ -29,7 +36,11 @@ services:
     stop_grace_period: 30s
 
   supervisor:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: "${GIT_COMMIT:-}"
+        SPACES_VERSION: "${SPACES_VERSION:-}"
     image: spaces:latest
     container_name: spaces-supervisor
     restart: unless-stopped
