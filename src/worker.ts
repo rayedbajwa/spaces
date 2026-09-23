@@ -325,6 +325,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: null })
       await queueEvent(runId, 'error', { message, reason: 'disk_full' })
       workerLog.error('refusing to start a run on a full volume', new Error(message))
+      void notifyProject(run.projectId, { kind: 'run_failed', message })
       return
     }
   }

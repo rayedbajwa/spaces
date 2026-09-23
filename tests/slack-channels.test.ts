@@ -12,7 +12,7 @@ const dbSuite = dbAvailable ? describe : describe.skip
 if (!dbAvailable) test.skip(`slack channel DB tests skipped: DATABASE_URL not reachable or schema not applied (${getDatabaseUrl()})`, () => {})
 
 /** A fake Slack Web API: records calls, answers like Slack. */
-function fakeSlack(options: { taken?: string[] } = {}) {
+function fakeSlack(options: { taken?: string[]; team?: string; lookupError?: string } = {}) {
   const calls: Array<{ method: string; body: Record<string, unknown> }> = []
   const channels = new Map<string, string>((options.taken ?? []).map((name) => [name, `C_OLD_${name}`]))
   const realFetch = globalThis.fetch
@@ -24,6 +24,8 @@ function fakeSlack(options: { taken?: string[] } = {}) {
     calls.push({ method, body })
     const reply = (data: Record<string, unknown>) => new Response(JSON.stringify(data), { status: 200 })
     switch (method) {
+      case 'auth.test':
+        return reply({ ok: true, team_id: options.team ?? 'T_ONE' })
       case 'conversations.create': {
         const name = String(body.name)
         if (channels.has(name)) return reply({ ok: false, error: 'name_taken' })
@@ -34,6 +36,7 @@ function fakeSlack(options: { taken?: string[] } = {}) {
       case 'conversations.list':
         return reply({ ok: true, channels: [...channels].map(([name, id]) => ({ id, name, is_member: false })) })
       case 'users.lookupByEmail':
+        if (options.lookupError) return reply({ ok: false, error: options.lookupError })
         return String(body.email).endsWith('@slack-user.test') ? reply({ ok: true, user: { id: `U_${body.email}` } }) : reply({ ok: false, error: 'users_not_found' })
       case 'chat.postMessage':
         return String(body.channel).startsWith('C_GONE') ? reply({ ok: false, error: 'channel_not_found' }) : reply({ ok: true, ts: '1.2' })
@@ -104,6 +107,25 @@ dbSuite('slack project channels', () => {
     await notifyProject(projects[1]!, { kind: 'run_finished' })
     const [row] = await sql`SELECT 1 FROM project_slack_channels WHERE project_id = ${projects[1]!}`
     expect(row).toBeUndefined() // forgotten, so the next notice creates a fresh channel
+  })
+
+  test('reconnecting Slack to another workspace makes the channel there', async () => {
+    // Reconnecting issues a new token for the other workspace.
+    await upsertAppIntegration({ orgId, kind: 'slack', status: 'connected', credentials: { access_token: 'xoxb-other-workspace' } })
+    slack = fakeSlack({ team: 'T_TWO' })
+    const channel = await ensureProjectChannel(projects[0]!)
+    expect(slack.calls.some((c) => c.method === 'conversations.create')).toBe(true)
+    const [row] = await sql<Array<{ teamId: string }>>`SELECT team_id AS "teamId" FROM project_slack_channels WHERE project_id = ${projects[0]!}`
+    expect(row!.teamId).toBe('T_TWO')
+    expect(channel).toBeDefined()
+  })
+
+  test('a lookup failure other than "not found" does not pass silently, and the channel still works', async () => {
+    await sql`DELETE FROM project_slack_channels WHERE project_id = ${projects[1]!}`
+    slack = fakeSlack({ lookupError: 'ratelimited' })
+    expect(await ensureProjectChannel(projects[1]!)).toBeDefined()
+    // No invite was sent with a partial member list.
+    expect(slack.calls.some((c) => c.method === 'conversations.invite')).toBe(false)
   })
 
   test('without Slack connected nothing is called', async () => {

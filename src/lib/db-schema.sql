@@ -981,3 +981,5 @@ CREATE TABLE IF NOT EXISTS project_slack_channels (
   channel_name  TEXT NOT NULL,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- The Slack workspace the channel lives in; reconnecting to another workspace makes new channels.
+ALTER TABLE project_slack_channels ADD COLUMN IF NOT EXISTS team_id TEXT;

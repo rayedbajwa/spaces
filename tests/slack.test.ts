@@ -47,5 +47,9 @@ describe('slack messages', () => {
     expect(slackText('x'.repeat(5000), 100).length).toBe(100)
     // An agent summary cannot ping everyone or inject links.
     expect(allText(renderNotice(project, { kind: 'stage_finished', stage: 'plan', summary: '<!channel> <https://evil|click>' }))).not.toContain('<!channel>')
+    // The notification text is mrkdwn too: a project named <!channel> must not ping anyone.
+    const named = renderNotice({ name: '<!channel>', code: null, slug: 'x' }, { kind: 'approval_needed', stage: '<!everyone>' })
+    expect(named.text).not.toContain('<!channel>')
+    expect(named.text).not.toContain('<!everyone>')
   })
 })

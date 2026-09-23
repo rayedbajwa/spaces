@@ -85,11 +85,22 @@ function reportSlackError(orgId: string, what: string, error: unknown): void {
   slackLog.warn(`Slack: ${what} failed`, { orgId, error: error instanceof Error ? error.message : String(error) })
 }
 
-async function storedChannel(projectId: string): Promise<{ channelId: string; channelName: string } | undefined> {
-  const [row] = await getDb()<Array<{ channelId: string; channelName: string }>>`
-    SELECT channel_id AS "channelId", channel_name AS "channelName" FROM project_slack_channels WHERE project_id = ${projectId}
+async function storedChannel(projectId: string): Promise<{ channelId: string; channelName: string; teamId: string | null } | undefined> {
+  const [row] = await getDb()<Array<{ channelId: string; channelName: string; teamId: string | null }>>`
+    SELECT channel_id AS "channelId", channel_name AS "channelName", team_id AS "teamId" FROM project_slack_channels WHERE project_id = ${projectId}
   `
   return row
+}
+
+const workspaceByToken = new Map<string, { teamId: string; at: number }>()
+
+/** The Slack workspace the token belongs to (auth.test), cached for a few minutes. */
+async function currentWorkspace(token: string): Promise<string> {
+  const cached = workspaceByToken.get(token)
+  if (cached && Date.now() - cached.at < 10 * 60_000) return cached.teamId
+  const data = await slackApi<SlackResponse & { team_id: string }>(token, 'auth.test', {})
+  workspaceByToken.set(token, { teamId: data.team_id, at: Date.now() })
+  return data.team_id
 }
 
 /** Find a public channel by name (the project's channel may already exist from an earlier connection). */
@@ -117,8 +128,10 @@ async function inviteTeam(token: string, channelId: string, project: ProjectForS
     try {
       const found = await slackApi<SlackResponse & { user: { id: string } }>(token, 'users.lookupByEmail', { email })
       slackIds.push(found.user.id)
-    } catch {
-      // Not in this Slack workspace, or the scope is missing: nothing to invite.
+    } catch (error) {
+      // Not in this Slack workspace: nothing to invite. Anything else (a missing
+      // scope, a rate limit, the network) is a real failure and is reported.
+      if (!(error instanceof SlackApiError && error.code === 'users_not_found')) throw error
     }
   }
   if (slackIds.length === 0) return 0
@@ -135,8 +148,6 @@ async function inviteTeam(token: string, channelId: string, project: ProjectForS
  * Undefined when Slack is not connected or the channel cannot be made.
  */
 export async function ensureProjectChannel(projectId: string): Promise<{ channelId: string; channelName: string } | undefined> {
-  const existing = await storedChannel(projectId)
-  if (existing) return existing
   const project = await loadProject(projectId)
   if (!project) return undefined
   const orgId = await orgIdForProject(projectId)
@@ -145,6 +156,13 @@ export async function ensureProjectChannel(projectId: string): Promise<{ channel
 
   const name = channelNameFor(project)
   try {
+    // A channel belongs to one workspace: after reconnecting Slack to another
+    // workspace, the stored channel is gone for this token and is made again.
+    const workspace = await currentWorkspace(token)
+    const existing = await storedChannel(projectId)
+    if (existing && existing.teamId === workspace) return existing
+    if (existing) await getDb()`DELETE FROM project_slack_channels WHERE project_id = ${projectId}`
+
     let channelId: string
     try {
       const created = await slackApi<SlackResponse & { channel: { id: string } }>(token, 'conversations.create', { name, is_private: false })
@@ -162,8 +180,8 @@ export async function ensureProjectChannel(projectId: string): Promise<{ channel
       purpose: `Spaces updates for ${project.name}${project.code ? ` (${project.code})` : ''}: runs, stage summaries and approvals.`.slice(0, 250),
     }).catch(() => undefined)
     await getDb()`
-      INSERT INTO project_slack_channels (project_id, org_id, channel_id, channel_name)
-      VALUES (${projectId}, ${orgId}, ${channelId}, ${name})
+      INSERT INTO project_slack_channels (project_id, org_id, channel_id, channel_name, team_id)
+      VALUES (${projectId}, ${orgId}, ${channelId}, ${name}, ${workspace})
       ON CONFLICT (project_id) DO NOTHING
     `
     const invited = await inviteTeam(token, channelId, project).catch((error) => { reportSlackError(orgId, 'invite the team', error); return 0 })
@@ -212,6 +230,10 @@ function projectLink(project: { code: string | null; slug: string }): string | u
 /** The Block Kit message for a notice (exported for tests). */
 export function renderNotice(project: { name: string; code: string | null; slug: string }, notice: ProjectNotice): { text: string; blocks: unknown[] } {
   const label = `${project.code ? `${project.code} · ` : ''}${project.name}`
+  // The top-level text is also Slack mrkdwn (it drives the notification): escape
+  // what projects, pipelines and stages are called, as in the blocks.
+  const safeLabel = slackText(label, 300)
+  const esc = (value: string) => slackText(value, 200)
   const link = projectLink(project)
   const open = link ? { type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Open in Spaces' }, url: link, ...(notice.kind === 'approval_needed' || notice.kind === 'question' ? { style: 'primary' } : {}) }] } : undefined
   const section = (text: string) => ({ type: 'section', text: { type: 'mrkdwn', text } })
@@ -220,31 +242,31 @@ export function renderNotice(project: { name: string; code: string | null; slug:
   let body: Array<unknown | undefined>
   switch (notice.kind) {
     case 'run_started':
-      text = `▶️ ${label}: run started (${notice.pipeline})`
+      text = `▶️ ${safeLabel}: run started (${esc(notice.pipeline)})`
       body = [section(`▶️ *Run started* — ${slackText(notice.stages.join(' → '), 500)}`)]
       break
     case 'stage_finished':
-      text = `✅ ${label}: ${notice.stage} finished`
+      text = `✅ ${safeLabel}: ${esc(notice.stage)} finished`
       body = [section(`✅ *${slackText(notice.stage)}* finished`), quote(notice.summary)]
       break
     case 'approval_needed':
-      text = `🟡 ${label}: approval needed on ${notice.stage}`
+      text = `🟡 ${safeLabel}: approval needed on ${esc(notice.stage)}`
       body = [section(`<!here> 🟡 *Approval needed* on *${slackText(notice.stage)}*. Review the summary, then approve or request changes in Spaces.`), quote(notice.summary), open]
       break
     case 'question':
-      text = `❓ ${label}: the agent has a question on ${notice.stage}`
+      text = `❓ ${safeLabel}: the agent has a question on ${esc(notice.stage)}`
       body = [section(`<!here> ❓ *The agent has a question* on *${slackText(notice.stage)}*. Answer it in Spaces to continue.`), quote(notice.question), open]
       break
     case 'run_finished':
-      text = `🏁 ${label}: run finished`
+      text = `🏁 ${safeLabel}: run finished`
       body = [section('🏁 *Run finished.*'), open]
       break
     case 'run_failed':
-      text = `🔴 ${label}: run failed${notice.stage ? ` at ${notice.stage}` : ''}`
+      text = `🔴 ${safeLabel}: run failed${notice.stage ? ` at ${esc(notice.stage)}` : ''}`
       body = [section(`🔴 *Run failed*${notice.stage ? ` at *${slackText(notice.stage)}*` : ''}`), quote(notice.message), open]
       break
   }
-  return { text, blocks: [{ type: 'context', elements: [{ type: 'mrkdwn', text: slackText(label, 300) }] }, ...body.filter(Boolean)] }
+  return { text, blocks: [{ type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] }, ...body.filter(Boolean)] }
 }
 
 /** Post a notice to the project's channel. Best effort: never throws. */
