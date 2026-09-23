@@ -326,9 +326,9 @@ export async function openOrUpdatePullRequest(options: {
 }): Promise<PullRequestRef> {
   // AI data guardrails: titles and bodies (often agent summaries) leave without secrets or personal data.
   const { loadGuardPolicy } = await import('./guardrails-policy')
-  const { maskOutput } = await import('./guardrails')
+  const { maskOutput, redactSecretValues } = await import('./guardrails')
   const policy = await loadGuardPolicy(options.orgId)
-  options = { ...options, title: maskOutput(options.title, policy), body: maskOutput(options.body, policy) }
+  options = { ...options, title: maskOutput(options.title, policy), body: maskOutput(redactSecretValues(options.body), policy) }
   const existing = await findOpenPullRequest(options.orgId, options.githubRepo, options.head)
   if (existing) {
     const updated = await githubApi<GitHubPull>(options.orgId, 'PATCH', `https://api.github.com/repos/${options.githubRepo}/pulls/${existing.number}`, {
@@ -349,7 +349,12 @@ export async function openOrUpdatePullRequest(options: {
 }
 
 export async function commentOnPullRequest(orgId: string, githubRepo: string, number: number, body: string): Promise<void> {
-  await githubApi(orgId, 'POST', `https://api.github.com/repos/${githubRepo}/issues/${number}/comments`, { body })
+  // AI data guardrails: review and verification reports are files the agent
+  // wrote with real values restored, so they are masked before GitHub sees them.
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput, redactSecretValues } = await import('./guardrails')
+  const safe = maskOutput(redactSecretValues(body), await loadGuardPolicy(orgId))
+  await githubApi(orgId, 'POST', `https://api.github.com/repos/${githubRepo}/issues/${number}/comments`, { body: safe })
 }
 
 /**

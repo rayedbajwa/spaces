@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { AgentGuard, findSensitive, maskOutput } from '../src/lib/guardrails'
+import { AgentGuard, findSensitive, isSecretFileName, maskOutput, redactSecretValues } from '../src/lib/guardrails'
 
 describe('detecting sensitive values', () => {
   test('personal data: emails, phones, SSNs, valid card numbers and IBANs', () => {
@@ -57,7 +57,7 @@ describe('an agent session\'s guard', () => {
 
   test('every value of a secret file is a secret, whatever its name', () => {
     const guard = new AgentGuard()
-    expect(guard.maskSecretFile('APP_ID=12345\nexport REGION="us-east-1"\n# comment\n')).toBe('APP_ID=<SECRET_1>\nexport REGION=<SECRET_2>\n# comment\n')
+    expect(guard.maskSecretFile('APP_ID=12345\nexport REGION="us-east-1"\n# comment\n')).toBe('APP_ID=<SECRET_1>\nexport REGION="<SECRET_2>"\n# comment\n')
   })
 
   test('strict mode blocks secret files and environment dumps, not ordinary work', () => {
@@ -135,5 +135,49 @@ describe('an agent session\'s guard', () => {
     expect(JSON.stringify(masked)).not.toContain('sam@acme.io')
     expect((masked.messages[1] as { content: Array<{ id: string; name: string }> }).content[0]).toMatchObject({ id: 'call_1', name: 'bash' })
     expect(Object.keys(masked)).toEqual(['messages']) // nothing added
+  })
+})
+
+describe('review of #44: detection gaps', () => {
+  const secrets = (text: string) => findSensitive(text).filter((s) => s.kind === 'SECRET').map((s) => s.value)
+
+  test('connection strings with an empty user', () => {
+    expect(secrets('redis://:s3cretPass@cache:6379/0')).toEqual(['s3cretPass'])
+    expect(redactSecretValues('redis://:s3cretPass@cache:6379/0')).toBe('redis://:[redacted]@cache:6379/0')
+  })
+
+  test('lower-case names with literal values, not code', () => {
+    expect(secrets('password=supersecret api_key=abc123 db_pass="p4ss word"')).toEqual(['supersecret', 'abc123', 'p4ss word'])
+    expect(secrets('password = "hunter2"')).toEqual(['hunter2'])
+    expect(secrets('const password = req.body.password; if (token == other) {}; bypass=1; author=jane; tokens=5')).toEqual([])
+    expect(secrets('PGPASSWORD=pw DB_PASS=x ENCRYPTION_KEY=abc BYPASS=yes')).toEqual(['pw', 'x', 'abc'])
+  })
+
+  test('YAML and JSON keys, quoted or bare, but not types or expressions', () => {
+    expect(secrets('password: abc123\nclient_secret: s3cr3t\n"token": "t0k3n"')).toEqual(['abc123', 's3cr3t', 't0k3n'])
+    expect(secrets('interface Login { password: string; token: string | null }\nconst c = { password: this.password, token: process.env.TOKEN }')).toEqual([])
+  })
+
+  test('secret files by their whole name, whatever the extension; not source code', () => {
+    for (const name of ['.env', '.env.production', 'credentials', 'credentials.yaml', 'credentials-prod', 'app.secrets.txt', 'k8s-secret.yaml', 'server.pem', 'id_ed25519', '.pgpass', '.npmrc', '/home/u/.git-credentials']) expect([name, isSecretFileName(name)]).toEqual([name, true])
+    for (const name of ['.env.example', 'secrets.ts', 'secret-manager.py', 'id_rsa.pub', 'README.md', 'credentials.test.ts']) expect([name, isSecretFileName(name)]).toEqual([name, false])
+  })
+
+  test('strict mode blocks printenv with names, keeps env NAME=value command', () => {
+    const guard = new AgentGuard({ mode: 'strict', allow: [] })
+    expect(guard.blockReason('bash', { command: 'printenv DATABASE_URL' })).toContain('strict mode')
+    expect(guard.blockReason('bash', { command: 'echo x && printenv -0' })).toContain('strict mode')
+    expect(guard.blockReason('bash', { command: 'cat /proc/self/environ' })).toContain('strict mode')
+    expect(guard.blockReason('bash', { command: 'cat app.secrets.txt' })).toContain('strict mode')
+    expect(guard.blockReason('bash', { command: 'env NODE_ENV=test bun test' })).toBeUndefined()
+    expect(guard.blockReason('bash', { command: 'grep -r "printenvironment" docs' })).toBeUndefined()
+  })
+
+  test('secret files in other layouts, and the allowlist inside them', () => {
+    const guard = new AgentGuard({ mode: 'mask', allow: ['us-east-1'] })
+    expect(guard.maskSecretFile('db.internal:5432:app:app_user:Pg$ecret\n', '/home/u/.pgpass')).toBe('db.internal:5432:app:app_user:<SECRET_1>\n')
+    expect(guard.maskSecretFile('//registry.npmjs.org/:_authToken=npm_abcdef\n', '.npmrc')).not.toContain('npm_abcdef')
+    expect(guard.maskSecretFile('[default]\naws_secret_access_key = wJalrXUtnFEMI\nregion: us-east-1\n', 'credentials')).toBe('[default]\naws_secret_access_key = <SECRET_3>\nregion: us-east-1\n')
+    expect(guard.maskSecretFile('{\n  "clientSecret": "abc",\n  "nested": {\n}\n', 'credentials.json')).toContain('"clientSecret": "<SECRET_4>",')
   })
 })

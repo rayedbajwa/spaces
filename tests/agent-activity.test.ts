@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createActivityLog, createLineStamper, createSecretRedactor, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
+import { createActivityLog, createLineCarry, createLineStamper, createSecretRedactor, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
 
 const text = (delta: string) => ({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
 const start = (id: string, toolName: string, args: unknown) => ({ type: 'tool_execution_start', toolCallId: id, toolName, args })
@@ -142,5 +142,21 @@ describe('masking streamed text', () => {
     const out = [text('I will set PASSWORD=sup'), text('ersecret99 now.\nDone')].map((e) => log.onEvent(e) ?? '').join('') + log.flush()
     expect(out).not.toContain('supersecret99')
     expect(out).toBe('[03:41:05Z task T001] I will set PASSWORD=[redacted] now.\n[03:41:05Z task T001] Done')
+  })
+})
+
+describe('the worker\'s carry buffer', () => {
+  test('a credential split between chunks reaches masking whole', () => {
+    const carry = createLineCarry()
+    const pieces = [carry.push('▸ $ psql postgres://u:pw1234'), carry.push('5678@host/db\n'), carry.flush()]
+    expect(pieces[0]).toBe('')
+    expect(redactSecrets(pieces.join(''))).toBe('▸ $ psql postgres://u:[redacted]@host/db\n')
+  })
+
+  test('a very long line is released at whitespace, never inside a word', () => {
+    const carry = createLineCarry({ maxHold: 20 })
+    const out = carry.push('aaaa bbbb cccc dddd eeee ffff')
+    expect(out).toBe('aaaa bbbb cccc dddd eeee ')
+    expect(carry.flush()).toBe('ffff')
   })
 })

@@ -143,7 +143,20 @@ async function summarizeOnce(rawPrompt: string, orgId?: string): Promise<string>
  * Compact a stage output tail into a preamble-ready summary. Never throws —
  * on any error, returns the raw tail so the pipeline still gets its context.
  */
-export async function compactHandoff(input: {
+/**
+ * The handoff a stage passes on, masked under the organization's AI data
+ * guardrails whichever way it was produced: the raw tail (short, or when
+ * compaction fails), a fresh summary, or a cached one written before the
+ * guardrails existed. The worker stores and posts what this returns.
+ */
+export async function compactHandoff(input: Parameters<typeof compactHandoffUnmasked>[0]): Promise<CompactionResult> {
+  const result = await compactHandoffUnmasked(input)
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput, redactSecretValues } = await import('./guardrails')
+  return { ...result, text: maskOutput(redactSecretValues(result.text), await loadGuardPolicy(input.orgId)) }
+}
+
+async function compactHandoffUnmasked(input: {
   stage: string
   stepId: string
   model?: string

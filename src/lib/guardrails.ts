@@ -38,6 +38,8 @@ export type SensitiveKind = 'SECRET' | 'EMAIL' | 'PHONE' | 'SSN' | 'CARD' | 'IBA
 
 interface Detector {
   kind: SensitiveKind
+  /** What maskOutput writes in its place (default: by kind). */
+  label?: string
   re: RegExp
   /** Capture groups holding the sensitive part (the first one that matched); the whole match when unset. */
   groups?: number[]
@@ -68,19 +70,33 @@ function iban(value: string): boolean {
 /** Addresses that are not personal data: git remotes and no-reply senders. */
 const NOT_PERSONAL_EMAIL = /^(git|noreply|no-reply|donotreply)@|@users\.noreply\.github\.com$|@example\.(com|org|net)$/i
 
-const DETECTORS: Detector[] = [
+/** Names that say a value is secret: *TOKEN*, *SECRET*, *PASSWORD*, and whole parts PASS, PWD, KEY, API_KEY, CREDENTIALS, AUTH (so BYPASS or AUTHOR are not). */
+const SECRET_NAME = String.raw`(?:(?:[A-Za-z0-9]+_)*[A-Za-z0-9]*(?:token|secret|password|passwd)(?:_[A-Za-z0-9]+)*|(?:[A-Za-z0-9]+_)*(?:pass|pwd|key|apikey|api_key|credentials?|auth)(?:_[A-Za-z0-9]+)*)`
+/** A YAML/JSON value that is a type or an expression, not a literal secret (`token: string`, `password: req.body.password`). */
+const NOT_A_LITERAL = /^(?:string|number|boolean|bool|any|unknown|null|undefined|none|nil|true|false|object|str|int|integer|float|bytes|optional|required|secret|password|token|\*+|x+|\.{3}|<[^>]*>|\[redacted.*)$|[()]|^this\.|^process\.env|^\$\{|^\{\{|^[A-Za-z_]+\.[A-Za-z_.]+$/i
+
+export const SECRET_DETECTORS: Detector[] = [
   // Secrets first: a connection string's user@host must not be read as an email.
-  { kind: 'SECRET', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
+  { kind: 'SECRET', label: '[redacted private key]', re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
   { kind: 'SECRET', re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g },
   { kind: 'SECRET', re: /\bsk-(?:ant-|or-|proj-)?[A-Za-z0-9_-]{16,}\b/g },
   { kind: 'SECRET', re: /\bxox[abpr]-[A-Za-z0-9-]{10,}\b/g },
   { kind: 'SECRET', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g },
-  { kind: 'SECRET', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
-  { kind: 'SECRET', re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@"'`]+:([^\s/@"'`]+)@/gi, groups: [1] },
-  { kind: 'SECRET', re: /[?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|sig|signature)=([^&\s"'`#]+)/gi, groups: [1] },
+  { kind: 'SECRET', label: '[redacted jwt]', re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
+  // Credentials in any URL (postgres://, redis://:pw@…, https://…): the password, with or without a user.
+  { kind: 'SECRET', re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@"'`]*:([^\s/@"'`]+)@/gi, groups: [1] },
+  { kind: 'SECRET', re: /[?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|key|sig|signature)=([^&\s"'`#]+)/gi, groups: [1] },
   { kind: 'SECRET', re: /\b(?:Bearer|token)\s+([A-Za-z0-9._~+/=-]{16,})/gi, groups: [1] },
-  { kind: 'SECRET', re: /\b[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|API_?KEY|_KEY|CREDENTIALS?|AUTH)[A-Z0-9_]*=(?:"([^"]+)"|'([^']+)'|([^\s"'`]+))/g, groups: [1, 2, 3] },
-  { kind: 'SECRET', re: /["']?(?:password|passwd|secret|client_secret|token|access_token|refresh_token|api_?key|private_key)["']?\s*[:=]\s*(?:"([^"]+)"|'([^']+)')/gi, groups: [1, 2] },
+  // Environment-style NAME=value (upper case: .env files, shell exports): any value.
+  { kind: 'SECRET', re: new RegExp(String.raw`\b(?=[A-Z0-9_]*[A-Z])${SECRET_NAME.replace(/\[A-Za-z0-9\]/g, '[A-Z0-9]').replace(/token\|secret\|password\|passwd/, 'TOKEN|SECRET|PASSWORD|PASSWD').replace(/pass\|pwd\|key\|apikey\|api_key\|credentials\?\|auth/, 'PASS|PWD|KEY|APIKEY|API_KEY|CREDENTIALS?|AUTH')}\s*=(?![=>])\s*(?:"([^"]+)"|'([^']+)'|([^\s"'${'`'},;&]+))`, 'g'), groups: [1, 2, 3] },
+  // Any-case name=value: a literal right after '=' (password=supersecret, api_key=abc) or a quoted one (password = "hunter2") — not code (password = req.body.password).
+  { kind: 'SECRET', re: new RegExp(String.raw`\b${SECRET_NAME}(?:=(?![=>])(?:"([^"]+)"|'([^']+)'|([^\s"'${'`'},;&()]+)(?![(\w]))|\s+=\s*(?:"([^"]+)"|'([^']+)'))`, 'gi'), groups: [1, 2, 3, 4, 5], check: (v) => !NOT_A_LITERAL.test(v) },
+  // "password": "…" and YAML password: abc123 — quoted or bare, but not a type or an expression.
+  { kind: 'SECRET', re: /(?:^|[\s{,"'])["']?(?:password|passwd|secret|client_secret|secret_key|token|auth_token|access_token|refresh_token|api_?key|access_key|aws_secret_access_key|private_key)["']?\s*:\s*(?:"([^"]+)"|'([^']+)'|([^\s"'`,}\]#;|]+))/gim, groups: [1, 2, 3], check: (v) => !NOT_A_LITERAL.test(v) },
+]
+
+const DETECTORS: Detector[] = [
+  ...SECRET_DETECTORS,
   // Personal data.
   { kind: 'EMAIL', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, check: (v) => !NOT_PERSONAL_EMAIL.test(v) },
   { kind: 'SSN', re: /\b(?!000|666|9\d\d)\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g },
@@ -89,12 +105,12 @@ const DETECTORS: Detector[] = [
   { kind: 'PHONE', re: /(?<![\w.:/-])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?![\w-])|(?<![\w.:/-])\+\d{11,15}(?!\w)/g },
 ]
 
-interface Span { start: number; end: number; kind: SensitiveKind; value: string }
+interface Span { start: number; end: number; kind: SensitiveKind; value: string; label?: string }
 
 /** Where the sensitive values in `text` are (non-overlapping, in order). */
-export function findSensitive(text: string, allow: Array<string | RegExp> = []): Span[] {
+export function findSensitive(text: string, allow: Array<string | RegExp> = [], detectors: Detector[] = DETECTORS): Span[] {
   const spans: Span[] = []
-  for (const detector of DETECTORS) {
+  for (const detector of detectors) {
     const re = new RegExp(detector.re.source, detector.re.flags.includes('d') ? detector.re.flags : `${detector.re.flags}d`)
     for (const m of text.matchAll(re)) {
       const indices = (m as RegExpMatchArray & { indices?: Array<[number, number] | undefined> }).indices
@@ -105,7 +121,7 @@ export function findSensitive(text: string, allow: Array<string | RegExp> = []):
       if (/^<(SECRET|EMAIL|PHONE|SSN|CARD|IBAN)_\d+>$/.test(value) || value.includes('[redacted')) continue
       if (allow.some((a) => (typeof a === 'string' ? a === value : a.test(value)))) continue
       if (spans.some((s) => start < s.end && end > s.start)) continue
-      spans.push({ start, end, kind: detector.kind, value })
+      spans.push({ start, end, kind: detector.kind, value, ...(detector.label ? { label: detector.label } : {}) })
     }
   }
   return spans.sort((a, b) => a.start - b.start)
@@ -127,7 +143,17 @@ export function maskOutput(text: string, policy: GuardPolicy = DEFAULT_POLICY): 
   const spans = findSensitive(text, compileAllow(policy.allow))
   let out = ''
   let at = 0
-  for (const s of spans) { out += text.slice(at, s.start) + OUTPUT_LABEL[s.kind]; at = s.end }
+  for (const s of spans) { out += text.slice(at, s.start) + (s.label ?? OUTPUT_LABEL[s.kind]); at = s.end }
+  return out + text.slice(at)
+}
+
+/** Secrets only, masked one way, whatever the organization's setting: logs never keep a secret. */
+export function redactSecretValues(text: string): string {
+  if (!text) return text
+  const spans = findSensitive(text, [], SECRET_DETECTORS)
+  let out = ''
+  let at = 0
+  for (const s of spans) { out += text.slice(at, s.start) + (s.label ?? '[redacted]'); at = s.end }
   return out + text.slice(at)
 }
 
@@ -142,8 +168,32 @@ export function maskOutputDeep<T>(value: T, policy: GuardPolicy = DEFAULT_POLICY
 const TOKEN = /<(SECRET|EMAIL|PHONE|SSN|CARD|IBAN)_(\d+)>/g
 
 /** Files whose every value is a secret, and commands that print the environment. */
-const SECRET_FILE = /(?:^|[\s/'"=])(\.env(?:\.(?!example\b|sample\b|template\b)[\w.-]+)?|[\w.-]*\.pem|id_(?:rsa|dsa|ecdsa|ed25519)|\.pgpass|\.npmrc|\.netrc|credentials(?:\.json)?|[\w.-]*secrets?\.(?:json|ya?ml|env))(?=$|[\s'";|&)])/
-const ENV_DUMP = /(?:^|[;&|]\s*|\s)(env|printenv|export -p|set)\s*(?:$|[;&|>])/
+const SOURCE_CODE = /\.(?:[cm]?[jt]sx?|py|go|rb|java|kt|rs|cs|php|swift|scala|md|mdx|html|css|test\.\w+)$/i
+
+/**
+ * Whether a file name (its basename, whatever the extension) is a file of
+ * secrets: .env and variants (not .example/.sample/.template), private keys,
+ * .pgpass/.npmrc/.netrc/.git-credentials, credentials*, *secret(s).* —
+ * but never source code (secrets.ts is code about secrets).
+ */
+export function isSecretFileName(name: string): boolean {
+  const base = name.replace(/\/+$/, '').split('/').pop() ?? ''
+  if (!base || SOURCE_CODE.test(base)) return false
+  if (/^\.env(?:\.[\w.-]+)?$/i.test(base)) return !/\.(?:example|sample|template|dist|defaults?)$/i.test(base)
+  return /\.(?:pem|p12|pfx|key|keystore|jks)$/i.test(base)
+    || /^id_(?:rsa|dsa|ecdsa|ed25519)$/i.test(base)
+    || /^\.(?:pgpass|npmrc|netrc|git-credentials|pypirc|dockercfg)$/i.test(base)
+    || /^credentials/i.test(base)
+    || /(?:^|[._-])secrets?(?:\.|$)/i.test(base)
+}
+
+/** The secret files a path or a command mentions. */
+function secretFilesIn(text: string): string[] {
+  return text.split(/[\s'"`=;|&<>()]+/).filter((t) => t && isSecretFileName(t))
+}
+
+/** Commands that print the environment: env or env -0 alone, printenv (with or without names), export -p, set alone, declare -x, /proc/…/environ. */
+const ENV_DUMP = /(?:^|[;&|(`]\s*|\$\(\s*)(?:printenv\b|env(?:\s+-0)?\s*(?:$|[;&|>)`])|export\s+-p\b|set\s*(?:$|[;&|>)`])|declare\s+-[a-z]*x|compgen\s+-e\b)|\/proc\/(?:self|\d+)\/environ/
 
 /**
  * The guardrails for one agent session: a vault of tokens (stable for the
@@ -215,13 +265,32 @@ export class AgentGuard {
     return out + text.slice(at)
   }
 
-  /** Every value in a file of secrets (KEY=value lines) as a token, whatever its name. */
-  maskSecretFile(text: string): string {
+  private allowed(value: string): boolean {
+    return this.allow.some((a) => (typeof a === 'string' ? a === value : a.test(value)))
+  }
+
+  /**
+   * Every value in a file of secrets as a token, whatever its name and layout:
+   * NAME=value (.env, .npmrc, INI), key: value (YAML), "key": "value" (JSON),
+   * and .pgpass's host:port:db:user:password. Allowlisted values stay.
+   */
+  maskSecretFile(text: string, fileName = ''): string {
     if (!this.masking) return this.mask(text)
-    return this.mask(text.replace(/^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*)(.+)$/gm, (_all, head: string, value: string) => {
-      const v = value.trim().replace(/^(["'])(.*)\1$/, '$2')
-      return v ? `${head}${this.tokenFor('SECRET', v)}` : `${head}${value}`
-    }))
+    const token = (value: string) => (this.allowed(value) ? value : this.tokenFor('SECRET', value))
+    const pgpass = /(?:^|\/)\.pgpass$/i.test(fileName)
+    return this.mask(text.split('\n').map((line) => {
+      if (!line.trim() || /^\s*(?:#|;|\[)/.test(line)) return line
+      if (pgpass) {
+        const cut = line.lastIndexOf(':')
+        return cut === -1 ? line : `${line.slice(0, cut + 1)}${token(line.slice(cut + 1))}`
+      }
+      const m = /^(\s*(?:export\s+)?["']?[^=:"']*?["']?\s*[=:]\s*)(.*?)(\s*,?\s*)$/.exec(line)
+      if (!m || !m[2]) return line
+      const quoted = /^(["'])(.*)\1$/.exec(m[2])
+      const value = quoted ? quoted[2]! : m[2]
+      if (!value || value === '{' || value === '[' || this.allowed(value)) return line
+      return `${m[1]}${quoted ? `${quoted[1]}${token(value)}${quoted[1]}` : token(value)}${m[3]}`
+    }).join('\n'))
   }
 
   /**
@@ -265,17 +334,18 @@ export class AgentGuard {
     if (this.policy.mode !== 'strict') return undefined
     const path = String(args.path ?? args.file_path ?? args.filePath ?? '')
     const command = toolName === 'bash' ? String(args.command ?? '') : ''
-    const touches = (path && SECRET_FILE.test(` ${path}`)) || (command && SECRET_FILE.test(` ${command}`))
-    const dumps = command && ENV_DUMP.test(` ${command}`)
+    const touches = (path && isSecretFileName(path)) || (command && secretFilesIn(command).length > 0)
+    const dumps = command && ENV_DUMP.test(command.trim())
     if (!touches && !dumps) return undefined
     return 'Blocked by the organization\'s AI data guardrails (strict mode): agents do not read secret files (.env, keys, credentials) or print the environment. '
       + 'Refer to variables by name instead (for example "$DATABASE_URL" in a command), or ask a person to make the change.'
   }
 
-  private readsSecretFile(toolName: string, args: Record<string, unknown>): boolean {
+  /** The secret file a tool call reads, if any (its name decides the layout). */
+  private secretFileRead(toolName: string, args: Record<string, unknown>): string | undefined {
     const path = String(args.path ?? args.file_path ?? args.filePath ?? '')
-    if (toolName === 'read' && path) return SECRET_FILE.test(` ${path}`)
-    return toolName === 'bash' && SECRET_FILE.test(` ${String(args.command ?? '')}`)
+    if (toolName === 'read' && path) return isSecretFileName(path) ? path : undefined
+    return toolName === 'bash' ? secretFilesIn(String(args.command ?? ''))[0] : undefined
   }
 
   /**
@@ -328,8 +398,8 @@ export class AgentGuard {
       const hooked = after ? await after(ctx, signal) : undefined
       const content = (hooked?.content ?? ctx.result.content) as Array<{ type?: string; text?: string }> | undefined
       if (!Array.isArray(content)) return hooked
-      const secretFile = this.masking && this.readsSecretFile(ctx.toolCall.name, (ctx.args ?? {}) as Record<string, unknown>)
-      const masked = content.map((b) => (b?.type === 'text' && typeof b.text === 'string' ? { ...b, text: secretFile ? this.maskSecretFile(b.text) : this.mask(b.text) } : b))
+      const secretFile = this.masking ? this.secretFileRead(ctx.toolCall.name, (ctx.args ?? {}) as Record<string, unknown>) : undefined
+      const masked = content.map((b) => (b?.type === 'text' && typeof b.text === 'string' ? { ...b, text: secretFile ? this.maskSecretFile(b.text, secretFile) : this.mask(b.text) } : b))
       return { ...(hooked ?? {}), content: masked }
     }
   }

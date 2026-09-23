@@ -41,7 +41,7 @@ import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
-import { createLineStamper, redactSecrets } from './lib/agent-activity'
+import { createLineCarry, createLineStamper, redactSecrets } from './lib/agent-activity'
 import { maskOutput } from './lib/guardrails'
 import { loadGuardPolicy, runGuardVault } from './lib/guardrails-policy'
 import { log } from './lib/logger'
@@ -348,12 +348,21 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
   Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
 
   let engine: PipelineEngine
+  // Writes what the run log is still holding back (set once the sinks exist).
+  let flushRunLog = () => {}
   try {
     // Every log line says when it was written and by which agent: the stage
     // running (with its role), or "spaces" for the orchestrator around it.
     let logAgent = 'spaces'
     const stampStdout = createLineStamper({ label: () => logAgent })
     const stampStderr = createLineStamper({ label: () => logAgent })
+    // Masked a whole line at a time: a secret split between chunks is still one secret.
+    const carryStdout = createLineCarry()
+    const carryStderr = createLineCarry()
+    const logWhole = (stream: 'stdout' | 'stderr', whole: string) => {
+      if (whole) void queueEvent(runId, 'log', { stream, chunk: (stream === 'stdout' ? stampStdout : stampStderr).stamp(maskLog(whole)) })
+    }
+    flushRunLog = () => { logWhole('stdout', carryStdout.flush()); logWhole('stderr', carryStderr.flush()) }
     engine = new PipelineEngine(run.templateJson, options, {
       onUsage: (message, stage) => {
         const raw = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
@@ -383,12 +392,13 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'stage_start', { stage, index, total })
       },
       stdout: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(maskLog(chunk)) })
+        logWhole('stdout', carryStdout.push(chunk))
       },
       stderr: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(maskLog(chunk)) })
+        logWhole('stderr', carryStderr.push(chunk))
       },
       onStageHandoff: async (h) => {
+        flushRunLog()
         // The stage's documents are the intent's record: sync them in before the next stage starts.
         await syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
         // A stage finished: keep the database copy of the conversation current.
@@ -437,6 +447,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
 
   try {
     const result = rehydrate ? await engine.resumeWithAnswer(answer!.text) : await engine.start()
+    flushRunLog()
     if (await runWasCancelled(runId)) {
       await finishCancelledRun(runId)
       await releaseAgent?.(null)
@@ -452,6 +463,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
     await releaseAgent?.(result.sessionFile ?? null, { detach: result.status === 'paused' })
     pendingAnswers.delete(runId)
   } catch (error) {
+    flushRunLog()
     await releaseAgent?.(null)
     if (await runWasCancelled(runId)) {
       // The engine was disposed under the running stage; that is the cancel, not a failure.

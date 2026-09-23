@@ -19,7 +19,7 @@ import {
 import { log } from './logger'
 import { createActivityLog, createSecretRedactor } from './agent-activity'
 import { AgentGuard, maskOutput } from './guardrails'
-import { guardSession, loadGuardPolicy } from './guardrails-policy'
+import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
@@ -271,6 +271,7 @@ export class AIDLCFlow {
    * carries the history, and the tokens in it must still map to their values.
    */
   private guard?: AgentGuard
+  private vaultWriter?: ReturnType<typeof createVaultWriter>
   private currentModelSpec?: string
   private stageIndex = 0
   private waitState?: WaitState
@@ -357,6 +358,8 @@ export class AIDLCFlow {
   }
 
   async dispose(): Promise<void> {
+    // Whatever tokens the run made are stored before it stops (finished, paused or failed).
+    await this.vaultWriter?.flush()
     this.session?.dispose()
     this.session = undefined
   }
@@ -499,15 +502,19 @@ export class AIDLCFlow {
 
     if (!this.guard) {
       // A resumed run's history already uses tokens: load the same vault back.
-      const vault = await this.options.guardVault?.load().catch(() => undefined)
+      // If it cannot be read, stop: the history's tokens would no longer map to
+      // their values, and commands would run with a literal <SECRET_1>.
+      let vault: Record<string, string> | undefined
+      try {
+        vault = await this.options.guardVault?.load()
+      } catch (error) {
+        throw new Error(`The run's guardrail vault could not be read (${error instanceof Error ? error.message : String(error)}); resuming would leave its tokens unmapped. Check ENCRYPTION_KEY, or start the run again.`)
+      }
       const guard = new AgentGuard(await loadGuardPolicy(await this.orgId()), vault)
-      let saving: ReturnType<typeof setTimeout> | undefined
-      guard.onNewToken = () => {
-        if (!this.options.guardVault || saving) return
-        saving = setTimeout(() => {
-          saving = undefined
-          void this.options.guardVault!.save(guard.exportVault()).catch((error) => aidlcLog.warn('guardrail vault not saved', { error: error instanceof Error ? error.message : String(error) }))
-        }, 250)
+      if (this.options.guardVault) {
+        this.vaultWriter = createVaultWriter(this.options.guardVault, () => guard.exportVault(), (error) =>
+          aidlcLog.warn('guardrail vault not saved', { error: error instanceof Error ? error.message : String(error) }))
+        guard.onNewToken = () => this.vaultWriter?.schedule()
       }
       this.guard = guard
     }
@@ -823,7 +830,7 @@ export class AIDLCFlow {
     // What the guardrails kept from the model (or blocked) during this stage.
     const guarded = this.guard?.report()
     if (guarded) this.print(`\n${guarded}`)
-    if (this.guard && this.options.guardVault) await this.options.guardVault.save(this.guard.exportVault()).catch(() => undefined)
+    await this.vaultWriter?.flush()
     this.captureActiveFeatureBranch()
     // Whatever the stage wrote into the implementation checkouts is committed on
     // the feature branch, so it is attributable and survives an interruption.

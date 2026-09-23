@@ -31,3 +31,26 @@ describe('guardrail policy', () => {
     }
   })
 })
+
+describe('the run vault writer', () => {
+  test('saves one at a time, always ending with the latest vault', async () => {
+    const { createVaultWriter } = await import('../src/lib/guardrails-policy')
+    let vault: Record<string, string> = {}
+    const saved: Array<Record<string, string>> = []
+    let inFlight = 0
+    let maxInFlight = 0
+    const store = {
+      load: async () => undefined,
+      save: async (v: Record<string, string>) => {
+        inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight)
+        await new Promise((r) => setTimeout(r, 5))
+        saved.push(v); inFlight -= 1
+      },
+    }
+    const writer = createVaultWriter(store, () => ({ ...vault }))
+    for (let i = 1; i <= 5; i++) { vault = { ...vault, [`<EMAIL_${i}>`]: `u${i}@acme.io` }; writer.schedule() }
+    await writer.flush()
+    expect(maxInFlight).toBe(1)
+    expect(Object.keys(saved.at(-1)!)).toHaveLength(5)
+  })
+})

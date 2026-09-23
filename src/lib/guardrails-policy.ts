@@ -65,3 +65,33 @@ export function runGuardVault(runId: string): GuardVaultStore {
     },
   }
 }
+
+/**
+ * Writes a run's vault one save at a time, always the latest: a save started
+ * while another runs waits and then writes the vault as it is by then, so an
+ * older snapshot can never land after a newer one. `flush` resolves once
+ * everything up to now is stored.
+ */
+export function createVaultWriter(store: GuardVaultStore, snapshot: () => Record<string, string>, onError: (error: unknown) => void = () => undefined) {
+  let dirty = false
+  let running: Promise<void> | undefined
+  const loop = async () => {
+    while (dirty) {
+      dirty = false
+      await store.save(snapshot()).catch(onError)
+    }
+    running = undefined
+  }
+  return {
+    /** A new token exists: store the vault soon. */
+    schedule(): void {
+      dirty = true
+      running ??= loop()
+    },
+    /** Everything so far is stored (before a stage ends, a pause, an error). */
+    async flush(): Promise<void> {
+      if (running) await running
+      if (dirty) { running ??= loop(); await running }
+    },
+  }
+}
