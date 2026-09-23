@@ -1,7 +1,7 @@
 import { getDb } from './db'
 import { sealCredentials, unsealCredentials } from './crypto-vault'
 
-export type AppIntegrationKind = 'github' | 'jira' | 'confluence' | 'slack' | 'linear'
+export type AppIntegrationKind = 'github' | 'jira' | 'confluence' | 'slack' | 'linear' | 'figma'
 export type AppIntegrationStatus = 'not_connected' | 'pending' | 'connected' | 'error'
 
 export interface AppIntegrationRow {

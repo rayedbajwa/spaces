@@ -73,7 +73,7 @@ export interface OAuthAppSummary {
   permissionsUrl?: string
 }
 
-export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear']
+export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear', 'figma']
 
 export function isOAuthProviderId(value: string): value is OAuthProviderId {
   return (OAUTH_PROVIDER_IDS as string[]).includes(value)

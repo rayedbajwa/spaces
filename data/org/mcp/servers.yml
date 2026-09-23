@@ -7,3 +7,7 @@ servers:
     purpose: tickets-epics-workflows
     approved: true
     default_mode: read-only
+  - id: figma
+    purpose: figma-file-nodes-and-design-tokens
+    approved: true
+    default_mode: read-only

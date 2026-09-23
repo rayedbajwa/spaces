@@ -23,8 +23,8 @@ import { log } from './logger'
 
 const storeLog = log.child({ mod: 'knowledge-store' })
 
-export type KnowledgeSourceKind = 'confluence' | 'jira' | 'linear' | 'github_repo' | 'github_issues' | 'url' | 'manual'
-export const KNOWLEDGE_SOURCE_KINDS: KnowledgeSourceKind[] = ['confluence', 'jira', 'linear', 'github_repo', 'github_issues', 'url', 'manual']
+export type KnowledgeSourceKind = 'confluence' | 'jira' | 'linear' | 'github_repo' | 'github_issues' | 'url' | 'manual' | 'figma'
+export const KNOWLEDGE_SOURCE_KINDS: KnowledgeSourceKind[] = ['confluence', 'jira', 'linear', 'github_repo', 'github_issues', 'url', 'manual', 'figma']
 export const KNOWLEDGE_KIND_LABEL: Record<KnowledgeSourceKind, string> = {
   confluence: 'Confluence space',
   jira: 'Jira project',
@@ -33,6 +33,7 @@ export const KNOWLEDGE_KIND_LABEL: Record<KnowledgeSourceKind, string> = {
   github_issues: 'GitHub issues & PRs',
   url: 'Web pages',
   manual: 'Notes',
+  figma: 'Figma design system',
 }
 
 export type SyncStatus = 'running' | 'ok' | 'error'

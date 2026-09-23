@@ -22,9 +22,11 @@ import { createActivityLog, createSecretRedactor } from './agent-activity'
 import { AgentGuard, maskOutput } from './guardrails'
 import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
+import { buildFigmaToolDefinitions } from './figma-tools'
 import { buildBrowserTools } from './browser-tools'
 import { checkoutContainerName, createAgentResourceLoader, createAgentSettings } from './agent-resources'
 import { installCommandTimeLimit, stopStageLeftovers } from './stage-limits'
+import { extractFigmaLinks, type FigmaDesignLink } from './features'
 import { standingAgentInstructions } from './agent-environment'
 import { readVerificationStatus } from './pipeline-branch'
 import {
@@ -510,7 +512,12 @@ export class AIDLCFlow {
       // Connected integrations (Jira/Linear/Confluence/GitHub) as on-demand knowledge tools.
       // Connected integrations as knowledge tools + web fetch/search; bash gives CLI access.
       // Plus a real browser so implement/QA stages can run the app and verify what users see.
-      customTools: [...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])), ...buildWebTools(), ...buildBrowserTools(this.options.cwd)],
+      customTools: [
+        ...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])),
+        ...(await buildFigmaToolDefinitions({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])),
+        ...buildWebTools(),
+        ...buildBrowserTools(this.options.cwd),
+      ],
       // Default resources plus the skills Spaces bundles (playwright-browser), and
       // the standing instructions for this run: what the machine provides and how
       // evidence must hold up.
@@ -719,8 +726,13 @@ export class AIDLCFlow {
   }
 
   private async runReviewGate(stage: StageName): Promise<FlowProgress> {
+    const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
+    const spec = featureDirAbs ? await readFile(path.join(featureDirAbs, 'spec.md'), 'utf8').catch(() => '') : ''
+    const links = extractFigmaLinks(spec)
+    const designChecklist = generateDesignFidelityChecklist(links)
+
     this.print(`\n--- Review gate after ${stage} ---\n\n`)
-    const output = await this.streamPrompt(withSharedContext(buildReviewPrompt(stage), this.options))
+    const output = await this.streamPrompt(withSharedContext(buildReviewPrompt(stage, designChecklist), this.options))
 
     if (QUESTION_PATTERN.test(output)) {
       return this.pause('clarification', stage)
@@ -1737,13 +1749,25 @@ ${note}
 Apply the notes to this stage's artifacts now (edit the files as needed), keep everything else as reviewed, and finish with a short summary of what you changed. The stage is already approved: do not ask questions and do not wait for another review.`
 }
 
-function buildReviewPrompt(stage: StageName): string {
+export function generateDesignFidelityChecklist(links?: FigmaDesignLink[]): string {
+  if (!links || links.length === 0) return ''
+  return [
+    '### Design Fidelity & Design System Checklist',
+    ...links.map((l) => `- [ ] Inspect linked design artifact: ${l.url}${l.nodeId ? ` (node: ${l.nodeId})` : ''}`),
+    '- [ ] Verify typography scale, colors, elevation, and design tokens conform to the design system',
+    '- [ ] Verify auto-layout padding, item spacing, and responsive flexbox alignment match mockup',
+    '- [ ] Verify component variants, interactive states (hover, active, disabled), and error states match spec',
+  ].join('\n')
+}
+
+function buildReviewPrompt(stage: StageName, designChecklist?: string): string {
   const scope = getReviewScope(stage)
+  const designSection = designChecklist ? `\n\n${designChecklist}\n` : ''
 
   return `Review the outputs produced by the ${STAGE_DEFINITIONS[stage].skill} stage in the current repository.
 Use the available tools to inspect the generated repo artifacts before responding.
 
-Focus on ${scope}.
+Focus on ${scope}.${designSection}
 
 Return a concise review with these sections:
 1. Summary
@@ -1831,6 +1855,7 @@ export async function runAIDLCAssistantChat(options: {
   })
 
   const knowledgeTools = await buildKnowledgeTools({ projectId: options.projectId, orgId }).catch(() => [])
+  const figmaTools = await buildFigmaToolDefinitions({ projectId: options.projectId, orgId }).catch(() => [])
   const actionNames = (options.actionTools ?? []).map((t) => t.name)
   const { session } = await createAgentSession({
     // Spaces' own secrets (its database, keys) stay out of the agent's shell.
@@ -1840,7 +1865,7 @@ export async function runAIDLCAssistantChat(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls'],
-    customTools: [...knowledgeTools, ...buildWebTools(), ...(options.actionTools ?? [])],
+    customTools: [...knowledgeTools, ...figmaTools, ...buildWebTools(), ...(options.actionTools ?? [])],
     sessionManager: SessionManager.inMemory(options.cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
@@ -2293,6 +2318,10 @@ export async function runAIDLCParallelSubAgents(options: {
     orgId,
     repos: (options.repoTargets ?? []).map((t) => t.githubRepo).filter((r): r is string => Boolean(r)),
   }).catch(() => [])
+  const figmaTools = await buildFigmaToolDefinitions({
+    projectId: options.projectId,
+    orgId,
+  }).catch(() => [])
 
   // ---- Branch / PR plumbing for GitHub-hosted repos ------------------------
   const prEnabled = options.pullRequests?.enabled === true
@@ -2413,7 +2442,7 @@ export async function runAIDLCParallelSubAgents(options: {
           model: modelSelection.model,
           thinkingLevel: modelSelection.thinkingLevel,
           tools: ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'],
-          customTools: [...knowledgeTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
+          customTools: [...knowledgeTools, ...figmaTools, ...buildWebTools(), ...buildBrowserTools(workstreamCwd)],
           resourceLoader: await createAgentResourceLoader(workstreamCwd, { appendSystemPrompt: await standingAgentInstructions(workstreamCwd, { label: workstream.title }) }),
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })

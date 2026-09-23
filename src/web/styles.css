@@ -1932,6 +1932,7 @@ textarea {
 .integration-logo.atlassian { background: linear-gradient(135deg, #0052cc, #2684ff); }
 .integration-logo.linear { background: linear-gradient(135deg, #5e6ad2, #8b5cf6); }
 .integration-logo.slack { background: linear-gradient(135deg, #4a154b, #e01e5a); }
+.integration-logo.figma { background: linear-gradient(135deg, #f24e1e, #a259ff, #1abcfe); }
 .integration-title { flex: 1; min-width: 200px; }
 .integration-title h3 { margin: 0 0 2px; }
 .integration-state { display: flex; align-items: center; gap: 8px; }
@@ -1973,6 +1974,7 @@ textarea {
 .ks-kind.github_repo, .ks-kind.github_issues { color: #cbd5e1; border-color: rgba(203, 213, 225, 0.3); }
 .ks-kind.url { color: var(--green); border-color: rgba(76, 183, 130, 0.35); }
 .ks-kind.manual { color: var(--amber); border-color: rgba(234, 179, 8, 0.35); }
+.ks-kind.figma { color: #f43f5e; border-color: rgba(244, 63, 94, 0.35); }
 .ks-owner { font-size: 13px; }
 .ks-content { font-size: 13px; white-space: nowrap; }
 .ks-content strong { color: var(--text-strong); }

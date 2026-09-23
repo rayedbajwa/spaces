@@ -47,6 +47,7 @@ export async function fetchSourceBatch(source: KnowledgeSourceRow): Promise<Sync
     case 'github_repo': return importGitHubRepo(source)
     case 'github_issues': return importGitHubIssues(source)
     case 'url': return importUrls(source)
+    case 'figma': return importFigma(source)
     case 'manual': return { documents: [], cursor: source.cursor, complete: false, hasMore: false }
   }
 }
@@ -65,6 +66,12 @@ export function validateSourceConfig(kind: KnowledgeSourceKind, config: Record<s
       if (!urls.length) return 'Add at least one URL.'
       const bad = urls.find((u) => !/^https?:\/\//i.test(u))
       return bad ? `"${bad}" is not an http(s) URL.` : undefined
+    }
+    case 'figma': {
+      const urls = list('fileUrls')
+      const keys = list('fileKeys')
+      if (!urls.length && !keys.length) return 'Provide at least one Figma file URL or file key.'
+      return undefined
     }
     case 'manual': return undefined
   }
@@ -518,4 +525,186 @@ async function importUrls(source: KnowledgeSourceRow): Promise<SyncBatch> {
   // Every configured URL was attempted; failed ones keep their previous copy.
   if (errors.length && documents.length === 0) throw new Error(errors.join('; '))
   return { documents, cursor: { ...source.cursor, errors }, complete: errors.length === 0, hasMore: false, skipped: errors.length }
+}
+
+export async function importFigma(source: KnowledgeSourceRow): Promise<SyncBatch> {
+  const { getAppIntegrationCredentials } = await import('./app-integrations')
+  const { parseFigmaUrl, fetchFigmaApi } = await import('./figma-tools')
+
+  const creds = await getAppIntegrationCredentials(source.orgId, 'figma')
+  if (!creds?.access_token || typeof creds.access_token !== 'string') {
+    throw new Error('Figma integration is not connected. Connect Figma under Organization → Integrations.')
+  }
+  const token = creds.access_token
+  const isPat = creds.isPat !== false
+
+  const urls = strings(source.config.fileUrls)
+  const directKeys = strings(source.config.fileKeys)
+  const fileKeysSet = new Set<string>(directKeys)
+
+  for (const u of urls) {
+    const parsed = parseFigmaUrl(u)
+    if (parsed?.fileKey) fileKeysSet.add(parsed.fileKey)
+    else {
+      const match = u.match(/figma\.com\/(?:file|design)\/([a-zA-Z0-9_-]+)/)
+      if (match?.[1]) fileKeysSet.add(match[1])
+    }
+  }
+
+  const fileKeys = Array.from(fileKeysSet)
+  if (!fileKeys.length) {
+    return { documents: [], cursor: source.cursor, complete: true, hasMore: false }
+  }
+
+  const extractTokens = source.config.extractTokens !== false
+  const extractComponents = source.config.extractComponents !== false
+
+  const currentCursor = (source.cursor || {}) as { fileVersions?: Record<string, string>; lastModified?: string }
+  const fileVersions: Record<string, string> = { ...(currentCursor.fileVersions || {}) }
+  const documents: KnowledgeDocumentInput[] = []
+
+  for (const fileKey of fileKeys) {
+    let meta: { name: string; lastModified?: string; version?: string }
+    try {
+      meta = await fetchFigmaApi(`/files/${fileKey}?depth=1`, token, isPat)
+    } catch {
+      continue
+    }
+
+    const currentVersion = meta.version || meta.lastModified || '1'
+    if (fileVersions[fileKey] === currentVersion) {
+      continue
+    }
+
+    const fileName = meta.name || fileKey
+
+    if (extractTokens) {
+      try {
+        const stylesRes = await fetchFigmaApi(`/files/${fileKey}/styles`, token, isPat)
+        const styles: Array<{ key: string; file_key: string; node_id: string; style_type: string; name: string; description?: string }> =
+          stylesRes.meta?.styles || []
+
+        if (styles.length > 0) {
+          const colorStyles = styles.filter((s) => s.style_type === 'FILL')
+          const textStyles = styles.filter((s) => s.style_type === 'TEXT')
+          const effectStyles = styles.filter((s) => s.style_type === 'EFFECT')
+
+          const overviewContent = [
+            `# Design Tokens & Styles: ${fileName}`,
+            `**Source**: Figma File \`${fileKey}\``,
+            `**Deep Link**: https://www.figma.com/design/${fileKey}`,
+            '',
+            '## Color Styles',
+            colorStyles.length
+              ? colorStyles.map((s) => `- \`${s.name}\`${s.description ? `: ${s.description}` : ''} (Node: ${s.node_id})`).join('\n')
+              : '_No color styles defined_',
+            '',
+            '## Typography Styles',
+            textStyles.length
+              ? textStyles.map((s) => `- \`${s.name}\`${s.description ? `: ${s.description}` : ''} (Node: ${s.node_id})`).join('\n')
+              : '_No text styles defined_',
+            '',
+            '## Elevation & Effect Styles',
+            effectStyles.length
+              ? effectStyles.map((s) => `- \`${s.name}\`${s.description ? `: ${s.description}` : ''} (Node: ${s.node_id})`).join('\n')
+              : '_No effect styles defined_',
+          ].join('\n')
+
+          documents.push({
+            externalId: `figma:${fileKey}:styles:overview`,
+            title: `Design Tokens: ${fileName} Styles & Colors`,
+            url: `https://www.figma.com/design/${fileKey}`,
+            content: overviewContent,
+            sourceUpdatedAt: meta.lastModified || undefined,
+          })
+
+          for (const s of styles) {
+            const tokenContent = [
+              `# Design Token: ${s.name}`,
+              `**Category**: ${s.style_type}`,
+              `**Figma Node ID**: ${s.node_id}`,
+              `**Description**: ${s.description || 'No description provided.'}`,
+              '',
+              `## Deep Link`,
+              `https://www.figma.com/design/${fileKey}?node-id=${s.node_id}`,
+            ].join('\n')
+
+            documents.push({
+              externalId: `figma:${fileKey}:token:${s.key || s.node_id}`,
+              title: `Design Token: ${s.name}`,
+              url: `https://www.figma.com/design/${fileKey}?node-id=${s.node_id}`,
+              content: tokenContent,
+              sourceUpdatedAt: meta.lastModified || undefined,
+            })
+          }
+        }
+      } catch {
+        // continue on error
+      }
+    }
+
+    if (extractComponents) {
+      try {
+        const compsRes = await fetchFigmaApi(`/files/${fileKey}/components`, token, isPat)
+        const components: Array<{ key: string; file_key: string; node_id: string; name: string; description?: string; containing_frame?: { name?: string } }> =
+          compsRes.meta?.components || []
+
+        const setsRes = await fetchFigmaApi(`/files/${fileKey}/component_sets`, token, isPat).catch(() => ({ meta: { component_sets: [] } }))
+        const sets: Array<{ key: string; file_key: string; node_id: string; name: string; description?: string }> =
+          setsRes.meta?.component_sets || []
+
+        for (const comp of components) {
+          const frame = comp.containing_frame?.name ? `\n**Frame**: ${comp.containing_frame.name}` : ''
+          const content = [
+            `# Component: ${comp.name}`,
+            `**File**: ${fileName} (${fileKey})`,
+            `**Node ID**: ${comp.node_id}${frame}`,
+            `**Description**: ${comp.description || 'Standard reusable UI component.'}`,
+            '',
+            `## Link to Figma Canvas`,
+            `https://www.figma.com/design/${fileKey}?node-id=${comp.node_id}`,
+          ].join('\n')
+
+          documents.push({
+            externalId: `figma:${fileKey}:component:${comp.key || comp.node_id}`,
+            title: `Component: ${comp.name}`,
+            url: `https://www.figma.com/design/${fileKey}?node-id=${comp.node_id}`,
+            content,
+            sourceUpdatedAt: meta.lastModified || undefined,
+          })
+        }
+
+        for (const set of sets) {
+          const content = [
+            `# Component Set: ${set.name}`,
+            `**File**: ${fileName} (${fileKey})`,
+            `**Node ID**: ${set.node_id}`,
+            `**Description**: ${set.description || 'Component variant family.'}`,
+            '',
+            `## Link to Figma Canvas`,
+            `https://www.figma.com/design/${fileKey}?node-id=${set.node_id}`,
+          ].join('\n')
+
+          documents.push({
+            externalId: `figma:${fileKey}:component_set:${set.key || set.node_id}`,
+            title: `Component Set: ${set.name}`,
+            url: `https://www.figma.com/design/${fileKey}?node-id=${set.node_id}`,
+            content,
+            sourceUpdatedAt: meta.lastModified || undefined,
+          })
+        }
+      } catch {
+        // continue on error
+      }
+    }
+
+    fileVersions[fileKey] = currentVersion
+  }
+
+  return {
+    documents,
+    cursor: { fileVersions, lastModified: new Date().toISOString() },
+    complete: true,
+    hasMore: false,
+  }
 }
