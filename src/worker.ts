@@ -39,6 +39,7 @@ import { getWorkerId, heartbeatWorker, unregisterWorker } from './lib/worker-reg
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
+import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
@@ -156,6 +157,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
     workerLog.info('run already claimed, skipping', { runId, status: run.status })
     return
   }
+
+  // The database holds the intents; the working copy may be a fresh clone or a
+  // new worker's disk. Put back missing documents before anything reads them.
+  await restoreIntentFilesQuietly(run.projectId, run.projectPath)
 
   // Rerun/resume: start at the requested stage when it exists in this template.
   const templateStages = (run.templateJson?.steps ?? []).map((s) => s.stage as StageName)
@@ -368,6 +373,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'log', { stream: 'stderr', chunk })
       },
       onStageHandoff: async (h) => {
+        // The stage's documents are the intent's record: sync them in before the next stage starts.
+        await syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
         // A stage finished: keep the database copy of the conversation current.
         void saveSessionCopy(runId, engines.get(runId)?.getSessionFile())
         const sql = getDb()
@@ -474,6 +481,8 @@ async function notifyGate(runId: string, progress: FlowProgress): Promise<void> 
 }
 
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {
+  // Paused or finished: bring the intents' record up to date before anyone looks.
+  await getRun(runId).then((run) => syncProjectIntentsQuietly(run?.projectId, run?.projectPath, 'agent')).catch(() => undefined)
   // Paused or finished: the next step (an answer, a rerun) may happen on another worker.
   await saveSessionCopy(runId, progress.sessionFile)
   if (progress.status === 'paused') {
