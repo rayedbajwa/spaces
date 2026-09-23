@@ -992,27 +992,6 @@ function App() {
   }
 
   /** Rename a feature: rewrites its spec's title (the directory and branch keep their names). */
-  /** Change an intent's scope (rewrites the **Scope** line of its spec). */
-  async function changeFeatureScope(feature: FeatureSummary, choice: string) {
-    if (!selectedProjectNamespace) return
-    const scope = choice === 'custom' ? normalizeScope(window.prompt(`Scope for ${feature.id} (e.g. security, performance)`, feature.scope ?? '') ?? '') : choice
-    if (!scope || scope === feature.scope) return
-    try {
-      const response = await fetch(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}`, {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ scope }),
-      })
-      const data = (await response.json().catch(() => ({}))) as { features?: FeatureSummary[]; error?: string }
-      if (!response.ok) throw new Error(data.error ?? `${response.status}`)
-      setProjectFeatures(data.features ?? [])
-      setStatusMessage(`${feature.title} is now scoped as ${scopeLabel(scope)}.`)
-      await refreshBoard()
-    } catch (error) {
-      setStatusMessage(toMessage(error))
-    }
-  }
-
   async function renameFeatureTitle(feature: FeatureSummary) {
     if (!selectedProjectNamespace) return
     const title = window.prompt(`New title for ${feature.id}`, feature.title)
@@ -2629,21 +2608,6 @@ function App() {
                             <div className="feature-row-actions">
                               {!feature.current && feature.status !== 'delivered' && (
                                 <button className="ghost-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active intent and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue</button>
-                              )}
-                              {feature.documents.some((d) => d.label === 'Spec') && (
-                                <select
-                                  className="scope-select"
-                                  aria-label={`Scope of ${feature.title}`}
-                                  title="What kind of work this intent is"
-                                  disabled={busy}
-                                  value={feature.scope ?? ''}
-                                  onChange={(e) => void changeFeatureScope(feature, e.target.value)}
-                                >
-                                  {!feature.scope && <option value="" disabled>Scope…</option>}
-                                  {INTENT_SCOPES.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-                                  {feature.scope && !INTENT_SCOPES.some((o) => o.id === feature.scope) && <option value={feature.scope}>{scopeLabel(feature.scope)}</option>}
-                                  <option value="custom">Other…</option>
-                                </select>
                               )}
                               {feature.documents.some((d) => d.label === 'Spec') && (
                                 <button className="ghost-button" disabled={busy} onClick={() => void renameFeatureTitle(feature)} type="button">Rename</button>
