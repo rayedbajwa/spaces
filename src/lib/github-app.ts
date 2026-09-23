@@ -116,7 +116,7 @@ export function slackManifestUrl(origin: string): string {
     features: { bot_user: { display_name: 'Spaces', always_online: false } },
     oauth_config: {
       redirect_urls: [`${origin}/api/oauth/slack/callback`],
-      scopes: { bot: ['channels:read', 'chat:write', 'users:read'] },
+      scopes: { bot: ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email'] },
     },
     settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
   }
