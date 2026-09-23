@@ -1049,11 +1049,11 @@ export class AIDLCFlow {
           title: conventional('feat', branch, specTitle ?? branch),
           body: pullRequestBody({
             summary: `The \`${target.label}\` part of feature \`${branch}\`, implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.${primary ? `\n\nSpecified and tracked in ${primary.githubRepo}#${primary.number} (${primary.url}).` : ''}\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
-            featureDir: featureDirRel,
+            featureDir: changeDir,
             artifacts,
           }),
         })
-        if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${featureDirRel ?? 'the intent\'s documents'}\n`)
+        if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${changeDir ?? 'its repo-local change'}\n`)
       } catch (error) {
         this.print(`[pr] ${target.label}: could not publish ${branch} after ${stage}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
       }
@@ -1260,7 +1260,8 @@ export class AIDLCFlow {
       if (own?.length) { workstreams.push(...own.map((ws) => ({ ...ws, repository: target.label, tasks: withGoverningTicks(ws.tasks, governingTasks) }))); continue }
       const names = [target.label, target.githubRepo, target.githubRepo?.split('/')[1], path.basename(target.localPath)].filter((n): n is string => Boolean(n)).map((n) => n.toLowerCase())
       const lines = governingTasks.split('\n').filter((l) => /^\s*-\s+\[[ xX]\]/.test(l))
-      const mentioning = lines.filter((l) => names.some((n) => l.toLowerCase().includes(n)))
+      // Whole names only: `api` names a repository in "api/src/…" or "the api service", not in "rapidly".
+      const mentioning = lines.filter((l) => names.some((n) => new RegExp(`(^|[^a-z0-9_-])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9_-])`, 'i').test(l)))
       workstreams.push({ title: `Tasks in ${target.label}`, tasks: (mentioning.length ? mentioning : lines).join('\n'), inputs: '', outputs: '', dependencies: '', qaFocus: '', scopedFiles: '', repository: target.label })
     }
     const project = this.options.projectId ? await import('./project-registry').then((m) => m.getProject(this.options.projectId!)).then((p) => (p ? { name: p.name, code: p.code } : undefined)).catch(() => undefined) : undefined
@@ -2704,9 +2705,16 @@ export function withGoverningTicks(workstreamTasks: string, governingTasks: stri
     const id = /^\s*-\s+\[[ xX]\]\s+(T\d+)\b/.exec(line)?.[1]
     if (id && !lineFor.has(id)) lineFor.set(id, line.trim())
   }
-  const ids = [...new Set([...workstreamTasks.matchAll(/\bT\d{2,}\b/g)].map((m) => m[0]))]
-  const lines = ids.map((id) => lineFor.get(id)).filter((l): l is string => Boolean(l))
-  return lines.length ? lines.join('\n') : workstreamTasks
+  // Each line of the workstream's tasks: a line naming task ids becomes those
+  // tasks' governing lines (ticked or not); a line without an id stays as written.
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const line of workstreamTasks.split('\n')) {
+    const ids = [...line.matchAll(/\bT\d{2,}\b/g)].map((m) => m[0]).filter((id) => lineFor.has(id))
+    if (!ids.length) { if (line.trim()) out.push(line); continue }
+    for (const id of ids) if (!seen.has(id)) { seen.add(id); out.push(lineFor.get(id)!) }
+  }
+  return out.length ? out.join('\n') : workstreamTasks
 }
 
 function resolveWorkstreamRepo(repository: string, targets: WorkstreamRepoTarget[] | undefined): WorkstreamRepoTarget | undefined {

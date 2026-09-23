@@ -65,6 +65,11 @@ export const REPO_CHANGE_FILES = new Set(['change.yaml', 'tasks.md', 'spec.md'])
  */
 export async function pruneMirroredDocuments(input: { governingFeatureDir: string; targetRoot: string; changeDir: string }): Promise<string[]> {
   const dir = path.join(input.targetRoot, input.changeDir)
+  // Never the intent itself: its own directory, or any checkout of the
+  // repository that holds it, would have every document "match" and be deleted.
+  if (path.resolve(dir) === path.resolve(input.governingFeatureDir)) return []
+  const { sameRepository } = await import('./repo-change')
+  if (sameRepository(input.targetRoot, input.governingFeatureDir)) return []
   if (!(await plainPath(input.targetRoot, dir))) return []
   const docs = await listIntentDocuments(dir).catch(() => undefined)
   if (!docs) return []

@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { stringify as toYaml } from 'yaml'
 import { isGovernanceRepo } from './governance'
@@ -154,7 +154,13 @@ export async function writeRepoChange(options: {
   // feature under this same numbered directory: its spec and tasks are the
   // record, so nothing is written over them.
   if (sameRepository(options.cwd, options.featureDir)) return { dir, relativeDir, tasksFile: path.join(relativeDir, 'tasks.md') }
+  // Never through a symbolic link: every existing folder from the checkout down
+  // to specs/<intent>/ must be a real directory, and no file written may be a link.
+  await assertPlainPath(options.cwd, dir)
   await mkdir(dir, { recursive: true })
+  for (const name of ['change.yaml', 'tasks.md', 'spec.md']) {
+    if ((await lstat(path.join(dir, name)).catch(() => undefined))?.isSymbolicLink()) throw new Error(`Refusing to write ${path.join(relativeDir, name)}: it is a symbolic link.`)
+  }
 
   const existingMeta = await readFile(path.join(dir, 'change.yaml'), 'utf8').catch(() => '')
   const created = /^created:\s*(\S+)/m.exec(existingMeta)?.[1] ?? new Date().toISOString().slice(0, 10)
@@ -228,6 +234,18 @@ function checklist(tasks: string): string {
 
 function firstLine(text: string): string {
   return text.trim().split('\n')[0]!.replace(/^[-*]\s+/, '').trim()
+}
+
+/** Throws unless every existing folder from `root` down to `dir` is a real directory (missing ones are created as such). */
+async function assertPlainPath(root: string, dir: string): Promise<void> {
+  let current = path.resolve(root)
+  for (const part of path.relative(current, path.resolve(dir)).split(path.sep).filter(Boolean)) {
+    if (part === '..') throw new Error(`Refusing to write outside ${root}.`)
+    current = path.join(current, part)
+    const info = await lstat(current).catch(() => undefined)
+    if (!info) return
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Refusing to write through ${path.relative(root, current)}: not a plain directory.`)
+  }
 }
 
 /** Whether two paths are in the same git repository (worktrees of one repository count as the same). */

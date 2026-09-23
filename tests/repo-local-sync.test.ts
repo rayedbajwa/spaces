@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { AIDLCFlow } from '../src/lib/aidlc'
@@ -63,5 +63,32 @@ describe('code stages write the repo-local change into implementation repositori
     expect(await readFile(path.join(worktree, 'specs/003-search/spec.md'), 'utf8')).toBe('# Feature Specification: Search\n')
     expect(await readFile(path.join(worktree, 'specs/003-search/tasks.md'), 'utf8')).toBe('- [ ] T001 real task\n')
     expect(await readFile(path.join(worktree, 'specs/003-search/change.yaml'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('a repo-local change is never written through a symbolic link', async () => {
+    const { writeRepoChange } = await import('../src/lib/repo-change')
+    const governing = await repo('governance2', { 'specs/003-search/spec.md': '# Search\n' })
+    const api = await repo('api2', { 'README.md': 'x\n' })
+    const outside = await mkdtemp(path.join(tmpdir(), 'outside-'))
+    cleanup.push(outside)
+    await symlink(outside, path.join(api, 'specs'))
+    const plan = { initiativeId: '003-search', changes: [{ repo: { label: 'api2', localPath: api }, changeId: '003-search', project: 'local/api2', workstreams: [{ title: 'x', tasks: '- y' }] }] }
+    await expect(writeRepoChange({ cwd: api, featureDir: path.join(governing, 'specs/003-search'), plan, change: plan.changes[0]! })).rejects.toThrow('not a plain directory')
+    expect(await readdir(outside)).toEqual([])
+  })
+
+  test('a task mentioning a word that merely contains the repository name is not its task', async () => {
+    const governing = await repo('governance3', {
+      'specs/003-search/spec.md': '# Search\n',
+      'specs/003-search/tasks.md': '- [ ] T001 Build index in api/src\n- [ ] T002 Render results rapidly in web\n',
+    })
+    const api = await repo('api', { 'src/a.ts': 'x\n' })
+    await writeFile(path.join(api, 'src/b.ts'), 'y\n')
+    const flow = new AIDLCFlow({ cwd: governing, repoTargets: [{ label: 'governance', localPath: governing, isPrimary: true }, { label: 'api', localPath: api }] }, ['implement'])
+    ;(flow as unknown as { activeFeatureBranch: string }).activeFeatureBranch = '003-search'
+    await (flow as unknown as { syncIntentDocumentsToImplementationRepos: (s: string) => Promise<void> }).syncIntentDocumentsToImplementationRepos('implement')
+    const tasks = await readFile(path.join(api, 'specs/003-search/tasks.md'), 'utf8')
+    expect(tasks).toContain('T001')
+    expect(tasks).not.toContain('T002')
   })
 })

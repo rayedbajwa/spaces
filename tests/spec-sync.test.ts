@@ -47,4 +47,25 @@ describe('implementation repositories keep only their repo-local change', () => 
     expect(withGoverningTicks('T001, T003', governing)).toBe('- [x] T001 Add parser in api/src/parse.ts\n- [x] T003 Docs')
     expect(withGoverningTicks('Build the thing', governing)).toBe('Build the thing')
   })
+
+  test('never prunes the intent itself', async () => {
+    const { featureDir } = await workspace()
+    const governingRoot = path.dirname(path.dirname(featureDir))
+    expect(await pruneMirroredDocuments({ governingFeatureDir: featureDir, targetRoot: governingRoot, changeDir: 'specs/003-search' })).toEqual([])
+    expect((await readdir(featureDir)).sort()).toEqual(['contracts', 'plan.md', 'spec.md', 'tasks.md'])
+  })
+
+  test('tasks without an id are kept beside the governing lines of numbered ones', () => {
+    const governing = '- [x] T001 Add parser\n- [ ] T002 Wire it\n'
+    expect(withGoverningTicks('- T001 parser\n- Update the runbook\n- T002 and T001 again', governing)).toBe('- [x] T001 Add parser\n- Update the runbook\n- [ ] T002 Wire it')
+  })
+
+  test('a repository is named by whole words only', async () => {
+    // Exercised through the flow in repo-local-sync; here the rule itself.
+    const names = ['api']
+    const matches = (line: string) => names.some((n) => new RegExp(`(^|[^a-z0-9_-])${n}($|[^a-z0-9_-])`, 'i').test(line))
+    expect(matches('- [ ] T001 Add index in api/src/search.ts')).toBe(true)
+    expect(matches('- [ ] T002 Render rapidly in web')).toBe(false)
+    expect(matches('- [ ] T003 Call the API service')).toBe(true)
+  })
 })
