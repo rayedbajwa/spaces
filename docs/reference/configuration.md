@@ -55,6 +55,27 @@ back to the same-size tier.
 | `AIDLC_GOVERNANCE_WORKSPACE` | `1` | `0` keeps specs inside the application repo instead of a governing workspace |
 | `AIDLC_GOVERNANCE_ROOT` | `<workspace root>/_governance` | Location of governing workspaces |
 | `AIDLC_WORKTREE_ROOT` | `<repo>/.aidlc-worktrees` | Where workstream worktrees are created |
+| `AGENT_DATABASE_URL` | the application's database server | Server on which each checkout's test database (`agent_<checkout>`) is created |
+| `AGENT_COMMAND_TIMEOUT_SECONDS` | `1200` | Longest any shell command an agent runs may take (minimum 60) |
+| `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` | Railway default | How long a deploy lets a running stage finish before the old container stops (set it to about 900) |
+
+The package-manager caches agents use (bun, npm, yarn, pnpm, pip, Go) live in
+`<workspace root>/../cache`, on the same volume as the workspaces, unless a
+project sets its own.
+
+### Running the test suite
+
+`bun test` runs a preload (`tests/setup/db-guard.ts`) that keeps the suite off
+databases that are not test databases:
+
+| Variable | Purpose |
+|---|---|
+| `TEST_DATABASE_URL` | Used as the suite's database when set |
+| `DATABASE_URL` | Used only when it is local, or its database is named for tests (`test`, `agent`, `ci`) |
+| `ALLOW_TEST_DATABASE` | `1` accepts any `DATABASE_URL` (only for a disposable database) |
+
+Anything else (a deployed application's database, such as Railway's `railway`)
+makes the database suites skip with a message instead of writing to it.
 
 ## Authentication and teams
 
