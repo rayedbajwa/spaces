@@ -84,7 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, retitleSpec } from './lib/features'
-import { changeIntentDocuments, currentIntentDirId, ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
+import { changeIntentDocuments, currentIntentDirId, IntentActionRefused, ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
 import { activeFeatureId, featureDirNames, removeFeatureDir } from './lib/active-feature'
 import { featureDescriptionProblem } from './lib/feature-description'
 import { implementLoopTemplate } from './lib/implement-loop'
@@ -1513,34 +1513,34 @@ async function route(req: Request): Promise<Response> {
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
 
     const body = await readJson<{ note?: string }>(req)
-    const artifacts = await collectProjectArtifacts(projectNamespace, projectMeta.path)
-    if (artifacts.verificationStatus === 'missing') {
-      return sendJson(409, {
-        error: 'There is nothing to accept yet: this intent has no verification report. Run verify first.',
-        code: 'not_verified',
-      })
-    }
-    if (artifacts.verifiedPass) {
-      return sendJson(409, { error: 'Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', code: 'already_passed' })
-    }
-
-    // Recorded in the database first; acceptance.md in the working copy follows.
+    // One intent, one snapshot: the target is resolved once, and the checks
+    // read the same locked record the acceptance is written to — another
+    // request switching intents cannot make this accept the wrong one.
     const dirId = await currentIntentDirId(project.projectId, projectMeta.path)
     if (!dirId) return sendJson(409, { error: 'This project has no intent to accept.' })
-    const acceptance = {
-      verificationStatus: artifacts.verificationStatus,
-      acceptedBy: auth?.user.name || auth?.user.email || 'local user',
-      acceptedAt: new Date().toISOString(),
-      note: body.note?.trim() || undefined,
+    const acceptedBy = auth?.user.name || auth?.user.email || 'local user'
+    let acceptance: Acceptance | undefined
+    try {
+      await changeIntentDocuments({
+        projectId: project.projectId, projectRoot: projectMeta.path, dirId, by: `person:${acceptedBy}`,
+        changes: (current) => {
+          if (!current.verificationStatus) {
+            throw new IntentActionRefused('There is nothing to accept yet: this intent has no verification report. Run verify first.', 'not_verified')
+          }
+          if (current.verificationStatus === 'pass') {
+            throw new IntentActionRefused('Verification already passed, so there is nothing to accept. The intent is releasing: review, then deliver.', 'already_passed')
+          }
+          acceptance = { verificationStatus: current.verificationStatus, acceptedBy, acceptedAt: new Date().toISOString(), note: body.note?.trim() || undefined }
+          return new Map([[ACCEPTANCE_FILE, renderAcceptance(acceptance, dirId)]])
+        },
+      })
+    } catch (error) {
+      if (error instanceof IntentActionRefused) return sendJson(409, { error: error.message, code: error.code })
+      throw error
     }
-    await changeIntentDocuments({
-      projectId: project.projectId, projectRoot: projectMeta.path, dirId,
-      changes: new Map([[ACCEPTANCE_FILE, renderAcceptance(acceptance, dirId)]]),
-      by: `person:${acceptance.acceptedBy}`,
-    })
-    const recorded = { acceptance }
+    const recorded = { acceptance: acceptance! }
     await markProjectStateStale(project.projectId).catch(() => undefined)
-    serverLog.info('feature accepted despite verification', { project: projectNamespace, status: artifacts.verificationStatus, by: recorded.acceptance.acceptedBy })
+    serverLog.info('feature accepted despite verification', { project: projectNamespace, intent: dirId, status: recorded.acceptance.verificationStatus, by: recorded.acceptance.acceptedBy })
 
     // The caller runs the final step itself through the ordinary execute-step
     // route, so merging and deploying keep their own guards and approvals.
