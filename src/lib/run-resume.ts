@@ -186,8 +186,9 @@ export function buildResumeNote(point: ResumePoint): string {
  * unfinished are the two ways a run destroys work: one rewrites the project
  * scaffold, the other opens a new feature directory and leaves the half-built
  * one behind. Both stages get a plain statement of what already exists and an
- * instruction to read it first. When the latest feature has passed
- * verification, starting the next one is legitimate and nothing is added.
+ * instruction to read it first. When the latest feature is finished — its
+ * verification passed, its delivery report says MERGED, or a person accepted
+ * it (acceptance.md) — starting the next one is legitimate and nothing is added.
  */
 export interface UnfinishedFeature {
   /** Directory name, e.g. "003-project-responsibilities". */

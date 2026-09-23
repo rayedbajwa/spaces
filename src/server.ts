@@ -1389,7 +1389,7 @@ async function route(req: Request): Promise<Response> {
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/features$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace!))
-    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s features.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s intents.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace!)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     if (!project) return sendJson(404, { error: 'Project not found.' })
@@ -1508,7 +1508,7 @@ async function route(req: Request): Promise<Response> {
     const [, , , projectNamespace] = url.pathname.split('/')
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const denied = requireProjectRole(project, 'member', 'Only team members can accept a feature.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', 'Only team members can accept an intent.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
 
@@ -2497,7 +2497,7 @@ async function route(req: Request): Promise<Response> {
     // 400 the client can react to (prompt for the missing field + retry).
     if (stages.includes('specify') && !mergedOptions.feature) {
       return sendJson(400, {
-        error: 'This run includes the specify stage but no feature was provided. Rerun with { "feature": "..." } to supply one.',
+        error: 'This run includes the specify stage but no intent was described. Rerun with { "feature": "..." } to describe one.',
         field: 'feature',
       })
     }
