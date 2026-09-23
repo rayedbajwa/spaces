@@ -52,3 +52,25 @@ describe('syncing an intent\'s documents into an implementation repository', () 
     expect(await syncIntentDocuments({ governingRoot: governing, featureDirAbs, targetRoot: impl })).toEqual({ written: [], removed: [] })
   })
 })
+
+describe('review of #46', () => {
+  test('an unreadable source changes nothing in the implementation checkout', async () => {
+    const { governing, impl, write } = await workspace()
+    await write(impl, 'specs/003-search/spec.md', '# Kept\n')
+    // The "intent directory" is a file: it cannot be listed.
+    await write(governing, 'specs/004-broken', 'not a directory')
+    await expect(syncIntentDocuments({ governingRoot: governing, featureDirAbs: path.join(governing, 'specs/004-broken'), targetRoot: impl })).rejects.toThrow()
+    expect(await readFile(path.join(impl, 'specs/003-search/spec.md'), 'utf8')).toBe('# Kept\n')
+  })
+
+  test('a symlinked folder inside the intent directory is never written through', async () => {
+    const { governing, impl, featureDirAbs } = await workspace()
+    const outside = await mkdtemp(path.join(tmpdir(), 'outside-'))
+    cleanup.push(outside)
+    await mkdir(path.join(impl, 'specs/003-search'), { recursive: true })
+    await symlink(outside, path.join(impl, 'specs/003-search/contracts'))
+    const result = await syncIntentDocuments({ governingRoot: governing, featureDirAbs, targetRoot: impl })
+    expect(result.written.sort()).toEqual(['spec.md', 'tasks.md'])
+    expect(await readFile(path.join(outside, 'search.yaml'), 'utf8').catch(() => null)).toBeNull()
+  })
+})

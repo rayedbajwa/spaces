@@ -16,18 +16,42 @@ import path from 'node:path'
 const DOCUMENT = /\.(md|json|ya?ml|txt)$/i
 const MAX_DEPTH = 3
 
-async function listDocuments(dir: string, relative = '', depth = 0): Promise<string[]> {
+/**
+ * The intent's documents under `dir` (relative paths). A directory that does
+ * not exist has none; any other read error is thrown — an unreadable source
+ * must never look empty, or the sync would delete the copies.
+ */
+export async function listIntentDocuments(dir: string, relative = '', depth = 0): Promise<string[]> {
   const out: string[] = []
-  for (const entry of await readdir(path.join(dir, relative), { withFileTypes: true }).catch(() => [])) {
+  let entries
+  try {
+    entries = await readdir(path.join(dir, relative), { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT' && relative === '') return out
+    throw error
+  }
+  for (const entry of entries) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
     const rel = relative ? `${relative}/${entry.name}` : entry.name
     if (entry.isDirectory()) {
-      if (depth < MAX_DEPTH) out.push(...await listDocuments(dir, rel, depth + 1))
+      if (depth < MAX_DEPTH) out.push(...await listIntentDocuments(dir, rel, depth + 1))
     } else if (entry.isFile() && DOCUMENT.test(entry.name)) {
       out.push(rel)
     }
   }
   return out
+}
+
+/** Whether every existing folder from `root` down to `dir` is a real directory (missing ones will be created as such). */
+async function plainPath(root: string, dir: string): Promise<boolean> {
+  let current = root
+  for (const part of path.relative(root, dir).split(path.sep).filter(Boolean)) {
+    current = path.join(current, part)
+    const info = await lstat(current).catch(() => undefined)
+    if (!info) return true
+    if (info.isSymbolicLink() || !info.isDirectory()) return false
+  }
+  return true
 }
 
 export interface SpecSyncResult {
@@ -50,20 +74,16 @@ export async function syncIntentDocuments(input: { governingRoot: string; featur
   if (governing === target || !source.startsWith(`${governing}${path.sep}`)) return result
   const relativeDir = path.relative(governing, source) // specs/<intent>
   const destination = path.join(target, relativeDir)
-  // The folders on the way must be real directories in the implementation checkout.
-  let current = target
-  for (const part of relativeDir.split(path.sep)) {
-    current = path.join(current, part)
-    const info = await lstat(current).catch(() => undefined)
-    if (!info) break
-    if (info.isSymbolicLink() || !info.isDirectory()) return result
-  }
+  if (!(await plainPath(target, destination))) return result
 
-  const wanted = await listDocuments(source)
+  // Read the source first, whole: if it cannot be listed, nothing is changed.
+  const wanted = await listIntentDocuments(source)
   for (const rel of wanted) {
     const content = await readFile(path.join(source, rel), 'utf8').catch(() => undefined)
     if (content === undefined) continue
     const file = path.join(destination, rel)
+    // Every folder on the way (specs/<intent>/contracts …) must be a real directory.
+    if (!(await plainPath(target, path.dirname(file)))) continue
     const existing = await lstat(file).catch(() => undefined)
     if (existing?.isSymbolicLink()) continue
     if (existing && (await readFile(file, 'utf8').catch(() => undefined)) === content) continue
@@ -72,8 +92,9 @@ export async function syncIntentDocuments(input: { governingRoot: string; featur
     result.written.push(rel)
   }
   const keep = new Set(wanted)
-  for (const rel of await listDocuments(destination)) {
+  for (const rel of await listIntentDocuments(destination)) {
     if (keep.has(rel)) continue
+    if (!(await plainPath(target, path.dirname(path.join(destination, rel))))) continue
     await rm(path.join(destination, rel), { force: true })
     result.removed.push(rel)
   }
