@@ -296,13 +296,6 @@ ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_che
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
   CHECK (kind IN ('github','jira','confluence','slack','linear','figma'));
 
--- Figma joins the app-level integrations as a Design & Prototyping provider.
--- Re-create the knowledge_sources kind CHECK so it can grow (the inline CHECK
--- on the table is Postgres' default name).
-ALTER TABLE knowledge_sources DROP CONSTRAINT IF EXISTS knowledge_sources_kind_check;
-ALTER TABLE knowledge_sources ADD CONSTRAINT knowledge_sources_kind_check
-  CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual','figma'));
-
 -- Per-project knowledge scope: which connected integrations agents may query for
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
 -- Confluence spaces, GitHub repos). '{}' = every connected source, unscoped.
@@ -536,6 +529,12 @@ CREATE TABLE IF NOT EXISTS knowledge_sources (
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS knowledge_sources_team_idx ON knowledge_sources (team_id);
+
+-- Figma joins the knowledge sources as a Design & Prototyping provider.
+-- Re-create the knowledge_sources kind CHECK so it can grow on existing databases.
+ALTER TABLE knowledge_sources DROP CONSTRAINT IF EXISTS knowledge_sources_kind_check;
+ALTER TABLE knowledge_sources ADD CONSTRAINT knowledge_sources_kind_check
+  CHECK (kind IN ('confluence','jira','linear','github_repo','github_issues','url','manual','figma'));
 
 CREATE TABLE IF NOT EXISTS knowledge_documents (
   document_id        UUID PRIMARY KEY,
