@@ -9,7 +9,7 @@
  * carries its own **change**, committed with the code on the same branch and
  * pull request, under the same `specs/` directory Spec Kit uses:
  *
- *   specs/<initiative-id>/
+ *   specs/<initiative-id>/        (the feature directory's name, e.g. 003-add-cache)
  *     change.yaml   metadata: schema, created, initiative, repository, links to sibling changes
  *     tasks.md      the tasks this repository owns (its workstreams), as a checklist
  *     spec.md       the delta spec as seen from this repository
@@ -19,6 +19,7 @@
  * is missing.
  */
 
+import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { stringify as toYaml } from 'yaml'
@@ -56,9 +57,13 @@ export function projectIdentifier(repo: Pick<ChangeRepo, 'githubRepo' | 'localPa
   return `local/${path.basename(path.resolve(repo.localPath))}`
 }
 
-/** `specs/003-add-cache` → `add-cache`; `Add 3DS!` → `add-3ds`. */
+/**
+ * The initiative's id is the feature directory's name, number included, so an
+ * implementation repository keeps its change under the same `specs/003-add-cache/`
+ * as the governing workspace: `003-add-cache` → `003-add-cache`; `Add 3DS!` → `add-3ds`.
+ */
 export function initiativeIdFor(featureDirName: string): string {
-  return slug(featureDirName.replace(/^\d+[-_]/, '')) || 'feature'
+  return slug(featureDirName) || 'feature'
 }
 
 /** The change id is the initiative id: the same `specs/<id>/` directory name in every repository. */
@@ -144,6 +149,11 @@ export async function writeRepoChange(options: {
   const { plan, change } = options
   const relativeDir = changeDirFor(change.changeId)
   const dir = path.join(options.cwd, relativeDir)
+  // A checkout (or worktree) of the repository that holds the intent itself —
+  // a project without a separate governing workspace — already has the real
+  // feature under this same numbered directory: its spec and tasks are the
+  // record, so nothing is written over them.
+  if (sameRepository(options.cwd, options.featureDir)) return { dir, relativeDir, tasksFile: path.join(relativeDir, 'tasks.md') }
   await mkdir(dir, { recursive: true })
 
   const existingMeta = await readFile(path.join(dir, 'change.yaml'), 'utf8').catch(() => '')
@@ -218,6 +228,20 @@ function checklist(tasks: string): string {
 
 function firstLine(text: string): string {
   return text.trim().split('\n')[0]!.replace(/^[-*]\s+/, '').trim()
+}
+
+/** Whether two paths are in the same git repository (worktrees of one repository count as the same). */
+export function sameRepository(a: string, b: string): boolean {
+  const common = (dir: string) => {
+    try {
+      const out = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      return out ? path.resolve(out) : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const ca = common(a)
+  return Boolean(ca && ca === common(b))
 }
 
 function slug(value: string): string {

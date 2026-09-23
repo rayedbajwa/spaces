@@ -81,8 +81,8 @@ Click an intent's title in **Overview → Intents** to open the **intent viewer*
 ## In implementation repositories
 
 When the code lives outside the governing workspace, each implementation
-repository working on the intent gets only its repo-local change,
-`specs/<initiative-id>/` with `change.yaml`, the tasks it owns and its delta
-spec, committed at every code stage, and its own pull request linking back to
+repository working on the intent gets only its repo-local change, under the
+same numbered `specs/<intent>/` (e.g. `specs/003-search/`) with `change.yaml`,
+the tasks it owns and its delta spec, committed at every code stage, and its own pull request linking back to
 the governing one. The rest of the intent's documents stay in Spaces. See
 [Delivery](delivery.md#the-intents-documents-in-implementation-repositories).

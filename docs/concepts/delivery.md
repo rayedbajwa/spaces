@@ -53,7 +53,7 @@ gets a **repo-local change**, committed with the code on the same branch and
 pull request, in the same `specs/` directory Spec Kit uses:
 
 ```
-<repo>/specs/<initiative-id>/
+<repo>/specs/<NNN-intent>/
   change.yaml   schema, created, initiative, repository, links to sibling changes
   tasks.md      the tasks this repository owns (its workstreams), as a checklist
   spec.md       the delta spec as seen from this repository
@@ -74,8 +74,8 @@ decisions (initiative-first planning with linked repo-local changes).
 An implementation repository carries **only its repo-local change**, never the
 whole intent. At every code stage (implement, orchestrate, review, verify),
 each implementation repository that is on the feature branch and has work there
-gets `specs/<initiative-id>/` (the intent's directory name without its number,
-e.g. `specs/search` for `003-search`), committed with that stage's changes:
+gets `specs/<intent>/`, under the same numbered name as in the governing
+workspace (e.g. `specs/003-search/`), committed with that stage's changes:
 
 | File | Contents |
 |---|---|
@@ -85,10 +85,11 @@ e.g. `specs/search` for `003-search`), committed with that stage's changes:
 
 The plan, test plan, research, data model, contracts, code review, verification
 and delivery reports stay in the governing workspace and in Spaces (the
-[intent record](intents.md)). A full copy of the intent directory
-(`specs/<NNN-intent>/`) written by an earlier version is removed, but only when
-every file in it is an exact copy of the governing one; nothing is removed
-through a symbolic link.
+[intent record](intents.md)). Documents an earlier version mirrored into that
+directory are pruned, only those that are exact copies of the governing ones
+(anything written in the repository stays), and nothing is removed through a
+symbolic link. A project without a separate governing workspace keeps the real
+intent in that directory, so no repo-local change is written over it.
 
 Those repositories are then pushed and get their own pull request
 (`feat(<intent>): <spec title>`), which links to the governing workspace's pull
@@ -97,8 +98,8 @@ governing workspace has no GitHub repository. Review and verification results
 are posted to every pull request on the feature branch. Work on the branch is
 measured against each repository's real default branch (as GitHub reports it),
 so `develop` or `trunk` repositories are included. The run log shows
-`[specs] <repo>: specs/<initiative-id> (change.yaml, tasks.md, spec.md) updated
-for implement` and `[pr] <repo>: opened pull request #N …`.
+`[specs] <repo>: specs/003-search (change.yaml, tasks.md, spec.md) updated for
+implement` and `[pr] <repo>: opened pull request #N …`.
 
 ## Code review loop
 

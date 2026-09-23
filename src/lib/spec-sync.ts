@@ -52,31 +52,38 @@ async function plainPath(root: string, dir: string): Promise<boolean> {
   return true
 }
 
+/** What an implementation repository's change directory holds (lib/repo-change.ts). */
+export const REPO_CHANGE_FILES = new Set(['change.yaml', 'tasks.md', 'spec.md'])
+
 /**
- * Remove the full copy of the intent directory (`specs/<NNN-intent>/`) an
- * earlier version mirrored into an implementation checkout — only when it is a
- * real directory and every document in it is an exact copy of the governing
- * one, so nothing a person or agent wrote there is lost. Returns the removed
- * path, relative to the checkout.
+ * Prune what an earlier version mirrored into an implementation checkout's
+ * `specs/<NNN-intent>/` (the plan, test plan, research, contracts, reports),
+ * leaving only its repo-local change. A document is removed only when it is an
+ * exact copy of the governing one — anything written in this repository stays
+ * — and folders left empty go too. Nothing is removed through a symbolic link.
+ * Returns the documents removed.
  */
-export async function removeMirroredIntentDir(input: { governingFeatureDir: string; targetRoot: string; keep: string }): Promise<string | undefined> {
-  const relative = path.join('specs', path.basename(input.governingFeatureDir))
-  if (path.normalize(relative) === path.normalize(input.keep)) return undefined
-  const dir = path.join(input.targetRoot, relative)
-  const info = await lstat(dir).catch(() => undefined)
-  if (!info || info.isSymbolicLink() || !info.isDirectory()) return undefined
-  if (!(await plainPath(input.targetRoot, dir))) return undefined
+export async function pruneMirroredDocuments(input: { governingFeatureDir: string; targetRoot: string; changeDir: string }): Promise<string[]> {
+  const dir = path.join(input.targetRoot, input.changeDir)
+  if (!(await plainPath(input.targetRoot, dir))) return []
   const docs = await listIntentDocuments(dir).catch(() => undefined)
-  if (!docs) return undefined
-  const everything = await readdir(dir, { recursive: true, withFileTypes: true }).catch(() => undefined)
-  // Anything other than a mirrored document (another file type, a hidden file) means it is not only our copy.
-  const files = (everything ?? []).filter((e) => !e.isDirectory())
-  if (files.length !== docs.length) return undefined
+  if (!docs) return []
+  const removed: string[] = []
   for (const rel of docs) {
-    const here = await readFile(path.join(dir, rel), 'utf8').catch(() => undefined)
+    if (REPO_CHANGE_FILES.has(rel)) continue
+    const file = path.join(dir, rel)
+    if (!(await plainPath(input.targetRoot, path.dirname(file)))) continue
+    if ((await lstat(file).catch(() => undefined))?.isSymbolicLink()) continue
+    const here = await readFile(file, 'utf8').catch(() => undefined)
     const there = await readFile(path.join(input.governingFeatureDir, rel), 'utf8').catch(() => undefined)
-    if (here === undefined || here !== there) return undefined
+    if (here === undefined || here !== there) continue
+    await rm(file, { force: true })
+    removed.push(rel)
   }
-  await rm(dir, { recursive: true, force: true })
-  return relative
+  // Folders the copy left empty (contracts/, checklists/ …).
+  for (const folder of [...new Set(removed.map((r) => path.dirname(r)).filter((d) => d !== '.'))].sort((a, b) => b.length - a.length)) {
+    const full = path.join(dir, folder)
+    if ((await readdir(full).catch(() => ['x'])).length === 0) await rm(full, { recursive: true, force: true })
+  }
+  return removed
 }

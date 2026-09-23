@@ -29,17 +29,39 @@ describe('code stages write the repo-local change into implementation repositori
       'specs/003-search/contracts/search.yaml': 'openapi: 3.1.0\n',
       'specs/003-search/tasks.md': '## Build\n- [x] T001 Add search index in api\n- [ ] T002 Search box in web\n',
     })
-    const api = await repo('api', { 'src/index.ts': 'export {}\n' })
+    const api = await repo('api', {
+      'src/index.ts': 'export {}\n',
+      // What an earlier version mirrored here: exact copies of the governing documents.
+      'specs/003-search/plan.md': '# Plan\n',
+      'specs/003-search/test-plan.md': '# Test plan\n',
+      'specs/003-search/contracts/search.yaml': 'openapi: 3.1.0\n',
+      // Written in this repository: stays.
+      'specs/003-search/notes.md': 'api-only notes\n',
+    })
     await writeFile(path.join(api, 'src/search.ts'), 'export const search = 1\n') // work on the branch
     const flow = new AIDLCFlow({ cwd: governing, repoTargets: [{ label: 'governance', localPath: governing, isPrimary: true }, { label: 'api', localPath: api }] }, ['implement'])
     ;(flow as unknown as { activeFeatureBranch: string }).activeFeatureBranch = '003-search'
     await (flow as unknown as { syncIntentDocumentsToImplementationRepos: (s: string) => Promise<void> }).syncIntentDocumentsToImplementationRepos('implement')
 
-    expect((await readdir(path.join(api, 'specs'))).sort()).toEqual(['search'])
-    expect((await readdir(path.join(api, 'specs/search'))).sort()).toEqual(['change.yaml', 'spec.md', 'tasks.md'])
-    const tasks = await readFile(path.join(api, 'specs/search/tasks.md'), 'utf8')
+    // The numbered directory, as in the governing workspace: its repo-local change, nothing that belongs in Spaces.
+    expect((await readdir(path.join(api, 'specs'))).sort()).toEqual(['003-search'])
+    expect((await readdir(path.join(api, 'specs/003-search'))).sort()).toEqual(['change.yaml', 'notes.md', 'spec.md', 'tasks.md'])
+    const tasks = await readFile(path.join(api, 'specs/003-search/tasks.md'), 'utf8')
     expect(tasks).toContain('- [x] T001 Add search index in api')
     expect(tasks).not.toContain('T002')
-    expect(await readFile(path.join(api, 'specs/search/change.yaml'), 'utf8')).toContain('initiative: search')
+    expect(await readFile(path.join(api, 'specs/003-search/change.yaml'), 'utf8')).toContain('initiative: 003-search')
+  })
+
+  test('never writes over the intent itself when the implementation repository is the one that holds it', async () => {
+    const { writeRepoChange } = await import('../src/lib/repo-change')
+    const app = await repo('app', { 'specs/003-search/spec.md': '# Feature Specification: Search\n', 'specs/003-search/tasks.md': '- [ ] T001 real task\n' })
+    const worktree = path.join(await mkdtemp(path.join(tmpdir(), 'wt-')), 'ws-1')
+    cleanup.push(path.dirname(worktree))
+    git(app, 'worktree', 'add', '-q', '-b', 'ws-1', worktree)
+    const plan = { initiativeId: '003-search', changes: [{ repo: { label: 'app', localPath: worktree }, changeId: '003-search', project: 'local/app', workstreams: [{ title: 'x', tasks: '- delta' }] }] }
+    await writeRepoChange({ cwd: worktree, featureDir: path.join(app, 'specs/003-search'), plan, change: plan.changes[0]! })
+    expect(await readFile(path.join(worktree, 'specs/003-search/spec.md'), 'utf8')).toBe('# Feature Specification: Search\n')
+    expect(await readFile(path.join(worktree, 'specs/003-search/tasks.md'), 'utf8')).toBe('- [ ] T001 real task\n')
+    expect(await readFile(path.join(worktree, 'specs/003-search/change.yaml'), 'utf8').catch(() => null)).toBeNull()
   })
 })

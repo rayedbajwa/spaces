@@ -134,7 +134,7 @@ inspectable artifacts each stage produces.
   injected as a preamble so the next model has context even when you swap
   Sonnet → Opus → Haiku mid-pipeline
 - **Repo-local changes** — each implementation repository gets
-  `specs/<initiative-id>/` (`change.yaml`, `tasks.md`, `spec.md`) committed with
+  `specs/<NNN-intent>/` (`change.yaml`, `tasks.md`, `spec.md`) committed with
   its code and PR, linked back to the initiative in the governing workspace by
   stable `github.com/org/repo` identifiers
 - **Intents** — each piece of work (bug fix, feature, MVP, improvement,
@@ -143,8 +143,8 @@ inspectable artifacts each stage produces.
   agents' working copy; continue, rename or delete one, and open it to page
   through every artifact it produced and its history
 - **Specs travel with the code** — implementation repositories get their
-  repo-local change (`specs/<initiative-id>/`: `change.yaml`, the tasks they
-  own, their delta spec) at every code stage, and their own pull request linked
+  repo-local change under the same numbered `specs/<intent>/` (e.g.
+  `specs/003-search/`: `change.yaml`, the tasks they own, their delta spec) at every code stage, and their own pull request linked
   to the governing one; the rest of the intent's documents stay in Spaces
 - **Data guardrails** — secrets and personal data become tokens before
   anything reaches a model and are restored only in the commands and files

@@ -1234,8 +1234,8 @@ export class AIDLCFlow {
    * repository owns (ticked as they are in the governing tasks.md) and its
    * delta spec — committed and published with its code. Everything else (plan,
    * test plan, research, contracts, reviews, reports) stays in the governing
-   * workspace and in Spaces. A full copy of the intent directory written by an
-   * earlier version is removed.
+   * workspace and in Spaces. Documents an earlier version mirrored into the
+   * same directory are pruned (exact copies only).
    */
   private async syncIntentDocumentsToImplementationRepos(stage: StageName): Promise<void> {
     const governingRoot = this.governingRoot()
@@ -1243,7 +1243,7 @@ export class AIDLCFlow {
     if (!featureDirAbs) return
     const targets = await this.implementationReposWithWork()
     if (!targets.length) return
-    const { removeMirroredIntentDir } = await import('./spec-sync')
+    const { pruneMirroredDocuments } = await import('./spec-sync')
     const governingTasks = await readFile(path.join(featureDirAbs, 'tasks.md'), 'utf8').catch(() => '')
     const parsed = await readWorkstreams(governingRoot, featureDirAbs).catch(() => [] as ParsedWorkstream[])
     const assigned = new Map<string, ParsedWorkstream[]>()
@@ -1270,8 +1270,8 @@ export class AIDLCFlow {
       if (!target) continue
       try {
         const written = await writeRepoChange({ cwd: target.localPath, featureDir: featureDirAbs, plan, change, project })
-        const removed = await removeMirroredIntentDir({ governingFeatureDir: featureDirAbs, targetRoot: target.localPath, keep: written.relativeDir })
-        this.print(`[specs] ${target.label}: ${written.relativeDir} (change.yaml, tasks.md, spec.md) updated for ${stage}${removed ? `; removed the full copy of ${removed}` : ''}.\n`)
+        const removed = await pruneMirroredDocuments({ governingFeatureDir: featureDirAbs, targetRoot: target.localPath, changeDir: written.relativeDir })
+        this.print(`[specs] ${target.label}: ${written.relativeDir} (change.yaml, tasks.md, spec.md) updated for ${stage}${removed.length ? `; removed ${removed.length} mirrored document${removed.length === 1 ? '' : 's'} that belong in Spaces` : ''}.\n`)
       } catch (error) {
         this.print(`[specs] ${target.label}: could not write the repo-local change (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
       }
