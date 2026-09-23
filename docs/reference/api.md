@@ -62,8 +62,7 @@ own session, team creation and invites.
 
 | Method & path | Purpose |
 |---|---|
-| `POST /api/projects/:id/repos` | Add `{ label, kind: 'local' | 'github', localPath?, githubRepo?, isPrimary? }`; GitHub repos clone, learn and set up in the background |
-| `POST /api/projects/:id/repos/create` | Create `{ name, owner?, description?, visibility? }` on GitHub and attach it (`403 insufficient_permissions` / `409 github_not_connected` with a `manualUrl` fallback) |
+| `POST /api/projects/:id/repos` | Add `{ label, kind: 'local' | 'github', localPath?, githubRepo?, isPrimary?, primaryIfFirst? }` (`primaryIfFirst` makes it primary when it is the project's first code repository); GitHub repos clone, learn and set up in the background |
 | `PATCH /api/projects/:id/repos/:repoId` | Edit label / path / owner-name / primary |
 | `DELETE /api/projects/:id/repos/:repoId` | Remove (drops its brief, recomposes memory, prunes knowledge scope) |
 | `POST /api/projects/:id/repos/:repoId/clone` · `…/learn` | Re-clone / re-learn |
