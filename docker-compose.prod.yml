@@ -15,7 +15,7 @@ services:
         # Baked into the image so /api/version reports the exact source.
         # Set these in the environment before `docker compose build`, e.g.:
         #   GIT_COMMIT="$(git rev-parse HEAD)" SPACES_VERSION="1.2.3" docker compose -f docker-compose.prod.yml build
-        GIT_COMMIT: "${GIT_COMMIT:-}"
+        GIT_COMMIT: "${GIT_COMMIT:-${RAILWAY_GIT_COMMIT_SHA:-}}"
         SPACES_VERSION: "${SPACES_VERSION:-}"
     image: spaces:latest
     container_name: spaces-app
@@ -39,7 +39,7 @@ services:
     build:
       context: .
       args:
-        GIT_COMMIT: "${GIT_COMMIT:-}"
+        GIT_COMMIT: "${GIT_COMMIT:-${RAILWAY_GIT_COMMIT_SHA:-}}"
         SPACES_VERSION: "${SPACES_VERSION:-}"
     image: spaces:latest
     container_name: spaces-supervisor
