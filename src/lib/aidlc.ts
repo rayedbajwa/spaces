@@ -1769,7 +1769,7 @@ export async function runAIDLCMergeOrchestrator(options: {
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
   let transcript = ''
-  const activity = createActivityLog()
+  const activity = createActivityLog({ label: 'merge-orchestrator' })
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
@@ -1853,7 +1853,7 @@ export async function runAIDLCSpecificTask(options: {
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
   let transcript = ''
-  const activity = createActivityLog()
+  const activity = createActivityLog({ label: `task ${options.taskId}` })
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
@@ -1938,7 +1938,7 @@ export async function runAIDLCSpecificWorkstream(options: {
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
   let transcript = ''
-  const activity = createActivityLog()
+  const activity = createActivityLog({ label: workstream.title })
   const unsubscribe = session.subscribe((event) => {
     const logged = activity.onEvent(event as unknown as { type: string })
     if (logged) transcript += logged
@@ -2157,9 +2157,9 @@ export async function runAIDLCParallelSubAgents(options: {
         // adds a line per tool call, so the workstream's live log shows its work.
         let log = ''
         let transcript = ''
-        const activity = createActivityLog()
+        const activity = createActivityLog({ label: workstream.title })
         // The same, line-prefixed with the workstream, for a log several agents share.
-        const mirror = options.onActivity ? createActivityLog({ prefix: workstream.title }) : undefined
+        const mirror = options.onActivity ? createActivityLog({ label: workstream.title }) : undefined
         let providerError: string | undefined
         let toolCalls = 0
         const unsubscribe = session.subscribe((event) => {

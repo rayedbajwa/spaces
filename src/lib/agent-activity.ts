@@ -70,21 +70,61 @@ function seconds(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
 }
 
+/** A log line's stamp: `[03:41:05Z implement] `. Time is UTC. */
+const STAMPED = /^\[\d\d:\d\d:\d\dZ[ \]]/
+
+function clock(now: Date): string {
+  return `${now.toISOString().slice(11, 19)}Z`
+}
+
+/**
+ * Marks the start of every line in a stream of log chunks with the time and
+ * the agent writing it: `[03:41:05Z implement] ▸ $ bun test`. Chunks can end
+ * mid-line (streamed text); the stamp goes where each line begins. A line
+ * that already carries a stamp (a sub-agent's, mirrored in) keeps its own.
+ */
+export function createLineStamper(options: { label?: () => string | undefined; timestamps?: boolean; now?: () => Date } = {}) {
+  const timestamps = options.timestamps ?? true
+  const now = options.now ?? (() => new Date())
+  let atLineStart = true
+  const stampFor = () => {
+    const label = options.label?.()
+    const parts = [timestamps ? clock(now()) : '', label ?? ''].filter(Boolean)
+    return parts.length ? `[${parts.join(' ')}] ` : ''
+  }
+  return {
+    stamp(chunk: string): string {
+      if (!chunk) return chunk
+      let out = ''
+      for (const piece of chunk.split(/(?<=\n)/)) {
+        if (atLineStart && piece !== '\n' && !STAMPED.test(piece)) out += stampFor()
+        out += piece
+        atLineStart = piece.endsWith('\n')
+      }
+      return out
+    },
+  }
+}
+
 /**
  * Follows one agent session and says what to append to its log: the agent's
  * text as it streams, and a line per tool call. Feed it every event; write
- * what it returns.
+ * what it returns. With `label` (and by default a time) every line is stamped
+ * with who wrote it and when — for sub-agents whose lines join a shared log,
+ * or a log of their own.
  */
-export function createActivityLog(options: { prefix?: string } = {}) {
-  const prefix = options.prefix ? `[${options.prefix}] ` : ''
+export function createActivityLog(options: { label?: string; timestamps?: boolean; now?: () => Date } = {}) {
+  const stamper = options.label || options.timestamps
+    ? createLineStamper({ label: () => options.label, timestamps: options.timestamps ?? true, now: options.now })
+    : undefined
   const started = new Map<string, { at: number; name: string }>()
   let atLineStart = true
 
-  const line = (text: string): string => {
-    const out = `${atLineStart ? '' : '\n'}${prefix}${redactSecrets(text)}\n`
-    atLineStart = true
-    return out
+  const emit = (text: string): string => {
+    atLineStart = text.endsWith('\n')
+    return stamper ? stamper.stamp(text) : text
   }
+  const line = (text: string): string => emit(`${atLineStart ? '' : '\n'}${redactSecrets(text)}\n`)
 
   return {
     /** What to append to the log for this event, if anything. */
@@ -92,11 +132,7 @@ export function createActivityLog(options: { prefix?: string } = {}) {
       if (event.type === 'message_update') {
         const inner = event.assistantMessageEvent as { type?: string; delta?: string } | undefined
         if (inner?.type !== 'text_delta' || !inner.delta) return undefined
-        // Prefixed logs (a sub-agent mirrored into another log) carry its text line by line.
-        let text = inner.delta
-        if (prefix) text = text.replace(/\n(?=.)/g, `\n${prefix}`).replace(/^(?=.)/, atLineStart ? prefix : '')
-        atLineStart = text.endsWith('\n')
-        return text
+        return emit(inner.delta)
       }
       if (event.type === 'tool_execution_start') {
         const id = String(event.toolCallId ?? '')
