@@ -91,40 +91,41 @@ test.skip('expired state (older than 10 min) is not returned — skipped: no exp
   // Then set createdAt = Date.now() - 11 * 60_000 and assert consumeState returns undefined.
 })
 
-describe('Figma provider template: corrected OAuth scopes', () => {
+describe('Figma provider template: granular OAuth scopes', () => {
   const figma = PROVIDER_TEMPLATES.figma
+  const expectedScopes = ['current_user:read', 'file_content:read', 'library_assets:read', 'library_content:read']
 
-  test('scopes request exactly files:read (no other scope)', () => {
-    expect(figma.scopes).toEqual(['files:read'])
+  test('scopes request exactly the granular read-only scopes (no deprecated umbrella)', () => {
+    expect(figma.scopes).toEqual(expectedScopes)
   })
 
-  test('scopes include the read scope for files/nodes/styles/components', () => {
-    expect(figma.scopes).toContain('files:read')
+  test('scopes cover identity, file/node content, and published styles/components', () => {
+    expect(figma.scopes).toContain('current_user:read') // GET /v1/me
+    expect(figma.scopes).toContain('file_content:read') // GET /files/:key + /nodes
+    expect(figma.scopes).toContain('library_assets:read') // GET /files/:key/styles + /components
+    expect(figma.scopes).toContain('library_content:read') // published components/styles of files
   })
 
-  // The pre-fix scope list was ['files:read', 'file_variables:read']; the fix
-  // removes only the Enterprise-only `file_variables:read` scope, which is what
-  // caused Figma's "scope not valid" error on standard plans.
-  const removedScopes = ['file_variables:read']
-  for (const scope of removedScopes) {
-    test(`scopes exclude the removed Enterprise-only scope ${scope}`, () => {
-      expect(figma.scopes).not.toContain(scope)
-    })
-  }
-
-  test('scopes exclude any deprecated file_read identifier', () => {
-    expect(figma.scopes.some((s) => s.includes('file_read'))).toBe(false)
+  test('scopes exclude the deprecated files:read umbrella scope', () => {
+    expect(figma.scopes).not.toContain('files:read')
   })
 
-  test('notes name files:read as the scope to enable', () => {
-    expect(figma.notes ?? '').toContain('files:read')
+  test('scopes exclude the Enterprise-only file_variables:read scope', () => {
+    expect(figma.scopes).not.toContain('file_variables:read')
   })
 
-  test('notes do not advertise the removed scope file_variables:read', () => {
+  test('notes list the granular scopes to enable', () => {
+    for (const scope of expectedScopes) {
+      expect(figma.notes ?? '').toContain(scope)
+    }
+  })
+
+  test('notes do not advertise the deprecated files:read or Enterprise-only file_variables:read', () => {
+    expect(figma.notes ?? '').not.toContain('files:read')
     expect(figma.notes ?? '').not.toContain('file_variables:read')
   })
 
-  test('the Figma authorization URL requests only files:read', () => {
+  test('the Figma authorization URL requests the granular scopes only', () => {
     const figmaConfig: OAuthProviderConfig = {
       provider: 'figma',
       authorizeUrl: figma.authorizeUrl,
@@ -135,6 +136,6 @@ describe('Figma provider template: corrected OAuth scopes', () => {
     }
     const { redirectUrl } = beginAuthorization(figmaConfig, 'project-figma', 'https://cb.example.com/oauth/callback')
     const url = new URL(redirectUrl)
-    expect(url.searchParams.get('scope')).toBe('files:read')
+    expect(url.searchParams.get('scope')).toBe(expectedScopes.join(' '))
   })
 })
