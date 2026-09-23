@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { SkeletonRows } from './loading'
 import { json, navigate, useAuth } from './auth'
+import { INTEGRATION_CATEGORIES, calculateCategoryStatus } from '../lib/integration-categories'
 
 /**
  * Integrations, self-serve and organization-wide.
@@ -115,81 +116,133 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       {error && <p className="error-text">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
       {apps === null && <SkeletonRows count={4} label="Loading integrations…" />}
-      <div className="integration-list">
-        {apps?.map((app) => {
-          const conns = app.kinds.map((kind) => ({ kind, row: connections.find((c) => c.kind === kind) }))
-          const anyConnected = conns.some((c) => c.row?.status === 'connected' && c.row.credentialsOk !== false)
-          const needsReconnect = conns.some((c) => c.row?.credentialsOk === false)
-          const isEditing = editing === app.provider
-          return (
-            <section key={app.provider} className={`card integration ${app.configured ? 'configured' : ''} ${anyConnected ? 'connected' : ''}`}>
-              <div className="integration-head">
-                <div className={`integration-logo ${app.provider}`} aria-hidden="true">{app.label.slice(0, 1)}</div>
-                <div className="integration-title">
-                  <h3>{app.label}</h3>
-                  <p className="panel-subtitle" style={{ margin: 0 }}>{PROVIDER_BLURB[app.provider]}</p>
-                </div>
-                <div className="integration-state">
-                  <span className={`mini-badge ${app.configured ? 'idle' : 'error'}`} title={app.configured ? `${app.setup.source === 'manifest' ? 'App created by Spaces' : 'Credentials set in the app'}${app.updatedByName ? ` by ${app.updatedByName}` : ''}${app.updatedAt ? ` on ${new Date(app.updatedAt).toLocaleDateString()}` : ''}` : 'No app set up yet'}>
-                    {app.configured ? (app.setup.installed ? 'app installed' : 'app set up') : 'app not set up'}
-                  </span>
-                  {canManage && <button type="button" className={isEditing || app.configured ? 'ghost-button' : 'primary-button'} onClick={() => setEditing(isEditing ? null : app.provider)}>{isEditing ? 'Close' : app.configured ? 'Manage app' : 'Set up app'}</button>}
-                </div>
-              </div>
+      {apps !== null && (
+        <div className="integration-categories">
+          {INTEGRATION_CATEGORIES.map((category) => {
+            const categoryApps = apps.filter((app) => (category.providers as readonly string[]).includes(app.provider))
+            const statusSummary = calculateCategoryStatus(category, apps, connections)
+            const isEmpty = statusSummary.state === 'empty'
 
-              {app.availableAtProvider === false && (
-                <p className="error-text" style={{ margin: '0 0 8px' }}>
-                  This app no longer exists on {app.label.split(' ')[0]}, so connecting and signing in with it fail. Create it again below.
-                </p>
-              )}
-              {app.availableAtProvider !== false && app.missingPermissions && app.missingPermissions.length > 0 && (
-                <p className="error-text" style={{ margin: '0 0 8px' }}>
-                  This app cannot {app.missingPermissions.includes('workflows') ? 'change workflow files, so a run that wires its tests into CI is refused' : 'do everything agents need'}.
-                  {' '}Add {app.missingPermissions.map((name) => name.replace('_', ' ')).join(', ')} (read and write)
-                  {app.permissionsUrl ? <> on <a href={app.permissionsUrl} target="_blank" rel="noreferrer">the app's permissions page</a></> : ' on GitHub'}
-                  , then accept the request on the installation.
-                </p>
-              )}
-
-              {isEditing && canManage && (
-                <SetupForm app={app} onSaved={async (m) => { setEditing(null); await load(); flash(m) }} onError={setError} />
-              )}
-
-              <ul className="integration-kinds">
-                {conns.map(({ kind, row }) => {
-                  const connected = row?.status === 'connected' && row.credentialsOk !== false
-                  return (
-                    <li key={kind}>
-                      <span className={`mini-badge ${connected ? 'completed' : row?.credentialsOk === false ? 'error' : 'idle'}`}>{connected ? '✓ connected' : row?.credentialsOk === false ? '⚠ reconnect needed' : 'not connected'}</span>
-                      <strong>{KIND_LABEL[kind] ?? kind}</strong>
-                      {row?.displayName && <span className="text-subtle">{row.displayName}</span>}
-                      {row?.updatedAt && connected && <span className="text-subtle">since {new Date(row.updatedAt).toLocaleDateString()}</span>}
-                      <span className="integration-kind-actions">
-                        {connected && canManage && <button type="button" className="ghost-button" onClick={() => void disconnect(kind)}>Disconnect</button>}
-                      </span>
-                    </li>
-                  )
-                })}
-              </ul>
-
-              {!readOnly && (
-                <div className="integration-foot">
-                  {anyConnected && !needsReconnect
-                    ? <span className="text-subtle">Connected as one account for the whole organization.</span>
-                    : app.configured
-                      ? (canManage ? <button type="button" className="primary-button" onClick={() => connect(app.provider)}>{needsReconnect ? `Reconnect ${app.label}` : `Connect ${app.label}`}</button> : <span className="text-subtle">An owner or admin can connect this.</span>)
-                      : <span className="text-subtle">Set up the {app.label.split(' ')[0]} app to enable connecting.</span>}
+            return (
+              <section key={category.id} className="integration-category">
+                <div className="integration-category-header">
+                  <div className="integration-category-title-row">
+                    <h3>{category.label}</h3>
+                    <span className={`category-badge category-badge-${statusSummary.badgeVariant} mini-badge ${statusSummary.badgeVariant}`}>
+                      {statusSummary.summaryBadge}
+                    </span>
+                  </div>
+                  <p className="panel-subtitle">{category.description}</p>
                 </div>
-              )}
-              {readOnly && !anyConnected && (
-                <div className="integration-foot">
-                  <span className="text-subtle">{app.configured ? (needsReconnect ? 'Needs reconnecting.' : 'App set up, not connected yet.') : 'App not set up yet.'}</span>
-                </div>
-              )}
-            </section>
-          )
-        })}
-      </div>
+
+                {isEmpty && (
+                  <div className="integration-category-empty card">
+                    <p>{category.emptyGuidance}</p>
+                    {canManage && categoryApps.length > 0 && (
+                      <div className="integration-category-empty-actions">
+                        {categoryApps.map((app) => (
+                          <button
+                            key={app.provider}
+                            type="button"
+                            className={editing === app.provider ? 'ghost-button' : 'primary-button'}
+                            onClick={() => setEditing(editing === app.provider ? null : app.provider)}
+                          >
+                            {editing === app.provider ? `Close ${app.label} setup` : `Set up ${app.label}`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {categoryApps.length > 0 && (
+                  <div className="integration-list">
+                    {categoryApps.map((app) => {
+                      const conns = app.kinds.map((kind) => ({ kind, row: connections.find((c) => c.kind === kind) }))
+                      const anyConnected = conns.some((c) => c.row?.status === 'connected' && c.row.credentialsOk !== false)
+                      const needsReconnect = conns.some((c) => c.row?.credentialsOk === false)
+                      const isEditing = editing === app.provider
+                      return (
+                        <section key={app.provider} className={`card integration ${app.configured ? 'configured' : ''} ${anyConnected ? 'connected' : ''}`}>
+                          <div className="integration-head">
+                            <div className={`integration-logo ${app.provider}`} aria-hidden="true">{app.label.slice(0, 1)}</div>
+                            <div className="integration-title">
+                              <h3>{app.label}</h3>
+                              <p className="panel-subtitle" style={{ margin: 0 }}>{PROVIDER_BLURB[app.provider]}</p>
+                            </div>
+                            <div className="integration-state">
+                              <span className={`mini-badge ${app.configured ? 'idle' : 'error'}`} title={app.configured ? `${app.setup.source === 'manifest' ? 'App created by Spaces' : 'Credentials set in the app'}${app.updatedByName ? ` by ${app.updatedByName}` : ''}${app.updatedAt ? ` on ${new Date(app.updatedAt).toLocaleDateString()}` : ''}` : 'No app set up yet'}>
+                                {app.configured ? (app.setup.installed ? 'app installed' : 'app set up') : 'app not set up'}
+                              </span>
+                              {canManage && <button type="button" className={isEditing || app.configured ? 'ghost-button' : 'primary-button'} onClick={() => setEditing(isEditing ? null : app.provider)}>{isEditing ? 'Close' : app.configured ? 'Manage app' : 'Set up app'}</button>}
+                            </div>
+                          </div>
+
+                          {app.availableAtProvider === false && (
+                            <p className="error-text" style={{ margin: '0 0 8px' }}>
+                              This app no longer exists on {app.label.split(' ')[0]}, so connecting and signing in with it fail. Create it again below.
+                            </p>
+                          )}
+                          {app.availableAtProvider !== false && app.missingPermissions && app.missingPermissions.length > 0 && (
+                            <p className="error-text" style={{ margin: '0 0 8px' }}>
+                              This app cannot {app.missingPermissions.includes('workflows') ? 'change workflow files, so a run that wires its tests into CI is refused' : 'do everything agents need'}.
+                              {' '}Add {app.missingPermissions.map((name) => name.replace('_', ' ')).join(', ')} (read and write)
+                              {app.permissionsUrl ? <> on <a href={app.permissionsUrl} target="_blank" rel="noreferrer">the app's permissions page</a></> : ' on GitHub'}
+                              , then accept the request on the installation.
+                            </p>
+                          )}
+
+                          {isEditing && canManage && (
+                            <SetupForm app={app} onSaved={async (m) => { setEditing(null); await load(); flash(m) }} onError={setError} />
+                          )}
+
+                          <ul className="integration-kinds">
+                            {conns.map(({ kind, row }) => {
+                              const connected = row?.status === 'connected' && row.credentialsOk !== false
+                              return (
+                                <li key={kind}>
+                                  <span className={`mini-badge ${connected ? 'completed' : row?.credentialsOk === false ? 'error' : 'idle'}`}>{connected ? '✓ connected' : row?.credentialsOk === false ? '⚠ reconnect needed' : 'not connected'}</span>
+                                  <strong>{KIND_LABEL[kind] ?? kind}</strong>
+                                  {row?.displayName && <span className="text-subtle">{row.displayName}</span>}
+                                  {row?.updatedAt && connected && <span className="text-subtle">since {new Date(row.updatedAt).toLocaleDateString()}</span>}
+                                  <span className="integration-kind-actions">
+                                    {connected && canManage && <button type="button" className="ghost-button" onClick={() => void disconnect(kind)}>Disconnect</button>}
+                                  </span>
+                                </li>
+                              )
+                            })}
+                          </ul>
+
+                          {!readOnly && (
+                            <div className="integration-foot">
+                              {anyConnected && !needsReconnect
+                                ? <span className="text-subtle">Connected as one account for the whole organization.</span>
+                                : app.configured
+                                  ? (canManage ? <button type="button" className="primary-button" onClick={() => connect(app.provider)}>{needsReconnect ? `Reconnect ${app.label}` : `Connect ${app.label}`}</button> : <span className="text-subtle">An owner or admin can connect this.</span>)
+                                  : <span className="text-subtle">Set up the {app.label.split(' ')[0]} app to enable connecting.</span>}
+                            </div>
+                          )}
+                          {readOnly && (
+                            <div className="integration-foot">
+                              <span className="text-subtle">
+                                {anyConnected && !needsReconnect
+                                  ? 'Connected for the organization.'
+                                  : app.configured
+                                    ? (needsReconnect ? 'Needs reconnecting.' : 'App set up, not connected yet.')
+                                    : 'App not set up yet.'}
+                              </span>
+                            </div>
+                          )}
+                        </section>
+                      )
+                    })}
+                  </div>
+                )}
+              </section>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
