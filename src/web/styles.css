@@ -2577,7 +2577,6 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 .scope-option.selected { background: var(--accent-soft); color: var(--accent-text); border-color: var(--border-focus); }
 .scope-custom { flex: 1 1 160px; min-width: 0; }
 .scope-hint { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; }
-.scope-select { font-size: 12px; padding: 3px 6px; max-width: 130px; }
 
 /* Intent viewer: every document an intent produced, navigable, with its history. */
 .intent-viewer { width: min(1180px, 96vw); max-width: none; height: min(860px, 92vh); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
