@@ -172,12 +172,16 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     kinds: ['figma'],
     authorizeUrl: 'https://www.figma.com/oauth',
     tokenUrl: 'https://www.figma.com/api/oauth/token',
-    // Read-only scope files:read covers file/node inspection, published styles,
-    // and published components. file_variables:read is Enterprise-only, so it is
-    // not requested (and /v1/me identity is not gated by an additional scope).
-    scopes: ['files:read'],
+    // Granular read-only scopes. The legacy files:read umbrella scope is
+    // deprecated by Figma (https://developers.figma.com/docs/rest-api/scopes/):
+    //   current_user:read    -> GET /v1/me (identity check)
+    //   file_content:read    -> GET /files/:key and /files/:key/nodes
+    //   library_assets:read  -> GET /files/:key/styles and /components (published assets)
+    //   library_content:read -> published components/styles of files
+    // file_variables:read is Enterprise-only and not requested (least privilege).
+    scopes: ['current_user:read', 'file_content:read', 'library_assets:read', 'library_content:read'],
     consoleUrl: 'https://www.figma.com/developers/apps',
-    notes: 'OAuth 2.0 app. Enable the read-only scope files:read in your Figma app settings.',
+    notes: 'OAuth 2.0 app. Enable the read-only scopes current_user:read, file_content:read, library_assets:read, and library_content:read in your Figma app settings.',
   },
 }
 
