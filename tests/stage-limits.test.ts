@@ -44,3 +44,18 @@ describe('keeping long work from holding the machine', () => {
     expect(await listenersOn(port)).toEqual([])
   }, 20_000)
 })
+
+describe('test databases for agents', () => {
+  test('with AGENT_DATABASE_URL, the database is created on that server, not the application\'s', async () => {
+    const { provisionTestDatabase } = await import('../src/lib/agent-environment')
+    const saved = process.env.AGENT_DATABASE_URL
+    process.env.AGENT_DATABASE_URL = 'postgres://nobody:nothing@127.0.0.1:1/unreachable'
+    try {
+      // Unreachable: nothing is created anywhere, and no URL is handed out.
+      expect(await provisionTestDatabase('separate-server-check')).toBeUndefined()
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_DATABASE_URL
+      else process.env.AGENT_DATABASE_URL = saved
+    }
+  }, 20_000)
+})

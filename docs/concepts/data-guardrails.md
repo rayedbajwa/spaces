@@ -24,10 +24,13 @@ addresses, versions, dates and UUIDs are not personal data.
   reads, command output) and the history are masked. Tool results and prompts
   are masked as they enter the history, so compaction summaries and resumed
   sessions never see real values either.
-- **Real values only where they are needed.** When the model calls a tool, the
-  tokens in its arguments are replaced with the real values, so the file it
-  writes or the command it runs still works: `export DATABASE_URL=<SECRET_1>`
-  runs with the real URL, and the provider never sees it.
+- **Real values only where they are needed.** When the model calls a tool that
+  stays on the machine (the shell and the file tools: `bash`, `read`, `write`,
+  `edit`, `grep`, `find`, `ls`), the tokens in its arguments are replaced with
+  the real values, so the file it writes or the command it runs still works:
+  `export DATABASE_URL=<SECRET_1>` runs with the real URL, and the provider
+  never sees it. Tools that send their arguments out of Spaces (web fetch and
+  search, the browser, knowledge and integration tools, Slack) keep the tokens.
 - **Secret files.** Everything read from `.env*` (not `.example`/`.sample`/
   `.template`), private keys, `.pgpass`, `.npmrc`, `.netrc`,
   `.git-credentials`, `credentials*` and `*secret(s).*` is treated as secret, in
@@ -41,14 +44,20 @@ addresses, versions, dates and UUIDs are not personal data.
 
 ## What leaves Spaces
 
-Masked one way (`[email]`, `[redacted]`) whatever an agent wrote:
+In **Mask** and **Strict**, these are masked one way (`[email]`, `[redacted]`)
+whatever an agent wrote:
 
-- run logs (secrets are masked in logs whatever the setting), a whole line at a
-  time so a value split across streamed chunks is still caught;
+- run logs, a whole line at a time so a value split across streamed chunks is
+  still caught;
 - Slack posts;
 - pull request titles, bodies and review/verification comments;
 - stage handoff summaries;
 - knowledge-base embeddings (documents and queries alike).
+
+In **Warn** and **Off** they are sent as written, except that **secrets** are
+always masked in run logs, pull request bodies and comments, handoff summaries
+and embeddings, whatever the setting. Personal data is left as it is in those
+two modes.
 
 ## Settings
 

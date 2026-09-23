@@ -112,7 +112,7 @@ requests and across restarts of the same artifact.
 | `DELETE /api/projects/:slug/features/:id` | Delete a feature that is not delivered (its directory under `specs/`). `409 delivered`, `409 project_busy` |
 | `GET /api/projects/:slug/pull-requests` | The current feature's open pull requests (`githubRepo`, `number`, `url`, `title`, `draft`), found on GitHub by head branch and cached for a minute. Board cards in Implementing and Releasing carry the same list as `pullRequests` |
 | `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status (each job with `lastActivityAt`, its run's newest event, and `workerHeartbeatAt`), tracker |
-| `POST /api/projects/:slug/jobs/:jobId/kill` | Force kill a stuck job: its run is cancelled (as `POST /api/runs/:id/cancel`) and the worker holding it is killed and replaced. Returns `jobs`. Members only |
+| `POST /api/projects/:slug/jobs/:jobId/kill` | Force kill a stuck job: the job, every active job of its run and the run are cancelled (as `POST /api/runs/:id/cancel`), and each worker holding them is killed. Under the supervisor a fresh worker starts when the project has work; a standalone worker (`bun run worker`) exits and must be restarted. Returns `jobs`. Members only |
 
 ## Sub-agents
 

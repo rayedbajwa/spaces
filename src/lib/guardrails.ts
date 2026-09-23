@@ -165,6 +165,9 @@ export function maskOutputDeep<T>(value: T, policy: GuardPolicy = DEFAULT_POLICY
   return value
 }
 
+/** Tools whose arguments never leave the machine: the only ones given real values back. */
+export const LOCAL_TOOLS = new Set(['bash', 'read', 'write', 'edit', 'grep', 'find', 'ls'])
+
 const TOKEN = /<(SECRET|EMAIL|PHONE|SSN|CARD|IBAN)_(\d+)>/g
 
 /** Files whose every value is a secret, and commands that print the environment. */
@@ -381,8 +384,11 @@ export class AgentGuard {
 
     const before = agent.beforeToolCall
     agent.beforeToolCall = async (ctx, signal) => {
-      // The validated arguments are the tool's own copy: restore real values in them.
-      this.unmaskDeep(ctx.args)
+      // The validated arguments are the tool's own copy: restore real values in
+      // them — only for tools that stay on this machine (the shell and files).
+      // Web, browser, knowledge, Slack and other tools that send their
+      // arguments out of Spaces keep the tokens.
+      if (LOCAL_TOOLS.has(ctx.toolCall.name)) this.unmaskDeep(ctx.args)
       const reason = this.blockReason(ctx.toolCall.name, (ctx.args ?? {}) as Record<string, unknown>)
       if (reason) {
         this.counts.BLOCKED += 1

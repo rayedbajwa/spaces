@@ -74,7 +74,9 @@ skipping checks it assumes are impossible:
   it (`agent_<checkout>`). The agent puts it in the checkout's `.env` and runs
   the project's own migration step, so tests that need a database run rather
   than skip. Set `AGENT_DATABASE_URL` to create those databases on a different
-  server. Each checkout keeps its own database for the life of the worker.
+  server. Every checkout a run works in, the governing one and each registered
+  repository, has its own database (and port, below) for the life of the
+  worker; the stage prompt lists which is whose.
 - **`psql`**, for projects whose scripts expect it.
 - **A port of its own** in 3100–3900, because the port serving Spaces is
   taken. Checkouts start at different points of the range and a port handed
@@ -128,7 +130,7 @@ and full-application runs happen once, where they give the answer:
   (`AGENT_COMMAND_TIMEOUT_SECONDS`, default 20 minutes); a longer or missing
   timeout is capped.
 - When a code stage ends, what it left running is stopped: anything still
-  listening on the checkout's test port, and the checkouts' Compose
+  listening on each checkout's test port, and each checkout's Compose
   containers. The run log says what (`[cleanup] …`).
 
 ## What the log shows
@@ -195,8 +197,8 @@ never stopped.
 **Force kill.** In **Recent jobs**, a job that has done nothing for 10 minutes
 (or whose worker stopped heartbeating for 2) gets **Force kill**: its run is
 cancelled and the worker holding it is killed (the supervisor SIGKILLs it and
-starts a fresh one when there is work; a standalone worker exits). Use it when a
-hung worker would never act on a normal **Cancel**.
+starts a fresh one when there is work; a standalone worker exits and must be
+restarted). Use it when a hung worker would never act on a normal **Cancel**.
 
 ## Failure handling
 

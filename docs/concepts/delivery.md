@@ -75,10 +75,11 @@ At every code stage (implement, orchestrate, review, verify) the intent's
 directory in the governing workspace, `specs/<intent>/` (spec, plan, tasks,
 test plan, contracts, research, review and verification reports), is mirrored
 into each implementation repository that is on the feature branch and has work
-there, and committed with that stage's changes. Only that directory is touched:
-documents no longer in the governing workspace are removed from the copy, a
-source that cannot be read changes nothing, and nothing is written through a
-symbolic link.
+there, and committed with that stage's changes. Only that directory is touched,
+and documents no longer in the governing workspace are removed from the copy.
+If the source directory cannot be listed, nothing changes; a single document
+that cannot be read is skipped (the others still sync). Nothing is written or
+removed through a symbolic link.
 
 Those repositories are then pushed and get their own pull request
 (`feat(<intent>): <spec title>`), which links to the governing workspace's pull
