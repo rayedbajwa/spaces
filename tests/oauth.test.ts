@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import { beginAuthorization, consumeState, type OAuthProviderConfig } from '../src/lib/oauth'
+import { beginAuthorization, consumeState, type OAuthProviderConfig, PROVIDER_TEMPLATES } from '../src/lib/oauth'
 
 /**
  * The oauth module holds a module-level `pendingStates` Map. Every test here
@@ -89,4 +89,56 @@ describe('consumeState: single-use + missing lookup', () => {
 test.skip('expired state (older than 10 min) is not returned — skipped: no exported hook to backdate createdAt or advance clock', () => {
   // To enable this: export `pendingStates` (or a `__setNow` hook) from oauth.ts.
   // Then set createdAt = Date.now() - 11 * 60_000 and assert consumeState returns undefined.
+})
+
+describe('Figma provider template: corrected OAuth scopes', () => {
+  const figma = PROVIDER_TEMPLATES.figma
+
+  test('scopes request exactly files:read (no other scope)', () => {
+    expect(figma.scopes).toEqual(['files:read'])
+  })
+
+  test('scopes include the read scope for files/nodes/styles/components', () => {
+    expect(figma.scopes).toContain('files:read')
+  })
+
+  const removedScopes = [
+    'current_user:read',
+    'file_content:read',
+    'file_variables:read',
+    'library_assets:read',
+  ]
+  for (const scope of removedScopes) {
+    test(`scopes exclude removed/invalid/enterprise scope ${scope}`, () => {
+      expect(figma.scopes).not.toContain(scope)
+    })
+  }
+
+  test('scopes exclude any deprecated file_read identifier', () => {
+    expect(figma.scopes.some((s) => s.includes('file_read'))).toBe(false)
+  })
+
+  test('notes name files:read as the scope to enable', () => {
+    expect(figma.notes ?? '').toContain('files:read')
+  })
+
+  test('notes do not advertise the removed scopes', () => {
+    for (const scope of ['current_user:read', 'file_content:read', 'library_assets:read']) {
+      expect(figma.notes ?? '').not.toContain(scope)
+    }
+  })
+
+  test('the Figma authorization URL requests only files:read', () => {
+    const figmaConfig: OAuthProviderConfig = {
+      provider: 'figma',
+      authorizeUrl: figma.authorizeUrl,
+      tokenUrl: figma.tokenUrl,
+      clientId: 'dummy-figma-client-id',
+      clientSecret: 'dummy-figma-client-secret',
+      scopes: figma.scopes,
+    }
+    const { redirectUrl } = beginAuthorization(figmaConfig, 'project-figma', 'https://cb.example.com/oauth/callback')
+    const url = new URL(redirectUrl)
+    expect(url.searchParams.get('scope')).toBe('files:read')
+  })
 })
