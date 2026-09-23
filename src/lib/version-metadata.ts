@@ -29,7 +29,7 @@ function resolveGitRevision(): string {
 }
 
 export function resolveVersionMetadata({ packageMetadata, env = process.env, resolveGitRevision: resolveGit = resolveGitRevision }: VersionMetadataOptions): VersionMetadata {
-  const configuredCommit = env.GIT_COMMIT?.trim()
+  const configuredCommit = (env.GIT_COMMIT?.trim() || env.RAILWAY_GIT_COMMIT_SHA?.trim())
   let commit = configuredCommit ?? ''
   if (!commit) {
     try {

@@ -33,11 +33,13 @@ ENV PORT=3000
 # the runtime stage. Pass them at build time, e.g.:
 #   docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" \
 #                --build-arg SPACES_VERSION="1.2.3" -t spaces:latest .
+# Platform build pipelines like Railway automatically provide RAILWAY_GIT_COMMIT_SHA.
 # When omitted, the resolver falls back to git (unavailable in the image) and
 # the package.json version, so the endpoint reports "unknown"/the placeholder.
 ARG GIT_COMMIT
+ARG RAILWAY_GIT_COMMIT_SHA
 ARG SPACES_VERSION
-ENV GIT_COMMIT=$GIT_COMMIT \
+ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
     SPACES_VERSION=$SPACES_VERSION
 
 # Agents clone repositories, create worktrees, commit and push: git is required.
