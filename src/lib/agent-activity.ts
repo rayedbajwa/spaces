@@ -18,12 +18,65 @@ const MAX_LINE = 160
 /** Mask tokens and passwords that commands and outputs can carry. */
 export function redactSecrets(text: string): string {
   return text
+    // Private key blocks, whole.
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, '[redacted private key]')
+    // Provider tokens by shape.
     .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/g, '[redacted]')
     .replace(/\b(sk-(?:ant-|or-|proj-)?[A-Za-z0-9_-]{16,})\b/g, '[redacted]')
     .replace(/\b(xox[abpr]-[A-Za-z0-9-]{10,})\b/g, '[redacted]')
-    .replace(/(https?:\/\/)[^\s/:@]+:[^\s/@]+@/g, '$1[redacted]@')
+    .replace(/\b((?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted jwt]')
+    // Credentials in any URL (postgres://, mysql://, redis://, https://…): keep the user, mask the password.
+.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@"'`]*):([^\s/@"'`]+)@/gi, '$1$2:[redacted]@')
+    // Secrets passed as query parameters.
+    .replace(/([?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|sig|signature|key)=)[^&\s"'`#]+/gi, '$1[redacted]')
     .replace(/\b(Bearer|token)\s+[A-Za-z0-9._~+/=-]{16,}/gi, '$1 [redacted]')
-    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, '$1=[redacted]')
+    // NAME=value where the name says it is secret (TOKEN, SECRET, PASSWORD, PASS, PWD, *_KEY, CREDENTIAL, AUTH).
+    .replace(/\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|API_?KEY|_KEY|CREDENTIALS?|AUTH)[A-Z0-9_]*)=("[^"]*"|'[^']*'|[^\s"'`]+)/g, '$1=[redacted]')
+    // "password": "…" in JSON or YAML-ish output.
+    .replace(/(["']?(?:password|passwd|secret|client_secret|token|access_token|refresh_token|api_?key|private_key)["']?\s*[:=]\s*)(["'])(?:(?!\2).)+\2/gi, '$1$2[redacted]$2')
+}
+
+/**
+ * redactSecrets for text that arrives in pieces (streamed agent output). A
+ * secret can be split across chunks, so only complete lines are masked and
+ * passed on; a partial line waits for its newline (or `flush`, or until it is
+ * longer than `maxHold`). A private key block is dropped from BEGIN to END
+ * even though it spans lines.
+ */
+export function createSecretRedactor(options: { maxHold?: number } = {}) {
+  const maxHold = options.maxHold ?? 8192
+  let pending = ''
+  let inPrivateKey = false
+  const line = (text: string): string => {
+    if (inPrivateKey) {
+      if (/-----END [A-Z ]*PRIVATE KEY-----/.test(text)) {
+        inPrivateKey = false
+        return redactSecrets(text.replace(/^[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/, ''))
+      }
+      return ''
+    }
+    if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text) && !/-----END [A-Z ]*PRIVATE KEY-----/.test(text)) inPrivateKey = true
+    return redactSecrets(text)
+  }
+  return {
+    /** The complete lines of `chunk` (with what was waiting), masked; the rest waits. */
+    push(chunk: string): string {
+      pending += chunk
+      const cut = pending.lastIndexOf('\n')
+      if (cut === -1) return pending.length > maxHold ? this.flush() : ''
+      const complete = pending.slice(0, cut + 1)
+      pending = pending.slice(cut + 1)
+      return complete.split(/(?<=\n)/).map(line).join('')
+    },
+    /** Whatever is waiting, masked (end of a stream, or a pause in it). */
+    flush(): string {
+      const out = pending ? line(pending) : ''
+      pending = ''
+      return out
+    },
+    get pending(): boolean { return pending.length > 0 },
+  }
 }
 
 function clip(text: string, max = MAX_LINE): string {
@@ -113,7 +166,9 @@ export function createLineStamper(options: { label?: () => string | undefined; t
  * with who wrote it and when — for sub-agents whose lines join a shared log,
  * or a log of their own.
  */
-export function createActivityLog(options: { label?: string; timestamps?: boolean; now?: () => Date } = {}) {
+export function createActivityLog(options: { label?: string; timestamps?: boolean; now?: () => Date; redact?: boolean } = {}) {
+  // Masked line by line as it is written (a secret can span streamed deltas); off when the caller masks.
+  const redactor = options.redact === false ? undefined : createSecretRedactor()
   const stamper = options.label || options.timestamps
     ? createLineStamper({ label: () => options.label, timestamps: options.timestamps ?? true, now: options.now })
     : undefined
@@ -122,11 +177,17 @@ export function createActivityLog(options: { label?: string; timestamps?: boolea
 
   const emit = (text: string): string => {
     atLineStart = text.endsWith('\n')
-    return stamper ? stamper.stamp(text) : text
+    const safe = redactor ? redactor.push(text) : text
+    return stamper ? stamper.stamp(safe) : safe
   }
   const line = (text: string): string => emit(`${atLineStart ? '' : '\n'}${redactSecrets(text)}\n`)
 
   return {
+    /** The end of the log: what the redactor was still holding back. */
+    flush(): string {
+      const rest = redactor?.flush() ?? ''
+      return rest && stamper ? stamper.stamp(rest) : rest
+    },
     /** What to append to the log for this event, if anything. */
     onEvent(event: AgentEvent): string | undefined {
       if (event.type === 'message_update') {
