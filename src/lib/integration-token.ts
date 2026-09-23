@@ -21,6 +21,7 @@ export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId> = {
   confluence: 'atlassian',
   slack: 'slack',
   linear: 'linear',
+  figma: 'figma',
 }
 
 const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
@@ -28,6 +29,7 @@ const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
   atlassian: ['jira', 'confluence'],
   slack: ['slack'],
   linear: ['linear'],
+  figma: ['figma'],
 }
 
 /** Refresh a little early so a token never dies mid-request. */

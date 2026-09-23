@@ -16,7 +16,7 @@ import { INTEGRATION_CATEGORIES, calculateCategoryStatus } from '../lib/integrat
  */
 
 interface OAuthApp {
-  provider: 'github' | 'atlassian' | 'slack' | 'linear'
+  provider: 'github' | 'atlassian' | 'slack' | 'linear' | 'figma'
   label: string
   kinds: string[]
   configured: boolean
@@ -48,12 +48,13 @@ interface OAuthApp {
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
 
-const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear' }
+const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma' }
 const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   github: 'Repository catalog, cloning, pull requests, issue search and GitHub sign-in.',
   atlassian: 'Jira issues and Confluence pages for agents and the knowledge base. One app covers both.',
   linear: 'Linear issues, projects and initiatives for agents and the knowledge base.',
   slack: 'A channel per project (#spaces-<code>) with run updates, stage summaries and approval requests.',
+  figma: 'Figma files, design tokens, style definitions, and component libraries for agent visual inspection and knowledge base ingestion.',
 }
 
 export function IntegrationsPanel({ embedded = false, readOnly = false }: { embedded?: boolean; readOnly?: boolean }) {
@@ -66,6 +67,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<OAuthApp['provider'] | null>(null)
+  const [showFigmaPatModal, setShowFigmaPatModal] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -216,10 +218,41 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                           {!readOnly && (
                             <div className="integration-foot">
                               {anyConnected && !needsReconnect
-                                ? <span className="text-subtle">Connected as one account for the whole organization.</span>
-                                : app.configured
-                                  ? (canManage ? <button type="button" className="primary-button" onClick={() => connect(app.provider)}>{needsReconnect ? `Reconnect ${app.label}` : `Connect ${app.label}`}</button> : <span className="text-subtle">An owner or admin can connect this.</span>)
-                                  : <span className="text-subtle">Set up the {app.label.split(' ')[0]} app to enable connecting.</span>}
+                                ? (
+                                  <>
+                                    <span className="text-subtle">Connected as one account for the whole organization.</span>
+                                    {app.provider === 'figma' && canManage && (
+                                      <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} onClick={() => setShowFigmaPatModal(true)}>
+                                        Update Token
+                                      </button>
+                                    )}
+                                  </>
+                                )
+                                : (
+                                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                                    {app.configured && (
+                                      canManage ? (
+                                        <button type="button" className="primary-button" onClick={() => connect(app.provider)}>
+                                          {needsReconnect ? `Reconnect ${app.label}` : `Connect ${app.label}`}
+                                        </button>
+                                      ) : (
+                                        <span className="text-subtle">An owner or admin can connect this.</span>
+                                      )
+                                    )}
+                                    {app.provider === 'figma' && canManage && (
+                                      <button
+                                        type="button"
+                                        className={app.configured ? 'ghost-button' : 'primary-button'}
+                                        onClick={() => setShowFigmaPatModal(true)}
+                                      >
+                                        {needsReconnect ? 'Reconnect with Token (PAT)' : 'Connect with Token (PAT)'}
+                                      </button>
+                                    )}
+                                    {!app.configured && app.provider !== 'figma' && (
+                                      <span className="text-subtle">Set up the {app.label.split(' ')[0]} app to enable connecting.</span>
+                                    )}
+                                  </div>
+                                )}
                             </div>
                           )}
                           {readOnly && (
@@ -242,6 +275,16 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
             )
           })}
         </div>
+      )}
+      {showFigmaPatModal && (
+        <FigmaTokenModal
+          onClose={() => setShowFigmaPatModal(false)}
+          onSaved={async (m) => {
+            await load()
+            flash(m)
+          }}
+          onError={setError}
+        />
       )}
     </div>
   )
@@ -384,5 +427,110 @@ function ManualCredentials({ app, callbackUrl, copyChip, onSaved, onError, busy,
         <button type="submit" className="primary-button" disabled={busy || !clientId.trim()}>{busy ? 'Saving…' : 'Save credentials'}</button>
       </div>
     </form>
+  )
+}
+
+function FigmaTokenModal({
+  onClose,
+  onSaved,
+  onError,
+}: {
+  onClose: () => void
+  onSaved: (message: string) => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [token, setToken] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<string | null>(null)
+
+  const handleVerify = async () => {
+    if (!token.trim()) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await json<{ ok: boolean; user?: { handle: string; email: string }; error?: string }>(
+        '/api/integrations/figma/verify',
+        { method: 'POST', body: JSON.stringify({ token: token.trim() }) }
+      )
+      if (res.ok && res.user) {
+        setTestResult(`✓ Valid token for ${res.user.handle || res.user.email}`)
+      } else {
+        setTestResult(`✗ ${res.error || 'Verification failed'}`)
+      }
+    } catch (err) {
+      setTestResult(`✗ ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token.trim()) return
+    setBusy(true)
+    try {
+      await json('/api/integrations/figma/token', {
+        method: 'POST',
+        body: JSON.stringify({ token: token.trim(), displayName: displayName.trim() || undefined }),
+      })
+      await onSaved('Figma Personal Access Token connected successfully.')
+      onClose()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-shell" style={{ maxWidth: 520, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            <h2>Connect Figma Personal Access Token</h2>
+            <p className="panel-subtitle">Generate a Personal Access Token in Figma under Settings → Security → Personal access tokens.</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="modal-body figma-token-form" style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+          <label>
+            <span>Personal Access Token</span>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => { setToken(e.target.value); setTestResult(null) }}
+              placeholder="figd_..."
+              required
+              autoFocus
+            />
+          </label>
+          <label>
+            <span>Display Name (optional)</span>
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              placeholder="e.g. Acme Design Team"
+            />
+          </label>
+          {testResult && (
+            <div style={{ fontSize: 13, color: testResult.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>
+              {testResult}
+            </div>
+          )}
+          <div className="button-row" style={{ marginTop: 8, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" className="ghost-button" disabled={busy || testing || !token.trim()} onClick={handleVerify}>
+              {testing ? 'Verifying…' : 'Test Token'}
+            </button>
+            <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary-button" disabled={busy || !token.trim()}>
+              {busy ? 'Connecting…' : 'Connect Figma'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }

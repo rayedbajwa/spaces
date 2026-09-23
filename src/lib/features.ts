@@ -35,6 +35,16 @@ export interface FeatureSummary {
   verification?: 'pass' | 'partial' | 'fail'
   delivery?: 'merged' | 'partial' | 'blocked'
   documents: Array<{ label: string; path: string }>
+  /** Figma design links referenced in the spec (for review-gate design fidelity checks). */
+  designLinks?: FigmaDesignLink[]
+}
+
+/** A Figma design artifact linked from the spec. */
+export interface FigmaDesignLink {
+  url: string
+  fileKey: string
+  nodeId?: string
+  label?: string
 }
 
 const DOCUMENTS: Array<[string, string]> = [
@@ -92,6 +102,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
     for (const [label, file] of DOCUMENTS) {
       if (await stat(path.join(dir, file)).then((s) => s.isFile()).catch(() => false)) documents.push({ label, path: `specs/${id}/${file}` })
     }
+    const links = extractFigmaLinks(spec ?? '')
     return {
       id,
       relativePath: `specs/${id}`,
@@ -101,6 +112,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
       ...featureStatus({ spec, plan, tasks, verification, acceptance, delivery, hasImplementation }),
       ...(codeReview ? { codeReview: /^approved$/i.test(codeReview) ? 'approved' as const : 'changes_requested' as const } : {}),
       documents,
+      ...(links.length ? { designLinks: links } : {}),
     }
   }))
 }
@@ -138,4 +150,39 @@ export function retitleSpec(spec: string, title: string): string {
     lines[index] = `# ${prefixed ? 'Feature Specification: ' : ''}${clean}`
   }
   return lines.join('\n')
+}
+
+/** Extract Figma design links from spec (or any markdown) content. */
+const FIGMA_URL_RE = /https?:\/\/(?:www\.)?figma\.com\/(?:file|design)\/[A-Za-z0-9]+(?:[\w-]*)(?:\/[^\s)\]]*)?/gi
+
+export function parseFigmaLink(rawUrl: string): { fileKey: string; nodeId?: string } | undefined {
+  try {
+    const parsed = new URL(rawUrl)
+    if (!parsed.hostname.includes('figma.com')) return undefined
+    const segments = parsed.pathname.split('/').filter(Boolean)
+    const typeIdx = segments.findIndex((s) => s === 'design' || s === 'file')
+    if (typeIdx === -1 || typeIdx + 1 >= segments.length) return undefined
+    const fileKey = segments[typeIdx + 1]
+    const rawNodeId = parsed.searchParams.get('node-id')
+    const nodeId = rawNodeId ? decodeURIComponent(rawNodeId).replace(/-/g, ':') : undefined
+    return { fileKey, nodeId }
+  } catch {
+    return undefined
+  }
+}
+
+export function extractFigmaLinks(text: string): FigmaDesignLink[] {
+  if (!text) return []
+  const links: FigmaDesignLink[] = []
+  const seen = new Set<string>()
+  for (const match of text.matchAll(FIGMA_URL_RE)) {
+    const url = match[0].replace(/[.,;:]+$/, '')
+    if (seen.has(url)) continue
+    const parsed = parseFigmaLink(url)
+    if (parsed?.fileKey) {
+      seen.add(url)
+      links.push({ url, fileKey: parsed.fileKey, nodeId: parsed.nodeId })
+    }
+  }
+  return links
 }

@@ -1,7 +1,7 @@
 import type { OAuthProviderId } from './oauth'
 import type { AppIntegrationKind } from './app-integrations'
 
-export type IntegrationCategoryId = 'source_control' | 'project_management' | 'communication'
+export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'communication'
 
 export type CategoryReadinessState =
   | 'connected'
@@ -59,6 +59,14 @@ export const INTEGRATION_CATEGORIES: readonly IntegrationCategoryDefinition[] = 
     emptyGuidance: 'Connect project management tools to link specs with active issues, sync initiatives, and ingest product knowledge.',
     providers: ['atlassian', 'linear'],
     kinds: ['jira', 'confluence', 'linear'],
+  },
+  {
+    id: 'design',
+    label: 'Design & Prototyping',
+    description: 'Figma files, design tokens, style definitions, and component libraries for agent visual inspection and knowledge base ingestion.',
+    emptyGuidance: 'Connect Figma so autonomous agents can inspect design mockups, extract layout tokens, and match components to design specs.',
+    providers: ['figma'],
+    kinds: ['figma'],
   },
   {
     id: 'communication',

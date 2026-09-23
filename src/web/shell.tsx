@@ -314,3 +314,49 @@ export function SearchBox({ value, onChange, placeholder }: { value: string; onC
     </label>
   )
 }
+
+export interface FigmaDesignPreviewLink {
+  url: string
+  fileKey: string
+  nodeId?: string
+  label?: string
+}
+
+/**
+ * Review gate design notice: renders linked Figma frames and compliance checks
+ * during human-in-the-loop review gates.
+ */
+export function ReviewGateDesignNotice({
+  links,
+}: {
+  links?: FigmaDesignPreviewLink[]
+}) {
+  if (!links || links.length === 0) return null
+
+  return (
+    <div className="review-gate-design-notice card" style={{ padding: '12px 14px', margin: '8px 0', background: 'var(--bg-elevated-2)', border: '1px solid var(--border)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span className="mini-badge completed">Design Review</span>
+        <strong>Linked Figma Designs &amp; Fidelity Checks</strong>
+      </div>
+      <ul style={{ margin: '4px 0 8px', paddingLeft: 20, fontSize: 13, display: 'grid', gap: 4 }}>
+        {links.map((link, idx) => (
+          <li key={idx}>
+            <a
+              href={link.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link-button"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              Open Figma Frame {link.nodeId ? `(${link.nodeId})` : ''} ↗
+            </a>
+          </li>
+        ))}
+      </ul>
+      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+        Verify layout flexbox rules, typography scale, design tokens, and component states conform to the design system before approving.
+      </div>
+    </div>
+  )
+}

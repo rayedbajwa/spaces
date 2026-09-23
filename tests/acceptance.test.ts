@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { readAcceptance, recordAcceptance, renderAcceptance, withdrawAcceptance } from '../src/lib/acceptance'
 import { laneForProject } from '../src/lib/board-drop'
+import { extractFigmaLinks, listFeatures } from '../src/lib/features'
+import { generateDesignFidelityChecklist } from '../src/lib/aidlc'
 
 /**
  * A verification that comes back partial is not automatically a failure: the
@@ -84,5 +86,46 @@ describe('an accepted, reviewed feature is releasing', () => {
 
   test('accepting QA does not skip the code review', () => {
     expect(laneForProject({ ...base, codeReviewStatus: undefined, verificationStatus: 'partial', accepted: true })).toBe('implementing')
+  })
+})
+
+describe('feature design artifact association and review gate checklist (US4)', () => {
+  test('extracts Figma links from spec markdown', () => {
+    const specContent = `
+# Feature Specification: Checkout Modal
+
+## Mockups
+- Primary screen: https://www.figma.com/design/Vf123Abc456/Checkout?node-id=10-25
+- Mobile responsive: https://figma.com/file/Vf123Abc456/Checkout?node-id=20-50
+`
+    const links = extractFigmaLinks(specContent)
+    expect(links).toHaveLength(2)
+    expect(links[0].fileKey).toBe('Vf123Abc456')
+    expect(links[0].nodeId).toBe('10:25')
+    expect(links[1].nodeId).toBe('20:50')
+  })
+
+  test('listFeatures associates designLinks from spec.md', async () => {
+    const root = await project({
+      'specs/001-feature/spec.md': '# Feature Specification\nSee https://www.figma.com/design/Key123/Project?node-id=5-5',
+    })
+    const features = await listFeatures(root)
+    expect(features).toHaveLength(1)
+    expect(features[0].designLinks).toBeDefined()
+    expect(features[0].designLinks).toHaveLength(1)
+    expect(features[0].designLinks?.[0].fileKey).toBe('Key123')
+    expect(features[0].designLinks?.[0].nodeId).toBe('5:5')
+  })
+
+  test('generateDesignFidelityChecklist formats checklist items for review gate', () => {
+    const links = [
+      { url: 'https://www.figma.com/design/Key123/Project?node-id=5:5', fileKey: 'Key123', nodeId: '5:5' },
+    ]
+    const checklist = generateDesignFidelityChecklist(links)
+    expect(checklist).toContain('Design Fidelity & Design System Checklist')
+    expect(checklist).toContain('Inspect linked design artifact')
+    expect(checklist).toContain('https://www.figma.com/design/Key123/Project?node-id=5:5')
+    expect(checklist).toContain('typography scale, colors, elevation')
+    expect(checklist).toContain('auto-layout padding, item spacing')
   })
 })
