@@ -134,7 +134,7 @@ export async function retryRunAndEnqueue(input: {
  * are marked 'error' rather than re-enqueued — the dispatcher can only serve
  * jobs that belong to a project.
  */
-export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenqueued: number; failed: number }> {
+export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenqueued: number; failed: number; runIds: string[] }> {
   const sql = getDb()
   const cutoff = new Date(Date.now() - staleAfterMs)
 
@@ -173,7 +173,8 @@ export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenque
       failed++
     }
   }
-  return { reenqueued, failed }
+  // Which runs, so a log line can be traced to them.
+  return { reenqueued, failed, runIds: orphans.map((o) => o.runId) }
 }
 
 /**

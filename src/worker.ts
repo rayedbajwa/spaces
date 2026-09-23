@@ -878,9 +878,9 @@ async function main(): Promise<void> {
   // or a manual DB manipulation could still leave orphans behind.
   timers.push(setInterval(() => {
     void reapOrphanedRuns()
-      .then(({ reenqueued, failed }) => {
+      .then(({ reenqueued, failed, runIds }) => {
         if (reenqueued > 0 || failed > 0) {
-          workerLog.info('reaped orphaned runs', { reenqueued, failed })
+          workerLog.info('reaped orphaned runs', { reenqueued, failed, runIds })
         }
       })
       .catch((err) => workerLog.error('orphan-run reaper failed', err))
