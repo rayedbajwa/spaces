@@ -17,7 +17,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
-import { createActivityLog } from './agent-activity'
+import { createActivityLog, createSecretRedactor } from './agent-activity'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
@@ -352,6 +352,7 @@ export class AIDLCFlow {
   }
 
   getLog(): string {
+    this.flushLog()
     return this.log
   }
 
@@ -561,6 +562,7 @@ export class AIDLCFlow {
     }
 
     await this.dispose()
+    this.flushLog()
     return {
       status: 'completed',
       log: this.log,
@@ -732,6 +734,7 @@ export class AIDLCFlow {
 
   private pause(kind: PauseKind, stage: StageName): FlowProgress {
     this.waitState = { kind, stage }
+    this.flushLog()
     return {
       status: 'paused',
       stage,
@@ -1105,7 +1108,8 @@ export class AIDLCFlow {
     let providerError: string | undefined
     const verbose = this.options.verbose === true
     // The agent's text and a line per tool call it makes: what it did, not only what it said.
-    const activity = createActivityLog()
+    // (Masked by print, which covers every line this flow writes.)
+    const activity = createActivityLog({ redact: false })
 
     const unsubscribe = this.session!.subscribe((event) => {
       const logged = activity.onEvent(event as unknown as { type: string })
@@ -1137,19 +1141,49 @@ export class AIDLCFlow {
       await this.session!.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
     } finally {
       unsubscribe()
+      // The stage's last words are in the log before anything reads it (a gate, a handoff).
+      this.flushLog()
     }
 
     return { output: assistantOutput, providerError }
   }
 
+  /**
+   * Everything this flow logs is masked on the way in, line by line: its own
+   * log (which gate and Slack notifications quote) and what the sinks receive
+   * alike. A partial line waits for its newline, or for a pause in the stream.
+   */
+  private readonly redactors = { stdout: createSecretRedactor(), stderr: createSecretRedactor() }
+  private flushTimer?: ReturnType<typeof setTimeout>
+
+  private write(stream: 'stdout' | 'stderr', text: string): void {
+    const safe = this.redactors[stream].push(text)
+    if (safe) {
+      this.log += safe
+      this.sinks[stream]?.(safe)
+    }
+    if (this.redactors.stdout.pending || this.redactors.stderr.pending) {
+      this.flushTimer ??= setTimeout(() => { this.flushTimer = undefined; this.flushLog() }, 1500)
+    }
+  }
+
+  private flushLog(): void {
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined }
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const rest = this.redactors[stream].flush()
+      if (rest) {
+        this.log += rest
+        this.sinks[stream]?.(rest)
+      }
+    }
+  }
+
   private print(text: string): void {
-    this.log += text
-    this.sinks.stdout?.(text)
+    this.write('stdout', text)
   }
 
   private error(text: string): void {
-    this.log += text
-    this.sinks.stderr?.(text)
+    this.write('stderr', text)
   }
 }
 
@@ -1795,6 +1829,7 @@ export async function runAIDLCMergeOrchestrator(options: {
     )
     if (providerError) throw new Error(`LLM provider error: ${providerError}`)
 
+    transcript += activity.flush()
     return {
       featureDir,
       outputFile,
@@ -1879,6 +1914,7 @@ export async function runAIDLCSpecificTask(options: {
     )
     if (providerError) throw new Error(`LLM provider error: ${providerError}`)
 
+    transcript += activity.flush()
     return {
       featureDir,
       outputFile,
@@ -1956,6 +1992,7 @@ export async function runAIDLCSpecificWorkstream(options: {
       { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
 
+    transcript += activity.flush()
     return {
       featureDir,
       outputFile,
@@ -2221,6 +2258,10 @@ export async function runAIDLCParallelSubAgents(options: {
                 ? 'Agent produced no output and made no tool calls.'
                 : undefined
 
+          // What the redactors were still holding back (a last line without its newline).
+          transcript += activity.flush()
+          const mirroredRest = mirror?.flush()
+          if (mirroredRest) options.onActivity?.(workstream.title, mirroredRest)
           const result: ParallelSubAgentResult = {
             workstream: workstream.title,
             outputFile,
