@@ -98,7 +98,11 @@ const OPENROUTER_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENROUTER || 'openro
  * call is enough for a summary, and it must not depend on one provider, since
  * a tenant routing through OpenRouter has no Anthropic key at all.
  */
-async function summarizeOnce(prompt: string, orgId?: string): Promise<string> {
+async function summarizeOnce(rawPrompt: string, orgId?: string): Promise<string> {
+  // AI data guardrails: the handoff is summarized without its secrets and personal data.
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput } = await import('./guardrails')
+  const prompt = maskOutput(rawPrompt, await loadGuardPolicy(orgId))
   // Keys belong to the organization whose run is being compacted; nothing is read from the process environment.
   const { loadProviderKeys } = await import('./provider-keys')
   const keys = orgId ? await loadProviderKeys(orgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>)) : {}
@@ -139,7 +143,20 @@ async function summarizeOnce(prompt: string, orgId?: string): Promise<string> {
  * Compact a stage output tail into a preamble-ready summary. Never throws —
  * on any error, returns the raw tail so the pipeline still gets its context.
  */
-export async function compactHandoff(input: {
+/**
+ * The handoff a stage passes on, masked under the organization's AI data
+ * guardrails whichever way it was produced: the raw tail (short, or when
+ * compaction fails), a fresh summary, or a cached one written before the
+ * guardrails existed. The worker stores and posts what this returns.
+ */
+export async function compactHandoff(input: Parameters<typeof compactHandoffUnmasked>[0]): Promise<CompactionResult> {
+  const result = await compactHandoffUnmasked(input)
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const { maskOutput, redactSecretValues } = await import('./guardrails')
+  return { ...result, text: maskOutput(redactSecretValues(result.text), await loadGuardPolicy(input.orgId)) }
+}
+
+async function compactHandoffUnmasked(input: {
   stage: string
   stepId: string
   model?: string

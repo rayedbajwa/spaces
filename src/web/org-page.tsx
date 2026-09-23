@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { LoadingBlock, SkeletonRows, SkeletonTiles } from './loading'
+import { GuardrailsSection } from './guardrails'
 import { json, navigate, useAuth, type MeTeam } from './auth'
 import { OrgKnowledgePanel } from './knowledge'
 import { IntegrationsPanel } from './integrations'
@@ -32,7 +33,7 @@ interface PromotionProposal {
 
 interface KnowledgeStatus { sources: number; documents: number; chunks: number; embeddings: { available: boolean; model: string }; vectorSearch: boolean; lastSyncAt: string | null }
 
-type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'promotions' | 'teams'
+type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'guardrails' | 'promotions' | 'teams'
 
 const SECTION_BLURB: Record<Section, string> = {
   overview: '',
@@ -42,6 +43,7 @@ const SECTION_BLURB: Record<Section, string> = {
   promotions: 'Learnings that projects propose for the whole organization; approve to add them to memory.',
   integrations: 'Set each provider app up once. Connections are shared by every team.',
   models: 'Bring your own Anthropic, OpenAI or OpenRouter key. Routing picks a model per task by cost and speed.',
+  guardrails: 'Keep secrets and personal data from AI models: masked before they are sent, restored only where agents need them.',
 }
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [
@@ -52,6 +54,7 @@ const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string 
   { id: 'promotions', label: 'Promotions', hint: 'Project learnings going org-wide', group: 'Shared context' },
   { id: 'integrations', label: 'Integrations', hint: 'App credentials and connections', group: 'Setup' },
   { id: 'models', label: 'Models', hint: 'Provider keys and routing', group: 'Setup' },
+  { id: 'guardrails', label: 'Data guardrails', hint: 'Secrets and personal data', group: 'Setup' },
 ]
 
 export function OrgPage() {
@@ -196,6 +199,7 @@ export function OrgPage() {
           {section === 'integrations' && <IntegrationsPanel embedded />}
 
           {section === 'models' && <ModelsSection canEdit={canEdit} />}
+          {section === 'guardrails' && <GuardrailsSection canEdit={canEdit} />}
 
           {section === 'promotions' && promotions === null && <SkeletonRows count={3} label="Loading promotions…" />}
           {section === 'promotions' && promotions !== null && (

@@ -655,6 +655,8 @@ CREATE TABLE IF NOT EXISTS organizations (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE teams              ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+-- AI data guardrails (lib/guardrails.ts): { mode: off|warn|mask|strict, allow: [...] }; unset means mask.
+ALTER TABLE organizations      ADD COLUMN IF NOT EXISTS ai_guardrails JSONB;
 ALTER TABLE org_memory         ADD COLUMN IF NOT EXISTS org_id UUID;
 ALTER TABLE provider_keys      ADD COLUMN IF NOT EXISTS org_id UUID;
 ALTER TABLE oauth_apps         ADD COLUMN IF NOT EXISTS org_id UUID;
@@ -1041,3 +1043,11 @@ CREATE TABLE IF NOT EXISTS intent_status_events (
   at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS intent_status_events_intent_idx ON intent_status_events (intent_id, at DESC);
+
+-- AI data guardrails: each run's token vault (<EMAIL_1> → the value), sealed
+-- with ENCRYPTION_KEY, so a run resumed in another process keeps its tokens.
+CREATE TABLE IF NOT EXISTS run_guard_vaults (
+  run_id      UUID PRIMARY KEY REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+  sealed      TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

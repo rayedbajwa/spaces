@@ -25,6 +25,7 @@ All `/api/*` routes except the ones marked public require a session cookie
 | `GET/PUT /api/teams/:id/memory` | Team memory (members edit) |
 | `GET/PUT /api/teams/:id/knowledge` | Team default knowledge scope (admin) |
 | `GET/PUT /api/org/memory` | Memory of the caller's organization, shared by its teams (owners/admins edit) |
+| `GET/PUT /api/org/guardrails` | The organization's AI data guardrails: `{ policy: { mode, allow } }`. `mode` is `off`, `warn`, `mask` (the default) or `strict`; `allow` lists values or `/patterns/` never masked. `PUT { mode?, allow? }` is for owners and admins; `400` for an unknown mode |
 
 Authorization: viewers get `403` on any non-GET route (except chat, invites
 and their own session); project routes return `403` when the project belongs
