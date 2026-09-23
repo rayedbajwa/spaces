@@ -10,6 +10,7 @@ import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import { featureDescriptionProblem } from '../lib/feature-description'
+import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/intent-scope'
 import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import './styles.css'
 
@@ -124,6 +125,8 @@ type FeatureSummary = {
   id: string
   relativePath: string
   title: string
+  /** What kind of work it is (bugfix, feature, mvp, …). */
+  scope?: string
   current: boolean
   status: 'specified' | 'planned' | 'tasked' | 'implementing' | 'verified' | 'accepted' | 'delivering' | 'delivered'
   codeReview?: 'approved' | 'changes_requested'
@@ -158,6 +161,7 @@ type BoardCard = {
   }
   updatedAt: string
   feature?: string
+  featureScope?: string
   latestRun?: {
     runId: string
     status: RunStatus
@@ -513,7 +517,9 @@ function App() {
     title: string
     label: string
     placeholder: string
-    resolve: (value: string | null) => void
+    /** Ask for the intent's scope too (New intent). */
+    withScope?: boolean
+    resolve: (value: string | null, scope?: string) => void
   } | null>(null)
 
   function promptForStageInput(field: 'feature' | 'constitution' | 'checklistDomain'): Promise<string | null> {
@@ -536,6 +542,19 @@ function App() {
     }[field]
     return new Promise((resolve) => {
       setStageInputPrompt({ ...config, resolve })
+    })
+  }
+
+  /** The New intent dialog: a description and a scope ('auto' lets the agent decide). */
+  function promptForIntent(): Promise<{ description: string; scope: string } | null> {
+    return new Promise((resolve) => {
+      setStageInputPrompt({
+        title: 'New intent',
+        label: 'Describe the intent the AI should specify, and what kind of work it is.',
+        placeholder: 'e.g. "Add reusable signing templates so users can share configs across projects."',
+        withScope: true,
+        resolve: (value, scope) => resolve(value ? { description: value, scope: scope ?? AUTO_SCOPE } : null),
+      })
     })
   }
   const [wizard, setWizard] = useState<WizardState>(defaultWizard)
@@ -983,6 +1002,27 @@ function App() {
   }
 
   /** Rename a feature: rewrites its spec's title (the directory and branch keep their names). */
+  /** Change an intent's scope (rewrites the **Scope** line of its spec). */
+  async function changeFeatureScope(feature: FeatureSummary, choice: string) {
+    if (!selectedProjectNamespace) return
+    const scope = choice === 'custom' ? normalizeScope(window.prompt(`Scope for ${feature.id} (e.g. security, performance)`, feature.scope ?? '') ?? '') : choice
+    if (!scope || scope === feature.scope) return
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { features?: FeatureSummary[]; error?: string }
+      if (!response.ok) throw new Error(data.error ?? `${response.status}`)
+      setProjectFeatures(data.features ?? [])
+      setStatusMessage(`${feature.title} is now scoped as ${scopeLabel(scope)}.`)
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(toMessage(error))
+    }
+  }
+
   async function renameFeatureTitle(feature: FeatureSummary) {
     if (!selectedProjectNamespace) return
     const title = window.prompt(`New title for ${feature.id}`, feature.title)
@@ -1881,17 +1921,18 @@ function App() {
     // src/server.ts /api/.../execute-step.
     const extraBody: Record<string, string> = {}
     if (step === 'specify') {
-      const value = await promptForStageInput('feature')
-      if (!value) {
+      const intent = await promptForIntent()
+      if (!intent) {
         setStatusMessage('Cancelled — the specify stage needs an intent description.')
         return
       }
-      const problem = featureDescriptionProblem(value)
+      const problem = featureDescriptionProblem(intent.description)
       if (problem) {
         setStatusMessage(problem)
         return
       }
-      extraBody.feature = value
+      extraBody.feature = intent.description
+      extraBody.scope = intent.scope
     } else if (step === 'constitution') {
       const value = await promptForStageInput('constitution')
       if (!value) {
@@ -2285,7 +2326,7 @@ function App() {
                       <small>{card.projectNamespace}</small>
                     </td>
                     <td><span className="mini-badge idle">{column.title}</span></td>
-                    <td className="cell-feature">{card.feature || <span className="text-subtle">No active intent</span>}</td>
+                    <td className="cell-feature">{card.featureScope && <span className={`scope-badge scope-${card.featureScope}`}>{scopeLabel(card.featureScope)}</span>}{card.feature || <span className="text-subtle">No active intent</span>}</td>
                     <td>
                       <span className={`mini-badge ${card.latestRun?.status ?? 'idle'}`}>{card.status}</span>
                       {card.automationState && card.automationState.state !== 'idle' && card.automationState.state !== 'completed' && (
@@ -2408,7 +2449,7 @@ function App() {
                       {card.archivedAt && <span className="mini-badge archived">archived</span>}
                       {card.pausedAt && !card.archivedAt && <span className="mini-badge paused">paused</span>}
                     </div>
-                    <p className="board-card-copy">{card.feature || 'No active intent yet'}</p>
+                    <p className="board-card-copy">{card.featureScope && <span className={`scope-badge scope-${card.featureScope}`}>{scopeLabel(card.featureScope)}</span>}{card.feature || 'No active intent yet'}</p>
                     <div className="summary-grid">
                       <div><span>Project</span><strong>{card.projectNamespace}</strong></div>
                       <div><span>Agent</span><strong>{card.currentAgent}</strong></div>
@@ -2474,7 +2515,7 @@ function App() {
                     {projectDetail?.pausedAt && !projectDetail.archivedAt && <span className="mini-badge paused">paused</span>}
                   </div>
                   <h1 className="project-title">{selectedCardFresh.projectLabel}</h1>
-                  <p className="project-feature">{selectedCardFresh.feature || 'No active intent yet'}</p>
+                  <p className="project-feature">{selectedCardFresh.featureScope && <span className={`scope-badge scope-${selectedCardFresh.featureScope}`}>{scopeLabel(selectedCardFresh.featureScope)}</span>}{selectedCardFresh.feature || 'No active intent yet'}</p>
                   <div className="team-chips">
                     <span className={`chip lane ${selectedCardFresh.status}`}><strong>{selectedCardFresh.status}</strong> lane</span>
                     <span className={`chip run ${selectedCardFresh.latestRun?.status ?? 'idle'}`}>
@@ -2588,6 +2629,7 @@ function App() {
                             {feature.documents.find((d) => d.label === 'Spec')
                               ? <a className="feature-title-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(feature.documents.find((d) => d.label === 'Spec')!.path)}`} target="_blank" rel="noreferrer" title="Open its spec"><strong>{feature.title}</strong></a>
                               : <strong>{feature.title}</strong>}
+                            {feature.scope && <span className={`scope-badge scope-${feature.scope}`} title="Scope">{scopeLabel(feature.scope)}</span>}
                             <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
                             {feature.current && <span className="mini-badge running">current</span>}
                             <span className="feature-row-meta">{[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ')}</span>
@@ -2599,6 +2641,21 @@ function App() {
                             <div className="feature-row-actions">
                               {!feature.current && feature.status !== 'delivered' && (
                                 <button className="ghost-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active intent and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue</button>
+                              )}
+                              {feature.documents.some((d) => d.label === 'Spec') && (
+                                <select
+                                  className="scope-select"
+                                  aria-label={`Scope of ${feature.title}`}
+                                  title="What kind of work this intent is"
+                                  disabled={busy}
+                                  value={feature.scope ?? ''}
+                                  onChange={(e) => void changeFeatureScope(feature, e.target.value)}
+                                >
+                                  {!feature.scope && <option value="" disabled>Scope…</option>}
+                                  {INTENT_SCOPES.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                                  {feature.scope && !INTENT_SCOPES.some((o) => o.id === feature.scope) && <option value={feature.scope}>{scopeLabel(feature.scope)}</option>}
+                                  <option value="custom">Other…</option>
+                                </select>
                               )}
                               {feature.documents.some((d) => d.label === 'Spec') && (
                                 <button className="ghost-button" disabled={busy} onClick={() => void renameFeatureTitle(feature)} type="button">Rename</button>
@@ -3675,7 +3732,8 @@ function App() {
           title={stageInputPrompt.title}
           label={stageInputPrompt.label}
           placeholder={stageInputPrompt.placeholder}
-          onSubmit={(v) => { stageInputPrompt.resolve(v); setStageInputPrompt(null) }}
+          withScope={stageInputPrompt.withScope}
+          onSubmit={(v, scope) => { stageInputPrompt.resolve(v, scope); setStageInputPrompt(null) }}
           onCancel={() => { stageInputPrompt.resolve(null); setStageInputPrompt(null) }}
         />
       )}
@@ -4046,15 +4104,19 @@ function App() {
  * Submit on ⌘/Ctrl+Enter or the button; Esc or clicking the overlay cancels.
  */
 function StageInputPromptModal({
-  title, label, placeholder, onSubmit, onCancel,
+  title, label, placeholder, withScope, onSubmit, onCancel,
 }: {
   title: string
   label: string
   placeholder: string
-  onSubmit: (value: string) => void
+  withScope?: boolean
+  onSubmit: (value: string, scope?: string) => void
   onCancel: () => void
 }) {
   const [value, setValue] = useState('')
+  const [scope, setScope] = useState(AUTO_SCOPE)
+  const [customScope, setCustomScope] = useState('')
+  const chosenScope = scope === 'custom' ? (normalizeScope(customScope) ?? AUTO_SCOPE) : scope
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Autofocus on open + Esc to cancel.
@@ -4068,7 +4130,7 @@ function StageInputPromptModal({
   function submit() {
     const trimmed = value.trim()
     if (!trimmed) return
-    onSubmit(trimmed)
+    onSubmit(trimmed, withScope ? chosenScope : undefined)
   }
 
   return (
@@ -4094,6 +4156,32 @@ function StageInputPromptModal({
             }
           }}
         />
+        {withScope && (
+          <div className="scope-picker" role="radiogroup" aria-label="Scope">
+            <span className="scope-picker-label">Scope</span>
+            {[{ id: AUTO_SCOPE, label: 'Auto' }, ...INTENT_SCOPES, { id: 'custom', label: 'Other…' }].map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                role="radio"
+                aria-checked={scope === option.id}
+                className={`chip chip-button scope-option${scope === option.id ? ' selected' : ''}`}
+                title={option.id === AUTO_SCOPE ? 'The agent decides from the description' : 'guidance' in option ? option.guidance : 'A scope of your own'}
+                onClick={() => setScope(option.id)}
+              >{option.label}</button>
+            ))}
+            {scope === 'custom' && (
+              <input className="scope-custom" value={customScope} onChange={(e) => setCustomScope(e.target.value)} placeholder="e.g. security, performance" maxLength={30} autoFocus />
+            )}
+            <p className="panel-subtitle scope-hint">
+              {scope === AUTO_SCOPE
+                ? 'The agent picks the scope from your description and sizes the spec to it.'
+                : scope === 'custom'
+                  ? 'A scope of your own; the agent sizes the spec to that kind of work.'
+                  : INTENT_SCOPES.find((o) => o.id === scope)?.guidance}
+            </p>
+          </div>
+        )}
         <div className="button-row" style={{ marginTop: 12, justifyContent: 'flex-end' }}>
           <button type="button" className="secondary-button" onClick={onCancel}>Cancel</button>
           <button type="button" className="primary-button" disabled={!value.trim()} onClick={submit}>

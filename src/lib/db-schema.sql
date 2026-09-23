@@ -1015,6 +1015,8 @@ CREATE TABLE IF NOT EXISTS intents (
   UNIQUE (project_id, dir_id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS intents_one_active ON intents (project_id) WHERE active AND deleted_at IS NULL;
+-- What kind of work the intent is (bugfix, feature, mvp, …), from the spec's **Scope** line.
+ALTER TABLE intents ADD COLUMN IF NOT EXISTS scope TEXT;
 
 CREATE TABLE IF NOT EXISTS intent_documents (
   intent_id   UUID NOT NULL REFERENCES intents(intent_id) ON DELETE CASCADE,
