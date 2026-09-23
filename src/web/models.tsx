@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { LoadingBlock, SkeletonRows } from './loading'
 import { json } from './auth'
 
 /**
@@ -83,7 +84,7 @@ function ProviderKeysCard({ canEdit, onChanged }: { canEdit: boolean; onChanged:
       </div>
       {error && <p className="error-text">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
-      {keys === null && <p className="panel-subtitle">Loading…</p>}
+      {keys === null && <SkeletonRows count={3} label="Loading provider keys…" />}
       <ul className="member-list">
         {keys?.map((k) => (
           <li key={k.provider} className="member-row provider-key-row">
@@ -211,7 +212,7 @@ export function ModelsSection({ canEdit }: { canEdit: boolean }) {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
   }
 
-  if (!routing) return <section className="card panel team-section"><p className="panel-subtitle">{error || 'Loading…'}</p></section>
+  if (!routing) return <section className="card panel team-section">{error ? <p className="panel-subtitle">{error}</p> : <LoadingBlock label="Loading model routing…" />}</section>
   const { policy } = routing
   const keysCard = <ProviderKeysCard canEdit={canEdit} onChanged={() => load(true)} />
   const isOpenRouter = routing.provider === 'openrouter'

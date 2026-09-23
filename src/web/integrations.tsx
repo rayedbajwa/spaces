@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { SkeletonRows } from './loading'
 import { json, navigate, useAuth } from './auth'
 
 /**
@@ -113,7 +114,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       )}
       {error && <p className="error-text">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
-      {apps === null && <p className="panel-subtitle">Loading…</p>}
+      {apps === null && <SkeletonRows count={4} label="Loading integrations…" />}
       <div className="integration-list">
         {apps?.map((app) => {
           const conns = app.kinds.map((kind) => ({ kind, row: connections.find((c) => c.kind === kind) }))

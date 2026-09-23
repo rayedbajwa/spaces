@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Spinner } from './loading'
 import { navigate, useAuth, useInviteAcceptance } from './auth'
 
 /**
@@ -232,7 +233,7 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
       </button>
       {open && (
         <div className="archived-list" role="menu">
-          {cards === null && <span className="menu-label">Loading…</span>}
+          {cards === null && <span className="menu-label"><Spinner size={11} /> Loading…</span>}
           {cards?.length === 0 && <span className="menu-label">No archived projects.</span>}
           {cards?.slice(0, 6).map((card) => (
             <button key={card.projectNamespace} type="button" className="archived-item" role="menuitem" onClick={() => { setOpen(false); onOpen(card) }}>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { LoadingBlock, SkeletonRows } from './loading'
 import { json, navigate, useAuth, type MeTeam, type TeamRole } from './auth'
 import { PageHead } from './shell'
 
@@ -138,7 +139,8 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
       </div>
 
         <div className="team-content">
-          {section === 'overview' && (
+          {!detail && section !== 'knowledge' && <SkeletonRows count={4} label="Loading the team…" />}
+          {section === 'overview' && detail && (
             <>
               <div className="stat-grid">
                 <Stat label="Members" value={members.length} sub={`${members.filter((m) => m.role === 'owner' || m.role === 'admin').length} can manage`} />
@@ -151,7 +153,7 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
                   <h3>Projects</h3>
                   <span className="panel-subtitle">Codes open the project page.</span>
                 </div>
-                {projects === null && <p className="panel-subtitle">Loading…</p>}
+                {projects === null && <SkeletonRows count={3} label="Loading projects…" />}
                 {projects && projects.length === 0 && <p className="panel-subtitle">No projects yet. Create one from the board.</p>}
                 <ul className="team-project-list">
                   {[...active, ...archived].map((p) => (
@@ -180,7 +182,7 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
             </>
           )}
 
-          {section === 'members' && (
+          {section === 'members' && detail && (
             <section className="card panel team-section">
               <div className="team-section-head">
                 <h3>Members</h3>
@@ -216,11 +218,11 @@ export function TeamPage({ slug, teams }: { slug: string; teams: MeTeam[] }) {
             </section>
           )}
 
-          {section === 'invites' && canManage && (
+          {section === 'invites' && canManage && detail && (
             <InvitesSection teamId={team.teamId} teamName={team.name} invites={detail?.invites ?? []} busy={busy} act={act} />
           )}
 
-          {section === 'memory' && (
+          {section === 'memory' && detail && (
             <MemorySection teamId={team.teamId} initial={detail?.memory.manualText ?? ''} updatedAt={detail?.memory.updatedAt} readOnly={role === 'viewer'} busy={busy} act={act} />
           )}
 
@@ -356,7 +358,7 @@ function KnowledgeSection({ teamId, busy, act }: { teamId: string; busy: boolean
     const next = current.includes(id) ? current.filter((s) => s !== id) : [...current, id]
     return { ...(c ?? {}), sources: next }
   })
-  if (!config) return <section className="card panel team-section"><p className="panel-subtitle">Loading…</p></section>
+  if (!config) return <section className="card panel team-section"><LoadingBlock label="Loading knowledge settings…" /></section>
   return (
     <section className="card panel team-section">
       <div className="team-section-head">
