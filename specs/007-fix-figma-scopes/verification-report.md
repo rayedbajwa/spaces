@@ -6,36 +6,35 @@ Critical Issues Open: 0
 
 **Feature**: `007-fix-figma-scopes` · bugfix
 **Repository under test**: `rayedbajwa/spaces` (`/data/aidlc/workspaces/rayedbajwa/spaces`)
-**Branch**: `007-fix-figma-scopes` (HEAD `58db6be`; `src/` and `tests/` byte-identical to merged `main` `3cf7570`, PR #54)
-**Date**: 2026-09-23 · verify stage · post-merge re-verification
+**Branch**: `007-fix-figma-scopes` (HEAD `71e813b`; `src/` and `tests/` byte-identical to merged `main` `3cf7570`, PR #54)
+**Date**: 2026-09-23 · verify stage · loop iteration 2 (re-verification)
 
 ---
 
 ## 0. Executive summary
 
-The feature has been **merged** (rayedbajwa/spaces#54 → `main` `3cf7570`) with CI
-green, and this verify pass re-confirms the merged code. The fix is correct:
-`src/lib/oauth.ts` now requests only `files:read`, dropping the Enterprise-only
-`file_variables:read` that caused Figma's "scope not valid" error on standard
-plans.
+Re-verification of the merged Figma OAuth scope fix (rayedbajwa/spaces#54 → `main`
+`3cf7570`, CI green, Railway `spaces / production` deploy success). The code under
+test is unchanged since the prior pass (`git diff origin/main HEAD -- src/ tests/`
+is empty); this run re-confirms the merged state.
 
-Every automated gate for this feature is green in this run:
+The fix is correct: `src/lib/oauth.ts` requests only `files:read`, dropping the
+Enterprise-only `file_variables:read` that caused Figma's "scope not valid" error
+on standard plans. Every automated gate that exercises this feature is green:
 
 - `bun run typecheck` — clean (exit 0).
-- `bun test tests/oauth.test.ts tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` — **31 pass / 1 skip / 0 fail**.
-- `bun test --timeout=20000 --max-concurrency=4` (full suite) — **441 pass / 9 skip / 3 fail / 1 error**; the 3 failures + 1 error are pre-existing Playwright/Chromium launch errors in `tests/project-responsibilities.e2e.test.ts`, unrelated to this change.
-- `SMOKE_BASE_URL=http://127.0.0.1:3369 bun test tests/smoke.test.ts` (server on `:3369`, `AUTH_DISABLED=1`) — **5 pass / 2 fail**; the 2 failures are `409 no_provider_key` from undecryptable pre-seeded provider keys in the shared DB (environmental, unrelated).
+- `bun test tests/oauth.test.ts tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` — **31 pass / 1 skip / 0 fail** (116 expect calls).
+- `bun test --timeout=20000 --max-concurrency=4` (full suite) — **441 pass / 9 skip / 3 fail / 1 error** (453 tests, 65 files); the 3 failures + 1 error are pre-existing Playwright/Chromium launch errors in `tests/project-responsibilities.e2e.test.ts`, unrelated to this change.
 
 Verification remains **PARTIAL** for one non-code reason: **AS2/AS3 and SC-002**
 (live Figma consent → token exchange → "Connected" status → <2-minute connect)
-require a configured Figma OAuth app and real keys, and are deferred to
-manual/UAT per Organization Memory ("E2E tests that require keys can be
-ignored"). SC-001's "zero unrecognized scope identifiers" half is proven at the
-URL level; its "Figma presents the consent screen" half is deferred to the same
-live flow.
+require a configured Figma OAuth app and real keys and are deferred to manual/UAT
+per Organization Memory ("E2E tests that require keys can be ignored"). SC-001's
+"zero unrecognized scope identifiers" half is proven at the URL level; its "Figma
+presents the consent screen" half is deferred to the same live flow.
 
-No release-blocking defect remains. Least-privilege is improved, no secrets were
-introduced, and the regression is genuinely guarded by the unit tests.
+No release-blocking defect remains. Least privilege is improved; no secrets were
+introduced.
 
 ---
 
@@ -47,33 +46,28 @@ a time limit, against this checkout's own database (`agent_spaces_3f701200`).
 | Command | Result | Duration |
 |---|---|---|
 | `bun run typecheck` (`tsc --noEmit`) | **PASS** (clean, exit 0) | ~6s |
-| `bun test tests/oauth.test.ts tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` | **31 pass / 1 skip / 0 fail** (116 expect calls) | 2.5s |
-| `bun test --timeout=20000 --max-concurrency=4` (full suite) | **441 pass / 9 skip / 3 fail / 1 error** (453 tests, 65 files) | 406s |
-| `bun run web` on `:3369` with `AUTH_DISABLED=1` (boot) + `SMOKE_BASE_URL=http://127.0.0.1:3369 bun test tests/smoke.test.ts` | **5 pass / 2 fail** (36 expect calls) | boot ~8s + 2.2s |
+| `bun test tests/oauth.test.ts tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` | **31 pass / 1 skip / 0 fail** (116 expect calls) | 2.6s |
+| `bun test --timeout=20000 --max-concurrency=4` (full suite) | **441 pass / 9 skip / 3 fail / 1 error** (453 tests, 65 files) | 404s |
+| smoke tests (`SMOKE_BASE_URL=http://127.0.0.1:3369`) | **0 pass / 8 skip** this run — server `:3369`'s `/api/board` not ready within the 2s probe during a slow boot against the shared multi-org DB (environmental; a prior run this session returned 5 pass / 2 fail, the 2 being `409 no_provider_key`) | 2.0s |
 | `docker build` (container image) | **NOT RUN** — no Docker daemon in this environment | — |
 
 The OAuth suite is 11 pass / 1 skip within the 31/1/0 targeted run (the extra 20
 are the Figma regression trio). The full suite's 9 skips are the 8 `smoke.test.ts`
-cases (no `:3000` server reachable in that run) plus 1 OAuth backdated-clock test.
+cases (no `:3000` server in that run) plus 1 OAuth backdated-clock test.
 
 ### Environmental failures (not feature defects)
 
 **`tests/project-responsibilities.e2e.test.ts` (3 fail / 1 error)** —
 `waitFor: Target page, context or browser has been closed` and
-`newPage: Protocol error (Target.createTarget): Not supported`. These exercise
-the React responsibility-management UI and share **no code path** with
-`src/lib/oauth.ts` (the only source file this feature changes). They reproduce in
-isolation and pre-date the one-line scope change.
+`newPage: Protocol error (Target.createTarget): Not supported`. Chromium launch
+failures; share no code path with `src/lib/oauth.ts`, reproduce in isolation, and
+pre-date the one-line scope change.
 
-**`tests/smoke.test.ts` (2 fail when a server is up on `:3369`)** —
-`POST /api/projects` returns `409 no_provider_key`. The smoke fixture seeds a
-provider key only when `provider_keys` is empty; this shared DB already contains
-org-owned keys that cannot be decrypted (the `.env` `ENCRYPTION_KEY` no longer
-matches the one that encrypted them). The other 5 smoke cases (health, board,
-projects list, integrations list, rerun-404) pass.
-
-Neither set blocks this feature's acceptance; both are noted for honesty so the
-next run can distinguish them from real regressions.
+**smoke tests (environmental)** — against `:3369`, `POST /api/projects` returned
+`409 no_provider_key` in a prior run (undecryptable pre-seeded org keys in the
+shared DB), and this run the smoke suite self-skipped because the server's
+`/api/board` liveness probe timed out during a slow boot against the shared
+multi-org DB. Neither relates to the Figma scope change.
 
 ---
 
@@ -92,9 +86,9 @@ next run can distinguish them from real regressions.
 | SC-003 | 100% of read-only tool paths unchanged | figma regression suite (20/20) | ✅ PASS |
 
 The `removedScopes` loop and the `notes`/URL assertions are keyed to the *real*
-removed scope (`file_variables:read`), so U1/U3/I1 all genuinely fail against the
+removed scope (`file_variables:read`), so U1/U3/I1 genuinely fail against the
 pre-fix `['files:read', 'file_variables:read']` value and guard the actual
-regression (confirmed against `git show 79fac3c:src/lib/oauth.ts`).
+regression.
 
 ### Acceptance-scenario coverage
 
@@ -121,36 +115,31 @@ regression (confirmed against `git show 79fac3c:src/lib/oauth.ts`).
 ## 4. Missing tests
 
 - **Live Figma OAuth consent + token exchange (AS2/AS3)** — no automated or CI
-  test exists. Accepted, documented deferral (needs real Figma keys), not an
-  accidental omission; AS2/AS3 are proven at the URL level (I1) plus the internal
-  `integration-token` / `figma-api` mocks.
-- **A timing test for SC-002** — none exists and none is feasible in CI without
-  the live flow.
+  test exists; accepted, documented deferral (needs real Figma keys), not an
+  accidental omission.
+- **A timing test for SC-002** — none exists; not feasible in CI without the live flow.
 - **Container-image build** — not executed here (no Docker daemon); the CI
-  `docker build` job passes on the PR, so this is an environment limitation of the
-  verify sandbox, not a coverage gap in the repo.
-- No other missing tests: U1–U6 + I1 fully cover FR-001…FR-006 and the edge cases
-  (deprecated `file_read` excluded via U4; Enterprise-only scope excluded via U3;
-  admin-guidance match via U5/U6).
+  `docker build` job passes on the PR, so this is a sandbox limitation, not a
+  coverage gap.
+- No other missing tests: U1–U6 + I1 fully cover FR-001…FR-006 and the edge cases.
 
 ---
 
 ## 5. Remaining defects, risks, and unknowns
 
 - **Environment-only failures** (not feature regressions): 3+1
-  `project-responsibilities.e2e.test.ts` Chromium launch failures, and 2
-  `smoke.test.ts` `409 no_provider_key` failures from undecryptable shared-DB
-  provider keys. Both reproduce in isolation and share no code path with
-  `src/lib/oauth.ts`.
+  `project-responsibilities.e2e.test.ts` Chromium launch failures, and the smoke
+  suite's shared-DB limitations (`409 no_provider_key` / slow `:3369` boot).
 - **Deferred live verification** — AS2/AS3/SC-002 remain unverified pending a
   manual UAT run against the deployed app with a configured Figma OAuth app
-  (recorded for after merge as D005; see `quickstart.md`, which lists `files:read`
-  as the only scope to enable).
+  (recorded post-merge as D005; see `quickstart.md`, which lists `files:read` as
+  the only scope to enable).
 - **Non-blocking NIT** (from code review) — `tests/oauth.test.ts:108` iterates a
   single-element `removedScopes` array; the assertion is correct but could be
-  inlined. Filed, not blocking.
+  inlined. Not blocking.
 - **Delivery** — merged (`main` `3cf7570`, PR #54), CI green, Railway `spaces /
-  production` deployment recorded (was `in_progress` at the last check).
+  production` deploy **success**; the duplicate PR #56 was closed in the prior
+  review cycle.
 
 ---
 
@@ -164,6 +153,6 @@ consent/token-exchange flow (AS2/AS3/SC-002), which requires a configured Figma
 app and real keys and is a manual/UAT task recorded for after merge (D005), not a
 code, artifact, or test-blocking defect.
 
-**Bottom line**: merge is already complete and CI passed. After the production
+**Bottom line**: already merged and deployed with CI green. After the production
 deploy confirms healthy, run the manual/UAT Figma connect flow (AS2/AS3/SC-002)
 to close the remaining acceptance criteria.
