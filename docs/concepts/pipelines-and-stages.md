@@ -120,7 +120,7 @@ with its status (specified → planned → tasked → implementing → verified 
 accepted → delivered), its review and verification outcome, and its documents.
 The board card shows the current feature's title.
 
-**＋ New intent** (project header or the Features list) asks what the feature
+**＋ New intent** (project header or the Intents list) asks what the feature
 is and runs `specify`, which opens the next numbered directory. When the
 current feature isn't delivered, accepted or verified, Spaces asks first: the
 unfinished feature stays in the list and the project moves on. A delivered
