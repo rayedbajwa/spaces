@@ -1,7 +1,7 @@
 import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ACCEPTANCE_FILE } from './acceptance-file'
-import { activeFeatureId, featureDirNames } from './active-feature'
+import { activeFeatureId, featureDirNames, isFeatureId } from './active-feature'
 
 /**
  * A project's features, one after another.
@@ -115,6 +115,8 @@ export async function renameFeature(projectRoot: string, id: string, title: stri
   const clean = title.replace(/\s+/g, ' ').trim()
   if (!clean) throw new Error('A title is required.')
   if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
+  // The id comes from the URL: it must name a feature directory, never a path out of specs/.
+  if (!isFeatureId(id) || !featureDirNames(projectRoot).includes(id)) throw new Error(`Intent ${id} does not exist.`)
   const file = path.join(projectRoot, 'specs', id, 'spec.md')
   const spec = await readFile(file, 'utf8').catch(() => undefined)
   if (spec === undefined) throw new Error(`Intent ${id} has no spec.md to rename.`)

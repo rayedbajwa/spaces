@@ -9,6 +9,7 @@ import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
+import { featureDescriptionProblem } from '../lib/feature-description'
 import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import './styles.css'
 
@@ -1885,9 +1886,9 @@ function App() {
         setStatusMessage('Cancelled — the specify stage needs an intent description.')
         return
       }
-      // A word or two ("tst") gives the agent nothing to specify; it declines and no feature is created.
-      if (value.trim().split(/\s+/).length < 4) {
-        setStatusMessage(`"${value.trim()}" is too short to specify. Describe the intent in a sentence: who does what, and how you'll know it works.`)
+      const problem = featureDescriptionProblem(value)
+      if (problem) {
+        setStatusMessage(problem)
         return
       }
       extraBody.feature = value
@@ -2592,7 +2593,7 @@ function App() {
                             <span className="feature-row-meta">{[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ')}</span>
                           </div>
                           <div className="feature-row-side">
-                            <div className="feature-steps" title={`${done} of 6: spec, plan, tasks, build, QA, delivered`} aria-label={`${done} of 6 milestones`}>
+                            <div className="feature-steps" title={`${done} of 6: spec, plan, tasks, build, QA, delivered`} role="progressbar" aria-label="Milestones: spec, plan, tasks, build, QA, delivered" aria-valuemin={0} aria-valuemax={6} aria-valuenow={done} aria-valuetext={`${done} of 6 milestones`}>
                               {Array.from({ length: 6 }, (_, i) => <span key={i} className={i < done ? 'done' : ''} />)}
                             </div>
                             <div className="feature-row-actions">
@@ -2618,8 +2619,7 @@ function App() {
                     <NewRepoCard
                       projectId={projectDetail.projectId}
                       proposal={projectDetail.suggestionsJson.newRepository}
-                      onCreated={async (fullName) => { setStatusMessage(`Created ${fullName} on GitHub — cloning in the background.`); await refreshProjectRepos() }}
-                      onAttachExisting={(fullName) => setRepoForm((c) => ({ ...c, open: true, kind: 'github', githubRepo: fullName, label: fullName.split('/').pop() ?? fullName }))}
+                      onAttached={async (fullName) => { setStatusMessage(`Attached ${fullName} — cloning in the background.`); await refreshProjectRepos() }}
                     />
                   )}
                   {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
@@ -3909,7 +3909,7 @@ function App() {
                         compact
                         projectId={onboardingReview.projectId}
                         proposal={onboardingReview.suggestions.newRepository}
-                        onCreated={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Created during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
+                        onAttached={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Attached during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
                       />
                     )}
                     {onboardingReview.suggestions.repositories.length > 0 && (
