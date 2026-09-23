@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
@@ -203,5 +203,30 @@ dbSuite('syncing intents into the database', () => {
     await write('specs/003-search/spec.md', '# Search\n') // a branch switch brings the folder back
     await syncProjectIntents(projectId, root, 'agent')
     expect(activeFeatureId(root)).toBe('002-billing')
+  })
+
+  test('a run cut off after specify keeps its new intent: restore takes in the unsynced folder first', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await setActiveFeature(root, null) // specify starts a new intent...
+    await write('specs/003-search/spec.md', '# Search\n') // ...and the run dies before its handoff sync
+    await restoreIntentFiles(projectId, root)
+    expect(activeFeatureId(root)).toBe('003-search')
+    expect((await listIntents(projectId)).filter((i) => i.active).map((i) => i.dirId)).toEqual(['003-search'])
+  })
+
+  test('restoring and person writes never go through a symbolic link', async () => {
+    const { root, write, projectId } = await setup()
+    const outside = await mkdtemp(path.join(tmpdir(), 'outside-'))
+    cleanup.push(outside)
+    await write('specs/002-billing/subagents/ws-1.md', '# Workstream 1\n')
+    await syncProjectIntents(projectId, root, 'import')
+    await rm(path.join(root, 'specs/002-billing/subagents'), { recursive: true })
+    await symlink(outside, path.join(root, 'specs/002-billing/subagents'))
+    await restoreIntentFiles(projectId, root)
+    expect(await readdir(outside)).toEqual([])
+    await changeIntentDocuments({ projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam', changes: new Map([['subagents/ws-2.md', '# Workstream 2\n']]) })
+    expect(await readdir(outside)).toEqual([])
   })
 })

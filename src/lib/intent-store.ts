@@ -397,6 +397,25 @@ export async function readIntentDocument(projectId: string, projectRoot: string,
 }
 
 /**
+ * Where an intent document is written, refusing any path that would go
+ * through a symbolic link: every folder from the project root down to the
+ * file's parent must be a real directory (or not exist yet, to be created).
+ * `stat`, `mkdir` and `writeFile` follow links, so without this a linked
+ * `specs/<intent>/subagents` could put a file outside the project.
+ */
+async function intentFilePath(projectRoot: string, dirId: string, relativePath: string): Promise<string> {
+  const file = path.join(projectRoot, 'specs', dirId, relativePath)
+  let current = projectRoot
+  for (const part of path.relative(projectRoot, path.dirname(file)).split(path.sep)) {
+    current = path.join(current, part)
+    const info = await lstat(current).catch(() => undefined)
+    if (!info) break // the rest is created as real directories
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Refusing to write through ${path.relative(projectRoot, current)}: not a plain directory.`)
+  }
+  return file
+}
+
+/**
  * Change an intent's documents (`null` removes one) as a person: stored and
  * the statuses recomputed in one transaction, then the files written.
  */
@@ -433,13 +452,14 @@ export async function changeIntentDocuments(input: {
     const docs = new Map((await tx<Array<{ path: string; content: string }>>`SELECT path, content FROM intent_documents WHERE intent_id = ${row.intentId}`).map((d) => [d.path, d.content]))
     await writeSummary(tx, row.intentId, existing as Record<string, unknown>, summarizeIntent(dirId, docs), by)
   })
-  const dir = path.join(projectRoot, 'specs', dirId)
   for (const [rel, content] of changes) {
-    const file = path.join(dir, rel)
-    await (content === null
-      ? rm(file, { force: true })
-      : mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
-    ).catch((error) => storeLog.warn('intent file not written', { projectId, file, error: error instanceof Error ? error.message : String(error) }))
+    await intentFilePath(projectRoot, dirId, rel).then(async (file) => {
+      if (content === null) return rm(file, { force: true })
+      await mkdir(path.dirname(file), { recursive: true })
+      // Never write through a link at the file itself either.
+      if ((await lstat(file).catch(() => undefined))?.isSymbolicLink()) throw new Error(`${rel} is a symbolic link.`)
+      await writeFile(file, content)
+    }).catch((error) => storeLog.warn('intent file not written', { projectId, path: rel, error: error instanceof Error ? error.message : String(error) }))
   }
   const [updated] = await sql`SELECT ${sql.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId}`
   return toRecord(updated as Record<string, unknown>)
@@ -485,7 +505,11 @@ export async function projectActiveIntent(projectId: string, projectRoot: string
  * many files were restored.
  */
 export async function restoreIntentFiles(projectId: string, projectRoot: string): Promise<number> {
-  await ensureIntentsSynced(projectId, projectRoot)
+  // Take in what is on disk first: a run cut off after specify created a new
+  // intent, but before its stage handoff synced it, left that intent only in
+  // the files. The sync records it (a new intent the agent started becomes
+  // active), so the database's choice below does not point back at the old one.
+  await syncProjectIntents(projectId, projectRoot, 'agent')
   const dirId = await currentIntentDirId(projectId, projectRoot)
   let restored = 0
   if (dirId && /^[\w.-]+$/.test(dirId) && !dirId.startsWith('.')) {
@@ -495,7 +519,11 @@ export async function restoreIntentFiles(projectId: string, projectRoot: string)
     `
     for (const row of rows) {
       if (row.path.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) continue
-      const file = path.join(projectRoot, 'specs', dirId, row.path)
+      const file = await intentFilePath(projectRoot, dirId, row.path).catch((error) => {
+        storeLog.warn('intent file not restored', { projectId, path: row.path, error: error instanceof Error ? error.message : String(error) })
+        return undefined
+      })
+      if (!file) continue
       // lstat: an existing symlink (even a dangling one) counts as present and is never written through.
       if (await lstat(file).then(() => true, () => false)) continue
       await mkdir(path.dirname(file), { recursive: true })
