@@ -28,16 +28,25 @@ export function featureDirNames(root: string): string[] {
   }
 }
 
-/** The active feature's directory name: the chosen one when it still exists, else the newest. */
-export function activeFeatureId(root: string): string | null {
-  const dirs = featureDirNames(root)
+/** A feature directory name as it may appear in a URL: no separators, no leading dot, no `..`. */
+export function isFeatureId(id: string): boolean {
+  return /^[\w.-]+$/.test(id) && !id.startsWith('.')
+}
+
+/** The feature a person chose to continue, when that choice is recorded and the feature still exists. */
+export function chosenFeatureId(root: string): string | null {
   try {
     const chosen = readFileSync(path.join(root, 'specs', ACTIVE_FEATURE_FILE), 'utf8').trim()
-    if (chosen && dirs.includes(chosen) && statSync(path.join(root, 'specs', chosen)).isDirectory()) return chosen
+    if (chosen && featureDirNames(root).includes(chosen) && statSync(path.join(root, 'specs', chosen)).isDirectory()) return chosen
   } catch {
     // no choice recorded
   }
-  return dirs[0] ?? null
+  return null
+}
+
+/** The active feature's directory name: the chosen one when it still exists, else the newest. */
+export function activeFeatureId(root: string): string | null {
+  return chosenFeatureId(root) ?? featureDirNames(root)[0] ?? null
 }
 
 /** Absolute path of the active feature directory, or null when there is none. */
@@ -59,7 +68,7 @@ export async function setActiveFeature(root: string, id: string | null): Promise
 
 /** Remove a feature's directory; clears the active choice when it pointed at it. */
 export async function removeFeatureDir(root: string, id: string): Promise<void> {
-  if (!/^[\w.-]+$/.test(id) || id.startsWith('.')) throw new Error('Invalid feature id.')
+  if (!isFeatureId(id)) throw new Error('Invalid feature id.')
   if (!featureDirNames(root).includes(id)) throw new Error(`Intent ${id} does not exist.`)
   let chosen = ''
   try { chosen = readFileSync(path.join(root, 'specs', ACTIVE_FEATURE_FILE), 'utf8').trim() } catch { /* none */ }
