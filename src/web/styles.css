@@ -2549,7 +2549,11 @@ textarea {
 /* A button doing its work shows a spinner in place of nothing happening. */
 button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 .board-skeleton { display: flex; gap: 10px; }
-.board-skeleton .board-column { flex: 1 0 220px; }
+.board-skeleton .board-column { flex: 1 0 220px; min-width: 220px; }
+/* Placeholder cards shaped like board cards: code and title, feature, details. */
+.skeleton-cards { display: grid; gap: 8px; }
+.skeleton-card { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--bg-elevated-2); }
+.board-summary .skeleton-line { height: 9px; }
 @media (prefers-reduced-motion: reduce) {
   .spinner, .skeleton-line { animation: none; }
 }

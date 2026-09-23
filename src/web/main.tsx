@@ -2190,7 +2190,40 @@ function App() {
           <button type="button" className="primary-button" onClick={() => navigate('/organization?section=models')}>Open Models</button>
         </div>
       )}
-      {!boardHasProjects ? (
+      {isLoading('board') && board.columns.length === 0 ? (
+        // First load: the board's shape with shimmering placeholders, never the
+        // "nothing here yet" welcome, which would be untrue until it answers.
+        <section className="board-panel card panel" aria-busy="true" aria-label="Loading projects…">
+          <div className="board-toolbar">
+            <div className="board-summary"><span className="skeleton-line" style={{ width: 280 }} /></div>
+            <div className="segmented" role="tablist" aria-label="View">
+              <button className={boardView === 'board' ? 'active' : ''} onClick={() => setBoardView('board')} type="button" role="tab" aria-selected={boardView === 'board'}>Board</button>
+              <button className={boardView === 'list' ? 'active' : ''} onClick={() => setBoardView('list')} type="button" role="tab" aria-selected={boardView === 'list'}>List</button>
+            </div>
+          </div>
+          {boardView === 'board' ? (
+            <div className="board-columns board-skeleton">
+              {['Backlog', 'Initialized', 'Specified', 'Planned', 'Tasked', 'Implementing', 'Releasing', 'Done'].map((title, i) => (
+                <section key={title} className="board-column">
+                  <div className="board-column-header"><h3>{title}</h3></div>
+                  <div className="skeleton-cards">
+                    {Array.from({ length: [2, 1, 1, 2, 1, 3, 1, 2][i]! }, (_, k) => (
+                      <div key={k} className="skeleton-card">
+                        <span className="skeleton-line short" style={{ width: '40%' }} />
+                        <span className="skeleton-line" style={{ width: `${60 + ((i + k) * 13) % 30}%` }} />
+                        <span className="skeleton-line short" style={{ width: '55%' }} />
+                        <span className="skeleton-line short" style={{ width: '35%' }} />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : (
+            <SkeletonRows count={6} label="Loading projects…" />
+          )}
+        </section>
+      ) : !boardHasProjects ? (
         <section className="card welcome-panel">
           <div className="welcome-copy">
             <p className="eyebrow">{(board.archivedCount ?? 0) > 0 ? 'Nothing active' : 'Nothing here yet'}</p>
@@ -2229,7 +2262,6 @@ function App() {
           </div>
         </div>
 
-        {boardView === 'list' && isLoading('board') && board.columns.length === 0 && <SkeletonRows count={5} label="Loading projects…" />}
         {boardView === 'list' && (
           <div className="table-wrap">
             <table className="project-table">
@@ -2300,16 +2332,6 @@ function App() {
           </div>
         )}
 
-        {boardView === 'board' && isLoading('board') && board.columns.length === 0 && (
-          <div className="board-columns board-skeleton" role="status" aria-busy="true" aria-label="Loading the board…">
-            {['Backlog', 'Initialized', 'Specified', 'Planned', 'Tasked', 'Implementing', 'Releasing', 'Done'].map((title, i) => (
-              <section key={title} className="board-column">
-                <div className="board-column-header"><h3>{title}</h3></div>
-                <SkeletonTiles count={i % 3 === 0 ? 2 : 1} minWidth={160} label={`Loading ${title}`} />
-              </section>
-            ))}
-          </div>
-        )}
         {boardView === 'board' && (
         <div className="board-columns">
           {board.columns.map((column) => {
