@@ -496,7 +496,8 @@ export async function restoreIntentFiles(projectId: string, projectRoot: string)
     for (const row of rows) {
       if (row.path.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) continue
       const file = path.join(projectRoot, 'specs', dirId, row.path)
-      if (await stat(file).then(() => true, () => false)) continue
+      // lstat: an existing symlink (even a dangling one) counts as present and is never written through.
+      if (await lstat(file).then(() => true, () => false)) continue
       await mkdir(path.dirname(file), { recursive: true })
       await writeFile(file, row.content, { flag: 'wx' }).then(() => { restored += 1 }, () => undefined)
     }
