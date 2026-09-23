@@ -71,14 +71,29 @@ skipping checks it assumes are impossible:
   an engine, or mount `/var/run/docker.sock`, to make containers usable. When
   no daemon answers, the agent is told to use the database below instead.
 - **A Postgres database for the checkout**, created on demand and named after
-  it. The agent puts it in the checkout's `.env` and runs the project's own
-  migration step, so tests that need a database run rather than skip. Set
-  `AGENT_DATABASE_URL` to create those databases on a different server.
+  it (`agent_<checkout>`). The agent puts it in the checkout's `.env` and runs
+  the project's own migration step, so tests that need a database run rather
+  than skip. Set `AGENT_DATABASE_URL` to create those databases on a different
+  server. Every checkout a run works in, the governing one and each registered
+  repository, has its own database (and port, below) for the life of the
+  worker; the stage prompt lists which is whose.
 - **`psql`**, for projects whose scripts expect it.
-- **A free port**, because the port serving Spaces is taken. The agent starts
+- **A port of its own** in 3100–3900, because the port serving Spaces is
+  taken. Checkouts start at different points of the range and a port handed
+  out is not handed out again, so two workers do not collide. The agent starts
   anything under test on that port and points smoke tests at it.
 - **A headless Chromium**, already installed, so Playwright and the browser
   tools run without downloading anything.
+
+**Spaces' own secrets never reach the agent's shell.** Every command runs after
+a prefix that unsets the application's `DATABASE_URL` (and its variants),
+`TEST_/AGENT_DATABASE_URL`, `PG*`, `ENCRYPTION_KEY`, `SESSION_SECRET`, Railway
+tokens and any `*_API_KEY` or `*_SECRET`. Without this, an agent testing Spaces
+itself ran its suite against the production database (Bun does not let a
+checkout's `.env` override a variable already set). The same prefix puts the
+package-manager caches (bun, npm, yarn, pnpm, pip, Go) on the persistent volume
+beside the workspaces, where a project has not set its own, turns on BuildKit,
+and names Docker Compose stacks after the checkout (`COMPOSE_PROJECT_NAME`).
 
 Those values are written into the checkout's own `.env` before the stage runs,
 for the variables the project declares, so its ordinary tooling picks them up:
@@ -97,6 +112,41 @@ any probe the result rests on or mark it unverified, map every identifier in a
 results table to a real test, tick a task off only when all of it is done,
 keep test data separate per run and clean it up, and refresh the delivery
 record in the same cycle.
+
+## Tests by stage
+
+Each code stage is told which tests to run, so long suites, container builds
+and full-application runs happen once, where they give the answer:
+
+| Stage | Runs |
+|---|---|
+| implement / orchestrate | only the tests covering what changed (`bun test <path>`, `vitest related`, `jest --findRelatedTests`, `pytest <path>`, `go test ./pkg/...`) |
+| review | the full unit and integration suite, once |
+| verify | the full suite, the application started with smoke/end-to-end tests against it, and the container build when the project ships a Dockerfile |
+
+## Time limits and cleanup
+
+- Every shell command an agent runs has a maximum time
+  (`AGENT_COMMAND_TIMEOUT_SECONDS`, default 20 minutes); a longer or missing
+  timeout is capped.
+- When a code stage ends, what it left running is stopped: anything still
+  listening on each checkout's test port, and each checkout's Compose
+  containers. The run log says what (`[cleanup] …`).
+
+## What the log shows
+
+A stage's log carries what the agent did, not only what it said: a line per
+tool call (`▸ $ bun test tests/x.test.ts`, `▸ edit src/x.ts`) and, for commands
+and failures, how it ended (`✓ 2.1s · 12 pass`, `✗ 1.4s · <last line>`).
+Sub-agents' logs carry the same, and their lines are mirrored into the run's
+output marked with their workstream.
+
+Every line is stamped with the time and the agent that wrote it:
+`[03:41:05Z implement/developer] ▸ $ bun test`. The stage (and its role) marks
+a stage's lines, `spaces` marks the orchestrator's own (setup, guards, pull
+requests), and sub-agents, the merge orchestrator and task runs use their own
+names. The interface shows the time in your time zone and the agent as a
+coloured tag. Secrets are masked in every log, a whole line at a time.
 
 ## The agent output dock
 
@@ -133,10 +183,22 @@ exactly as if the run had never stopped.
 The session file lives on the worker's disk, so a gzip-compressed copy is kept
 in Postgres (`run_sessions`), refreshed after every stage and at every pause
 and finish. A run that resumes where the file is missing (a new volume, another
-worker host) gets it back from that copy first. Feature documents need no copy:
-the pipeline commits and pushes them with the feature branch. If there is no
-copy either, an approval moves on to the next stage and any other answer
-re-runs the stage with the answer in its context.
+worker host) gets it back from that copy first, and the current intent's
+missing documents are restored from the database (see [Intents](intents.md)).
+If there is no copy either, an approval moves on to the next stage and any
+other answer re-runs the stage with the answer in its context.
+
+**Slots go where the work is.** When a project waits at
+`SUPERVISOR_MAX_WORKERS`, a worker whose project has no work left gives its
+slot up at once instead of waiting out its idle timeout; one whose project has
+queued jobs but runs none gives it up after a minute. A worker running a job is
+never stopped.
+
+**Force kill.** In **Recent jobs**, a job that has done nothing for 10 minutes
+(or whose worker stopped heartbeating for 2) gets **Force kill**: its run is
+cancelled and the worker holding it is killed (the supervisor SIGKILLs it and
+starts a fresh one when there is work; a standalone worker exits and must be
+restarted). Use it when a hung worker would never act on a normal **Cancel**.
 
 ## Failure handling
 
@@ -148,6 +210,9 @@ re-runs the stage with the answer in its context.
 | Transient provider error (socket closed, 5xx, overloaded) | Retried from the same stage, twice, before failing |
 | Second answer while the first is being processed | Refused: the first answer takes the run out of paused |
 | Job whose worker stopped heartbeating | Closed and its run handed off (no fixed 10-minute timeout) |
+| Job stuck with a hung worker | **Force kill** in Recent jobs: run cancelled, worker killed and replaced |
+| A command that never returns | Capped at `AGENT_COMMAND_TIMEOUT_SECONDS` (default 20 minutes) |
+| A deploy while a stage runs | The worker finishes the stage (up to the drain budget) and hands the run back at the stage boundary |
 | Failed or finished run | **Rerun from &lt;stage&gt;** / **Rerun from start**, resuming the previous session |
 
 ## Memory and knowledge

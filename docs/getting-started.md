@@ -92,7 +92,7 @@ ships without any. Supported providers and where to create a key:
    pins) if you like. With OpenRouter, OpenRouter picks the model per request.
 
 Keys take effect in every process within a second — no restart. See
-[Configuration → Models](reference/configuration.md#models) for the details.
+[Configuration → Models](reference/configuration.md#models-bring-your-own-key) for the details.
 
 ## Connect GitHub
 

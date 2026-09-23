@@ -180,4 +180,19 @@ describe('review of #44: detection gaps', () => {
     expect(guard.maskSecretFile('[default]\naws_secret_access_key = wJalrXUtnFEMI\nregion: us-east-1\n', 'credentials')).toBe('[default]\naws_secret_access_key = <SECRET_3>\nregion: us-east-1\n')
     expect(guard.maskSecretFile('{\n  "clientSecret": "abc",\n  "nested": {\n}\n', 'credentials.json')).toContain('"clientSecret": "<SECRET_4>",')
   })
+
+  test('real values go back only into local tools; web and other external tools keep the tokens', async () => {
+    const guard = new AgentGuard()
+    const token = guard.mask('jane@acme.io')
+    const seen: Record<string, unknown> = {}
+    const agent = { streamFunction: () => undefined, beforeToolCall: async (ctx: { toolCall: { name: string }; args: unknown }) => { seen[ctx.toolCall.name] = ctx.args; return undefined }, afterToolCall: undefined as unknown }
+    guard.install({ agent })
+    const call = (name: string, args: object) => (agent.beforeToolCall as unknown as (c: unknown) => Promise<unknown>)({ toolCall: { name }, args })
+    await call('bash', { command: `echo ${token}` })
+    await call('web_fetch', { url: `https://example.org/?q=${token}` })
+    await call('org_knowledge_search', { query: token })
+    expect(seen.bash).toEqual({ command: 'echo jane@acme.io' })
+    expect(seen.web_fetch).toEqual({ url: `https://example.org/?q=${token}` })
+    expect(seen.org_knowledge_search).toEqual({ query: token })
+  })
 })
