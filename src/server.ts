@@ -15,7 +15,7 @@ import { getTemplate, listTemplates } from './lib/pipeline-loader'
 import type { PipelineTemplate } from './lib/pipeline-template'
 import type { ProjectRow } from './lib/project-registry'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
-import { enqueueJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
+import { enqueueJob, forceKillJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
 import { assertEnvOrExit } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveGitHubLoginProvider, resolveProvider } from './lib/oauth'
 import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, recordGitHubInstallation, saveGitHubAppFromManifest, saveOAuthApp } from './lib/oauth-apps'
@@ -1855,25 +1855,11 @@ async function route(req: Request): Promise<Response> {
     const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
     if (!project) return sendJson(404, { error: 'Project not found.' })
     const denied = requireProjectRole(project, 'member', 'Only team members can stop jobs.'); if (denied) return denied
-    const sql = getDb()
-    const [job] = await sql<Array<{ jobId: string; runId: string | null; status: string; claimedBy: string | null }>>`
-      SELECT job_id AS "jobId", run_id AS "runId", status, claimed_by AS "claimedBy" FROM project_jobs WHERE job_id = ${jobId} AND project_id = ${project.projectId}
-    `
-    if (!job) return sendJson(404, { error: 'Job not found in this project.' })
     const by = auth?.user.email ?? 'local'
-    const reason = `Force killed by ${by}`
-    await sql.begin(async (tx) => {
-      await tx`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = ${reason} WHERE job_id = ${jobId} AND status IN ('queued', 'claimed', 'running')`
-      if (job.runId) {
-        await tx`UPDATE project_jobs SET status = 'cancelled', ended_at = now(), error_message = ${reason} WHERE run_id = ${job.runId} AND status IN ('queued', 'claimed', 'running')`
-        await tx`UPDATE pipeline_runs SET status = 'cancelled', error_message = ${reason}, pause_kind = NULL, owning_worker_id = NULL, updated_at = now() WHERE run_id = ${job.runId} AND status IN ('queued', 'running', 'paused')`
-        await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ${job.runId} AND status = 'open'`
-        await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${job.runId}, 'cancelled', ${tx.json({ by, reason, forced: true } as never)})`
-      }
-    })
-    if (job.runId) await sql`SELECT pg_notify('run_cancel', ${job.runId})`
-    if (job.claimedBy) await sql`SELECT pg_notify('worker_kill', ${job.claimedBy})`
-    serverLog.warn('job force killed', { project: slug, jobId, runId: job.runId, worker: job.claimedBy, by })
+    const killed = await forceKillJob(project.projectId, jobId, by)
+    if (!killed) return sendJson(404, { error: 'Job not found in this project.' })
+    const { runId, claimants } = killed
+    serverLog.warn('job force killed', { project: slug, jobId, runId, workers: claimants, by })
     return sendJson(200, { ok: true, jobs: await listJobsForProject(project.projectId) })
   }
 

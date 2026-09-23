@@ -107,41 +107,43 @@ the fixes.
 
 ## Intents
 
-In the interface these are **intents**; underneath they are Spec Kit features.
+In the interface these are **intents**; underneath they are Spec Kit features,
+numbered directories under `specs/` (`001-login`, `002-billing`) with their own
+spec, plan, tasks, reviews, verification and delivery record. The **current
+intent** (the active one, else the newest) is what the board, lanes, next step
+and runs work on; earlier intents are history. Their record (statuses,
+documents and every change) lives in the database, with the files as the
+agents' working copy. See **[Intents](intents.md)** for the record, scopes,
+the intent viewer and history.
 
-A project works through features one at a time. Each is a numbered directory
-under `specs/` (`001-login`, `002-billing`) with its own spec, plan, tasks,
-reviews, verification and delivery record. The highest number is the
-**current feature**: the board, lanes, next step and runs work on it. Earlier
-features are history.
+The project page lists every intent under **Overview → Intents**, newest first,
+with its scope, status (specified → planned → tasked → implementing → verified
+or accepted → delivered), review and verification outcome. Clicking a title
+opens the intent viewer.
 
-The project page lists every feature under **Overview → Intents**, newest first,
-with its status (specified → planned → tasked → implementing → verified or
-accepted → delivered), its review and verification outcome, and its documents.
-The board card shows the current feature's title.
-
-**＋ New intent** (project header or the Intents list) asks what the feature
-is and runs `specify`, which opens the next numbered directory. When the
-current feature isn't delivered, accepted or verified, Spaces asks first: the
-unfinished feature stays in the list and the project moves on. A delivered
+**＋ New intent** asks what the intent is and its scope (Auto lets the agent
+decide), then runs `specify`, which opens the next numbered directory. When the
+current intent isn't delivered, accepted or verified, Spaces asks first: the
+unfinished intent stays in the list and the project moves on. A delivered
 project's next step is **Start a new intent**.
 
 ### Continuing, renaming or deleting an intent
 
-Each feature in the list has its own actions:
+Each intent in the list has its own actions:
 
-- **Continue** (earlier, undelivered features) makes it the
-  active feature: the board, lanes, next step, stage reports and runs work on
-  it instead of the newest. Each repository switches to the feature's branch
-  (named like its directory, `001-login`) when that branch exists and the
-  checkout has no uncommitted changes; the others are listed as left alone.
-  The choice is kept in `specs/.active-feature`, which is excluded from git,
-  and starting a new feature clears it.
-- **Delete** (features not delivered) removes the feature's directory: spec,
-  plan, tasks and reports. Git branches and pull requests on GitHub are left as
-  they are. Delivered features stay as history and can't be deleted.
+- **Continue** (earlier, undelivered intents) makes it the active intent: the
+  board, lanes, next step, stage reports and runs work on it instead of the
+  newest. Each repository switches to the intent's branch (named like its
+  directory, `001-login`) when that branch exists and the checkout has no
+  uncommitted changes; the others are listed as left alone.
+- **Rename** rewrites the spec's title; the directory and branch keep their
+  names.
+- **Delete** (intents not delivered) removes the intent's directory and marks
+  its record deleted, kept with its history. Git branches and pull requests on
+  GitHub are left as they are, and a copy on another branch never brings it
+  back. Delivered intents stay as history and can't be deleted.
 
-Both wait while a run is queued, running or waiting at a gate.
+Continue and Delete wait while a run is queued, running or waiting at a gate.
 
 ### Starting a new intent refreshes the project
 

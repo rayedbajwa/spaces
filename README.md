@@ -137,6 +137,31 @@ inspectable artifacts each stage produces.
   `specs/<initiative-id>/` (`change.yaml`, `tasks.md`, `spec.md`) committed with
   its code and PR, linked back to the initiative in the governing workspace by
   stable `github.com/org/repo` identifiers
+- **Intents** — each piece of work (bug fix, feature, MVP, improvement,
+  chore, spike, or Auto: the agent decides) is an intent whose statuses,
+  documents and every change are recorded in Postgres, with the files as the
+  agents' working copy; continue, rename or delete one, and open it to page
+  through every artifact it produced and its history
+- **Specs travel with the code** — implementation repositories get the
+  intent's `specs/<intent>/` on the feature branch at every code stage, and
+  their own pull request linked to the governing one
+- **Data guardrails** — secrets and personal data become tokens before
+  anything reaches a model and are restored only in the commands and files
+  agents write; logs, Slack, pull requests and embeddings are masked too.
+  Mask, Strict, Warn or Off per organization, with an allowlist
+- **Agents never see Spaces' own secrets** — the application's database URL,
+  encryption key and provider keys are unset in every agent shell, and the
+  test suite refuses to run against a database that is not a test database
+- **Logs you can follow** — a line per tool call (`▸ $ bun test …`,
+  `✓ 2.1s · 12 pass`), stamped with the time and the agent's name, for stages
+  and sub-agents alike
+- **Cheaper long tests** — implement runs only the tests covering what
+  changed, review the full suite, verify the full suite plus the app,
+  end-to-end tests and the container build; each checkout has its own test
+  database and port, package caches persist on the volume, commands are
+  capped (default 20 minutes) and what a stage leaves running is stopped
+- **Force kill** — a job idle for 10 minutes gets a Force kill in Recent jobs
+  that cancels its run and kills the worker holding it
 - **Human-in-the-loop review gates** after `specify`, `plan`, `tasks`,
   `testplan`, `implement`, `verify`
 - **Live streaming output** in a bottom dock with stage progress, approvals,
@@ -168,7 +193,8 @@ inspectable artifacts each stage produces.
   tiers, tuned by an organization policy (cost / balanced / quality, provider
   order, premium models, pins); with OpenRouter, OpenRouter routes each request
 - **Postgres-backed** job queue with per-project concurrency (SKIP LOCKED),
-  stale-job reaper, and LISTEN/NOTIFY for reactive workers
+  stale-job reaper, and LISTEN/NOTIFY for reactive workers; a worker whose
+  project has no work left hands its slot to a waiting project at once
 
 ---
 
@@ -178,6 +204,10 @@ See **[Model setup: bring your own key](#model-setup-bring-your-own-key-byok)** 
 
 Full docs are published at **https://rayedbajwa.github.io/spaces/** (built from
 `docs/` with MkDocs Material by the `Docs` workflow on every push to `main`).
+Start with [Intents](docs/concepts/intents.md),
+[Data guardrails](docs/concepts/data-guardrails.md) and
+[Agents, workers & context](docs/concepts/agents-and-workers.md) for the
+latest behaviour.
 
 ## Quickstart
 
@@ -623,6 +653,11 @@ local development.
 
 PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, conventions,
 and areas where contributions are especially useful.
+
+`bun test` only writes to a test database: `TEST_DATABASE_URL` when set, else a
+local `DATABASE_URL` or one named for tests (`test`, `agent`, `ci`). Anything
+else makes the database suites skip (see
+[Configuration](docs/reference/configuration.md#running-the-test-suite)).
 
 ---
 

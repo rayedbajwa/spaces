@@ -54,6 +54,30 @@ scopes; fix it in the Atlassian developer console and reconnect.
 Fixed: provider errors are now surfaced per workstream and the sub-agent route
 uses the same authenticated runtime and model as runs.
 
+**A job has done nothing for a long time.**
+Open the project's **Recent jobs**: a job idle for 10 minutes (or whose worker
+stopped heartbeating) shows **Force kill**, which cancels its run and kills the
+worker holding it. Start the run again afterwards if it should continue.
+
+**"worker cap reached; project waits" in the logs.**
+All `SUPERVISOR_MAX_WORKERS` slots are busy. A worker whose project has no work
+left hands its slot over at once; raise the cap (or add a worker host) when
+projects genuinely run in parallel.
+
+**Projects named `test-probe-*`, `test-dispatcher-*` or `cross-a/b-*` appear.**
+Test data from Spaces' own suite written into this database. Agents' shells no
+longer carry the application's `DATABASE_URL` and the suite refuses non-test
+databases, so new ones should not appear; archive or delete the ones left.
+
+**A log shows `<SECRET_1>` or `<EMAIL_2>` instead of a value.**
+The data guardrails at work: the model only ever saw the token. The real value
+was used where the agent needed it (the command it ran, the file it wrote). See
+[Data guardrails](../concepts/data-guardrails.md).
+
+**Strict mode: "Blocked by the organization's AI data guardrails".**
+The agent tried to read a secret file or print the environment. It should use
+the variable by name instead (`$DATABASE_URL` in a command).
+
 ## Where things live
 
 | Path | Contents |

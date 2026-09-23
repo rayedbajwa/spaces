@@ -19,6 +19,7 @@ import { execFile } from 'node:child_process'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
 import { resolveBrowserExecutable } from './browser-tools'
+import postgres from 'postgres'
 import { getDb } from './db'
 import { log } from './logger'
 
@@ -102,8 +103,11 @@ export async function provisionTestDatabase(label: string): Promise<string | und
   try { url = new URL(source) } catch { return undefined }
 
   const name = `agent_${label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'tests'}`
+  // The database is created on the server it will be used on: AGENT_DATABASE_URL's
+  // when set (a short-lived connection), else the application's own.
+  const separate = Boolean(process.env.AGENT_DATABASE_URL?.trim())
+  const sql = separate ? postgres(source, { max: 1, idle_timeout: 5, connect_timeout: 10, onnotice: () => undefined }) : getDb()
   try {
-    const sql = getDb()
     const [exists] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pg_database WHERE datname = ${name}`
     // The name is derived from a sanitized label (letters, digits and underscores only).
     // template0 avoids the collation-version mismatch template1 can carry after an upgrade.
@@ -114,6 +118,8 @@ export async function provisionTestDatabase(label: string): Promise<string | und
   } catch (error) {
     envLog.info('no test database for agents on this deployment', { error: error instanceof Error ? error.message : String(error) })
     return undefined
+  } finally {
+    if (separate) await sql.end({ timeout: 5 }).catch(() => undefined)
   }
 }
 
