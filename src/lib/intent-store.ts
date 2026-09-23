@@ -266,6 +266,9 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
       }
     })
   }
+  // The folders on disk may have changed (a new intent, a branch switch that
+  // brought back a deleted one), so the pointer is re-derived from the database.
+  if (dirs.length > 0) await projectActiveIntent(projectId, projectRoot)
   if (statusChanges || documentsChanged) storeLog.info('intents synced', { projectId, intents: dirs.length, documentsChanged, statusChanges, by })
   return { intents: dirs.length, documentsChanged, statusChanges }
 }

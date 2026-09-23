@@ -6,7 +6,7 @@ import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -168,5 +168,19 @@ dbSuite('syncing intents into the database', () => {
     expect(await readFile(path.join(root, 'specs/002-billing/spec.md'), 'utf8').catch(() => null)).toBeNull()
     expect(activeFeatureId(root)).toBe('001-login')
     expect(await restoreIntentFiles(projectId, root)).toBe(0)
+  })
+
+  test('a deleted intent back on disk (another branch) does not become current in the working copy', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await write('specs/003-search/spec.md', '# Search\n')
+    await syncProjectIntents(projectId, root, 'agent')
+    await setActiveIntent(projectId, root, '002-billing', 'person:Sam')
+    await markIntentDeleted(projectId, '003-search', 'person:Sam')
+    await rm(path.join(root, 'specs/003-search'), { recursive: true })
+    await projectActiveIntent(projectId, root)
+    await write('specs/003-search/spec.md', '# Search\n') // a branch switch brings the folder back
+    await syncProjectIntents(projectId, root, 'agent')
+    expect(activeFeatureId(root)).toBe('002-billing')
   })
 })
