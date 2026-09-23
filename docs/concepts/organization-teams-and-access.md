@@ -134,3 +134,12 @@ sidebar entry. It gathers everything shared across teams: the organization
 name and memory, the knowledge base (imports and search), promotion proposals
 from projects with approve and reject, and your teams with a way to start a
 new one. Owners and admins of any team edit; everyone reads.
+
+### Organization integrations
+
+Integrations are shared across the entire organization and grouped into three functional SDLC domains:
+- **Source Control**: GitHub (repositories, branch synchronization, pull request generation, and Git sign-in).
+- **Project Management**: Jira, Confluence, and Linear (issue tracking, sprint initiatives, specs, and knowledge base ingestion).
+- **Message Channels / Communication**: Slack (dedicated project channels with pipeline progress, verification summaries, and human-in-the-loop review alerts).
+
+Each category displays an aggregate readiness badge and dedicated empty states to guide setup. Credentials and OAuth applications are configured by organization owners and admins on the Organization page (`/organization?section=integrations`), while all members can inspect connection statuses in read-only mode via the top navigation strip.
