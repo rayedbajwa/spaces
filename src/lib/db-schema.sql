@@ -599,7 +599,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS projects_code_idx ON projects (code) WHERE cod
 -- OAuth app credentials per provider, set from the Integrations panel by an
 -- owner/admin (secret sealed with ENCRYPTION_KEY). .env values are a fallback.
 CREATE TABLE IF NOT EXISTS oauth_apps (
-  provider           TEXT PRIMARY KEY CHECK (provider IN ('github','atlassian','slack','linear')),
+  provider           TEXT PRIMARY KEY CHECK (provider IN ('github','atlassian','slack','linear','figma')),
   client_id          TEXT NOT NULL,
   client_secret_enc  TEXT NOT NULL,
   updated_by         UUID REFERENCES users(user_id) ON DELETE SET NULL,
@@ -609,6 +609,12 @@ CREATE TABLE IF NOT EXISTS oauth_apps (
 -- Provider app details beyond the client credentials (GitHub App id, slug,
 -- install url, sealed private key; Slack manifest source, …).
 ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Figma joins OAuth apps as an external provider.
+-- Re-create the oauth_apps provider CHECK so it can grow on existing databases.
+ALTER TABLE oauth_apps DROP CONSTRAINT IF EXISTS oauth_apps_provider_check;
+ALTER TABLE oauth_apps ADD CONSTRAINT oauth_apps_provider_check
+  CHECK (provider IN ('github','atlassian','slack','linear','figma'));
 
 -- Token usage and cost per model call, rolled up per run / project / organization.
 CREATE TABLE IF NOT EXISTS run_usage (

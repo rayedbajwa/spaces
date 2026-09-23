@@ -6,6 +6,11 @@ import {
   disconnectAppIntegration,
   listAppIntegrations,
 } from '../src/lib/app-integrations'
+import {
+  saveOAuthApp,
+  getOAuthAppCredentials,
+  deleteOAuthApp,
+} from '../src/lib/oauth-apps'
 import { verifyFigmaToken } from '../src/lib/figma-tools'
 import { applySchema, vectorSearchAvailable } from '../src/lib/db'
 import { getDefaultOrgId } from '../src/lib/orgs'
@@ -127,6 +132,33 @@ describe('Figma Integration API & Credential Sealing', () => {
       await expect(applySchema()).resolves.toBeUndefined()
       const hasVector = await vectorSearchAvailable()
       expect(hasVector).toBe(true)
+    })
+  })
+
+  describe('TC-API-005: Figma OAuth App Registration & oauth_apps Persistence', () => {
+    test('saves Figma OAuth credentials in oauth_apps without violating check constraint', async () => {
+      const orgId = await getDefaultOrgId()
+      const clientId = 'figma-oauth-client-id-123'
+      const clientSecret = 'figma-oauth-client-secret-xyz'
+
+      // Save OAuth app credentials for figma
+      await expect(
+        saveOAuthApp(orgId, 'figma', { clientId, clientSecret })
+      ).resolves.toBeUndefined()
+
+      // Verify credentials can be retrieved and decrypted
+      const creds = await getOAuthAppCredentials(orgId, 'figma')
+      expect(creds).toBeDefined()
+      expect(creds?.clientId).toBe(clientId)
+      expect(creds?.clientSecret).toBe(clientSecret)
+      expect(creds?.source).toBe('database')
+
+      // Clean up
+      const deleted = await deleteOAuthApp(orgId, 'figma')
+      expect(deleted).toBe(true)
+
+      const afterDelete = await getOAuthAppCredentials(orgId, 'figma')
+      expect(afterDelete).toBeUndefined()
     })
   })
 })
