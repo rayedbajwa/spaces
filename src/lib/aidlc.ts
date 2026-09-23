@@ -120,6 +120,11 @@ export interface FlowOptions {
    */
   allowNewFeature?: boolean
   feature?: string
+  /**
+   * The intent's scope for specify (bugfix, feature, mvp, … or a custom
+   * label); unset or 'auto' lets the agent decide (lib/intent-scope.ts).
+   */
+  intentScope?: string
   constitution?: string
   planContext?: string
   checklistDomain?: string
@@ -779,7 +784,11 @@ export class AIDLCFlow {
     // A note left by a review that sent the run back here: the findings to work through.
     const note = this.pendingStageNote
     this.pendingStageNote = undefined
-    const prompt = [inProgress, note, preamble, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // A new intent is written to its scope: the one the person chose, or one the agent decides.
+    const scope = stage === 'specify'
+      ? await import('./intent-scope').then((m) => m.scopeInstruction(m.normalizeScope(this.options.intentScope)))
+      : ''
+    const prompt = [inProgress, note, preamble, scope, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
     this.captureActiveFeatureBranch()
