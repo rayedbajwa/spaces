@@ -1,0 +1,51 @@
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { featureStatus, featureTitle, listFeatures } from '../src/lib/features'
+
+const roots: string[] = []
+afterAll(async () => { for (const r of roots) await rm(r, { recursive: true, force: true }) })
+
+async function project(files: Record<string, string>): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'features-'))
+  roots.push(root)
+  for (const [rel, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(root, rel)), { recursive: true })
+    await writeFile(path.join(root, rel), content)
+  }
+  return root
+}
+
+describe('features', () => {
+  test('titles come from the spec heading, else the directory name', () => {
+    expect(featureTitle('# Feature Specification: Login with SSO\n', '001-login')).toBe('Login with SSO')
+    expect(featureTitle(undefined, '002-billing-portal')).toBe('billing portal')
+  })
+
+  test('status is the furthest milestone the documents show', () => {
+    expect(featureStatus({ spec: 's', hasImplementation: false }).status).toBe('specified')
+    expect(featureStatus({ spec: 's', plan: 'p', tasks: 't', hasImplementation: false }).status).toBe('tasked')
+    expect(featureStatus({ tasks: 't', hasImplementation: true }).status).toBe('implementing')
+    expect(featureStatus({ verification: 'Verification Status: PASS', hasImplementation: true })).toEqual({ status: 'verified', verification: 'pass' })
+    expect(featureStatus({ verification: 'Verification Status: PARTIAL', acceptance: 'accepted', hasImplementation: true }).status).toBe('accepted')
+    expect(featureStatus({ delivery: 'Delivery Status: MERGED', hasImplementation: true })).toEqual({ status: 'delivered', delivery: 'merged' })
+  })
+
+  test('lists every feature newest first, the newest current, with its documents', async () => {
+    const root = await project({
+      'specs/001-login/spec.md': '# Feature Specification: Login\n',
+      'specs/001-login/verification-report.md': 'Verification Status: PASS\n',
+      'specs/001-login/code-review.md': 'Code Review Status: APPROVED\n',
+      'specs/001-login/delivery-report.md': 'Delivery Status: MERGED\n',
+      'specs/002-billing/spec.md': '# Billing\n',
+      'specs/002-billing/plan.md': '# Plan\n',
+    })
+    const features = await listFeatures(root)
+    expect(features.map((f) => [f.id, f.current, f.status])).toEqual([['002-billing', true, 'planned'], ['001-login', false, 'delivered']])
+    expect(features[1]!.codeReview).toBe('approved')
+    expect(features[1]!.documents.map((d) => d.label)).toEqual(['Spec', 'Code review', 'Verification report', 'Delivery report'])
+    expect(features[1]!.documents[0]!.path).toBe('specs/001-login/spec.md')
+    expect(await listFeatures(path.join(root, 'nowhere'))).toEqual([])
+  })
+})

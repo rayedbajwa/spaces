@@ -105,6 +105,42 @@ deliver and do not count), then review, then verify; a review that requested
 changes leads back to implement, and to review again once `tasks.md` records
 the fixes.
 
+## Features
+
+A project works through features one at a time. Each is a numbered directory
+under `specs/` (`001-login`, `002-billing`) with its own spec, plan, tasks,
+reviews, verification and delivery record. The highest number is the
+**current feature**: the board, lanes, next step and runs work on it. Earlier
+features are history.
+
+The project page lists every feature under **Specs → Features**, newest first,
+with its status (specified → planned → tasked → implementing → verified or
+accepted → delivered), its review and verification outcome, and its documents.
+The board card shows the current feature's title.
+
+**＋ New feature** (project header or the Features list) asks what the feature
+is and runs `specify`, which opens the next numbered directory. When the
+current feature isn't delivered, accepted or verified, Spaces asks first: the
+unfinished feature stays in the list and the project moves on. A delivered
+project's next step is **Start a new feature**.
+
+### Starting a new feature refreshes the project
+
+Before `specify` opens a feature after an earlier one, the run:
+
+1. **Pulls the latest code.** Each GitHub repository fetches and fast-forwards
+   its default branch, leaving the previous feature's branch, so the new feature
+   starts from current code. A checkout with uncommitted changes, or a default
+   branch that diverged from origin, is left alone and the log says why.
+2. **Learns what changed.** Repositories whose code moved are inventoried and
+   briefed again by an agent, as during onboarding.
+3. **Rebuilds project memory**, including a feature history: every earlier
+   feature with its status and review and verification outcome.
+4. **Refreshes the run's shared context**, so the spec and plan are written
+   against the updated memory, organization knowledge and lessons.
+
+The first feature skips this; onboarding has just learned the code.
+
 ## Accepting a partial verification
 
 Verification reports `PASS`, `PARTIAL` or `FAIL`, and only a pass finishes a

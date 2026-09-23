@@ -233,11 +233,15 @@ export async function findUnfinishedFeature(projectPath: string): Promise<Unfini
   }
 }
 
-export async function describeWorkInProgress(projectPath: string, stage: StageName): Promise<string> {
+/**
+ * `newFeature`: a person asked for a new feature although the last one is
+ * unfinished, so specify is not told to continue that one.
+ */
+export async function describeWorkInProgress(projectPath: string, stage: StageName, options: { newFeature?: boolean } = {}): Promise<string> {
   if (stage !== 'init' && stage !== 'specify') return ''
 
   const initialized = await exists(path.join(projectPath, '.specify'))
-  const unfinished = await findUnfinishedFeature(projectPath)
+  const unfinished = stage === 'specify' && options.newFeature ? undefined : await findUnfinishedFeature(projectPath)
   const featureName = unfinished?.name
   const present = unfinished?.artifacts ?? []
   const tasks = unfinished?.tasks
