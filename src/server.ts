@@ -130,7 +130,7 @@ import { laneForProject } from './lib/board-drop'
 import { readAcceptance, recordAcceptance, withdrawAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
 import { reapAbandonedJobs } from './lib/job-reaper'
-import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
+import { describeGitHubActor, describeRepoCreationFix, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
 
@@ -992,7 +992,11 @@ async function route(req: Request): Promise<Response> {
       return sendJson(201, { repo, fullName: created.fullName, htmlUrl: created.htmlUrl })
     } catch (error) {
       if (error instanceof GitHubNotConnectedError) return sendJson(409, { error: 'Connect GitHub under Organization → Integrations first, or create the repository by hand and attach it.', code: 'github_not_connected', manualUrl })
-      if (error instanceof GitHubPermissionError) return sendJson(403, { error: error.message, code: 'insufficient_permissions', manualUrl })
+      if (error instanceof GitHubPermissionError) {
+        // Say exactly what the app lacks and where to add it, not only what GitHub answered.
+        const fix = await describeRepoCreationFix(await orgIdForProject(projectId)).catch(() => undefined)
+        return sendJson(403, { error: fix?.message ?? error.message, code: 'insufficient_permissions', manualUrl, ...(fix?.permissionsUrl ? { permissionsUrl: fix.permissionsUrl } : {}), ...(fix?.installationUrl ? { installationUrl: fix.installationUrl } : {}) })
+      }
       return sendJson(500, { error: error instanceof Error ? error.message : String(error), manualUrl })
     }
   }

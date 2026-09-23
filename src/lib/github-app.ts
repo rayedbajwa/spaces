@@ -61,6 +61,8 @@ export function buildGitHubAppManifest(origin: string, options: { name?: string 
       checks: 'read',
       actions: 'read',
       workflows: 'write',
+      // Creating a repository from Spaces (a project's proposed repository) needs it.
+      administration: 'write',
     },
     default_events: [],
   }

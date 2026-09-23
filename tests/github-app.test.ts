@@ -11,7 +11,7 @@ describe('GitHub App manifest', () => {
     expect(m.setup_url).toBe('https://spaces.example.com/api/oauth-apps/github/installed')
     // setup_url and request_oauth_on_install are mutually exclusive on GitHub; we use setup_url.
     expect(m.request_oauth_on_install).toBe(false)
-    expect(m.default_permissions).toEqual({ contents: 'write', pull_requests: 'write', issues: 'write', metadata: 'read', checks: 'read', actions: 'read', workflows: 'write' })
+    expect(m.default_permissions).toEqual({ contents: 'write', pull_requests: 'write', issues: 'write', metadata: 'read', checks: 'read', actions: 'read', workflows: 'write', administration: 'write' })
     expect(m.hook_attributes).toBeUndefined()
     expect(m.public).toBe(false)
     expect(m.name.length).toBeLessThanOrEqual(34)

@@ -70,6 +70,8 @@ interface AppState {
   /** Repository permissions GitHub reports for the app, e.g. { contents: 'write' }. */
   permissions: Record<string, string>
   slug?: string
+  /** Who owns the app: its settings live under the user's or the organization's settings. */
+  owner?: { login: string; type: string }
 }
 
 const appStateCache = new Map<string, { at: number; state: AppState }>()
@@ -124,14 +126,42 @@ export async function inspectGitHubApp(orgId: string): Promise<AppState | undefi
     appStateCache.set(orgId, { at: Date.now(), state })
     return state
   }
-  const data = response.ok ? ((await response.json().catch(() => ({}))) as { slug?: string; permissions?: Record<string, string> }) : {}
-  const state: AppState = { alive: response.ok, permissions: data.permissions ?? {}, slug: data.slug }
+  const data = response.ok ? ((await response.json().catch(() => ({}))) as { slug?: string; permissions?: Record<string, string>; owner?: { login: string; type: string } }) : {}
+  const state: AppState = { alive: response.ok, permissions: data.permissions ?? {}, slug: data.slug, ...(data.owner ? { owner: { login: data.owner.login, type: data.owner.type } } : {}) }
   appStateCache.set(orgId, { at: Date.now(), state })
   if (response.ok) {
     const missing = Object.entries(REQUIRED_APP_PERMISSIONS).filter(([name, level]) => state.permissions[name] !== level && !(level === 'read' && state.permissions[name] === 'write')).map(([name]) => name)
     if (missing.length) authLog.warn('the GitHub App is missing permissions agents need', { orgId, app: state.slug, missing })
   }
   return state
+}
+
+/**
+ * Why creating a repository was refused, and where to fix it. Creating a
+ * repository needs the GitHub App's "Administration: write" repository
+ * permission; apps created before Spaces asked for it do not have it. Returns
+ * the settings page to add it on and the installation page where the owner
+ * then accepts the new permission.
+ */
+export async function describeRepoCreationFix(orgId: string): Promise<{ message: string; permissionsUrl?: string; installationUrl?: string } | undefined> {
+  forgetGitHubAppState(orgId) // the permission may have just been added: ask GitHub again
+  const state = await inspectGitHubApp(orgId)
+  if (!state?.alive || !state.slug) return undefined
+  const config = await getOAuthAppConfig(orgId, 'github').catch(() => ({} as Awaited<ReturnType<typeof getOAuthAppConfig>>))
+  const org = state.owner?.type === 'Organization' ? state.owner.login : undefined
+  const permissionsUrl = org
+    ? `https://github.com/organizations/${org}/settings/apps/${state.slug}/permissions`
+    : `https://github.com/settings/apps/${state.slug}/permissions`
+  const installationId = config.installationIds?.[0]
+  const installationUrl = installationId ? (org ? `https://github.com/organizations/${org}/settings/installations/${installationId}` : `https://github.com/settings/installations/${installationId}`) : undefined
+  if (state.permissions.administration === 'write') {
+    return { message: `The GitHub App "${state.slug}" has Administration: write, but GitHub still refused. Check that the connected GitHub account may create repositories${org ? ` in ${org}` : ''}, and that the new permission was accepted on the app's installation.`, permissionsUrl, installationUrl }
+  }
+  return {
+    message: `The GitHub App "${state.slug}" cannot create repositories: it lacks the "Administration: write" repository permission. Add it on the app's permissions page (Repository permissions → Administration → Read and write → Save changes), then accept the new permission on the installation. After that, creating repositories from Spaces works.`,
+    permissionsUrl,
+    installationUrl,
+  }
 }
 
 /** Forget the cached answer after the app is re-created or removed. */
