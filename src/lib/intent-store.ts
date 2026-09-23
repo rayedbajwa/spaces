@@ -181,6 +181,57 @@ export async function getIntentDocuments(intentId: string): Promise<IntentDocume
 
 type Tx = TransactionSql<Record<string, never>>
 
+/**
+ * One writer per project at a time, across processes: a sync (files into the
+ * database) and a person action (database, then files) hold this lock for
+ * their transaction, so a sync never stores an older snapshot of files a
+ * person action is writing, and two actions write their files in commit order.
+ */
+async function lockProject(tx: Tx, projectId: string): Promise<void> {
+  await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`intents:${projectId}`}, 0))`
+}
+
+/** A document path inside an intent: no empty, hidden or `..` parts. */
+function isDocumentPath(relativePath: string): boolean {
+  return !relativePath.split('/').some((part) => !part || part === '..' || part.startsWith('.'))
+}
+
+/**
+ * The file for an intent's document, or undefined when writing it could leave
+ * the project: `specs`, the intent's directory or a folder inside it is a
+ * symlink or not a directory. Missing parts are fine: they are created as
+ * real directories.
+ */
+async function intentFileWithoutLinks(projectRoot: string, dirId: string, relativePath: string): Promise<string | undefined> {
+  if (!isFeatureId(dirId) || !isDocumentPath(relativePath)) return undefined
+  let current = projectRoot
+  for (const part of ['specs', dirId, ...relativePath.split('/').slice(0, -1)]) {
+    current = path.join(current, part)
+    const info = await lstat(current).catch(() => undefined)
+    if (!info) break
+    if (info.isSymbolicLink() || !info.isDirectory()) return undefined
+  }
+  return path.join(projectRoot, 'specs', dirId, relativePath)
+}
+
+/** Write (or remove, for null) an intent's document file; never through a symlink. */
+async function writeIntentFile(projectId: string, projectRoot: string, dirId: string, relativePath: string, content: string | null): Promise<void> {
+  const file = await intentFileWithoutLinks(projectRoot, dirId, relativePath)
+  if (!file) {
+    storeLog.warn('intent file not written: its folder is a link', { projectId, intent: dirId, path: relativePath })
+    return
+  }
+  const existing = await lstat(file).catch(() => undefined)
+  if (existing?.isSymbolicLink()) {
+    storeLog.warn('intent file not written: it is a link', { projectId, intent: dirId, path: relativePath })
+    return
+  }
+  await (content === null
+    ? rm(file, { force: true })
+    : mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
+  ).catch((error) => storeLog.warn('intent file not written', { projectId, file, error: error instanceof Error ? error.message : String(error) }))
+}
+
 async function hasActiveIntent(tx: Tx, projectId: string): Promise<boolean> {
   const [row] = await tx`SELECT 1 FROM intents WHERE project_id = ${projectId} AND active AND deleted_at IS NULL`
   return Boolean(row)
@@ -229,24 +280,31 @@ export interface SyncResult { intents: number; documentsChanged: number; statusC
  * the change: 'agent' after a stage, 'import' for the first sync, or
  * 'person:<name>' after an action in Spaces.
  */
-export async function syncProjectIntents(projectId: string, projectRoot: string, by = 'agent'): Promise<SyncResult> {
+export async function syncProjectIntents(projectId: string, projectRoot: string, by = 'agent', only?: string[]): Promise<SyncResult> {
   const sql = getDb()
-  const dirs = featureDirNames(projectRoot)
+  const dirs = featureDirNames(projectRoot).filter((dirId) => !only || only.includes(dirId))
   const active = activeFeatureId(projectRoot)
   let documentsChanged = 0
   let statusChanges = 0
   for (const dirId of dirs) {
-    const docs = await readDocuments(path.join(projectRoot, 'specs', dirId))
-    if (docs.size === 0) continue
-    const summary = summarizeIntent(dirId, docs)
     await sql.begin(async (tx) => {
-      const [existing] = await tx`SELECT ${tx.unsafe(INTENT_COLS)}, deleted_at AS "deletedAt" FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId} FOR UPDATE`
+      // Files are read under the project lock, so a person action that is
+      // writing them has committed first and its content is what gets read.
+      await lockProject(tx, projectId)
+      const docs = await readDocuments(path.join(projectRoot, 'specs', dirId))
+      if (docs.size === 0) return
+      const summary = summarizeIntent(dirId, docs)
+      // Another process may import the same directory at the same moment (the
+      // boot import and a first read): the insert keeps whichever row exists.
+      await tx`
+        INSERT INTO intents (intent_id, project_id, dir_id, title, status) VALUES (${randomUUID()}, ${projectId}, ${dirId}, ${summary.title}, ${summary.status})
+        ON CONFLICT (project_id, dir_id) DO NOTHING
+      `
+      const [row] = await tx`SELECT ${tx.unsafe(INTENT_COLS)}, deleted_at AS "deletedAt", synced_at IS NULL AS "fresh" FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId} FOR UPDATE`
       // Deleted by a person: a copy left on some branch does not bring it back.
-      if (existing?.deletedAt) return
-      const intentId = (existing?.intentId as string | undefined) ?? randomUUID()
-      if (!existing) {
-        await tx`INSERT INTO intents (intent_id, project_id, dir_id, title, status) VALUES (${intentId}, ${projectId}, ${dirId}, ${summary.title}, ${summary.status})`
-      }
+      if (!row || row.deletedAt) return
+      const intentId = row.intentId as string
+      const existing = row.fresh ? undefined : row
       // The active intent is the database's to say (a person's choice). A sync
       // only sets it when nothing is active yet, or when this directory is a
       // new intent the agent just started — starting one makes it current.
@@ -290,6 +348,7 @@ export async function syncProjectIntentsQuietly(projectId: string | null | undef
 export async function markIntentDeleted(projectId: string, dirId: string, by: string, title = dirId): Promise<void> {
   const sql = getDb()
   await sql.begin(async (tx) => {
+    await lockProject(tx, projectId)
     const [row] = await tx<Array<{ intentId: string }>>`
       INSERT INTO intents (intent_id, project_id, dir_id, title, status, deleted_at)
       VALUES (${randomUUID()}, ${projectId}, ${dirId}, ${title}, 'specified', now())
@@ -334,10 +393,30 @@ export async function getIntentDocument(projectId: string, dirId: string, relati
   return row ? { ...row, updatedAt: new Date(row.updatedAt).toISOString() } : undefined
 }
 
+/** Whether a person deleted this intent: its documents are gone for good, whatever is on disk. */
+export async function isIntentDeleted(projectId: string, dirId: string): Promise<boolean> {
+  const [row] = await getDb()<Array<{ deleted: boolean }>>`SELECT deleted_at IS NOT NULL AS deleted FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId}`
+  return Boolean(row?.deleted)
+}
+
+/** Whether the database has any record of the project's intents, deleted ones included. */
+export async function hasIntentRecords(projectId: string): Promise<boolean> {
+  const [row] = await getDb()`SELECT 1 FROM intents WHERE project_id = ${projectId} LIMIT 1`
+  return Boolean(row)
+}
+
+/** First imports in flight in this process, so concurrent first reads share one. */
+const importing = new Map<string, Promise<void>>()
+
 /** Import a project the first time its intents are needed (later syncs follow stages and actions). */
 export async function ensureIntentsSynced(projectId: string, projectRoot: string): Promise<void> {
-  const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intents WHERE project_id = ${projectId}`
-  if ((row?.n ?? 0) === 0 && featureDirNames(projectRoot).length > 0) await syncProjectIntents(projectId, projectRoot, 'import')
+  const pending = importing.get(projectId)
+  if (pending) return pending
+  const run = (async () => {
+    if (!(await hasIntentRecords(projectId)) && featureDirNames(projectRoot).length > 0) await syncProjectIntents(projectId, projectRoot, 'import')
+  })().finally(() => importing.delete(projectId))
+  importing.set(projectId, run)
+  return run
 }
 
 /** The intents list as the interface shows it (lib/features.ts FeatureSummary), from the database. */
@@ -372,11 +451,21 @@ export async function listIntentSummaries(projectId: string, projectRoot: string
 /** The intent the project is working on: the active one, else the newest, else what the files say. */
 export async function currentIntentDirId(projectId: string, projectRoot: string): Promise<string | null> {
   await ensureIntentsSynced(projectId, projectRoot).catch(() => undefined)
-  const [row] = await getDb()<Array<{ dirId: string }>>`
-    SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL
-     ORDER BY active DESC, dir_id DESC LIMIT 1
-  `.catch(() => [] as Array<{ dirId: string }>)
-  return row?.dirId ?? activeFeatureId(projectRoot)
+  let rows: Array<{ dirId: string }>
+  try {
+    rows = await getDb()<Array<{ dirId: string }>>`
+      SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL
+       ORDER BY active DESC, dir_id DESC LIMIT 1
+    `
+  } catch {
+    // The database could not be read: the working copy is all there is.
+    return activeFeatureId(projectRoot)
+  }
+  if (rows[0]) return rows[0].dirId
+  // Read fine and nothing is live. A project the database has never seen
+  // still goes by its files; one whose intents were all deleted has none,
+  // even if a deleted intent's directory is still on disk.
+  return (await hasIntentRecords(projectId).catch(() => true)) ? null : activeFeatureId(projectRoot)
 }
 
 async function intentRowFor(projectId: string, projectRoot: string, dirId: string): Promise<{ intentId: string } | undefined> {
@@ -390,33 +479,49 @@ async function intentRowFor(projectId: string, projectRoot: string, dirId: strin
 /** One of an intent's documents: the database copy, else the working file. */
 export async function readIntentDocument(projectId: string, projectRoot: string, dirId: string, relativePath: string): Promise<string | undefined> {
   // Ids and paths come from URLs: never read outside the intent's directory.
-  if (!isFeatureId(dirId) || relativePath.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) return undefined
+  if (!isFeatureId(dirId) || !isDocumentPath(relativePath)) return undefined
   const stored = await getIntentDocument(projectId, dirId, relativePath).catch(() => undefined)
   if (stored) return stored.content
+  if (await isIntentDeleted(projectId, dirId).catch(() => false)) return undefined
   return readFile(path.join(projectRoot, 'specs', dirId, relativePath), 'utf8').catch(() => undefined)
+}
+
+/** A person action refused by what the locked record says (the route answers with `status`). */
+export class IntentActionRefused extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
 }
 
 /**
  * Change an intent's documents (`null` removes one) as a person: stored and
- * the statuses recomputed in one transaction, then the files written.
+ * the statuses recomputed in one transaction, and the files written before it
+ * commits, all under the project lock. `changes` can be a function of the
+ * locked record and its documents, so the guard and the write see the same
+ * state (it throws IntentActionRefused to refuse).
  */
 export async function changeIntentDocuments(input: {
   projectId: string
   projectRoot: string
   dirId: string
-  changes: Map<string, string | null>
+  changes: Map<string, string | null> | ((current: IntentRecord, documents: Map<string, string>) => Map<string, string | null>)
   by: string
 }): Promise<IntentRecord> {
-  const { projectId, projectRoot, dirId, changes, by } = input
+  const { projectId, projectRoot, dirId, by } = input
   if (!isFeatureId(dirId)) throw new Error('Invalid intent id.')
-  for (const rel of changes.keys()) {
-    if (rel.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) throw new Error(`Invalid document path ${rel}.`)
+  const checkPaths = (changes: Map<string, string | null>) => {
+    for (const rel of changes.keys()) if (!isDocumentPath(rel)) throw new Error(`Invalid document path ${rel}.`)
   }
+  if (input.changes instanceof Map) checkPaths(input.changes)
   const row = await intentRowFor(projectId, projectRoot, dirId)
   if (!row) throw new Error(`Intent ${dirId} does not exist.`)
   const sql = getDb()
-  await sql.begin(async (tx) => {
-    const [existing] = await tx`SELECT ${tx.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId} FOR UPDATE`
+  const updated = await sql.begin(async (tx) => {
+    await lockProject(tx, projectId)
+    // Resolved before the lock: a delete may have committed since.
+    const [existing] = await tx`SELECT ${tx.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId} AND deleted_at IS NULL FOR UPDATE`
+    if (!existing) throw new IntentActionRefused(`Intent ${dirId} was deleted.`, 404, 'deleted')
+    const loadDocs = async () => new Map((await tx<Array<{ path: string; content: string }>>`SELECT path, content FROM intent_documents WHERE intent_id = ${row.intentId}`).map((d) => [d.path, d.content]))
+    const changes = input.changes instanceof Map ? input.changes : input.changes(toRecord(existing as Record<string, unknown>), await loadDocs())
+    checkPaths(changes)
     for (const [rel, content] of changes) {
       if (content === null) {
         await tx`DELETE FROM intent_documents WHERE intent_id = ${row.intentId} AND path = ${rel}`
@@ -430,18 +535,12 @@ export async function changeIntentDocuments(input: {
               updated_by = EXCLUDED.updated_by, updated_at = now()
       `
     }
-    const docs = new Map((await tx<Array<{ path: string; content: string }>>`SELECT path, content FROM intent_documents WHERE intent_id = ${row.intentId}`).map((d) => [d.path, d.content]))
-    await writeSummary(tx, row.intentId, existing as Record<string, unknown>, summarizeIntent(dirId, docs), by)
+    await writeSummary(tx, row.intentId, existing as Record<string, unknown>, summarizeIntent(dirId, await loadDocs()), by)
+    // Still under the lock: no sync reads these files until they match the record.
+    for (const [rel, content] of changes) await writeIntentFile(projectId, projectRoot, dirId, rel, content)
+    const [after] = await tx`SELECT ${tx.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId}`
+    return after
   })
-  const dir = path.join(projectRoot, 'specs', dirId)
-  for (const [rel, content] of changes) {
-    const file = path.join(dir, rel)
-    await (content === null
-      ? rm(file, { force: true })
-      : mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
-    ).catch((error) => storeLog.warn('intent file not written', { projectId, file, error: error instanceof Error ? error.message : String(error) }))
-  }
-  const [updated] = await sql`SELECT ${sql.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId}`
   return toRecord(updated as Record<string, unknown>)
 }
 
@@ -467,7 +566,11 @@ export async function setActiveIntent(projectId: string, projectRoot: string, di
 
 /** Write specs/.active-feature from the database (the working copy of the choice). */
 export async function projectActiveIntent(projectId: string, projectRoot: string): Promise<void> {
-  const [row] = await getDb()<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND active AND deleted_at IS NULL`
+  // The current intent as the database has it (active, else the newest live
+  // one), so file readers never land on a newer directory that was deleted.
+  const [row] = await getDb()<Array<{ dirId: string }>>`
+    SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL ORDER BY active DESC, dir_id DESC LIMIT 1
+  `
   const file = path.join(projectRoot, 'specs', ACTIVE_FEATURE_FILE)
   const newest = featureDirNames(projectRoot)[0]
   await (row && row.dirId !== newest
@@ -486,16 +589,23 @@ export async function projectActiveIntent(projectId: string, projectRoot: string
  */
 export async function restoreIntentFiles(projectId: string, projectRoot: string): Promise<number> {
   await ensureIntentsSynced(projectId, projectRoot)
+  // An intent created on disk that no sync recorded yet (a run stopped between
+  // specify and its handoff) is brought in first; being new, it becomes the
+  // current one, so the pointer below does not send the run back to the old.
+  const known = new Set((await getDb()<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId}`).map((r) => r.dirId))
+  const unsynced = featureDirNames(projectRoot).filter((d) => !known.has(d))
+  if (unsynced.length) await syncProjectIntents(projectId, projectRoot, 'agent', unsynced)
   const dirId = await currentIntentDirId(projectId, projectRoot)
   let restored = 0
-  if (dirId && /^[\w.-]+$/.test(dirId) && !dirId.startsWith('.')) {
+  if (dirId && isFeatureId(dirId)) {
     const rows = await getDb()<Array<{ path: string; content: string }>>`
       SELECT d.path, d.content FROM intent_documents d JOIN intents i ON i.intent_id = d.intent_id
        WHERE i.project_id = ${projectId} AND i.dir_id = ${dirId} AND i.deleted_at IS NULL
     `
     for (const row of rows) {
-      if (row.path.split('/').some((part) => !part || part === '..' || part.startsWith('.'))) continue
-      const file = path.join(projectRoot, 'specs', dirId, row.path)
+      // Never through a symlinked folder, which could point outside the project.
+      const file = await intentFileWithoutLinks(projectRoot, dirId, row.path)
+      if (!file) continue
       // lstat: an existing symlink (even a dangling one) counts as present and is never written through.
       if (await lstat(file).then(() => true, () => false)) continue
       await mkdir(path.dirname(file), { recursive: true })

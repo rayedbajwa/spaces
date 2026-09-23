@@ -6,7 +6,7 @@ import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { changeIntentDocuments, currentIntentDirId, documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, documentKind, ensureIntentsSynced, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -204,4 +204,72 @@ dbSuite('syncing intents into the database', () => {
     await syncProjectIntents(projectId, root, 'agent')
     expect(activeFeatureId(root)).toBe('002-billing')
   })
+
+  test('concurrent first reads import once, whole', async () => {
+    const { root, projectId } = await setup()
+    await Promise.all([ensureIntentsSynced(projectId, root), ensureIntentsSynced(projectId, root), syncProjectIntents(projectId, root, 'import'), listIntentSummaries(projectId, root)])
+    expect((await listIntents(projectId)).map((i) => i.dirId)).toEqual(['002-billing', '001-login'])
+  })
+
+  test('a deleted intent is not read from a copy on disk, and with every intent deleted there is no current one', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await markIntentDeleted(projectId, '002-billing', 'person:Sam')
+    expect(await readIntentDocument(projectId, root, '002-billing', 'spec.md')).toBeUndefined() // the file is still there
+    expect(await currentIntentDirId(projectId, root)).toBe('001-login')
+    await markIntentDeleted(projectId, '001-login', 'person:Sam')
+    expect(await currentIntentDirId(projectId, root)).toBeNull()
+  })
+
+  test('a person action on an intent deleted meanwhile is refused and writes nothing', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await markIntentDeleted(projectId, '001-login', 'person:Sam')
+    await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', changes: new Map([['acceptance.md', '# Acceptance\n']]), by: 'person:Sam' }))
+      .rejects.toThrow(/does not exist|was deleted/)
+    expect(await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+  test('a guard sees the locked record and can refuse; nothing is written then', async () => {
+    const { root, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    const refuse = changeIntentDocuments({
+      projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam',
+      changes: (current, documents) => {
+        if (!documents.has('verification-report.md')) throw new IntentActionRefused(`${current.dirId} has no verification report`, 409, 'not_verified')
+        return new Map([['acceptance.md', 'x']])
+      },
+    })
+    await expect(refuse).rejects.toBeInstanceOf(IntentActionRefused)
+    expect(await getIntentDocument(projectId, '002-billing', 'acceptance.md')).toBeUndefined()
+    const accepted = await changeIntentDocuments({
+      projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam',
+      changes: (current) => new Map([['acceptance.md', `# Acceptance\n\n- Verification status: ${current.verificationStatus}\n- Accepted by: Sam\n- Accepted at: 2026-09-23T10:00:00.000Z\n`]]),
+    })
+    expect(accepted.acceptedBy).toBe('Sam')
+  })
+
+  test('a run stopped between specify and its sync keeps the new intent current when files are restored', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await setActiveFeature(root, null) // specify clears the choice
+    await write('specs/003-search/spec.md', '# Search\n') // then stops before its handoff
+    await restoreIntentFiles(projectId, root)
+    expect(await currentIntentDirId(projectId, root)).toBe('003-search')
+    expect(activeFeatureId(root)).toBe('003-search')
+  })
+
+  test('restoring never writes through a symlinked folder', async () => {
+    const { root, write, projectId } = await setup()
+    await write('specs/001-login/subagents/ws-1.md', '# ws-1\n')
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await rm(path.join(root, 'specs/001-login/subagents'), { recursive: true })
+    await mkdir(path.join(root, 'elsewhere'))
+    await symlink(path.join(root, 'elsewhere'), path.join(root, 'specs/001-login/subagents'))
+    await restoreIntentFiles(projectId, root)
+    expect(await readFile(path.join(root, 'elsewhere/ws-1.md'), 'utf8').catch(() => null)).toBeNull()
+  })
+
 })
