@@ -17,6 +17,7 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
+import { createActivityLog } from './agent-activity'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
 import { createAgentResourceLoader } from './agent-resources'
@@ -1103,12 +1104,15 @@ export class AIDLCFlow {
     let assistantOutput = ''
     let providerError: string | undefined
     const verbose = this.options.verbose === true
+    // The agent's text and a line per tool call it makes: what it did, not only what it said.
+    const activity = createActivityLog()
 
     const unsubscribe = this.session!.subscribe((event) => {
+      const logged = activity.onEvent(event as unknown as { type: string })
+      if (logged) this.print(logged)
       if (event.type === 'message_update') {
         if (event.assistantMessageEvent.type === 'text_delta') {
           assistantOutput += event.assistantMessageEvent.delta
-          this.print(event.assistantMessageEvent.delta)
         }
 
         if (verbose && event.assistantMessageEvent.type === 'thinking_delta') {
@@ -1127,17 +1131,6 @@ export class AIDLCFlow {
         this.sinks.onUsage?.(event.message as unknown as Parameters<NonNullable<OutputSinks['onUsage']>>[0], this.activeStage)
       }
 
-      if (!verbose) {
-        return
-      }
-
-      if (event.type === 'tool_execution_start') {
-        this.error(`\n[tool:start] ${event.toolName}\n`)
-      }
-
-      if (event.type === 'tool_execution_end') {
-        this.error(`\n[tool:end] ${event.toolName} (${event.isError ? 'error' : 'ok'})\n`)
-      }
     })
 
     try {
@@ -1774,8 +1767,13 @@ export async function runAIDLCMergeOrchestrator(options: {
   })
 
   let log = ''
+  // What it said plus a line per tool call: the log a person reads.
+  let transcript = ''
+  const activity = createActivityLog()
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
+    const logged = activity.onEvent(event as unknown as { type: string })
+    if (logged) transcript += logged
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -1801,7 +1799,7 @@ export async function runAIDLCMergeOrchestrator(options: {
       featureDir,
       outputFile,
       summary: log.trim().split('\n').slice(-3).join(' ').trim() || 'Orchestration complete',
-      log: log.trim(),
+      log: transcript.trim(),
     }
   } finally {
     unsubscribe()
@@ -1853,8 +1851,13 @@ export async function runAIDLCSpecificTask(options: {
   })
 
   let log = ''
+  // What it said plus a line per tool call: the log a person reads.
+  let transcript = ''
+  const activity = createActivityLog()
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {
+    const logged = activity.onEvent(event as unknown as { type: string })
+    if (logged) transcript += logged
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -1880,7 +1883,7 @@ export async function runAIDLCSpecificTask(options: {
       featureDir,
       outputFile,
       summary: log.trim().split('\n').slice(-3).join(' ').trim() || `Task ${options.taskId} executed`,
-      log: log.trim(),
+      log: transcript.trim(),
     }
   } finally {
     unsubscribe()
@@ -1933,7 +1936,12 @@ export async function runAIDLCSpecificWorkstream(options: {
   })
 
   let log = ''
+  // What it said plus a line per tool call: the log a person reads.
+  let transcript = ''
+  const activity = createActivityLog()
   const unsubscribe = session.subscribe((event) => {
+    const logged = activity.onEvent(event as unknown as { type: string })
+    if (logged) transcript += logged
     if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
       log += event.assistantMessageEvent.delta
     }
@@ -1952,7 +1960,7 @@ export async function runAIDLCSpecificWorkstream(options: {
       featureDir,
       outputFile,
       summary: log.trim().split('\n').slice(-3).join(' ').trim() || `Workstream ${workstream.title} executed`,
-      log: log.trim(),
+      log: transcript.trim(),
     }
   } finally {
     unsubscribe()
@@ -1985,6 +1993,8 @@ export async function runAIDLCParallelSubAgents(options: {
    */
   pullRequests?: { enabled: boolean; baseBranch?: string; draft?: boolean }
   onProgress?: (event: ParallelSubAgentProgressEvent) => void
+  /** Each workstream's log as it grows (its text and a line per tool call), each line prefixed with the workstream, to mirror into a shared log. */
+  onActivity?: (workstream: string, text: string) => void
   registerSession?: (workstream: string, session: AgentSession) => void
   unregisterSession?: (workstream: string) => void
 }): Promise<{ featureDir: string; results: ParallelSubAgentResult[] }> {
@@ -2143,18 +2153,30 @@ export async function runAIDLCParallelSubAgents(options: {
 
         const outputFile = path.join(outputDir, `${String(index + 1).padStart(2, '0')}-${slugify(workstream.title)}.md`)
         options.registerSession?.(workstream.title, session)
+        // `log` is what the agent said (summaries come from it); `transcript`
+        // adds a line per tool call, so the workstream's live log shows its work.
         let log = ''
+        let transcript = ''
+        const activity = createActivityLog()
+        // The same, line-prefixed with the workstream, for a log several agents share.
+        const mirror = options.onActivity ? createActivityLog({ prefix: workstream.title }) : undefined
         let providerError: string | undefined
         let toolCalls = 0
         const unsubscribe = session.subscribe((event) => {
           if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
             log += event.assistantMessageEvent.delta
+          }
+          const mirrored = mirror?.onEvent(event as unknown as { type: string })
+          if (mirrored) options.onActivity?.(workstream.title, mirrored)
+          const logged = activity.onEvent(event as unknown as { type: string })
+          if (logged) {
+            transcript += logged
             options.onProgress?.({
               type: 'workstream_update',
               featureDir,
               workstream: workstream.title,
               outputFile,
-              log,
+              log: transcript,
               summary: log.trim().split('\n').slice(-2).join(' ').trim(),
               runtimeMs: Date.now() - startedAt,
               estimatedTokens: estimateTokenCount(log),
@@ -2203,7 +2225,7 @@ export async function runAIDLCParallelSubAgents(options: {
             workstream: workstream.title,
             outputFile,
             summary: error ?? (log.trim().split('\n').slice(-3).join(' ').trim() || 'Completed'),
-            log: log.trim(),
+            log: transcript.trim(),
             runtimeMs: Date.now() - startedAt,
             estimatedTokens: estimateTokenCount(log),
             ...(error ? { error } : {}),
@@ -2240,7 +2262,7 @@ export async function runAIDLCParallelSubAgents(options: {
               commitMessage: `${conventional('feat', featureSlug, workstream.title)}\n\nWorkstream ${index + 1} of feature ${featureSlug}, implemented by an AIDLC sub-agent.`,
               title: conventional('feat', featureSlug, workstream.title),
               body: pullRequestBody({
-                summary: `Workstream **${workstream.title}** of feature \`${featureSlug}\`.\n\n${workstream.tasks ? `**Tasks**\n${workstream.tasks}\n\n` : ''}${workstream.qaFocus ? `**QA focus**\n${workstream.qaFocus}\n\n` : ''}<details><summary>Sub-agent summary</summary>\n\n${outcome.log.split('\n').slice(-20).join('\n').slice(-1500)}\n\n</details>`,
+                summary: `Workstream **${workstream.title}** of feature \`${featureSlug}\`.\n\n${workstream.tasks ? `**Tasks**\n${workstream.tasks}\n\n` : ''}${workstream.qaFocus ? `**QA focus**\n${workstream.qaFocus}\n\n` : ''}<details><summary>Sub-agent summary</summary>\n\n${log.trim().split('\n').slice(-20).join('\n').slice(-1500)}\n\n</details>`,
                 featureDir: path.relative(cwd, featureDir),
                 artifacts: [path.relative(cwd, outputFile)],
                 stackedOn: prPlan.stackedOn,

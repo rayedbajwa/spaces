@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
@@ -307,13 +307,12 @@ dbSuite('syncing intents into the database', () => {
     const { root, write, projectId } = await setup()
     await write('specs/001-login/acceptance.md', '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n')
     await syncProjectIntents(projectId, root, 'import')
-    await chmod(path.join(root, 'specs/001-login'), 0o555) // the file cannot be removed
-    try {
-      await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', null]]) }))
-        .rejects.toThrow('nothing was changed')
-    } finally {
-      await chmod(path.join(root, 'specs/001-login'), 0o755)
-    }
+    // The file cannot be removed: a directory stands in its place. (Not a
+    // read-only folder: running as root, as containers do, ignores that.)
+    await rm(path.join(root, 'specs/001-login/acceptance.md'))
+    await mkdir(path.join(root, 'specs/001-login/acceptance.md/keep'), { recursive: true })
+    await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', null]]) }))
+      .rejects.toThrow('nothing was changed')
     // Record and file still agree: accepted.
     expect((await listIntents(projectId)).find((i) => i.dirId === '001-login')!.acceptedBy).toBe('Sam')
     expect(await getIntentDocument(projectId, '001-login', 'acceptance.md')).toBeDefined()
