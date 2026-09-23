@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { featureStatus, featureTitle, listFeatures, renameFeature } from '../src/lib/features'
 import { readFile } from 'node:fs/promises'
+import { featureDescriptionProblem } from '../src/lib/feature-description'
 
 const roots: string[] = []
 afterAll(async () => { for (const r of roots) await rm(r, { recursive: true, force: true }) })
@@ -57,6 +58,23 @@ describe('features', () => {
     await renameFeature(root, '002-x', 'Billing')
     expect((await listFeatures(root)).map((f) => f.title)).toEqual(['Billing', 'Login with SSO'])
     await expect(renameFeature(root, '001-login', '   ')).rejects.toThrow('title is required')
-    await expect(renameFeature(root, '404-none', 'x')).rejects.toThrow('no spec.md')
+    await expect(renameFeature(root, '404-none', 'x')).rejects.toThrow('does not exist')
+  })
+
+  test('renaming refuses an id that points outside specs/', async () => {
+    const root = await project({ 'specs/001-login/spec.md': '# Login\n', 'spec.md': '# Outside\n' })
+    for (const id of ['..', '../', '../..', '.hidden', '001-login/../..']) {
+      await expect(renameFeature(path.join(root), id, 'Pwned')).rejects.toThrow('does not exist')
+    }
+    expect(await readFile(path.join(root, 'spec.md'), 'utf8')).toBe('# Outside\n')
+  })
+})
+
+describe('feature description', () => {
+  test('specify needs a sentence, not a word', () => {
+    expect(featureDescriptionProblem(undefined)).toContain('requires a feature description')
+    expect(featureDescriptionProblem('  ')).toContain('requires a feature description')
+    expect(featureDescriptionProblem('tst')).toContain('too short')
+    expect(featureDescriptionProblem('Users can reset passwords')).toBeUndefined()
   })
 })

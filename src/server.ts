@@ -85,6 +85,7 @@ import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, renameFeature } from './lib/features'
 import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
+import { featureDescriptionProblem } from './lib/feature-description'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -1461,7 +1462,10 @@ async function route(req: Request): Promise<Response> {
     const orgId = await orgIdForProject(project.projectId)
     const branches: Array<{ repo: string; switched: boolean; reason?: string }> = []
     for (const repo of await registry.listRepos(project.projectId)) {
-      if (!repo.localPath) continue
+      if (!repo.localPath) {
+        branches.push({ repo: repo.githubRepo ?? repo.label, switched: false, reason: 'no local checkout' })
+        continue
+      }
       await ensureIgnored(repo.localPath, 'specs/.active-feature')
       const result = await switchToFeatureBranch(repo.localPath, featureId, repo.githubRepo ? orgId : undefined)
         .catch((error) => ({ switched: false, reason: error instanceof Error ? error.message.split('\n')[0] : String(error) }))
@@ -2008,9 +2012,10 @@ async function route(req: Request): Promise<Response> {
     // Without this, the run gets created, the worker picks it up, the
     // PipelineEngine constructor throws, and the UI shows a confusing
     // "adhoc-specify errored" instead of "specify needs a feature".
-    if (body.step === 'specify' && !body.feature?.trim()) {
+    const featureProblem = body.step === 'specify' ? featureDescriptionProblem(body.feature) : undefined
+    if (featureProblem) {
       return sendJson(400, {
-        error: 'The specify stage requires a feature description. Provide { "feature": "..." } in the request body.',
+        error: body.feature?.trim() ? featureProblem : `${featureProblem} Provide { "feature": "..." } in the request body.`,
         field: 'feature',
       })
     }
