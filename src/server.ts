@@ -83,7 +83,7 @@ import {
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
-import { featureTitle, listFeatures } from './lib/features'
+import { featureTitle, listFeatures, renameFeature } from './lib/features'
 import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
@@ -1410,18 +1410,31 @@ async function route(req: Request): Promise<Response> {
   }
 
   // Continue an earlier feature (make it active), or delete one that is not delivered.
-  if ((method === 'POST' || method === 'DELETE') && /^\/api\/projects\/[^/]+\/features\/[^/]+(\/activate)?$/.test(url.pathname)) {
+  if ((method === 'POST' || method === 'DELETE' || method === 'PATCH') && /^\/api\/projects\/[^/]+\/features\/[^/]+(\/activate)?$/.test(url.pathname)) {
     const parts = url.pathname.split('/')
     const projectNamespace = parts[3]!
     const featureId = decodeURIComponent(parts[5]!)
     const activating = parts[6] === 'activate'
     if ((method === 'POST') !== activating) return sendJson(405, { error: 'Method not allowed.' })
+    const renaming = method === 'PATCH'
     const registry = await import('./lib/project-registry')
     const project = await registry.getProjectBySlug(projectNamespace)
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch features.' : 'Only team members can delete features.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch features.' : renaming ? 'Only team members can rename features.' : 'Only team members can delete features.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+    // Renaming only rewrites the spec's title line: no need to wait for runs.
+    if (renaming) {
+      const body = await readJson<{ title?: string }>(req)
+      try {
+        await renameFeature(projectMeta.path, featureId, body.title ?? '')
+      } catch (error) {
+        return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+      }
+      await markProjectStateStale(project.projectId).catch(() => undefined)
+      void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
+      return sendJson(200, { features: await listFeatures(projectMeta.path) })
+    }
     // Switching or deleting under a live run would pull its feature away from it.
     const [live] = await getDb()<Array<{ status: string; stage: string | null }>>`
       SELECT status, current_stage AS stage FROM pipeline_runs

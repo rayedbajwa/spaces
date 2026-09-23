@@ -160,6 +160,9 @@ type BoardCard = {
     runId: string
     status: RunStatus
     stage?: string
+    /** The run's stages, and the feature description it was started with. */
+    stages?: string[]
+    feature?: string
   }
   recommendedAction?: {
     step: string
@@ -944,6 +947,27 @@ function App() {
       setProjectFeatures(result.features)
       const skipped = result.branches.filter((b) => !b.switched && b.reason !== 'already on it' && b.reason !== 'no branch for this feature here')
       setStatusMessage(`${feature.title} is the active feature.${skipped.length ? ` Left as they are: ${skipped.map((b) => `${b.repo} (${b.reason})`).join('; ')}.` : ''}`)
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(toMessage(error))
+    }
+  }
+
+  /** Rename a feature: rewrites its spec's title (the directory and branch keep their names). */
+  async function renameFeatureTitle(feature: FeatureSummary) {
+    if (!selectedProjectNamespace) return
+    const title = window.prompt(`New title for ${feature.id}`, feature.title)
+    if (title === null || !title.trim() || title.trim() === feature.title) return
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: title.trim() }),
+      })
+      const data = (await response.json().catch(() => ({}))) as { features?: FeatureSummary[]; error?: string }
+      if (!response.ok) throw new Error(data.error ?? `${response.status}`)
+      setProjectFeatures(data.features ?? [])
+      setStatusMessage(`Renamed ${feature.id} to "${title.trim()}".`)
       await refreshBoard()
     } catch (error) {
       setStatusMessage(toMessage(error))
@@ -1809,6 +1833,11 @@ function App() {
         setStatusMessage('Cancelled — the specify stage needs a feature description.')
         return
       }
+      // A word or two ("tst") gives the agent nothing to specify; it declines and no feature is created.
+      if (value.trim().split(/\s+/).length < 4) {
+        setStatusMessage(`"${value.trim()}" is too short to specify. Describe the feature in a sentence: who does what, and how you'll know it works.`)
+        return
+      }
       extraBody.feature = value
     } else if (step === 'constitution') {
       const value = await promptForStageInput('constitution')
@@ -2451,7 +2480,13 @@ function App() {
                       <button className="primary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
                     </div>
                   </div>
-                  {projectFeatures.length === 0 && <p className="empty-state">No features yet. Start one to write its spec.</p>}
+                  {projectFeatures.length === 0 && (
+                    // A New feature run can end without a spec (the agent will not invent one from
+                    // a vague description): say so instead of a bare "no features".
+                    selectedCardFresh.latestRun && selectedCardFresh.latestRun.stages?.includes('specify') && ['completed', 'error'].includes(selectedCardFresh.latestRun.status)
+                      ? <p className="empty-state">The last New feature run{selectedCardFresh.latestRun.feature ? <> (<q>{selectedCardFresh.latestRun.feature}</q>)</> : null} ended without a spec. The agent needs a real description to write one: who does what, and how you'll know it works. Check its reasoning in the Assistant tab, then start again with ＋ New feature.</p>
+                      : <p className="empty-state">No features yet. Start one to write its spec.</p>
+                  )}
                   <div className="feature-rows">
                     {projectFeatures.map((feature) => {
                       // Six milestones: spec, plan, tasks, build, QA, delivered.
@@ -2460,13 +2495,28 @@ function App() {
                         <div key={feature.id} className={`feature-row ${feature.current ? 'current' : ''}`}>
                           <div className="feature-row-main">
                             <code>{feature.id}</code>
-                            <strong>{feature.title}</strong>
+                            {feature.documents.find((d) => d.label === 'Spec')
+                              ? <a className="feature-title-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(feature.documents.find((d) => d.label === 'Spec')!.path)}`} target="_blank" rel="noreferrer" title="Open its spec"><strong>{feature.title}</strong></a>
+                              : <strong>{feature.title}</strong>}
                             <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
                             {feature.current && <span className="mini-badge running">current</span>}
                             <span className="feature-row-meta">{[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ')}</span>
                           </div>
-                          <div className="feature-steps" title={`${done} of 6: spec, plan, tasks, build, QA, delivered`} aria-label={`${done} of 6 milestones`}>
-                            {Array.from({ length: 6 }, (_, i) => <span key={i} className={i < done ? 'done' : ''} />)}
+                          <div className="feature-row-side">
+                            <div className="feature-steps" title={`${done} of 6: spec, plan, tasks, build, QA, delivered`} aria-label={`${done} of 6 milestones`}>
+                              {Array.from({ length: 6 }, (_, i) => <span key={i} className={i < done ? 'done' : ''} />)}
+                            </div>
+                            <div className="feature-row-actions">
+                              {!feature.current && feature.status !== 'delivered' && (
+                                <button className="ghost-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active feature and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue</button>
+                              )}
+                              {feature.documents.some((d) => d.label === 'Spec') && (
+                                <button className="ghost-button" disabled={busy} onClick={() => void renameFeatureTitle(feature)} type="button">Rename</button>
+                              )}
+                              {!['delivered', 'delivering'].includes(feature.status) && (
+                                <button className="ghost-button danger-text" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Delete this unfinished feature'} onClick={() => void deleteFeature(feature)} type="button">Delete</button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )
@@ -2876,43 +2926,6 @@ function App() {
                       <span>{artifact.stepLabel}</span>
                       <strong>{artifact.label}</strong>
                     </a>
-                  ))}
-                </div>
-                <div className="section-header-row" style={{ marginTop: 16 }}>
-                  <h3>Features</h3>
-                  <button className="secondary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
-                </div>
-                {projectFeatures.length === 0 && <p className="empty-state">No features yet. Start one to write its spec.</p>}
-                <div className="feature-list">
-                  {projectFeatures.map((feature) => (
-                    <details key={feature.id} className="qa-artifact" open={feature.current}>
-                      <summary>
-                        <code>{feature.id}</code> {feature.title}{' '}
-                        <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : feature.status === 'accepted' || feature.status === 'verified' || feature.status === 'delivering' ? 'paused' : 'idle'}`}>{feature.status}</span>
-                        {feature.current && <span className="mini-badge running">current</span>}
-                      </summary>
-                      <p className="panel-subtitle">
-                        {[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ') || 'Not reviewed or verified yet.'}
-                      </p>
-                      {(!feature.current && feature.status !== 'delivered') || !['delivered', 'delivering'].includes(feature.status) ? (
-                        <div className="button-row" style={{ marginBottom: 8 }}>
-                          {!feature.current && feature.status !== 'delivered' && (
-                            <button className="secondary-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active feature and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue this feature</button>
-                          )}
-                          {!['delivered', 'delivering'].includes(feature.status) && (
-                            <button className="danger-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Delete this unfinished feature'} onClick={() => void deleteFeature(feature)} type="button">Delete</button>
-                          )}
-                        </div>
-                      ) : null}
-                      <div className="artifact-group">
-                        {feature.documents.map((doc) => (
-                          <a key={doc.path} className="artifact-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(doc.path)}`} target="_blank" rel="noreferrer">
-                            <span>{feature.id}</span>
-                            <strong>{doc.label}</strong>
-                          </a>
-                        ))}
-                      </div>
-                    </details>
                   ))}
                 </div>
               </section>

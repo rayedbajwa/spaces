@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ACCEPTANCE_FILE } from './acceptance'
 import { activeFeatureId, featureDirNames } from './active-feature'
@@ -104,4 +104,27 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
 /** A current feature that is not finished yet (not merged, accepted or verified): starting another parks it. */
 export function isUnfinished(feature: FeatureSummary | undefined): boolean {
   return Boolean(feature && !(feature.verification === 'pass' || feature.status === 'accepted' || feature.delivery === 'merged'))
+}
+
+/**
+ * Rename a feature: its title is the spec's first heading, so that line is
+ * rewritten (keeping Spec Kit's "Feature Specification:" prefix). The directory
+ * and branch keep their names — pull requests and history point at them.
+ */
+export async function renameFeature(projectRoot: string, id: string, title: string): Promise<void> {
+  const clean = title.replace(/\s+/g, ' ').trim()
+  if (!clean) throw new Error('A title is required.')
+  if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
+  const file = path.join(projectRoot, 'specs', id, 'spec.md')
+  const spec = await readFile(file, 'utf8').catch(() => undefined)
+  if (spec === undefined) throw new Error(`Feature ${id} has no spec.md to rename.`)
+  const lines = spec.split('\n')
+  const index = lines.findIndex((line) => line.startsWith('# '))
+  if (index === -1) {
+    lines.unshift(`# Feature Specification: ${clean}`, '')
+  } else {
+    const prefixed = /^#\s+Feature Specification:/i.test(lines[index]!)
+    lines[index] = `# ${prefixed ? 'Feature Specification: ' : ''}${clean}`
+  }
+  await writeFile(file, lines.join('\n'))
 }
