@@ -42,6 +42,8 @@ import { reapAbandonedJobs } from './lib/job-reaper'
 import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
 import { createLineStamper, redactSecrets } from './lib/agent-activity'
+import { maskOutput } from './lib/guardrails'
+import { loadGuardPolicy, runGuardVault } from './lib/guardrails-policy'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -283,6 +285,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       return false
     },
     ...(priorHandoffs.length ? { priorHandoffs } : {}),
+    // The run's guardrail tokens outlive this process (a gate answer or a redeploy resumes elsewhere).
+    guardVault: runGuardVault(runId),
     ...(resumeSessionFile
       ? {
           // Same session file as the previous attempt → the agent keeps its context.
@@ -337,6 +341,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
   }
 
   const runOrgId = run.projectId ? await orgIdForProject(run.projectId) : await getDefaultOrgId()
+  // The organization's AI data guardrails also mask what reaches the run's log;
+  // secrets are masked whatever the setting.
+  const guardPolicy = await loadGuardPolicy(runOrgId)
+  const maskLog = (chunk: string) => maskOutput(redactSecrets(chunk), guardPolicy)
   Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
 
   let engine: PipelineEngine
@@ -375,10 +383,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'stage_start', { stage, index, total })
       },
       stdout: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(redactSecrets(chunk)) })
+        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(maskLog(chunk)) })
       },
       stderr: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(redactSecrets(chunk)) })
+        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(maskLog(chunk)) })
       },
       onStageHandoff: async (h) => {
         // The stage's documents are the intent's record: sync them in before the next stage starts.

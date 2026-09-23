@@ -78,17 +78,21 @@ describe('an agent session\'s guard', () => {
     let sent: { systemPrompt?: string; messages?: unknown[] } | undefined
     let ran: Record<string, unknown> | undefined
     const agent = {
-      streamFn: (_model: unknown, context: { systemPrompt?: string; messages?: unknown[] }) => { sent = context; return 'stream' },
+      streamFunction: (_model: unknown, context: { systemPrompt?: string; messages?: unknown[] }) => { sent = context; return 'stream' },
       beforeToolCall: async (ctx: { args: unknown }) => { ran = ctx.args as Record<string, unknown>; return undefined },
       afterToolCall: undefined as unknown,
     }
-    guard.install({ agent })
+    let prompted = ''
+    const session = { agent, prompt: async (text: string) => { prompted = text } }
+    guard.install(session)
+    await session.prompt('Call +1 415 555 0132 about it')
+    expect(prompted).toMatch(/^Call <PHONE_\d+> about it$/)
     const history = [
       { role: 'user', content: 'Fix the signup for jane@acme.io' },
       { role: 'toolResult', content: [{ type: 'text', text: 'DATABASE_URL=postgres://u:secretpw1@h/db' }] },
       { role: 'assistant', content: [{ type: 'toolCall', name: 'bash', arguments: { command: 'echo <EMAIL_1>' } }] },
     ]
-    expect((agent.streamFn as (m: unknown, c: unknown) => unknown)('model', { systemPrompt: 'Owner: sam@acme.io', messages: history })).toBe('stream')
+    expect((agent.streamFunction as (m: unknown, c: unknown) => unknown)('model', { systemPrompt: 'Owner: sam@acme.io', messages: history })).toBe('stream')
     expect(JSON.stringify(sent)).not.toContain('jane@acme.io')
     expect(JSON.stringify(sent)).not.toContain('secretpw1')
     expect(JSON.stringify(sent)).not.toContain('sam@acme.io')
@@ -100,5 +104,36 @@ describe('an agent session\'s guard', () => {
     expect(ran).toEqual({ command: 'git log --author=jane@acme.io' })
     const after = await (agent.afterToolCall as (c: unknown) => Promise<{ content: Array<{ text: string }> }>)({ toolCall: { name: 'read' }, args: { path: '.env' }, result: { content: [{ type: 'text', text: 'REGION=us-east-1\n' }] }, isError: false })
     expect(after.content[0]!.text).toMatch(/^REGION=<SECRET_\d+>\n$/)
+  })
+
+  test('tool results are masked as they enter the history', async () => {
+    const guard = new AgentGuard()
+    const agent = { streamFunction: () => undefined, beforeToolCall: undefined as unknown, afterToolCall: undefined as unknown }
+    guard.install({ agent })
+    const after = await (agent.afterToolCall as (c: unknown) => Promise<{ content: Array<{ text: string }> }>)({ toolCall: { name: 'bash' }, args: { command: 'git log -1' }, result: { content: [{ type: 'text', text: 'Author: Jane <jane@acme.io>' }] }, isError: false })
+    expect(after.content[0]!.text).toBe('Author: Jane <<EMAIL_1>>')
+  })
+
+  test('a resumed run maps its tokens to the same values', () => {
+    const first = new AgentGuard()
+    first.mask('jane@acme.io and postgres://a:pw123456@h/db')
+    const vault = first.exportVault()
+    const resumed = new AgentGuard(undefined, vault)
+    expect(resumed.unmask('<EMAIL_1> <SECRET_1>')).toBe('jane@acme.io pw123456')
+    expect(resumed.mask('bob@acme.io')).toBe('<EMAIL_2>')
+  })
+
+  test('masks every text field of a request (system prompt sections included), never structural ones', () => {
+    const guard = new AgentGuard()
+    const context = {
+      messages: [
+        { role: 'system', content: '', sections: { preamble: 'You help.', projectContext: 'Owner: sam@acme.io' } },
+        { role: 'assistant', content: [{ type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'mail sam@acme.io' } }] },
+      ],
+    }
+    const masked = guard.maskContext(context)
+    expect(JSON.stringify(masked)).not.toContain('sam@acme.io')
+    expect((masked.messages[1] as { content: Array<{ id: string; name: string }> }).content[0]).toMatchObject({ id: 'call_1', name: 'bash' })
+    expect(Object.keys(masked)).toEqual(['messages']) // nothing added
   })
 })

@@ -1,3 +1,4 @@
+import { decryptSecret, encryptSecret } from './crypto-vault'
 import { getDb } from './db'
 import { AgentGuard, DEFAULT_POLICY, GUARD_MODES, type GuardMode, type GuardPolicy } from './guardrails'
 
@@ -36,8 +37,31 @@ export async function saveGuardPolicy(orgId: string, input: unknown): Promise<Gu
 }
 
 /** A guard for one agent session, installed on it, under the organization's setting. */
-export async function guardSession(session: { agent: unknown }, orgId: string | null | undefined): Promise<AgentGuard> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function guardSession(session: { agent: unknown; prompt?: (text: string, options?: any) => Promise<unknown> }, orgId: string | null | undefined): Promise<AgentGuard> {
   const guard = new AgentGuard(await loadGuardPolicy(orgId))
   guard.install(session)
   return guard
+}
+
+export interface GuardVaultStore {
+  load: () => Promise<Record<string, string> | undefined>
+  save: (vault: Record<string, string>) => Promise<void>
+}
+
+/** Where a run keeps its token vault: sealed in run_guard_vaults, never in the clear. */
+export function runGuardVault(runId: string): GuardVaultStore {
+  return {
+    load: async () => {
+      const [row] = await getDb()<Array<{ sealed: string }>>`SELECT sealed FROM run_guard_vaults WHERE run_id = ${runId}`
+      return row ? JSON.parse(decryptSecret(row.sealed)) as Record<string, string> : undefined
+    },
+    save: async (vault) => {
+      const sealed = encryptSecret(JSON.stringify(vault))
+      await getDb()`
+        INSERT INTO run_guard_vaults (run_id, sealed) VALUES (${runId}, ${sealed})
+        ON CONFLICT (run_id) DO UPDATE SET sealed = EXCLUDED.sealed, updated_at = now()
+      `
+    },
+  }
 }

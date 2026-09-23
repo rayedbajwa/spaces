@@ -159,9 +159,30 @@ export class AgentGuard {
   readonly counts: Record<SensitiveKind | 'BLOCKED', number> = { SECRET: 0, EMAIL: 0, PHONE: 0, SSN: 0, CARD: 0, IBAN: 0, BLOCKED: 0 }
   private reported = { ...this.counts }
 
-  constructor(policy: GuardPolicy = DEFAULT_POLICY) {
+  /** Called when a new value gets a token, so a run can keep its vault across processes. */
+  onNewToken?: () => void
+
+  constructor(policy: GuardPolicy = DEFAULT_POLICY, vault?: Record<string, string>) {
     this.policy = policy
     this.allow = compileAllow(policy.allow)
+    if (vault) this.importVault(vault)
+  }
+
+  /** Token → value, for storing (sealed) with the run. */
+  exportVault(): Record<string, string> {
+    return Object.fromEntries(this.byToken)
+  }
+
+  /** Tokens a resumed run's history already uses map to the same values again. */
+  importVault(vault: Record<string, string>): void {
+    for (const [token, value] of Object.entries(vault)) {
+      const m = /^<(SECRET|EMAIL|PHONE|SSN|CARD|IBAN)_(\d+)>$/.exec(token)
+      if (!m || typeof value !== 'string') continue
+      const kind = m[1] as SensitiveKind
+      this.byToken.set(token, value)
+      this.byValue.set(value, token)
+      this.next[kind] = Math.max(this.next[kind], Number(m[2]))
+    }
   }
 
   get active(): boolean { return this.policy.mode !== 'off' }
@@ -175,6 +196,7 @@ export class AgentGuard {
     const token = `<${kind}_${this.next[kind]}>`
     this.byValue.set(value, token)
     this.byToken.set(token, value)
+    this.onNewToken?.()
     return token
   }
 
@@ -218,36 +240,24 @@ export class AgentGuard {
     return value
   }
 
-  /** A masked copy of any JSON-like value (tool-call arguments). */
-  private maskDeep(value: unknown): unknown {
-    if (typeof value === 'string') return this.mask(value)
-    if (Array.isArray(value)) return value.map((v) => this.maskDeep(v))
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.maskDeep(v)]))
-    return value
-  }
+  /** Fields that name or route things rather than carry text: never masked. */
+  private static readonly STRUCTURAL = new Set(['role', 'type', 'id', 'toolCallId', 'toolName', 'name', 'api', 'provider', 'model', 'stopReason', 'timestamp', 'mimeType', 'data', 'signature', 'thinkingSignature'])
 
-  private maskContent(content: unknown): unknown {
-    if (typeof content === 'string') return this.mask(content)
-    if (!Array.isArray(content)) return content
-    return content.map((block: Record<string, unknown>) => {
-      if (block?.type === 'text' && typeof block.text === 'string') return { ...block, text: this.mask(block.text) }
-      if (block?.type === 'thinking' && typeof block.thinking === 'string') return { ...block, thinking: this.mask(block.thinking) }
-      if (block?.type === 'toolCall' && block.arguments) return { ...block, arguments: this.maskDeep(block.arguments) }
-      return block
-    })
+  /** A masked copy of a message: every text field, at any depth (content blocks, system prompt sections, tool-call arguments). */
+  private maskMessage(value: unknown, key?: string): unknown {
+    if (typeof value === 'string') return key && AgentGuard.STRUCTURAL.has(key) ? value : this.mask(value)
+    if (Array.isArray(value)) return value.map((v) => this.maskMessage(v))
+    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, this.maskMessage(v, k)]))
+    return value
   }
 
   /** The request as the provider may receive it (a copy; the session's own history is untouched). */
   maskContext<T extends { systemPrompt?: string; messages?: unknown[] }>(context: T): T {
     if (!this.active) return context
-    return {
-      ...context,
-      systemPrompt: typeof context.systemPrompt === 'string' ? this.mask(context.systemPrompt) : context.systemPrompt,
-      messages: (context.messages ?? []).map((m) => {
-        const message = m as { content?: unknown }
-        return 'content' in (message ?? {}) ? { ...message, content: this.maskContent(message.content) } : m
-      }),
-    }
+    const masked: T = { ...context }
+    if (typeof context.systemPrompt === 'string') masked.systemPrompt = this.mask(context.systemPrompt)
+    if (Array.isArray(context.messages)) masked.messages = context.messages.map((m) => this.maskMessage(m))
+    return masked
   }
 
   /** Why a tool call is refused in strict mode, if it is. */
@@ -273,15 +283,31 @@ export class AgentGuard {
    * restore real values in tool calls, refuse what strict mode forbids, and
    * treat everything read from a secret file as a secret.
    */
-  install(session: { agent: unknown }): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  install(session: { agent: unknown; prompt?: (text: string, options?: any) => Promise<unknown> }): void {
     if (!this.active) return
+    type Stream = (model: unknown, context: { systemPrompt?: string; messages?: unknown[] }, options?: unknown) => unknown
     const agent = session.agent as {
-      streamFn: (model: unknown, context: { systemPrompt?: string; messages?: unknown[] }, options?: unknown) => unknown
+      streamFunction?: Stream
+      streamFn?: Stream
       beforeToolCall?: (ctx: { toolCall: { name: string }; args: unknown }, signal?: AbortSignal) => Promise<{ block?: boolean; reason?: string } | undefined>
       afterToolCall?: (ctx: { toolCall: { name: string }; args: unknown; result: { content?: unknown }; isError: boolean }, signal?: AbortSignal) => Promise<{ content?: unknown; isError?: boolean } | undefined>
     }
-    const stream = agent.streamFn
-    agent.streamFn = (model, context, options) => stream(model, this.maskContext(context), options)
+    const already = (agent as { __guarded?: AgentGuard }).__guarded
+    if (already === this) return
+    ;(agent as { __guarded?: AgentGuard }).__guarded = this
+
+    // Every provider request (system prompt included) — the last line of defence.
+    const key = typeof agent.streamFunction === 'function' ? 'streamFunction' : 'streamFn'
+    const stream = agent[key]
+    if (stream) agent[key] = (model, context, options) => stream(model, this.maskContext(context), options)
+
+    // Prompts enter the history masked, so nothing else that reads the history
+    // (compaction summaries, a resumed session) sees the real values either.
+    if (typeof session.prompt === 'function') {
+      const prompt = session.prompt.bind(session)
+      session.prompt = (text: string, options?: unknown) => prompt(this.mask(text), options as never)
+    }
 
     const before = agent.beforeToolCall
     agent.beforeToolCall = async (ctx, signal) => {
@@ -296,13 +322,15 @@ export class AgentGuard {
       return before ? before(ctx, signal) : undefined
     }
 
+    // Tool results enter the history masked; a secret file's every value is a secret.
     const after = agent.afterToolCall
     agent.afterToolCall = async (ctx, signal) => {
       const hooked = after ? await after(ctx, signal) : undefined
-      if (!this.masking || !this.readsSecretFile(ctx.toolCall.name, (ctx.args ?? {}) as Record<string, unknown>)) return hooked
       const content = (hooked?.content ?? ctx.result.content) as Array<{ type?: string; text?: string }> | undefined
       if (!Array.isArray(content)) return hooked
-      return { ...(hooked ?? {}), content: content.map((b) => (b?.type === 'text' && typeof b.text === 'string' ? { ...b, text: this.maskSecretFile(b.text) } : b)) }
+      const secretFile = this.masking && this.readsSecretFile(ctx.toolCall.name, (ctx.args ?? {}) as Record<string, unknown>)
+      const masked = content.map((b) => (b?.type === 'text' && typeof b.text === 'string' ? { ...b, text: secretFile ? this.maskSecretFile(b.text) : this.mask(b.text) } : b))
+      return { ...(hooked ?? {}), content: masked }
     }
   }
 

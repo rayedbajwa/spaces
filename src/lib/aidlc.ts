@@ -123,6 +123,8 @@ export interface FlowOptions {
    */
   allowNewFeature?: boolean
   feature?: string
+  /** Keeps the run's guardrail token vault across processes (the worker: sealed in the database). */
+  guardVault?: import('./guardrails-policy').GuardVaultStore
   /**
    * The intent's scope for specify (bugfix, feature, mvp, … or a custom
    * label); unset or 'auto' lets the agent decide (lib/intent-scope.ts).
@@ -494,7 +496,20 @@ export class AIDLCFlow {
       sessionManager,
     })
 
-    this.guard ??= new AgentGuard(await loadGuardPolicy(await this.orgId()))
+    if (!this.guard) {
+      // A resumed run's history already uses tokens: load the same vault back.
+      const vault = await this.options.guardVault?.load().catch(() => undefined)
+      const guard = new AgentGuard(await loadGuardPolicy(await this.orgId()), vault)
+      let saving: ReturnType<typeof setTimeout> | undefined
+      guard.onNewToken = () => {
+        if (!this.options.guardVault || saving) return
+        saving = setTimeout(() => {
+          saving = undefined
+          void this.options.guardVault!.save(guard.exportVault()).catch((error) => aidlcLog.warn('guardrail vault not saved', { error: error instanceof Error ? error.message : String(error) }))
+        }, 250)
+      }
+      this.guard = guard
+    }
     this.guard.install(session)
     this.session = session
     this.currentModelSpec = modelSelection.model?.id ? `${modelSelection.model.provider}/${modelSelection.model.id}` : (overrideModel ?? this.options.model)
@@ -805,6 +820,7 @@ export class AIDLCFlow {
     // What the guardrails kept from the model (or blocked) during this stage.
     const guarded = this.guard?.report()
     if (guarded) this.print(`\n${guarded}`)
+    if (this.guard && this.options.guardVault) await this.options.guardVault.save(this.guard.exportVault()).catch(() => undefined)
     this.captureActiveFeatureBranch()
     // Whatever the stage wrote into the implementation checkouts is committed on
     // the feature branch, so it is attributable and survives an interruption.

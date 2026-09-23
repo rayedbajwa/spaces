@@ -2625,3 +2625,13 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 /* Log line stamps: local time dimmed, the agent as a small coloured tag. */
 .log-time { color: var(--text-subtle); margin-right: 6px; font-variant-numeric: tabular-nums; }
 .log-agent { display: inline-block; margin-right: 6px; padding: 0 5px; border: 1px solid; border-radius: 4px; font-size: 0.9em; line-height: 1.35; }
+
+/* Organization → Data guardrails. */
+.guardrail-modes { display: grid; gap: 8px; margin: 4px 0 14px; }
+.guardrail-mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; }
+.guardrail-mode.selected { border-color: var(--border-focus); background: var(--accent-soft); }
+.guardrail-mode.readonly { cursor: default; }
+.guardrail-mode input { margin-top: 3px; }
+.guardrail-mode > span { display: flex; flex-direction: column; gap: 2px; }
+.guardrail-allow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.guardrail-allow textarea { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }

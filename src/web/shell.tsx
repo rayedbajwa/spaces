@@ -46,6 +46,7 @@ const I = {
   book: <svg viewBox="0 0 16 16"><path d="M2.5 3.5A1.5 1.5 0 0 1 4 2h9v11H4a1.5 1.5 0 0 0-1.5 1.5z" /><path d="M2.5 12.5A1.5 1.5 0 0 1 4 11h9" /></svg>,
   brain: <svg viewBox="0 0 16 16"><path d="M6 2.5a2 2 0 0 0-2 2v.5A2.5 2.5 0 0 0 3 9.5a2.5 2.5 0 0 0 2.5 4H8V2.5zM10 2.5a2 2 0 0 1 2 2v.5a2.5 2.5 0 0 1 1 4.5 2.5 2.5 0 0 1-2.5 4H8" /></svg>,
   plug: <svg viewBox="0 0 16 16"><path d="M5.5 2v3M10.5 2v3M3.5 5h9v2a4.5 4.5 0 0 1-9 0zM8 11.5V14" /></svg>,
+  shield: <svg viewBox="0 0 16 16"><path d="M8 1.5 13.5 3.5v4c0 3.3-2.3 5.9-5.5 7-3.2-1.1-5.5-3.7-5.5-7v-4Z" /><path d="m5.8 8 1.6 1.6 3-3.2" /></svg>,
   cpu: <svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" /><rect x="6.5" y="6.5" width="3" height="3" /><path d="M6 1.5v2.5M10 1.5v2.5M6 12v2.5M10 12v2.5M1.5 6h2.5M1.5 10h2.5M12 6h2.5M12 10h2.5" /></svg>,
   users: <svg viewBox="0 0 16 16"><circle cx="6" cy="5.5" r="2.5" /><path d="M1.5 13.5a4.5 4.5 0 0 1 9 0M10.5 3.2a2.5 2.5 0 0 1 0 4.6M12 9.3a4.5 4.5 0 0 1 2.5 4.2" /></svg>,
   building: <svg viewBox="0 0 16 16"><path d="M2.5 14V3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v11M10.5 6h2a1 1 0 0 1 1 1v7M1.5 14h13M5 5h1.5M5 8h1.5M5 11h1.5" /></svg>,
@@ -128,6 +129,7 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
       { id: 'memory', label: 'Memory', icon: I.brain, path: orgPath('memory'), match: () => onOrg('memory') },
       { id: 'integrations', label: 'Integrations', icon: I.plug, path: orgPath('integrations'), match: () => onOrg('integrations') },
       { id: 'models', label: 'Models', icon: I.cpu, path: orgPath('models'), match: () => onOrg('models') },
+      { id: 'guardrails', label: 'Data guardrails', icon: I.shield, path: orgPath('guardrails'), match: () => onOrg('guardrails') },
     ],
     [
       ...(active ? [{ id: 'people', label: 'People', icon: I.users, path: `/teams/${encodeURIComponent(active.slug)}`, match: (l: { pathname: string }) => l.pathname.startsWith('/teams/'), hint: active.name } as NavItem] : []),
