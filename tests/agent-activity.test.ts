@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'bun:test'
-import { createActivityLog, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
+import { createActivityLog, createLineStamper, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
 
 const text = (delta: string) => ({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
 const start = (id: string, toolName: string, args: unknown) => ({ type: 'tool_execution_start', toolCallId: id, toolName, args })
 const end = (id: string, toolName: string, output: string, isError = false) => ({ type: 'tool_execution_end', toolCallId: id, toolName, isError, result: { content: [{ type: 'text', text: output }] } })
 
-function play(events: Array<{ type: string }>, prefix?: string): string {
-  const log = createActivityLog(prefix ? { prefix } : {})
+const at = () => new Date('2026-09-23T03:41:05Z')
+
+function play(events: Array<{ type: string }>, label?: string): string {
+  const log = createActivityLog(label ? { label, now: at } : {})
   return events.map((e) => log.onEvent(e) ?? '').join('')
 }
 
@@ -52,8 +54,26 @@ describe('agent activity log', () => {
     expect(redactSecrets('OPENROUTER_API_KEY=sk-or-v1-abcdef1234567890abcdef')).toBe('OPENROUTER_API_KEY=[redacted]')
   })
 
-  test('a sub-agent mirrored into a shared log marks every line with its workstream', () => {
+  test('a sub-agent\'s lines are stamped with the time and its name', () => {
     const out = play([text('Starting the API work.\nReading'), text(' the plan.\n'), start('1', 'read', { path: 'plan.md' })], 'WS-1 API')
-    expect(out).toBe('[WS-1 API] Starting the API work.\n[WS-1 API] Reading the plan.\n[WS-1 API] ▸ read plan.md\n')
+    expect(out).toBe('[03:41:05Z WS-1 API] Starting the API work.\n[03:41:05Z WS-1 API] Reading the plan.\n[03:41:05Z WS-1 API] ▸ read plan.md\n')
+  })
+
+  test('the run log stamper marks each line where it begins, with the current agent, and keeps stamps already there', () => {
+    let agent = 'spaces'
+    const stamper = createLineStamper({ label: () => agent, now: at })
+    let out = stamper.stamp('[setup] ready\nI\'ll start')
+    agent = 'implement/developer'
+    out += stamper.stamp(' by reading.\n\n')
+    out += stamper.stamp('[03:41:05Z WS-1] mirrored line\n')
+    out += stamper.stamp('▸ $ bun test\n')
+    expect(out).toBe([
+      '[03:41:05Z spaces] [setup] ready',
+      "[03:41:05Z spaces] I'll start by reading.",
+      '',
+      '[03:41:05Z WS-1] mirrored line',
+      '[03:41:05Z implement/developer] ▸ $ bun test',
+      '',
+    ].join('\n'))
   })
 })

@@ -41,6 +41,7 @@ import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
+import { createLineStamper } from './lib/agent-activity'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -340,6 +341,11 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
 
   let engine: PipelineEngine
   try {
+    // Every log line says when it was written and by which agent: the stage
+    // running (with its role), or "spaces" for the orchestrator around it.
+    let logAgent = 'spaces'
+    const stampStdout = createLineStamper({ label: () => logAgent })
+    const stampStderr = createLineStamper({ label: () => logAgent })
     engine = new PipelineEngine(run.templateJson, options, {
       onUsage: (message, stage) => {
         const raw = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
@@ -357,6 +363,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
       },
       onStageStart: ({ stage, index, total }) => {
+        const role = run.templateJson?.steps?.find((s) => s.stage === stage)?.role
+        logAgent = role ? `${stage}/${role}` : stage
         // The answer has been applied once a stage starts: a later failure retries without it.
         pendingAnswers.delete(runId)
         // A flow reports progress only when it pauses or finishes, so without this
@@ -367,10 +375,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'stage_start', { stage, index, total })
       },
       stdout: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stdout', chunk })
+        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(chunk) })
       },
       stderr: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stderr', chunk })
+        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(chunk) })
       },
       onStageHandoff: async (h) => {
         // The stage's documents are the intent's record: sync them in before the next stage starts.

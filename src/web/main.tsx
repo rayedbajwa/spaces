@@ -13,6 +13,7 @@ import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/in
 import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import { renderMarkdown } from './markdown'
 import { IntentViewer } from './intent-viewer'
+import { LogText } from './log-text'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -3181,13 +3182,13 @@ function App() {
                           {item.pullRequestUrl && <> • <a href={item.pullRequestUrl} target="_blank" rel="noreferrer">Pull request</a></>}
                         </p>
                       )}
-                      <pre className="context-preview small-preview">{item.log || item.summary || 'Waiting for updates...'}</pre>
+                      <pre className="context-preview small-preview">{item.log ? <LogText text={item.log} /> : item.summary || 'Waiting for updates...'}</pre>
                     </details>
                   ))}
                   {currentRun && ['tasks', 'parallelize', 'implement', 'orchestrate'].includes(currentRun.stage ?? '') && (
                     <>
                       <h3>Latest implementation agent output</h3>
-                      <pre className="context-preview small-preview">{currentRun.log}</pre>
+                      <pre className="context-preview small-preview"><LogText text={currentRun.log} /></pre>
                     </>
                   )}
                 </section>
@@ -3255,7 +3256,7 @@ function App() {
                       <summary>{agent.workstream}</summary>
                       <p className="panel-subtitle">runtime: {formatDuration(agent.runtimeMs)} • tokens: {agent.estimatedTokens}</p>
                       <a className="artifact-link inline-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(agent.outputFile)}`} target="_blank" rel="noreferrer">Open report</a>
-                      <pre className="context-preview small-preview">{agent.log || agent.summary}</pre>
+                      <pre className="context-preview small-preview">{agent.log ? <LogText text={agent.log} /> : agent.summary}</pre>
                     </details>
                   ))}
                 </section>
@@ -3671,7 +3672,7 @@ function App() {
             <h3 style={{ marginTop: 12 }}>Log ({(inspectedRun.log ?? '').length.toLocaleString()} chars)</h3>
             <pre
               style={{ maxHeight: '55vh', overflow: 'auto', fontSize: 12, background: '#0f172a', color: '#e2e8f0', padding: 12, borderRadius: 6, whiteSpace: 'pre-wrap' }}
-            >{inspectedRun.log || '(no log recorded)'}</pre>
+            >{inspectedRun.log ? <LogText text={inspectedRun.log} /> : '(no log recorded)'}</pre>
             <div className="button-row" style={{ marginTop: 8 }}>
               <button type="button" className="ghost-button" onClick={() => setInspectedRun(null)}>Close</button>
             </div>
@@ -4352,7 +4353,7 @@ function AiAgentOutputBar({
             className="context-preview modal-preview run-log"
             onScroll={onLogScroll}
           >
-            {currentRun?.log || (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
+            {currentRun?.log ? <LogText text={currentRun.log} /> : (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
           </pre>
           <div className="dock-scrollers" aria-label="Scroll the log">
             <button type="button" className="dock-icon" onClick={() => scrollLog('top')} title="Scroll to top" aria-label="Scroll to top">↑</button>
