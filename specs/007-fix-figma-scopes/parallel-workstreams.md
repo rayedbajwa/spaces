@@ -78,7 +78,7 @@ Do **not** modify `tests/oauth.test.ts`, any other `tests/*`, `src/server.ts`, `
 ### QA Focus
 
 - **Exact scope set**: `scopes` must deep-equal `['files:read']` — length 1, exact value.
-- **Removed identifiers absent**: `current_user:read`, `file_content:read`, `file_variables:read` (Enterprise-only), `library_assets:read`, and any deprecated `file_read` must not appear anywhere in the `figma` block.
+- **Removed identifiers absent**: `file_variables:read` (Enterprise-only) and any deprecated `file_read` must not appear anywhere in the `figma` block.
 - **Guidance parity**: the `notes` string must list exactly the scope requested (`files:read`), never a removed scope.
 - **Least privilege**: narrowing (not widening) — no new capabilities, read-only only.
 
@@ -93,8 +93,8 @@ rayedbajwa/spaces
 ### Tasks
 
 - **Task IDs**: T003, T004, T005
-- T003 `[P]`: Add the failing unit test for the corrected scope set in `tests/oauth.test.ts` — import `PROVIDER_TEMPLATES` from `../src/lib/oauth` and assert `figma.scopes` deep-equals `['files:read']`, contains `files:read`, and does NOT contain `current_user:read`, `file_content:read`, `file_variables:read`, or any `file_read` id (FR-001…FR-004). Confirm it FAILS against the current buggy value.
-- T004 `[P]` `[US1]`: Add the admin-guidance assertion — `figma.notes` names `files:read` and does NOT name `current_user:read`, `file_content:read`, or `library_assets:read` (FR-005).
+- T003 `[P]`: Add the failing unit test for the corrected scope set in `tests/oauth.test.ts` — import `PROVIDER_TEMPLATES` from `../src/lib/oauth` and assert `figma.scopes` deep-equals `['files:read']`, contains `files:read`, and does NOT contain `file_variables:read` (the Enterprise-only scope removed by this fix) (FR-001…FR-004). Confirm it FAILS against the current buggy value.
+- T004 `[P]` `[US1]`: Add the admin-guidance assertion — `figma.notes` names `files:read` and does NOT name `file_variables:read` (FR-005).
 - T005 `[P]` `[US1]`: Add the Figma authorization-URL assertion — call `beginAuthorization` with `PROVIDER_TEMPLATES.figma` + dummy `clientId`/`clientSecret`, parse `redirectUrl`, assert the `scope` query parameter equals exactly `files:read` (FR-001, SC-001).
 
 **Proposed sub-agent assignment**: OAuth Test Engineer.
@@ -103,13 +103,13 @@ rayedbajwa/spaces
 
 - Phase 2 green baseline (T002) recorded first.
 - `specs/007-fix-figma-scopes/spec.md` (FR-001…FR-005, SC-001, acceptance scenario AS1).
-- `specs/007-fix-figma-scopes/test-plan.md` (§ 2 unit cases U1–U9, integration case I1).
+- `specs/007-fix-figma-scopes/test-plan.md` (§ 2 unit cases U1–U6, integration case I1).
 - Existing module: `tests/oauth.test.ts` (already imports `../src/lib/oauth` and exercises `beginAuthorization`).
 
 ### Outputs
 
-- Red test (T003) proven failing against the buggy `['current_user:read', 'file_content:read', 'library_assets:read']` value.
-- Guidance (U8–U9) and URL (I1) assertions in `tests/oauth.test.ts`.
+- Red test (T003) proven failing against the buggy `['files:read', 'file_variables:read']` value.
+- Guidance (U5–U6) and URL (I1) assertions in `tests/oauth.test.ts`.
 - **Merge Checkpoint 2 (Red Test in Place)**: emitted *before* Workstream 1 begins; signals the gate for T006/T007.
 
 ### Dependencies
@@ -171,7 +171,7 @@ Do **not** modify any file in `rayedbajwa/spaces`, nor `spec.md`/`plan.md`/`task
 ### QA Focus
 
 - **Traceability completeness**: every acceptance scenario (AS1 invalid-scope-free URL, AS2 consent/token exchange, AS3 connected status, AS4 read-tool regression) and every FR/SC must map to at least one concrete test case.
-- **Consistency with tasks.md**: T003/T004/T005 in the plan must match the unit/integration cases (U1–U9, I1) the test workstream actually authors.
+- **Consistency with tasks.md**: T003/T004/T005 in the plan must match the unit/integration cases (U1–U6, I1) the test workstream actually authors.
 - **Key-free stance**: mark the live Figma consent flow (AS2/AS3) as manual/UAT per Organization Memory ("E2E tests that require keys can be ignored").
 
 ---

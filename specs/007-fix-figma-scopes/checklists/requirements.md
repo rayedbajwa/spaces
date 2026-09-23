@@ -31,5 +31,5 @@
 
 ## Notes
 
-- The spec names the specific scope identifiers (`files:read`, `file_content:read`, `current_user:read`, `file_variables:read`) because they are the defect itself; this is inherent to a bugfix whose subject is an incorrect configuration value, not an implementation detail of the solution.
+- The spec names the specific scope identifiers (`files:read`, `file_variables:read`) because they are the defect itself; this is inherent to a bugfix whose subject is an incorrect configuration value, not an implementation detail of the solution.
 - Scope is bounded to correcting the Figma OAuth scope list and its administrator guidance; no new capabilities beyond restoring correct connection behavior.

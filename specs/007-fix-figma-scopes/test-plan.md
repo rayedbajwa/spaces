@@ -11,18 +11,18 @@
 This plan verifies that the Figma OAuth provider template requests **only valid
 Figma scope identifiers**, fixing the "scopes not valid" error that blocks the
 entire Figma integration. The defect is a single, localized drift in
-`src/lib/oauth.ts`: the `PROVIDER_TEMPLATES.figma` entry requests
-`current_user:read`, `file_content:read`, and `library_assets:read` — two of
-which (`current_user:read`, `file_content:read`) are not recognized Figma OAuth
-scope names, so Figma rejects the consent request before token exchange.
+`src/lib/oauth.ts`: the `PROVIDER_TEMPLATES.figma` entry requests the
+Enterprise-only `file_variables:read` scope alongside the read-only `files:read`
+scope. `file_variables:read` requires a Figma Enterprise plan, so on standard
+plans Figma rejects the consent request with a "scope not valid" error before
+token exchange.
 
 The fix has two parts under test:
 
 1. **Scope correction** (`src/lib/oauth.ts`) — set `scopes` to `['files:read']`
    (the canonical read-only scope that covers file/node inspection, published
-   styles, and published components), remove the two invalid identifiers, drop
-   the unnecessary `library_assets:read`, and do **not** require the
-   Enterprise-only `file_variables:read`.
+   styles, and published components), removing the Enterprise-only
+   `file_variables:read` scope that caused the error.
 2. **Administrator guidance** (`src/lib/oauth.ts`) — update the `notes` string
    so admins are told to enable exactly the requested scope.
 
@@ -39,7 +39,7 @@ database integration layer to exercise.
   criterion (SC-001…SC-003) through automated unit assertions (no external keys
   required).
 - Prove the scope set is exactly `['files:read']` — contains `files:read` and
-  contains **none** of the invalid/deprecated/Enterprise identifiers.
+  contains **none** of the removed/deprecated/Enterprise identifiers.
 - Prove the authorization URL's `scope` query parameter carries only
   `files:read`.
 - Prove the admin-facing guidance names only `files:read`.
@@ -81,19 +81,16 @@ imports from `../src/lib/oauth` and exercises `beginAuthorization`).
 |---|---|---|
 | U1 | `PROVIDER_TEMPLATES.figma.scopes` deep-equals `['files:read']` (exact length 1, exact value) | FR-001, FR-002, SC-001 |
 | U2 | `PROVIDER_TEMPLATES.figma.scopes` contains `files:read` | FR-002, FR-006 |
-| U3 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain `current_user:read` | FR-003 |
-| U4 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain `file_content:read` | FR-003 |
-| U5 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain `file_variables:read` (Enterprise-only) | FR-004 |
-| U6 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain `library_assets:read` | FR-002, least-privilege narrowing |
-| U7 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain any deprecated `file_read` identifier | edge case (legacy/deprecated) |
-| U8 | `PROVIDER_TEMPLATES.figma.notes` names `files:read` | FR-005 |
-| U9 | `PROVIDER_TEMPLATES.figma.notes` does **not** name `current_user:read`, `file_content:read`, or `library_assets:read` | FR-005 |
+| U3 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain `file_variables:read` (Enterprise-only — the removed scope) | FR-003, FR-004 |
+| U4 | `PROVIDER_TEMPLATES.figma.scopes` does **not** contain any deprecated `file_read` identifier | edge case (legacy/deprecated) |
+| U5 | `PROVIDER_TEMPLATES.figma.notes` names `files:read` | FR-005 |
+| U6 | `PROVIDER_TEMPLATES.figma.notes` does **not** name `file_variables:read` | FR-005 |
 
-The failing test is written first (red‑green): T003 covers U1–U7, T004 adds
-U8–U9, T005 adds the URL test below. **Pass threshold**: every case above
+The failing test is written first (red‑green): T003 covers U1–U4, T004 adds
+U5–U6, T005 adds the URL test below. **Pass threshold**: every case above
 passes; T003 must be shown to FAIL against the current
-`['current_user:read', 'file_content:read', 'library_assets:read']` value before
-the source fix (T006/T007) lands.
+`['files:read', 'file_variables:read']` value before the source fix (T006/T007)
+lands.
 
 ### Integration-level: authorization-URL assertion
 
@@ -143,13 +140,11 @@ tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.t
 
 | Acceptance area | Spec trace | Planned evidence | Level | Priority |
 |---|---|---|---|---|
-| Authorization URL requests only valid read-only scopes, zero unrecognized identifiers | AS1; FR-001, FR-002, FR-003; SC-001 | I1 (scope param == `files:read`) + U1–U7 (scope set) | Unit/integration | P0 |
+| Authorization URL requests only valid read-only scopes, zero unrecognized identifiers | AS1; FR-001, FR-002, FR-003; SC-001 | I1 (scope param == `files:read`) + U1–U4 (scope set) | Unit/integration | P0 |
 | Scope set includes the read scope for files/nodes/styles/components | FR-002; FR-006 | U2 (`files:read` present) | Unit | P0 |
-| Invalid identifiers (`current_user:read`, `file_content:read`) absent | FR-003 | U3, U4 | Unit | P0 |
-| Enterprise-only `file_variables:read` not required | FR-004; edge case | U5 | Unit | P0 |
-| Unnecessary `library_assets:read` dropped (least privilege) | FR-002 | U6 | Unit | P0 |
-| Deprecated `file_read` not requested | edge case (legacy/deprecated) | U7 | Unit | P0 |
-| Admin guidance names exactly the requested scope | FR-005; edge case (admin guidance) | U8, U9 | Unit | P0 |
+| Enterprise-only `file_variables:read` not requested | FR-003, FR-004; edge case | U3 | Unit | P0 |
+| Deprecated `file_read` not requested | edge case (legacy/deprecated) | U4 | Unit | P0 |
+| Admin guidance names exactly the requested scope | FR-005; edge case (admin guidance) | U5, U6 | Unit | P0 |
 | Read-only tools + identity + token exchange unaffected | AS4; FR-006; SC-003 | figma-tools, figma-api, integration-token, oauth regression | Regression | P0 |
 | Figma presents consent screen (not "invalid scope") | AS2; SC-001 | I1 (URL) in CI; live consent deferred (manual/UAT) | Manual/UAT | P1 (deferred) |
 | Token exchange completes; card reports Connected + handle | AS3; SC-002 | Live flow (manual), regression tests for exchange internals | Manual/UAT | P1 (deferred) |
@@ -158,10 +153,10 @@ tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.t
 
 | Edge case | Where covered |
 |---|---|
-| Legacy/deprecated scope names not requested | U7 (`file_read` prohibited) |
-| Enterprise-only scopes not required | U5 (`file_variables:read` prohibited) |
+| Legacy/deprecated scope names not requested | U4 (`file_read` prohibited) |
+| Enterprise-only scopes not required | U3 (`file_variables:read` prohibited) |
 | Wrong-but-recognized vs. not-valid scope distinction | Documented (deferred to live Figma behavior; not reproducible without a Figma app — see §5) |
-| Admin guidance matches requested scopes | U8, U9 |
+| Admin guidance matches requested scopes | U5, U6 |
 
 ## 4. Test Data and Environment Needs
 
@@ -192,12 +187,12 @@ Run from `/data/aidlc/workspaces/rayedbajwa/spaces` after implementation:
 ```bash
 bun install --frozen-lockfile                     # once (T001)
 bun run typecheck                                 # gate
-bun test tests/oauth.test.ts                      # U1–U9, I1 (the fix's core)
+bun test tests/oauth.test.ts                      # U1–U6, I1 (the fix's core)
 bun test tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts  # regression (T010)
 bun test                                          # full suite (T011)
 
 # Source confirmation (T012 / quickstart)
-grep -n "files:read\|current_user:read\|file_content:read\|library_assets:read" src/lib/oauth.ts
+grep -n "files:read\|file_variables:read" src/lib/oauth.ts
 ```
 
 ## 5. Risks, Gaps, and Deferred Verification
@@ -207,14 +202,14 @@ grep -n "files:read\|current_user:read\|file_content:read\|library_assets:read" 
 | Live Figma consent/token exchange requires real keys and a configured app | AS2/AS3 cannot be verified in CI; the "invalid scope → consent" fix is proven only at the URL level | I1 proves zero unrecognized scope names (the root cause); live flow is documented as manual/UAT per Organization Memory | Deferred |
 | The "wrong-but-recognized" vs. "not-valid" scope distinction (edge case) is only observable against a live Figma app | Cannot automate without keys; a wrongly-enabled scope's "scope does not match"/"inactive scope" message is indistinguishable in unit tests | Document as a UAT observation; I1 guarantees no *unrecognized* identifier is sent, which is the defect being fixed | Deferred |
 | No new module/database boundary | N/A — static constant change | Full `bun test` regression plus typecheck guards against unintended fallout | N/A |
-| Assertions could over-fit the exact notes string | Brittle test if wording changes later | U8/U9 assert *presence/absence of scope names* (`files:read` named; removed names absent) rather than the full literal sentence | Mitigated |
+| Assertions could over-fit the exact notes string | Brittle test if wording changes later | U5/U6 assert *presence/absence of scope names* (`files:read` named; `file_variables:read` absent) rather than the full literal sentence | Mitigated |
 | CI coverage is intentionally unchanged | A future drift in the scope list would only be caught by the unit test if it remains in the default `bun test` suite | Confirm `tests/oauth.test.ts` is already reached by CI's unit-test job (it is an existing file); re-evaluate a dedicated CI job only if a regression surfaces | Accepted |
 
 ## 6. Automation Priorities
 
 ### P0 — merge-blocking
 
-1. Scope-set unit assertions U1–U9 (`tests/oauth.test.ts`).
+1. Scope-set unit assertions U1–U6 (`tests/oauth.test.ts`).
 2. Authorization-URL assertion I1 (`scope=files:read` only).
 3. Regression: `tests/oauth.test.ts` + `tests/integration-token.test.ts` +
    `tests/figma-api.test.ts` + `tests/figma-tools.test.ts` green.
@@ -246,7 +241,7 @@ grep -n "files:read\|current_user:read\|file_content:read\|library_assets:read" 
 
 - The red test (T003) demonstrably failed against the buggy scope list and now
   passes after the fix (red-green proven).
-- U1–U9 and I1 all pass.
+- U1–U6 and I1 all pass.
 - Regression suites (oauth, integration-token, figma-api, figma-tools) and the
   full `bun test` + `bun run typecheck` are green.
 - `grep` of `src/lib/oauth.ts` shows `scopes: ['files:read']` and none of the

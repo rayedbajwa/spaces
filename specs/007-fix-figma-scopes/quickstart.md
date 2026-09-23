@@ -5,10 +5,10 @@
 
 ## What changed
 
-The Figma OAuth provider template now requests the single valid read-only scope
-`files:read` instead of three scopes (`current_user:read`, `file_content:read`,
-`library_assets:read`), two of which Figma does not recognize. The administrator
-guidance (`notes`) was updated to match.
+The Figma OAuth provider template now requests the single read-only scope
+`files:read`, removing the Enterprise-only `file_variables:read` scope that caused
+Figma's "scope not valid" error on standard plans. The administrator guidance
+(`notes`) was updated to match.
 
 ## Verifying the change (in `rayedbajwa/spaces`)
 
@@ -16,7 +16,7 @@ guidance (`notes`) was updated to match.
 cd /data/aidlc/workspaces/rayedbajwa/spaces
 
 # Confirm the correction
-grep -n "files:read\|current_user:read\|file_content:read\|library_assets:read" src/lib/oauth.ts
+grep -n "files:read\|file_variables:read" src/lib/oauth.ts
 
 # Typecheck
 bun run typecheck

@@ -16,15 +16,13 @@ safe fix.
 The Figma OAuth authorization request must use **only `files:read`**.
 
 ### Rationale
-- The current provider template requests `current_user:read`, `file_content:read`,
-  and `library_assets:read`. Of these, `current_user:read` and `file_content:read`
-  are not recognized Figma OAuth scope names, which is why Figma rejects the consent
-  request with an "invalid scope" error regardless of app-side scope enablement.
-- The `006-figma-integration` research (see `specs/006-figma-integration/research.md`,
-  §1 "Authentication & Credential Management") recorded the intended scopes as
-  `files:read` (or the legacy alias `file_read`) and `file_variables:read` (for
-  variable collections). The implementation drifted, requesting the three invalid
-  names instead.
+- The current provider template requests `files:read` alongside the Enterprise-only
+  `file_variables:read` scope. `file_variables:read` requires a Figma Enterprise
+  plan, so on standard plans Figma rejects the consent request with a "scope not
+  valid" error regardless of app-side scope enablement.
+- The `006-figma-integration` implementation (`git show 79fac3c:src/lib/oauth.ts`)
+  recorded the scopes as `['files:read', 'file_variables:read']`. The fix removes the
+  Enterprise-only `file_variables:read`, leaving only the read-only `files:read`.
 - `files:read` is the canonical read-only scope that authorizes reading file contents,
   nodes, published styles (`/v1/files/:key/styles`), and published components
   (`/v1/files/:key/components`, `/component_sets`) — exactly the read-only tools
@@ -42,14 +40,14 @@ The Figma OAuth authorization request must use **only `files:read`**.
 - **Use the legacy alias `file_read`**: rejected. `file_read` is deprecated; the spec's
   edge cases explicitly forbid requesting deprecated identifiers (spec FR-002 directs
   `files:read`).
-- **Keep `library_assets:read` (it *is* a real Figma scope, unlike the other two)**:
-  rejected as unnecessary. The implemented read tools (`figma_get_file_styles`,
+- **Add back any other scope (e.g. a library/assets scope)**: rejected as
+  unnecessary. The implemented read tools (`figma_get_file_styles`,
   `figma_get_components`, `importFigma`) hit file-level endpoints
-  (`/v1/files/:key/styles`, `/components`, `/component_sets`) covered by `files:read`;
-  no code path calls the team/organization *library* endpoints that
-  `library_assets:read` gates. The `006-figma-integration` plan also never intended
-  this scope (`files:read` + optional `file_variables:read`). Dropping it narrows to
-  least privilege and matches FR-002.
+  (`/v1/files/:key/styles`, `/components`, `/component_sets`) already covered by
+  `files:read`; no code path calls any team/organization *library* endpoint. The
+  `006-figma-integration` plan only ever intended `files:read` (+ optional
+  `file_variables:read`). Restricting to `files:read` alone narrows to least
+  privilege and matches FR-002.
 
 ## 2. Where the change lives
 
@@ -63,10 +61,10 @@ test in `tests/oauth.test.ts`.
   `notes` string (surfaced in the Integrations UI by `ManualCredentials` in
   `src/web/integrations.tsx`). Correcting one place fixes both the authorization URL
   and the administrator-facing guidance.
-- A `grep` across the repo confirms `current_user:read`, `file_content:read`,
-  `library_assets:read`, `files:read`, and `file_variables:read` appear in product
-  code only in `src/lib/oauth.ts` (other hits are `specs/006-*` artifacts). No docs,
-  schema, or UI hardcode the scope names other than echoing `app.scopes`/`app.notes`.
+- A `grep` across the repo confirms `files:read` and `file_variables:read` appear in
+  product code only in `src/lib/oauth.ts` (other hits are `specs/006-*` artifacts).
+  No docs, schema, or UI hardcode the scope names other than echoing
+  `app.scopes`/`app.notes`.
 
 ### Alternatives considered
 - **Per-plan whitelisting in `beginAuthorization`**: rejected — special-casing a
@@ -92,7 +90,7 @@ No database change; no migration.
 
 | Area | Decision | Key justification |
 |------|----------|-------------------|
-| Scope set | `['files:read']` only | Canonical read-only scope covering styles/components/files; `file_variables:read` is Enterprise-only; removed names are invalid |
+| Scope set | `['files:read']` only | Canonical read-only scope covering styles/components/files; the removed `file_variables:read` scope is Enterprise-only |
 | Edit site | `PROVIDER_TEMPLATES.figma` in `src/lib/oauth.ts` | Single source of truth for scope + admin guidance |
 | Migration | None | Static provider metadata; existing tokens unaffected |
 | Test | `tests/oauth.test.ts` unit test | Asserts corrected scope set and guidance (FR-001…FR-005) |

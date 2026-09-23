@@ -5,16 +5,16 @@
 
 ## Summary
 
-The Figma OAuth provider template in `src/lib/oauth.ts` requests three scope
-identifiers — `current_user:read`, `file_content:read`, and `library_assets:read` —
-two of which (`current_user:read`, `file_content:read`) are not valid Figma OAuth
-scope names. Figma therefore rejects the consent request with an "invalid scope"
-error, blocking the entire Figma integration shipped in `006-figma-integration`.
+The Figma OAuth provider template in `src/lib/oauth.ts` requests the
+Enterprise-only `file_variables:read` scope alongside the read-only `files:read`
+scope. `file_variables:read` requires a Figma Enterprise plan; on standard plans
+Figma rejects the consent request with a "scope not valid" error, blocking the
+entire Figma integration shipped in `006-figma-integration`.
 
 The fix corrects the scope list in the Figma provider template to request only the
-valid, read-only `files:read` scope (the scope documented for `006-figma-integration`),
-removes the invalid identifiers, and updates the administrator-facing guidance so the
-instructions match what is actually requested. No other behavior changes; the token
+read-only `files:read` scope, removes the Enterprise-only `file_variables:read`
+scope, and updates the administrator-facing guidance so the instructions match what
+is actually requested. No other behavior changes; the token
 exchange, identity verification, and all read-only agent tools continue to work
 because `files:read` authorizes file/node inspection, published styles, and published
 components, and `/v1/me` (identity) is not gated by an additional scope.
@@ -98,11 +98,11 @@ verification is mandatory, not waived. Test strategy:
 
 1. **Unit test (new, `tests/oauth.test.ts`)** — assert `PROVIDER_TEMPLATES.figma.scopes`
    equals `['files:read']`, contains `files:read`, and does **not** contain
-   `current_user:read`, `file_content:read`, `file_variables:read`, or `library_assets:read`.
+   `file_variables:read` (the Enterprise-only scope removed by this fix).
    This maps to FR-001…FR-004.
 2. **Admin-guidance test (optionally folded into the unit test)** — assert
    `PROVIDER_TEMPLATES.figma.notes` names `files:read` and does not name the removed
-   scopes (FR-005).
+   Enterprise-only scope `file_variables:read` (FR-005).
 3. **Authorization URL test** — reuse the existing `beginAuthorization` URL test to
    assert a Figma-config `scope` query parameter contains only `files:read` (FR-001,
    SC-001).

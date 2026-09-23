@@ -22,15 +22,16 @@ None. The relevant persisted entity is `app_integrations` (Figma tokens stored i
 
 | Field | Location | Before | After |
 |-------|----------|--------|-------|
-| `PROVIDER_TEMPLATES.figma.scopes` | `src/lib/oauth.ts` | `['current_user:read', 'file_content:read', 'library_assets:read']` | `['files:read']` |
-| `PROVIDER_TEMPLATES.figma.notes` | `src/lib/oauth.ts` | "…Enable the read-only scopes current_user:read, file_content:read and library_assets:read…" | "…Enable the read-only scope files:read…" |
+| `PROVIDER_TEMPLATES.figma.scopes` | `src/lib/oauth.ts` | `['files:read', 'file_variables:read']` | `['files:read']` |
+| `PROVIDER_TEMPLATES.figma.notes` | `src/lib/oauth.ts` | "…Enable files:read and file_variables:read scopes…" | "…Enable the read-only scope files:read…" |
 
 ## Validation rules
 
 - FR-001/FR-002/FR-003/FR-004: the `scopes` array MUST contain `files:read` and MUST
-  NOT contain `current_user:read`, `file_content:read`, `file_variables:read`, or any
-  deprecated `file_read` identifier.
-- FR-005: `notes` MUST name `files:read` and MUST NOT advertise the removed scopes.
+  NOT contain `file_variables:read` (the Enterprise-only scope removed by this fix),
+  nor any deprecated `file_read` identifier.
+- FR-005: `notes` MUST name `files:read` and MUST NOT advertise the removed scope
+  `file_variables:read`.
 
 ## State transitions
 
