@@ -115,14 +115,22 @@ record in the same cycle.
 
 ## Tests by stage
 
-Each code stage is told which tests to run, so long suites, container builds
-and full-application runs happen once, where they give the answer:
+Each code stage is told which tests to run. Quality stages test the **impacted
+area** of the intent rather than everything; the full suite and the container
+image build run in CI on the pull request.
 
 | Stage | Runs |
 |---|---|
 | implement / orchestrate | only the tests covering what changed (`bun test <path>`, `vitest related`, `jest --findRelatedTests`, `pytest <path>`, `go test ./pkg/...`) |
-| review | the full unit and integration suite, once |
-| verify | the full suite, the application started with smoke/end-to-end tests against it, and the container build when the project ships a Dockerfile |
+| review | the tests of the impacted area, not the whole suite |
+| verify | the impacted area's tests; the application started with smoke/end-to-end tests for the user flows the change affects; the container build only when the change touches what the image is built from (a Dockerfile, Compose file or dependency manifest) |
+
+The impacted area is listed in the review and verify prompts: the files the
+intent changed in each repository, against its default branch plus uncommitted
+work, with `specs/` left out. Agents also run the tests of modules that import
+those files and of the intent's acceptance criteria, widen the area when a
+change is shared (a type, a migration, configuration) and say why, and record in
+the verification report which tests covered which part of the scope.
 
 ## Time limits and cleanup
 
