@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
@@ -8,6 +8,7 @@ import { retitleSpec } from '../src/lib/features'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
 import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, documentKind, ensureIntentsSynced, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
+import { loadProjectStates, saveProjectState } from '../src/lib/project-state'
 
 describe('summarizeIntent', () => {
   test('reads title, statuses, verification summary, acceptance and task progress from the documents', () => {
@@ -270,6 +271,61 @@ dbSuite('syncing intents into the database', () => {
     await symlink(path.join(root, 'elsewhere'), path.join(root, 'specs/001-login/subagents'))
     await restoreIntentFiles(projectId, root)
     expect(await readFile(path.join(root, 'elsewhere/ws-1.md'), 'utf8').catch(() => null)).toBeNull()
+  })
+
+
+  test('a run cut off after specify keeps its new intent: restore takes in the unsynced folder first', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await setActiveFeature(root, null) // specify starts a new intent...
+    await write('specs/003-search/spec.md', '# Search\n') // ...and the run dies before its handoff sync
+    await restoreIntentFiles(projectId, root)
+    expect(activeFeatureId(root)).toBe('003-search')
+    expect((await listIntents(projectId)).filter((i) => i.active).map((i) => i.dirId)).toEqual(['003-search'])
+  })
+
+  test('restoring and person writes never go through a symbolic link; a refused write changes nothing', async () => {
+    const { root, write, projectId } = await setup()
+    const outside = await mkdtemp(path.join(tmpdir(), 'outside-'))
+    cleanup.push(outside)
+    await write('specs/002-billing/subagents/ws-1.md', '# Workstream 1\n')
+    await syncProjectIntents(projectId, root, 'import')
+    await rm(path.join(root, 'specs/002-billing/subagents'), { recursive: true })
+    await symlink(outside, path.join(root, 'specs/002-billing/subagents'))
+    await restoreIntentFiles(projectId, root)
+    expect(await readdir(outside)).toEqual([])
+    await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam', changes: new Map([['subagents/ws-2.md', '# Workstream 2\n']]) }))
+      .rejects.toThrow('symbolic link')
+    expect(await readdir(outside)).toEqual([])
+    expect(await getIntentDocument(projectId, '002-billing', 'subagents/ws-2.md')).toBeUndefined()
+  })
+
+
+  test('a withdrawal whose file cannot be removed is rolled back, so no sync brings the old state back', async () => {
+    const { root, write, projectId } = await setup()
+    await write('specs/001-login/acceptance.md', '# Acceptance\n\n- Verification status: partial\n- Accepted by: Sam\n- Accepted at: 2026-09-22T10:00:00.000Z\n')
+    await syncProjectIntents(projectId, root, 'import')
+    await chmod(path.join(root, 'specs/001-login'), 0o555) // the file cannot be removed
+    try {
+      await expect(changeIntentDocuments({ projectId, projectRoot: root, dirId: '001-login', by: 'person:Sam', changes: new Map([['acceptance.md', null]]) }))
+        .rejects.toThrow('nothing was changed')
+    } finally {
+      await chmod(path.join(root, 'specs/001-login'), 0o755)
+    }
+    // Record and file still agree: accepted.
+    expect((await listIntents(projectId)).find((i) => i.dirId === '001-login')!.acceptedBy).toBe('Sam')
+    expect(await getIntentDocument(projectId, '001-login', 'acceptance.md')).toBeDefined()
+  })
+
+  test('a change to the intents marks the board\'s stored project state stale', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await saveProjectState(projectId, root, {}, 0, new Date())
+    expect((await loadProjectStates([projectId])).get(projectId)?.stale).toBe(false)
+    await write('specs/002-billing/tasks.md', '- [x] T001 a\n')
+    await syncProjectIntents(projectId, root, 'agent')
+    expect((await loadProjectStates([projectId])).get(projectId)?.stale).toBe(true)
   })
 
 })

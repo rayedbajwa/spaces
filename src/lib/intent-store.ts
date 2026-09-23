@@ -8,6 +8,7 @@ import { ACTIVE_FEATURE_FILE, activeFeatureId, featureDirNames, isFeatureId } fr
 import { getDb } from './db'
 import { featureStatus, featureTitle, type FeatureStatus } from './features'
 import { log } from './logger'
+import { markProjectStateStale } from './project-state'
 import { implementationTaskProgress, parseTaskProgress } from './run-resume'
 import { summarizeVerification, type VerificationSummary } from './verification-summary'
 
@@ -214,22 +215,23 @@ async function intentFileWithoutLinks(projectRoot: string, dirId: string, relati
   return path.join(projectRoot, 'specs', dirId, relativePath)
 }
 
-/** Write (or remove, for null) an intent's document file; never through a symlink. */
+/**
+ * Write (or remove, for null) an intent's document file; never through a
+ * symbolic link. Throws when it cannot, so the caller's transaction rolls
+ * back: a record that says one thing while the file says another would be
+ * undone by the next sync (a failed withdrawal would bring the acceptance back).
+ */
 async function writeIntentFile(projectId: string, projectRoot: string, dirId: string, relativePath: string, content: string | null): Promise<void> {
   const file = await intentFileWithoutLinks(projectRoot, dirId, relativePath)
-  if (!file) {
-    storeLog.warn('intent file not written: its folder is a link', { projectId, intent: dirId, path: relativePath })
-    return
+  if (!file) throw new Error(`Refusing to write specs/${dirId}/${relativePath}: a folder on its path is a symbolic link.`)
+  if ((await lstat(file).catch(() => undefined))?.isSymbolicLink()) throw new Error(`Refusing to write specs/${dirId}/${relativePath}: it is a symbolic link.`)
+  try {
+    if (content === null) await rm(file, { force: true })
+    else await mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
+  } catch (error) {
+    storeLog.warn('intent file not written; the change is rolled back', { projectId, file, error: error instanceof Error ? error.message : String(error) })
+    throw new Error(`specs/${dirId}/${relativePath} could not be written (${error instanceof Error ? error.message : String(error)}); nothing was changed.`)
   }
-  const existing = await lstat(file).catch(() => undefined)
-  if (existing?.isSymbolicLink()) {
-    storeLog.warn('intent file not written: it is a link', { projectId, intent: dirId, path: relativePath })
-    return
-  }
-  await (content === null
-    ? rm(file, { force: true })
-    : mkdir(path.dirname(file), { recursive: true }).then(() => writeFile(file, content))
-  ).catch((error) => storeLog.warn('intent file not written', { projectId, file, error: error instanceof Error ? error.message : String(error) }))
 }
 
 async function hasActiveIntent(tx: Tx, projectId: string): Promise<boolean> {
@@ -329,7 +331,11 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
   // The folders on disk may have changed (a new intent, a branch switch that
   // brought back a deleted one), so the pointer is re-derived from the database.
   if (dirs.length > 0) await projectActiveIntent(projectId, projectRoot)
-  if (statusChanges || documentsChanged) storeLog.info('intents synced', { projectId, intents: dirs.length, documentsChanged, statusChanges, by })
+  if (statusChanges || documentsChanged) {
+    // The board caches each project's state; the record just changed under it.
+    await markProjectStateStale(projectId).catch(() => undefined)
+    storeLog.info('intents synced', { projectId, intents: dirs.length, documentsChanged, statusChanges, by })
+  }
   return { intents: dirs.length, documentsChanged, statusChanges }
 }
 
@@ -358,6 +364,7 @@ export async function markIntentDeleted(projectId: string, dirId: string, by: st
     `
     if (row) await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${row.intentId}, 'deleted', NULL, 'deleted', ${by})`
   })
+  await markProjectStateStale(projectId).catch(() => undefined)
 }
 
 /** Documents a person opens, in the order and with the names the interface shows. */
@@ -536,11 +543,24 @@ export async function changeIntentDocuments(input: {
       `
     }
     await writeSummary(tx, row.intentId, existing as Record<string, unknown>, summarizeIntent(dirId, await loadDocs()), by)
-    // Still under the lock: no sync reads these files until they match the record.
-    for (const [rel, content] of changes) await writeIntentFile(projectId, projectRoot, dirId, rel, content)
+    // Still under the lock: no sync reads these files until they match the
+    // record. A write that fails throws, and the whole change rolls back. Files
+    // already written for this change are put back as they were first.
+    const previous = new Map<string, string | null>()
+    try {
+      for (const [rel, content] of changes) {
+        const file = path.join(projectRoot, 'specs', dirId, rel)
+        previous.set(rel, await lstat(file).then((info) => (info.isFile() ? readFile(file, 'utf8') : null), () => null))
+        await writeIntentFile(projectId, projectRoot, dirId, rel, content)
+      }
+    } catch (error) {
+      for (const [rel, before] of previous) await writeIntentFile(projectId, projectRoot, dirId, rel, before).catch(() => undefined)
+      throw error
+    }
     const [after] = await tx`SELECT ${tx.unsafe(INTENT_COLS)} FROM intents WHERE intent_id = ${row.intentId}`
     return after
   })
+  await markProjectStateStale(projectId).catch(() => undefined)
   return toRecord(updated as Record<string, unknown>)
 }
 
@@ -553,6 +573,7 @@ export async function setActiveIntent(projectId: string, projectRoot: string, di
   const row = dirId ? await intentRowFor(projectId, projectRoot, dirId) : undefined
   if (dirId && !row) throw new Error(`Intent ${dirId} does not exist.`)
   await getDb().begin(async (tx) => {
+    await lockProject(tx, projectId)
     const [before] = await tx<Array<{ dirId: string }>>`SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND active FOR UPDATE`
     await tx`UPDATE intents SET active = false, updated_at = now() WHERE project_id = ${projectId} AND active`
     if (row) await tx`UPDATE intents SET active = true, updated_at = now() WHERE intent_id = ${row.intentId}`
@@ -561,14 +582,25 @@ export async function setActiveIntent(projectId: string, projectRoot: string, di
       if (target) await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${target}, 'active', ${before?.dirId ?? null}, ${dirId}, ${by})`
     }
   })
+  await markProjectStateStale(projectId).catch(() => undefined)
   await projectActiveIntent(projectId, projectRoot)
 }
 
 /** Write specs/.active-feature from the database (the working copy of the choice). */
 export async function projectActiveIntent(projectId: string, projectRoot: string): Promise<void> {
+  // Read and written under the project lock, after the caller's change has
+  // committed: whichever projection runs last reads the latest choice, so an
+  // older call can never leave a stale pointer behind a newer one.
+  await getDb().begin(async (tx) => {
+    await lockProject(tx, projectId)
+    await writeActivePointer(tx, projectId, projectRoot)
+  })
+}
+
+async function writeActivePointer(tx: Tx, projectId: string, projectRoot: string): Promise<void> {
   // The current intent as the database has it (active, else the newest live
   // one), so file readers never land on a newer directory that was deleted.
-  const [row] = await getDb()<Array<{ dirId: string }>>`
+  const [row] = await tx<Array<{ dirId: string }>>`
     SELECT dir_id AS "dirId" FROM intents WHERE project_id = ${projectId} AND deleted_at IS NULL ORDER BY active DESC, dir_id DESC LIMIT 1
   `
   const file = path.join(projectRoot, 'specs', ACTIVE_FEATURE_FILE)
