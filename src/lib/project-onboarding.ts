@@ -1,5 +1,4 @@
 import { execFile } from 'node:child_process'
-import { listFeatures } from './features'
 import { defaultModel } from './model-policy'
 import { appendFile, chmod, cp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -605,7 +604,8 @@ export async function composeProjectMemory(projectId: string): Promise<string> {
   // Earlier features and how they ended, so the next feature builds on what was
   // delivered instead of rediscovering it.
   const primary = pickRunnableRepo(repos)
-  const features = primary?.localPath ? await listFeatures(primary.localPath).catch(() => []) : []
+  // From the database, the record (it imports the project the first time).
+  const features = primary?.localPath ? await import('./intent-store').then((m) => m.listIntentSummaries(projectId, primary.localPath!)).catch(() => []) : []
   if (features.length > 0) {
     sections.push('', '## Feature history', ...features.map((f) => {
       const outcome = [f.status, f.codeReview ? `review ${f.codeReview.replace('_', ' ')}` : '', f.verification ? `verification ${f.verification}` : ''].filter(Boolean).join(', ')

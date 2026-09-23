@@ -983,3 +983,59 @@ CREATE TABLE IF NOT EXISTS project_slack_channels (
 );
 -- The Slack workspace the channel lives in; reconnecting to another workspace makes new channels.
 ALTER TABLE project_slack_channels ADD COLUMN IF NOT EXISTS team_id TEXT;
+
+-- Intents (Spec Kit features) and their documents: the record of what each
+-- project has built and where it stands. Files under specs/ are the agents'
+-- working copies; lib/intent-store.ts syncs them in after every stage and the
+-- database is what the board, next steps and people's actions use.
+CREATE TABLE IF NOT EXISTS intents (
+  intent_id             UUID PRIMARY KEY,
+  project_id            UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  dir_id                TEXT NOT NULL,            -- 003-project-responsibilities
+  number                INTEGER,
+  title                 TEXT NOT NULL,
+  status                TEXT NOT NULL,            -- specified … delivered (lib/features.ts FeatureStatus)
+  code_review_status    TEXT,                     -- approved | changes_requested
+  verification_status   TEXT,                     -- pass | partial | fail
+  verification_summary  JSONB,                    -- { met, total, criticalOpen }
+  delivery_status       TEXT,                     -- merged | partial | blocked
+  accepted_by           TEXT,
+  accepted_at           TIMESTAMPTZ,
+  accepted_note         TEXT,
+  accepted_verification TEXT,
+  tasks_done            INTEGER NOT NULL DEFAULT 0,
+  tasks_total           INTEGER NOT NULL DEFAULT 0,
+  implementation_done   INTEGER NOT NULL DEFAULT 0,
+  implementation_total  INTEGER NOT NULL DEFAULT 0,
+  active                BOOLEAN NOT NULL DEFAULT false,
+  synced_at             TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at            TIMESTAMPTZ,
+  UNIQUE (project_id, dir_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS intents_one_active ON intents (project_id) WHERE active AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS intent_documents (
+  intent_id   UUID NOT NULL REFERENCES intents(intent_id) ON DELETE CASCADE,
+  path        TEXT NOT NULL,                      -- relative to the intent's directory: spec.md, subagents/ws-1.md
+  kind        TEXT NOT NULL,                      -- spec | plan | tasks | test-plan | code-review | verification | delivery | delivery-status | acceptance | other
+  content     TEXT NOT NULL,
+  sha256      TEXT NOT NULL,
+  bytes       INTEGER NOT NULL,
+  updated_by  TEXT NOT NULL,                      -- agent | import | person:<name>
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (intent_id, path)
+);
+
+-- How each intent's statuses moved, and who or what moved them.
+CREATE TABLE IF NOT EXISTS intent_status_events (
+  event_id    BIGSERIAL PRIMARY KEY,
+  intent_id   UUID NOT NULL REFERENCES intents(intent_id) ON DELETE CASCADE,
+  field       TEXT NOT NULL,
+  from_value  TEXT,
+  to_value    TEXT,
+  by          TEXT NOT NULL,
+  at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS intent_status_events_intent_idx ON intent_status_events (intent_id, at DESC);

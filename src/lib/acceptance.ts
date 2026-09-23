@@ -20,7 +20,8 @@ import { log } from './logger'
 
 const acceptLog = log.child({ mod: 'acceptance' })
 
-export const ACCEPTANCE_FILE = 'acceptance.md'
+import { ACCEPTANCE_FILE } from './acceptance-file'
+export { ACCEPTANCE_FILE }
 
 export interface Acceptance {
   /** Verification status at the moment it was accepted. */
@@ -30,7 +31,7 @@ export interface Acceptance {
   note?: string
 }
 
-function parseAcceptance(markdown: string): Acceptance | undefined {
+export function parseAcceptance(markdown: string): Acceptance | undefined {
   const status = /^-\s*Verification status:\s*(pass|partial|fail|missing)/im.exec(markdown)?.[1]?.toLowerCase()
   const by = /^-\s*Accepted by:\s*(.+)$/im.exec(markdown)?.[1]?.trim()
   const at = /^-\s*Accepted at:\s*(.+)$/im.exec(markdown)?.[1]?.trim()
