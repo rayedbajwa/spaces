@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createActivityLog, createLineStamper, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
+import { createActivityLog, createLineStamper, createSecretRedactor, describeToolCall, redactSecrets } from '../src/lib/agent-activity'
 
 const text = (delta: string) => ({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta } })
 const start = (id: string, toolName: string, args: unknown) => ({ type: 'tool_execution_start', toolCallId: id, toolName, args })
@@ -75,5 +75,72 @@ describe('agent activity log', () => {
       '[03:41:05Z implement/developer] ▸ $ bun test',
       '',
     ].join('\n'))
+  })
+})
+
+describe('secret masking', () => {
+  test('database URLs of any scheme, and exported connection strings', () => {
+    const line = 'export DATABASE_URL="postgresql://postgres:MPBdzwutCaZnzhSxLbjk@postgres.railway.internal:5432/agent_db"'
+    const out = redactSecrets(line)
+    expect(out).not.toContain('MPBdzwutCaZnzhSxLbjk')
+    expect(out).toContain('postgres.railway.internal')
+    for (const url of ['mysql://app:hunter2secret@db:3306/x', 'redis://default:s3cretPass@cache:6379', 'mongodb+srv://u:p4ssw0rd@c.mongodb.net/db', 'amqp://guest:guestpass@mq//']) {
+      expect(redactSecrets(url)).toMatch(/:\[redacted\]@/)
+    }
+  })
+
+  test('query parameters, JSON keys, variable names, AWS keys, JWTs and private keys', () => {
+    expect(redactSecrets('https://host/x?user=a&password=abc123&x=1')).toBe('https://host/x?user=a&password=[redacted]&x=1')
+    expect(redactSecrets('{"password": "abc123", "user": "sam"}')).toBe('{"password": "[redacted]", "user": "sam"}')
+    expect(redactSecrets('ENCRYPTION_KEY=0123456789abcdef PGPASSWORD=pw DB_PASS=x')).toBe('ENCRYPTION_KEY=[redacted] PGPASSWORD=[redacted] DB_PASS=[redacted]')
+    expect(redactSecrets('AKIAABCDEFGHIJKLMNOP')).toBe('[redacted]')
+    expect(redactSecrets('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')).toBe('[redacted jwt]')
+    expect(redactSecrets('-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----')).toBe('[redacted private key]')
+  })
+
+  test('ordinary text is left alone', () => {
+    const text = 'Run bun test; DATABASE_URL points at /railway. See https://github.com/o/r/pull/4 and user=sam.'
+    expect(redactSecrets(text)).toBe(text)
+  })
+})
+
+describe('masking streamed text', () => {
+  const secretLine = 'export DATABASE_URL="postgresql://postgres:MPBdzwutCaZnzhSx@db:5432/app" && eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U\n'
+
+  test('a secret split across chunks at any point is masked', () => {
+    for (let cut = 1; cut < secretLine.length; cut += 3) {
+      const r = createSecretRedactor()
+      const out = r.push(secretLine.slice(0, cut)) + r.push(secretLine.slice(cut)) + r.flush()
+      expect(out).not.toContain('MPBdzwutCaZnzhSx')
+      expect(out).not.toContain('dozjgNryP4J3jVmNHl0w5N')
+    }
+  })
+
+  test('a private key block spanning lines and chunks is dropped whole', () => {
+    const r = createSecretRedactor()
+    const out = [
+      'before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIB',
+      'AAKCAQEA\nabcdef\n-----END RSA PRIVATE ',
+      'KEY-----\nafter\n',
+    ].map((c) => r.push(c)).join('') + r.flush()
+    expect(out).toContain('before\n[redacted private key]')
+    expect(out.endsWith('after\n')).toBe(true)
+    for (const material of ['MIIEowIB', 'AAKCAQEA', 'abcdef']) expect(out).not.toContain(material)
+  })
+
+  test('a partial line waits for its newline or a flush', () => {
+    const r = createSecretRedactor()
+    expect(r.push('PGPASSWORD=hunt')).toBe('')
+    expect(r.pending).toBe(true)
+    expect(r.push('er2 psql\n')).toBe('PGPASSWORD=[redacted] psql\n')
+    expect(r.push('tail without newline')).toBe('')
+    expect(r.flush()).toBe('tail without newline')
+  })
+
+  test('the agent\'s own text in a task transcript is masked, even split across deltas', () => {
+    const log = createActivityLog({ label: 'task T001', now: () => new Date('2026-09-23T03:41:05Z') })
+    const out = [text('I will set PASSWORD=sup'), text('ersecret99 now.\nDone')].map((e) => log.onEvent(e) ?? '').join('') + log.flush()
+    expect(out).not.toContain('supersecret99')
+    expect(out).toBe('[03:41:05Z task T001] I will set PASSWORD=[redacted] now.\n[03:41:05Z task T001] Done')
   })
 })

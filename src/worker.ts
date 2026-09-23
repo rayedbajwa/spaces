@@ -41,7 +41,7 @@ import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
-import { createLineStamper } from './lib/agent-activity'
+import { createLineStamper, redactSecrets } from './lib/agent-activity'
 import { log } from './lib/logger'
 import { checkProviderKeys } from './lib/provider-check'
 import { listenProviderKeys, loadProviderKeys, scrubProviderKeysFromEnv } from './lib/provider-keys'
@@ -375,10 +375,10 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'stage_start', { stage, index, total })
       },
       stdout: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(chunk) })
+        void queueEvent(runId, 'log', { stream: 'stdout', chunk: stampStdout.stamp(redactSecrets(chunk)) })
       },
       stderr: (chunk) => {
-        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(chunk) })
+        void queueEvent(runId, 'log', { stream: 'stderr', chunk: stampStderr.stamp(redactSecrets(chunk)) })
       },
       onStageHandoff: async (h) => {
         // The stage's documents are the intent's record: sync them in before the next stage starts.
