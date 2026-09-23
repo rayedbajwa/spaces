@@ -9,7 +9,7 @@
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
-import { DefaultResourceLoader, getAgentDir } from '@earendil-works/pi-coding-agent'
+import { DefaultResourceLoader, SettingsManager, getAgentDir } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
 
 const resLog = log.child({ mod: 'agent-resources' })
@@ -46,4 +46,39 @@ export async function createAgentResourceLoader(cwd: string, options: { appendSy
   })
   await loader.reload()
   return loader
+}
+
+/**
+ * Spaces' own secrets, never seen by an agent's shell. The worker runs with
+ * the application's DATABASE_URL, ENCRYPTION_KEY and provider keys, and
+ * every command an agent ran inherited them: a `bun test` in a checkout of
+ * Spaces itself then used production's database (Bun does not let a .env
+ * override a variable already set), writing test projects and jobs there. The
+ * checkout's own .env (pointed at the assigned test database) is what its
+ * commands should see.
+ */
+export const HIDDEN_FROM_AGENTS = [
+  'DATABASE_URL', 'DATABASE_PUBLIC_URL', 'DATABASE_PRIVATE_URL', 'AGENT_DATABASE_URL', 'TEST_DATABASE_URL',
+  'PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGDATA',
+  'ENCRYPTION_KEY', 'SESSION_SECRET', 'RAILWAY_TOKEN', 'RAILWAY_API_TOKEN',
+]
+
+/** Run before every command in an agent's shell: removes the variables above, and any *_API_KEY or *_SECRET. */
+export const AGENT_SHELL_PREFIX = [
+  `unset ${HIDDEN_FROM_AGENTS.join(' ')} 2>/dev/null`,
+  `for __v in $(env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' | grep -E '(_API_KEY|_SECRET|_SECRET_KEY)$'); do unset "$__v"; done; unset __v`,
+].join('\n')
+
+/**
+ * The settings an agent session runs with: the usual ones (files), plus the
+ * shell prefix above — set in memory only, so nothing is written to the
+ * settings files.
+ */
+export function createAgentSettings(cwd: string): SettingsManager {
+  const settings = SettingsManager.create(cwd, getAgentDir())
+  // On this instance only: the session reloads its settings, which would drop
+  // a value set on the merged settings, and the setter writes to disk.
+  const configured = settings.getShellCommandPrefix.bind(settings)
+  settings.getShellCommandPrefix = () => [AGENT_SHELL_PREFIX, configured()].filter(Boolean).join('\n')
+  return settings
 }
