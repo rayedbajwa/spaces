@@ -83,6 +83,7 @@ import {
 } from './lib/auth'
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
+import { featureTitle, listFeatures } from './lib/features'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -1395,6 +1396,16 @@ async function route(req: Request): Promise<Response> {
     const days = Math.min(365, Math.max(1, Number(url.searchParams.get('days') ?? '30') || 30))
     const usageOrg = await orgIdOf()
     return sendJson(200, { days, ...(await summarizeOrgUsage(usageOrg, days)), actor: await describeGitHubActor(usageOrg).catch(() => null) })
+  }
+
+  // Every feature of the project, newest (current) first, with status and documents.
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/features$/.test(url.pathname)) {
+    const [, , , projectNamespace] = url.pathname.split('/')
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace!))
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s features.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace!)
+    if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+    return sendJson(200, { features: await listFeatures(projectMeta.path) })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/pull-requests$/.test(url.pathname)) {
@@ -3084,7 +3095,8 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       // run is in flight (the agent bar owns that moment).
       recommendedAction: latestRun && (latestRun.status === 'running' || latestRun.status === 'paused') ? undefined : nextStepFor(artifacts),
       updatedAt: latestRun?.updatedAt ?? project.lastUpdated,
-      feature: latestRun?.feature,
+      // The feature the project is on, by its spec's title; the run's description until a spec exists.
+      feature: artifacts.currentFeature?.title ?? latestRun?.feature,
       latestRun,
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
@@ -3182,6 +3194,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     codeReviewStatus: undefined as 'approved' | 'changes_requested' | undefined,
     codeReviewStale: false,
     implementationTasks: undefined as { done: number; total: number } | undefined,
+    currentFeature: undefined as { id: string; title: string } | undefined,
     deliveryStatus: undefined as 'merged' | 'partial' | 'blocked' | undefined,
     scope: {
       requirements: 0,
@@ -3205,6 +3218,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   }
 
   const featurePrefix = `Feature ${latestFeature.featureId}`
+  flags.currentFeature = { id: latestFeature.featureId, title: featureTitle(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/spec.md`)), latestFeature.featureId) }
   const specPath = join(projectRoot, `${latestFeature.relativePath}/spec.md`)
   const tasksPath = join(projectRoot, `${latestFeature.relativePath}/tasks.md`)
   const parallelPath = join(projectRoot, `${latestFeature.relativePath}/parallel-workstreams.md`)
@@ -4213,6 +4227,8 @@ interface ProjectArtifacts {
   codeReviewStatus?: 'approved' | 'changes_requested'
   /** Changes were requested and tasks.md has been updated since: the review needs running again. */
   codeReviewStale?: boolean
+  /** The feature the project is on (the highest-numbered directory under specs/). */
+  currentFeature?: { id: string; title: string }
   /** Checkboxes in tasks.md outside the Delivery group: the work implement is responsible for. */
   implementationTasks?: { done: number; total: number }
   /** From delivery-report.md; MERGED is what finishes a feature. */

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { listFeatures } from './features'
 import { defaultModel } from './model-policy'
 import { appendFile, chmod, cp, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -601,9 +602,18 @@ export async function composeProjectMemory(projectId: string): Promise<string> {
     if (!brief) continue
     sections.push('', repos.length > 1 ? `# Repository: ${repoName(repo)}` : '', brief.content.trim())
   }
+  // Earlier features and how they ended, so the next feature builds on what was
+  // delivered instead of rediscovering it.
+  const primary = pickRunnableRepo(repos)
+  const features = primary?.localPath ? await listFeatures(primary.localPath).catch(() => []) : []
+  if (features.length > 0) {
+    sections.push('', '## Feature history', ...features.map((f) => {
+      const outcome = [f.status, f.codeReview ? `review ${f.codeReview.replace('_', ' ')}` : '', f.verification ? `verification ${f.verification}` : ''].filter(Boolean).join(', ')
+      return `- \`${f.relativePath}\` — ${f.title} (${outcome})${f.current ? ' · current' : ''}`
+    }))
+  }
   const autoSummary = sections.filter((line) => line !== undefined).join('\n')
   await upsertProjectMemory(projectId, { autoSummary })
-  const primary = pickRunnableRepo(repos)
   if (primary?.localPath) {
     await buildContextBundle({ projectId, projectSlug: project.slug, projectPath: primary.localPath }).catch(() => undefined)
   }

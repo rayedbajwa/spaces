@@ -117,6 +117,19 @@ type ArtifactDiffEntry = {
   createdAt: string
 }
 
+/** A feature of the project (a numbered directory under specs/); the first is the current one. */
+type FeatureSummary = {
+  id: string
+  relativePath: string
+  title: string
+  current: boolean
+  status: 'specified' | 'planned' | 'tasked' | 'implementing' | 'verified' | 'accepted' | 'delivering' | 'delivered'
+  codeReview?: 'approved' | 'changes_requested'
+  verification?: 'pass' | 'partial' | 'fail'
+  delivery?: 'merged' | 'partial' | 'blocked'
+  documents: Array<{ label: string; path: string }>
+}
+
 type OpenPullRequestLink = { githubRepo: string; number: number; url: string; title: string; draft: boolean }
 
 type BoardCard = {
@@ -471,6 +484,8 @@ function App() {
   const [activeProjectTab, setActiveProjectTab] = useState<ProjectModalTab>('overview')
   // The open project's open pull requests, looked up on GitHub when it opens.
   const [projectPullRequests, setProjectPullRequests] = useState<OpenPullRequestLink[] | null>(null)
+  // The open project's features, newest (current) first.
+  const [projectFeatures, setProjectFeatures] = useState<FeatureSummary[]>([])
   // Themed modal for stage-input prompts (feature/constitution/checklistDomain).
   // Set to a request object with a resolver Promise; the modal renders and
   // calls resolve(value|null) on submit/cancel. Replaces window.prompt().
@@ -905,6 +920,31 @@ function App() {
     }
     return selectedCard
   }, [board, selectedCard, selectedProjectNamespace])
+  // Features change when a new one starts or the current one moves on: refetch with the lane and feature.
+  useEffect(() => {
+    if (!selectedProjectNamespace) { setProjectFeatures([]); return }
+    let cancelled = false
+    getJson<{ features: FeatureSummary[] }>(`/api/projects/${selectedProjectNamespace}/features`)
+      .then((data) => { if (!cancelled) setProjectFeatures(data.features) })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [selectedProjectNamespace, selectedCardFresh?.status, selectedCardFresh?.feature])
+
+  /**
+   * Start the project's next feature: specify asks what it is and opens a new
+   * numbered feature. A current feature that is not finished is parked (it
+   * stays in the Features list); the person confirms that first.
+   */
+  async function startNewFeature() {
+    const current = projectFeatures[0]
+    // Finished as the server counts it: verification passed, accepted, or merged.
+    // A delivery report alone (partial, blocked) is not.
+    const unfinished = Boolean(current && !(current.verification === 'pass' || current.status === 'accepted' || current.delivery === 'merged'))
+    if (unfinished && !window.confirm(`"${current!.title}" is not finished (${current!.status}). Start a new feature anyway? It stays in the Features list, and the project moves on to the new one.`)) return
+    // Always forced: this is an explicit request for a new feature, so neither the
+    // duplicate check nor the engine's unfinished-feature guard may turn it into a continuation.
+    await executeStep('specify', 'specs', undefined, { force: true })
+  }
 
   async function refreshBoard() {
     try {
@@ -1712,7 +1752,7 @@ function App() {
    * different project without opening its modal first — used by board drag+drop
    * so a card dropped onto its next-eligible lane triggers the action inline.
    */
-  async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard) {
+  async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard, options: { force?: boolean } = {}) {
     const namespace = targetCard?.projectNamespace ?? selectedProjectNamespace
     if (!namespace) return
     // "Accept and finish" is a recommended next step but not a pipeline stage:
@@ -1759,7 +1799,7 @@ function App() {
       const raw = await fetch(`/api/projects/${namespace}/execute-step`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ step, ...extraBody }),
+        body: JSON.stringify({ step, ...extraBody, ...(options.force ? { force: true } : {}) }),
       })
       if (raw.status === 404) {
         // Stale project card — refresh the board and close the modal so the
@@ -2295,6 +2335,7 @@ function App() {
                     <span className={`chip verify ${selectedCardFresh.verificationStatus}`}>verify <strong>{selectedCardFresh.verificationStatus}</strong></span>
                     <UsageChip usage={selectedCardFresh.usage} label="spend" />
                     <PullRequestLinks pullRequests={projectPullRequests ?? selectedCardFresh.pullRequests} />
+                    <button className="chip chip-button new-feature" disabled={busy || runInFlight} onClick={() => void startNewFeature()} title="Start the project's next feature: pulls the latest code, refreshes memory and context, then writes a new spec" type="button">＋ New feature</button>
                     {projectDetail && <span className="chip"><strong>{projectDetail.repos.filter((r) => r.label !== 'governance').length}</strong> repositor{projectDetail.repos.filter((r) => r.label !== 'governance').length === 1 ? 'y' : 'ies'}</span>}
                     {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
                       <button className={`chip attention chip-button`} onClick={() => setActiveProjectTab('assistant')} type="button">{selectedCardFresh.automationState.state.replace('_', ' ')} →</button>
@@ -2772,6 +2813,33 @@ function App() {
                       <span>{artifact.stepLabel}</span>
                       <strong>{artifact.label}</strong>
                     </a>
+                  ))}
+                </div>
+                <div className="section-header-row" style={{ marginTop: 16 }}>
+                  <h3>Features</h3>
+                  <button className="secondary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
+                </div>
+                {projectFeatures.length === 0 && <p className="empty-state">No features yet. Start one to write its spec.</p>}
+                <div className="feature-list">
+                  {projectFeatures.map((feature) => (
+                    <details key={feature.id} className="qa-artifact" open={feature.current}>
+                      <summary>
+                        <code>{feature.id}</code> {feature.title}{' '}
+                        <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : feature.status === 'accepted' || feature.status === 'verified' || feature.status === 'delivering' ? 'paused' : 'idle'}`}>{feature.status}</span>
+                        {feature.current && <span className="mini-badge running">current</span>}
+                      </summary>
+                      <p className="panel-subtitle">
+                        {[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ') || 'Not reviewed or verified yet.'}
+                      </p>
+                      <div className="artifact-group">
+                        {feature.documents.map((doc) => (
+                          <a key={doc.path} className="artifact-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(doc.path)}`} target="_blank" rel="noreferrer">
+                            <span>{feature.id}</span>
+                            <strong>{doc.label}</strong>
+                          </a>
+                        ))}
+                      </div>
+                    </details>
                   ))}
                 </div>
               </section>
@@ -3338,10 +3406,13 @@ function App() {
                 // loops through review and QA), review, verify, accept or deliver.
                 const rec = selectedCardFresh.recommendedAction
                 if (!rec) return undefined // a run is in flight; the bar shows it
-                if (rec.step !== 'specify') return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
-                return { step: 'implement', label: '✅ Pipeline complete. Kick a new feature via the wizard.', reason: 'Delivered and merged.' }
+                // Delivered: the next step is a new feature (specify asks what it is), never implement again.
+                if (rec.step === 'specify' && selectedCardFresh.status === 'done') {
+                  return { step: 'specify', label: 'Start a new feature.', reason: `${rec.reason} Describe the next feature; it gets its own spec, plan, tasks and pull requests.` }
+                }
+                return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
               })()}
-              onRunNext={(step) => void executeStep(step, 'implementation')}
+              onRunNext={(step) => void executeStep(step, mapStageToTab(step))}
               canAnswer={canAnswer}
               onSendAnswer={(a) => void sendAnswer(a)}
               onRerun={(fromStage) => void rerunRun(fromStage)}
