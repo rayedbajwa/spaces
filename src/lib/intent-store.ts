@@ -668,3 +668,31 @@ export async function restoreIntentFilesQuietly(projectId: string | null | undef
   await restoreIntentFiles(projectId, projectRoot).catch((error) =>
     storeLog.warn('intent files not restored', { projectId, error: error instanceof Error ? error.message : String(error) }))
 }
+
+export interface IntentDetail {
+  intent: IntentRecord
+  /** Every stored document, without its content (fetched one at a time). */
+  documents: Array<{ path: string; kind: string; bytes: number; updatedBy: string; updatedAt: string }>
+  /** Status changes, oldest first: what changed, from what, to what, by whom and when. */
+  events: Array<{ field: string; from: string | null; to: string | null; by: string; at: string }>
+}
+
+/** One intent with its documents and its history, for reviewing it. Undefined when unknown or deleted. */
+export async function getIntentDetail(projectId: string, dirId: string): Promise<IntentDetail | undefined> {
+  const sql = getDb()
+  const [row] = await sql`SELECT ${sql.unsafe(INTENT_COLS)} FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId} AND deleted_at IS NULL`
+  if (!row) return undefined
+  const intent = toRecord(row as Record<string, unknown>)
+  const iso = (v: unknown) => new Date(v as string).toISOString()
+  const documents = await sql<Array<{ path: string; kind: string; bytes: number; updatedBy: string; updatedAt: Date }>>`
+    SELECT path, kind, bytes, updated_by AS "updatedBy", updated_at AS "updatedAt" FROM intent_documents WHERE intent_id = ${intent.intentId} ORDER BY path
+  `
+  const events = await sql<Array<{ field: string; from: string | null; to: string | null; by: string; at: Date }>>`
+    SELECT field, from_value AS "from", to_value AS "to", by, at FROM intent_status_events WHERE intent_id = ${intent.intentId} ORDER BY at, event_id
+  `
+  return {
+    intent,
+    documents: documents.map((d) => ({ ...d, updatedAt: iso(d.updatedAt) })),
+    events: events.map((e) => ({ ...e, at: iso(e.at) })),
+  }
+}

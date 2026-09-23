@@ -84,8 +84,8 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, retitleSpec } from './lib/features'
-import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, ensureIntentsSynced, getIntentDocument, hasIntentRecords, isIntentDeleted, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
-import { activeFeatureId, featureDirNames, removeFeatureDir } from './lib/active-feature'
+import { IntentActionRefused, changeIntentDocuments, getIntentDetail, currentIntentDirId, ensureIntentsSynced, getIntentDocument, hasIntentRecords, isIntentDeleted, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
+import { activeFeatureId, featureDirNames, isFeatureId, removeFeatureDir } from './lib/active-feature'
 import { featureDescriptionProblem } from './lib/feature-description'
 import { normalizeScope, parseScope, setScopeInSpec } from './lib/intent-scope'
 import { implementLoopTemplate } from './lib/implement-loop'
@@ -1395,6 +1395,23 @@ async function route(req: Request): Promise<Response> {
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     if (!project) return sendJson(404, { error: 'Project not found.' })
     return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
+  }
+
+  // One intent for review: its record, every document it has (content is
+  // fetched per document from the artifact route) and its status history.
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/features\/[^/]+$/.test(url.pathname)) {
+    const parts = url.pathname.split('/')
+    const projectNamespace = parts[3]!
+    const featureId = decodeURIComponent(parts[5]!)
+    if (!isFeatureId(featureId)) return sendJson(400, { error: 'Invalid intent id.' })
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s intents.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (projectMeta) await ensureIntentsSynced(project.projectId, projectMeta.path).catch(() => undefined)
+    const detail = await getIntentDetail(project.projectId, featureId)
+    if (!detail) return sendJson(404, { error: `Intent ${featureId} does not exist.` })
+    return sendJson(200, detail)
   }
 
   // Continue an earlier feature (make it active), or delete one that is not delivered.

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { marked } from 'marked'
 import { AuthRoot, navigate, useAuth } from './auth'
 import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
 import { NewRepoCard, type NewRepositoryProposal } from './new-repo'
@@ -12,6 +11,8 @@ import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import { featureDescriptionProblem } from '../lib/feature-description'
 import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/intent-scope'
 import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
+import { renderMarkdown } from './markdown'
+import { IntentViewer } from './intent-viewer'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -27,19 +28,6 @@ const TAB_LABELS: Record<string, string> = {
   memory: 'Memory',
   promotions: 'Lessons',
   tracker: 'Tracker',
-}
-
-/**
- * Markdown → HTML for assistant answers. `marked` does not sanitise, so strip
- * the few things that could execute: script/style/iframe blocks, inline event
- * handlers and javascript: URLs.
- */
-function renderMarkdown(text: string): string {
-  const html = marked.parse(text ?? '', { async: false, gfm: true, breaks: true }) as string
-  return html
-    .replace(/<(script|style|iframe|object|embed)[\s\S]*?<\/\1>/gi, '')
-    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-    .replace(/(href|src)\s*=\s*("|')\s*javascript:[^"']*\2/gi, '$1="#"')
 }
 
 /** Messages that report a failure get the red toast treatment. */
@@ -510,6 +498,8 @@ function App() {
   const [projectPullRequests, setProjectPullRequests] = useState<OpenPullRequestLink[] | null>(null)
   // The open project's features, newest (current) first.
   const [projectFeatures, setProjectFeatures] = useState<FeatureSummary[]>([])
+  // The intent open in the viewer (its documents and history), by directory id.
+  const [viewingIntent, setViewingIntent] = useState<string | null>(null)
   // Themed modal for stage-input prompts (feature/constitution/checklistDomain).
   // Set to a request object with a resolver Promise; the modal renders and
   // calls resolve(value|null) on submit/cancel. Replaces window.prompt().
@@ -2167,7 +2157,7 @@ function App() {
   // Escape closes the top-most overlay (the stage-input prompt handles its own).
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || stageInputPrompt) return
+      if (event.key !== 'Escape' || stageInputPrompt || viewingIntent) return
       if (inspectedRun) setInspectedRun(null)
       else if (isIntegrationsModalOpen) setIsIntegrationsModalOpen(false)
       else if (isWizardOpen && !onboarding) setIsWizardOpen(false)
@@ -2175,7 +2165,7 @@ function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stageInputPrompt, inspectedRun, isIntegrationsModalOpen, isWizardOpen, onboarding, isProjectModalOpen])
+  }, [stageInputPrompt, viewingIntent, inspectedRun, isIntegrationsModalOpen, isWizardOpen, onboarding, isProjectModalOpen])
 
   const allCards = board.columns.flatMap((column) => column.cards.map((card) => ({ card, column })))
   const boardQ = boardQuery.trim().toLowerCase()
@@ -2626,9 +2616,7 @@ function App() {
                         <div key={feature.id} className={`feature-row ${feature.current ? 'current' : ''}`}>
                           <div className="feature-row-main">
                             <code>{feature.id}</code>
-                            {feature.documents.find((d) => d.label === 'Spec')
-                              ? <a className="feature-title-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(feature.documents.find((d) => d.label === 'Spec')!.path)}`} target="_blank" rel="noreferrer" title="Open its spec"><strong>{feature.title}</strong></a>
-                              : <strong>{feature.title}</strong>}
+                            <button type="button" className="link-button feature-title-link" title="Review everything this intent produced, and its history" onClick={() => setViewingIntent(feature.id)}><strong>{feature.title}</strong></button>
                             {feature.scope && <span className={`scope-badge scope-${feature.scope}`} title="Scope">{scopeLabel(feature.scope)}</span>}
                             <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
                             {feature.current && <span className="mini-badge running">current</span>}
@@ -3725,6 +3713,10 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {viewingIntent && selectedProjectNamespace && (
+        <IntentViewer projectNamespace={selectedProjectNamespace} intentId={viewingIntent} onClose={() => setViewingIntent(null)} />
       )}
 
       {stageInputPrompt && (
