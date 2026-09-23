@@ -28,6 +28,18 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
+# Bake build identity into the image so a packaged instance reports the exact
+# source revision and version even though `.dockerignore` excludes `.git` from
+# the runtime stage. Pass them at build time, e.g.:
+#   docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" \
+#                --build-arg SPACES_VERSION="1.2.3" -t spaces:latest .
+# When omitted, the resolver falls back to git (unavailable in the image) and
+# the package.json version, so the endpoint reports "unknown"/the placeholder.
+ARG GIT_COMMIT
+ARG SPACES_VERSION
+ENV GIT_COMMIT=$GIT_COMMIT \
+    SPACES_VERSION=$SPACES_VERSION
+
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
 # postgresql-client gives agents psql and pg_isready so a checkout's database
