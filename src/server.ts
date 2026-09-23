@@ -84,9 +84,10 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, retitleSpec } from './lib/features'
-import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, ensureIntentsSynced, getIntentDocument, hasIntentRecords, isIntentDeleted, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
-import { activeFeatureId, featureDirNames, removeFeatureDir } from './lib/active-feature'
+import { IntentActionRefused, changeIntentDocuments, getIntentDetail, currentIntentDirId, ensureIntentsSynced, getIntentDocument, hasIntentRecords, isIntentDeleted, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, projectActiveIntent, readIntentDocument, setActiveIntent } from './lib/intent-store'
+import { activeFeatureId, featureDirNames, isFeatureId, removeFeatureDir } from './lib/active-feature'
 import { featureDescriptionProblem } from './lib/feature-description'
+import { normalizeScope, parseScope, setScopeInSpec } from './lib/intent-scope'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -1396,6 +1397,23 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
   }
 
+  // One intent for review: its record, every document it has (content is
+  // fetched per document from the artifact route) and its status history.
+  if (method === 'GET' && /^\/api\/projects\/[^/]+\/features\/[^/]+$/.test(url.pathname)) {
+    const parts = url.pathname.split('/')
+    const projectNamespace = parts[3]!
+    const featureId = decodeURIComponent(parts[5]!)
+    if (!isFeatureId(featureId)) return sendJson(400, { error: 'Invalid intent id.' })
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s intents.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (projectMeta) await ensureIntentsSynced(project.projectId, projectMeta.path).catch(() => undefined)
+    const detail = await getIntentDetail(project.projectId, featureId)
+    if (!detail) return sendJson(404, { error: `Intent ${featureId} does not exist.` })
+    return sendJson(200, detail)
+  }
+
   // Continue an earlier feature (make it active), or delete one that is not delivered.
   if ((method === 'POST' || method === 'DELETE' || method === 'PATCH') && /^\/api\/projects\/[^/]+\/features\/[^/]+(\/activate)?$/.test(url.pathname)) {
     const parts = url.pathname.split('/')
@@ -1410,19 +1428,28 @@ async function route(req: Request): Promise<Response> {
     const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch intents.' : renaming ? 'Only team members can rename intents.' : 'Only team members can delete intents.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
-    // Renaming only rewrites the spec's title line: no need to wait for runs.
+    // Renaming or changing the scope only rewrites a line of the spec (its
+    // title, its **Scope** line): no need to wait for runs.
     if (renaming) {
-      const body = await readJson<{ title?: string }>(req)
+      const body = await readJson<{ title?: string; scope?: string }>(req)
+      if (body.title === undefined && body.scope === undefined) return sendJson(400, { error: 'Nothing to change: send a title or a scope.' })
+      const scope = body.scope === undefined ? undefined : normalizeScope(body.scope)
+      if (body.scope !== undefined && !scope) return sendJson(400, { error: 'A scope is required, e.g. bugfix, feature or mvp.' })
       try {
-        const spec = await readIntentDocument(project.projectId, projectMeta.path, featureId, 'spec.md')
-        if (spec === undefined) throw new Error(`Intent ${featureId} has no spec.md to rename.`)
         await changeIntentDocuments({
           projectId: project.projectId, projectRoot: projectMeta.path, dirId: featureId,
-          changes: new Map([['spec.md', retitleSpec(spec, body.title ?? '')]]),
+          // From the spec as locked with the record, so two edits cannot undo each other.
+          changes: (_current, documents) => {
+            let spec = documents.get('spec.md')
+            if (spec === undefined) throw new IntentActionRefused(`Intent ${featureId} has no spec.md to change.`, 400)
+            if (body.title !== undefined) spec = retitleSpec(spec, body.title)
+            if (scope) spec = setScopeInSpec(spec, scope)
+            return new Map([['spec.md', spec]])
+          },
           by: `person:${auth?.user.name || auth?.user.email || 'local user'}`,
         })
       } catch (error) {
-        return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+        return sendJson(error instanceof IntentActionRefused ? error.status : 400, { error: error instanceof Error ? error.message : String(error) })
       }
       await markProjectStateStale(project.projectId).catch(() => undefined)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
@@ -2022,6 +2049,8 @@ async function route(req: Request): Promise<Response> {
       role?: string
       force?: boolean
       feature?: string
+      /** The new intent's scope for specify; unset or 'auto' lets the agent decide. */
+      scope?: string
       constitution?: string
       checklistDomain?: string
     }>(req)
@@ -2168,6 +2197,7 @@ async function route(req: Request): Promise<Response> {
         // Stage-specific inputs required by validateStageInputs. The endpoint
         // above rejects requests missing these when the step needs them.
         ...(body.feature ? { feature: body.feature } : {}),
+        ...(body.step === 'specify' && normalizeScope(body.scope) ? { intentScope: normalizeScope(body.scope) } : {}),
         ...(body.constitution ? { constitution: body.constitution } : {}),
         ...(body.checklistDomain ? { checklistDomain: body.checklistDomain } : {}),
       },
@@ -3216,6 +3246,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       updatedAt: latestRun?.updatedAt ?? project.lastUpdated,
       // The feature the project is on, by its spec's title; the run's description until a spec exists.
       feature: artifacts.currentFeature?.title ?? latestRun?.feature,
+      ...(artifacts.currentFeature?.scope ? { featureScope: artifacts.currentFeature.scope } : {}),
       latestRun,
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
@@ -3371,7 +3402,7 @@ async function collectProjectArtifactsFromDb(projectNamespace: string, projectRo
     codeReviewStale: intent.codeReviewStatus === 'changes_requested' && Boolean(reviewedAt && tasksAt && tasksAt > reviewedAt),
     implementationTasks: docAt.has('tasks.md') ? { done: intent.implementationDone, total: intent.implementationTotal } : undefined,
     tasksDone: intent.tasksDone,
-    currentFeature: { id: intent.dirId, title: intent.title },
+    currentFeature: { id: intent.dirId, title: intent.title, ...(intent.scope ? { scope: intent.scope } : {}) },
     deliveryStatus: intent.deliveryStatus ?? undefined,
     scope: { requirements: 0, tasks: 0, contracts: contracts.length, workstreams: 0 },
     links,
@@ -3414,7 +3445,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     codeReviewStatus: undefined as 'approved' | 'changes_requested' | undefined,
     codeReviewStale: false,
     implementationTasks: undefined as { done: number; total: number } | undefined,
-    currentFeature: undefined as { id: string; title: string } | undefined,
+    currentFeature: undefined as { id: string; title: string; scope?: string } | undefined,
     deliveryStatus: undefined as 'merged' | 'partial' | 'blocked' | undefined,
     scope: {
       requirements: 0,
@@ -3438,7 +3469,9 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   }
 
   const featurePrefix = `Intent ${latestFeature.featureId}`
-  flags.currentFeature = { id: latestFeature.featureId, title: featureTitle(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/spec.md`)), latestFeature.featureId) }
+  const latestSpec = await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/spec.md`))
+  const latestScope = parseScope(latestSpec)
+  flags.currentFeature = { id: latestFeature.featureId, title: featureTitle(latestSpec, latestFeature.featureId), ...(latestScope ? { scope: latestScope } : {}) }
   const specPath = join(projectRoot, `${latestFeature.relativePath}/spec.md`)
   const tasksPath = join(projectRoot, `${latestFeature.relativePath}/tasks.md`)
   const parallelPath = join(projectRoot, `${latestFeature.relativePath}/parallel-workstreams.md`)
@@ -4451,7 +4484,7 @@ interface ProjectArtifacts {
   /** Changes were requested and tasks.md has been updated since: the review needs running again. */
   codeReviewStale?: boolean
   /** The feature the project is on (the highest-numbered directory under specs/). */
-  currentFeature?: { id: string; title: string }
+  currentFeature?: { id: string; title: string; scope?: string }
   /** Checkboxes in tasks.md outside the Delivery group: the work implement is responsible for. */
   implementationTasks?: { done: number; total: number }
   /** Every ticked task, as the database records it; files are read only when this is unset. */
@@ -4503,6 +4536,8 @@ interface BoardCard {
   recommendedAction?: RecommendedActionRecord
   updatedAt: string
   feature?: string
+  /** The current intent's scope (bugfix, feature, mvp, …). */
+  featureScope?: string
   latestRun?: HistoryRunSummary
   artifactLinks: BoardArtifactLink[]
   artifactDiffs: ArtifactDiffEntry[]

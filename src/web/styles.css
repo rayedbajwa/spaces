@@ -2558,3 +2558,67 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .spinner, .skeleton-line { animation: none; }
 }
+
+/* Intent scope: a small coloured label (bugfix, feature, mvp, …), and its picker. */
+.scope-badge {
+  display: inline-flex; align-items: center; margin-right: 6px; padding: 1px 7px;
+  border-radius: 999px; border: 1px solid var(--border-strong);
+  background: var(--accent-soft); color: var(--accent-text);
+  font-size: 11px; font-weight: 500; line-height: 16px; white-space: nowrap; vertical-align: 1px;
+}
+.scope-badge.scope-bugfix { background: var(--red-soft); color: var(--red); border-color: rgba(239, 68, 68, 0.28); }
+.scope-badge.scope-feature { background: var(--blue-soft); color: var(--blue); border-color: rgba(59, 130, 246, 0.28); }
+.scope-badge.scope-mvp { background: var(--green-soft); color: var(--green); border-color: rgba(76, 183, 130, 0.28); }
+.scope-badge.scope-improvement { background: var(--accent-soft); color: var(--accent-text); }
+.scope-badge.scope-chore { background: rgba(148, 163, 184, 0.16); color: #94a3b8; }
+.scope-badge.scope-spike { background: var(--amber-soft); color: var(--amber); border-color: rgba(234, 179, 8, 0.28); }
+.scope-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; }
+.scope-picker-label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
+.scope-option.selected { background: var(--accent-soft); color: var(--accent-text); border-color: var(--border-focus); }
+.scope-custom { flex: 1 1 160px; min-width: 0; }
+.scope-hint { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; }
+.scope-select { font-size: 12px; padding: 3px 6px; max-width: 130px; }
+
+/* Intent viewer: every document an intent produced, navigable, with its history. */
+.intent-viewer { width: min(1180px, 96vw); max-width: none; height: min(860px, 92vh); display: flex; flex-direction: column; padding: 0; overflow: hidden; }
+.intent-viewer-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.intent-viewer-title { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+.intent-viewer-title h2 { margin: 0; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intent-viewer-meta { flex-basis: 100%; order: 3; font-size: 12px; color: var(--text-muted); }
+.intent-viewer-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 240px 1fr; }
+.intent-viewer-nav { overflow-y: auto; padding: 10px 8px; border-right: 1px solid var(--border); }
+.intent-nav-group + .intent-nav-group { margin-top: 12px; }
+.intent-nav-group-title { padding: 0 8px 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-subtle); }
+.intent-nav-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.intent-nav-item small { font-size: 11px; color: var(--text-subtle); }
+.intent-nav-item:hover { background: rgba(255, 255, 255, 0.04); }
+.intent-nav-item.selected { background: var(--accent-soft); color: var(--accent-text); }
+.intent-nav-empty { padding: 0 8px; font-size: 12px; }
+.intent-viewer-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.intent-doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 10px 20px; border-bottom: 1px solid var(--border); }
+.intent-doc-head .text-subtle { flex: 1; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.intent-doc { flex: 1; overflow-y: auto; padding: 16px 24px; }
+.intent-doc-raw { margin: 0; font-size: 12px; white-space: pre-wrap; }
+.intent-history { flex: 1; overflow-y: auto; padding: 16px 24px; }
+.intent-history h3 { margin: 4px 0 10px; font-size: 14px; }
+.intent-history h3 ~ h3 { margin-top: 22px; }
+.intent-timeline { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--border-strong); }
+.intent-timeline li { display: grid; grid-template-columns: 120px 1fr auto; gap: 12px; align-items: baseline; padding: 6px 0 6px 14px; position: relative; font-size: 13px; }
+.intent-timeline li::before { content: ''; position: absolute; left: -5px; top: 12px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.intent-timeline time { color: var(--text-muted); font-size: 12px; }
+.intent-timeline-who { color: var(--text-muted); font-size: 12px; }
+.intent-timeline .link-button { text-align: left; }
+.intent-history-note { margin-top: 16px; font-size: 12px; }
+.intent-viewer-pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); }
+.intent-viewer-pager .text-subtle { font-size: 11px; }
+.feature-title-link { padding: 0; border: 0; background: none; color: inherit; cursor: pointer; text-align: left; }
+.feature-title-link:hover strong { color: var(--accent-text); text-decoration: underline; }
+@media (max-width: 720px) {
+  .intent-viewer { width: 100vw; height: 100vh; border-radius: 0; }
+  .intent-viewer-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .intent-viewer-nav { display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 6px; }
+  .intent-nav-group { display: contents; }
+  .intent-nav-group-title, .intent-nav-item small { display: none; }
+  .intent-nav-item { width: auto; white-space: nowrap; }
+  .intent-timeline li { grid-template-columns: 1fr; gap: 2px; }
+}

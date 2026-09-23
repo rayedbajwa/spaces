@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { activeFeatureId, setActiveFeature } from '../src/lib/active-feature'
 import { retitleSpec } from '../src/lib/features'
+import { setScopeInSpec } from '../src/lib/intent-scope'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, documentKind, ensureIntentsSynced, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { IntentActionRefused, changeIntentDocuments, currentIntentDirId, documentKind, ensureIntentsSynced, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, getIntentDetail, markIntentDeleted, projectActiveIntent, readIntentDocument, restoreIntentFiles, setActiveIntent, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 import { loadProjectStates, saveProjectState } from '../src/lib/project-state'
 
@@ -344,5 +345,39 @@ dbSuite('syncing intents into the database', () => {
       const onDisk = await readFile(path.join(root, 'specs/001-login/acceptance.md'), 'utf8').catch(() => null)
       expect(onDisk).toBe(stored)
     }
+  })
+
+  test('the scope comes from the spec, is listed, and a change is recorded', async () => {
+    const { root, write, projectId } = await setup()
+    await write('specs/002-billing/spec.md', '# Billing\n\n**Scope**: MVP\n')
+    await syncProjectIntents(projectId, root, 'import')
+    expect((await listIntentSummaries(projectId, root)).map((f) => [f.id, f.scope])).toEqual([['002-billing', 'mvp'], ['001-login', undefined]])
+    await changeIntentDocuments({
+      projectId, projectRoot: root, dirId: '002-billing', by: 'person:Sam',
+      changes: (_current, documents) => new Map([['spec.md', setScopeInSpec(documents.get('spec.md')!, 'feature')]]),
+    })
+    expect((await listIntents(projectId)).find((i) => i.dirId === '002-billing')?.scope).toBe('feature')
+    const [event] = await getDb()`SELECT e.from_value, e.to_value, e.by FROM intent_status_events e JOIN intents i USING (intent_id) WHERE i.project_id = ${projectId} AND e.field = 'scope' AND e.by <> 'import'`
+    expect(event).toMatchObject({ from_value: 'mvp', to_value: 'feature', by: 'person:Sam' })
+  })
+
+  test('the detail of one intent: its record, every document without content, and its history in order', async () => {
+    const { root, write, projectId } = await setup()
+    await write('specs/002-billing/subagents/ws-1.md', '# Workstream 1\n')
+    await syncProjectIntents(projectId, root, 'import')
+    await write('specs/002-billing/tasks.md', '- [x] T001 a\n')
+    await syncProjectIntents(projectId, root, 'agent')
+    await setActiveIntent(projectId, root, '001-login', 'person:Sam')
+    await setActiveIntent(projectId, root, '002-billing', 'person:Sam')
+    const detail = await getIntentDetail(projectId, '002-billing')
+    expect(detail?.intent.title).toBe('Billing')
+    expect(detail?.documents.map((d) => d.path)).toEqual(['plan.md', 'spec.md', 'subagents/ws-1.md', 'tasks.md'])
+    expect(detail?.documents[0]).not.toHaveProperty('content')
+    const events = detail!.events.map((e) => [e.field, e.to, e.by])
+    expect(events).toContainEqual(['status', 'implementing', 'agent'])
+    expect(events.at(-1)).toEqual(['active', '002-billing', 'person:Sam'])
+    expect(detail!.events.map((e) => e.at)).toEqual([...detail!.events.map((e) => e.at)].sort())
+    await markIntentDeleted(projectId, '002-billing', 'person:Sam')
+    expect(await getIntentDetail(projectId, '002-billing')).toBeUndefined()
   })
 })

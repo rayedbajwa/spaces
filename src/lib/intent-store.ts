@@ -7,6 +7,7 @@ import { ACCEPTANCE_FILE } from './acceptance-file'
 import { ACTIVE_FEATURE_FILE, activeFeatureId, featureDirNames, isFeatureId } from './active-feature'
 import { getDb } from './db'
 import { featureStatus, featureTitle, type FeatureStatus } from './features'
+import { parseScope } from './intent-scope'
 import { log } from './logger'
 import { markProjectStateStale } from './project-state'
 import { implementationTaskProgress, parseTaskProgress } from './run-resume'
@@ -47,6 +48,7 @@ export interface IntentRecord {
   tasksTotal: number
   implementationDone: number
   implementationTotal: number
+  scope: string | null
   active: boolean
   syncedAt: string | null
   createdAt: string
@@ -142,13 +144,14 @@ export function summarizeIntent(dirId: string, docs: Map<string, string>) {
     tasksTotal: all.total,
     implementationDone: implementation.done,
     implementationTotal: implementation.total,
+    scope: parseScope(text('spec.md')) ?? null,
   }
 }
 
-const TRACKED_FIELDS = ['status', 'codeReviewStatus', 'verificationStatus', 'deliveryStatus', 'acceptedBy', 'title'] as const
+const TRACKED_FIELDS = ['status', 'codeReviewStatus', 'verificationStatus', 'deliveryStatus', 'acceptedBy', 'title', 'scope'] as const
 const COLUMN: Record<(typeof TRACKED_FIELDS)[number], string> = {
   status: 'status', codeReviewStatus: 'code_review_status', verificationStatus: 'verification_status',
-  deliveryStatus: 'delivery_status', acceptedBy: 'accepted_by', title: 'title',
+  deliveryStatus: 'delivery_status', acceptedBy: 'accepted_by', title: 'title', scope: 'scope',
 }
 
 const INTENT_COLS = `
@@ -157,7 +160,7 @@ const INTENT_COLS = `
   verification_summary AS "verificationSummary", delivery_status AS "deliveryStatus",
   accepted_by AS "acceptedBy", accepted_at AS "acceptedAt", accepted_note AS "acceptedNote",
   accepted_verification AS "acceptedVerification", tasks_done AS "tasksDone", tasks_total AS "tasksTotal",
-  implementation_done AS "implementationDone", implementation_total AS "implementationTotal",
+  implementation_done AS "implementationDone", implementation_total AS "implementationTotal", scope,
   active, synced_at AS "syncedAt", created_at AS "createdAt", updated_at AS "updatedAt"`
 
 function toRecord(row: Record<string, unknown>): IntentRecord {
@@ -259,7 +262,7 @@ async function writeSummary(
       delivery_status = ${summary.deliveryStatus}, accepted_by = ${summary.acceptedBy}, accepted_at = ${summary.acceptedAt},
       accepted_note = ${summary.acceptedNote}, accepted_verification = ${summary.acceptedVerification},
       tasks_done = ${summary.tasksDone}, tasks_total = ${summary.tasksTotal},
-      implementation_done = ${summary.implementationDone}, implementation_total = ${summary.implementationTotal},
+      implementation_done = ${summary.implementationDone}, implementation_total = ${summary.implementationTotal}, scope = ${summary.scope},
       active = COALESCE(${active ?? null}::boolean, active), synced_at = now(), updated_at = now()
     WHERE intent_id = ${intentId}
   `
@@ -439,6 +442,7 @@ export async function listIntentSummaries(projectId: string, projectRoot: string
       id: i.dirId,
       relativePath: `specs/${i.dirId}`,
       title: i.title,
+      ...(i.scope ? { scope: i.scope } : {}),
       current: i.intentId === current,
       status: i.status,
       ...(i.codeReviewStatus ? { codeReview: i.codeReviewStatus } : {}),
@@ -663,4 +667,32 @@ export async function restoreIntentFilesQuietly(projectId: string | null | undef
   if (!projectId || !projectRoot) return
   await restoreIntentFiles(projectId, projectRoot).catch((error) =>
     storeLog.warn('intent files not restored', { projectId, error: error instanceof Error ? error.message : String(error) }))
+}
+
+export interface IntentDetail {
+  intent: IntentRecord
+  /** Every stored document, without its content (fetched one at a time). */
+  documents: Array<{ path: string; kind: string; bytes: number; updatedBy: string; updatedAt: string }>
+  /** Status changes, oldest first: what changed, from what, to what, by whom and when. */
+  events: Array<{ field: string; from: string | null; to: string | null; by: string; at: string }>
+}
+
+/** One intent with its documents and its history, for reviewing it. Undefined when unknown or deleted. */
+export async function getIntentDetail(projectId: string, dirId: string): Promise<IntentDetail | undefined> {
+  const sql = getDb()
+  const [row] = await sql`SELECT ${sql.unsafe(INTENT_COLS)} FROM intents WHERE project_id = ${projectId} AND dir_id = ${dirId} AND deleted_at IS NULL`
+  if (!row) return undefined
+  const intent = toRecord(row as Record<string, unknown>)
+  const iso = (v: unknown) => new Date(v as string).toISOString()
+  const documents = await sql<Array<{ path: string; kind: string; bytes: number; updatedBy: string; updatedAt: Date }>>`
+    SELECT path, kind, bytes, updated_by AS "updatedBy", updated_at AS "updatedAt" FROM intent_documents WHERE intent_id = ${intent.intentId} ORDER BY path
+  `
+  const events = await sql<Array<{ field: string; from: string | null; to: string | null; by: string; at: Date }>>`
+    SELECT field, from_value AS "from", to_value AS "to", by, at FROM intent_status_events WHERE intent_id = ${intent.intentId} ORDER BY at, event_id
+  `
+  return {
+    intent,
+    documents: documents.map((d) => ({ ...d, updatedAt: iso(d.updatedAt) })),
+    events: events.map((e) => ({ ...e, at: iso(e.at) })),
+  }
 }
