@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setActiveFeature } from '../src/lib/active-feature'
@@ -91,5 +91,26 @@ dbSuite('syncing intents into the database', () => {
     await markIntentDeleted(projectId, '002-billing', 'person:Sam')
     await syncProjectIntents(projectId, root, 'agent') // the directory is still on disk
     expect((await listIntents(projectId)).map((i) => i.dirId)).toEqual(['001-login'])
+  })
+
+  test('deleting an intent no sync has recorded yet still keeps it deleted', async () => {
+    const { root, write, projectId } = await setup()
+    await syncProjectIntents(projectId, root, 'import')
+    await write('specs/003-reports/spec.md', '# Reports\n')
+    await markIntentDeleted(projectId, '003-reports', 'person:Sam', 'Reports')
+    await syncProjectIntents(projectId, root, 'agent') // a copy is still on disk
+    expect((await listIntents(projectId)).map((i) => i.dirId)).toEqual(['002-billing', '001-login'])
+    const events = await getDb()<Array<{ field: string }>>`SELECT e.field FROM intent_status_events e JOIN intents i USING (intent_id) WHERE i.project_id = ${projectId} AND i.dir_id = '003-reports'`
+    expect(events.map((e) => e.field)).toEqual(['deleted'])
+  })
+
+  test('a symlink named like a document is not copied into the record', async () => {
+    const { root, write, projectId } = await setup()
+    await write('outside/secret.md', 'do not copy\n')
+    await symlink(path.join(root, 'outside/secret.md'), path.join(root, 'specs/001-login/notes.md'))
+    await syncProjectIntents(projectId, root, 'import')
+    const login = (await listIntents(projectId)).find((i) => i.dirId === '001-login')!
+    const docs = await getIntentDocuments(login.intentId)
+    expect(docs.map((d: { path: string }) => d.path)).not.toContain('notes.md')
   })
 })

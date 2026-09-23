@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { lstat, readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { parseAcceptance } from './acceptance'
 import { ACCEPTANCE_FILE } from './acceptance-file'
@@ -97,8 +97,10 @@ async function readDocuments(dir: string): Promise<Map<string, string>> {
       if (entry.isDirectory()) {
         if (depth < 2) await walk(full, rel, depth + 1)
       } else if (DOCUMENT_FILE.test(entry.name)) {
-        const info = await stat(full).catch(() => undefined)
-        if (!info || info.size > MAX_DOCUMENT_BYTES) continue
+        // lstat, not stat: a symlink named like a document could point anywhere
+        // outside the intent, and its target would be copied into the database.
+        const info = await lstat(full).catch(() => undefined)
+        if (!info?.isFile() || info.size > MAX_DOCUMENT_BYTES) continue
         const content = await readFile(full, 'utf8').catch(() => undefined)
         if (content !== undefined) docs.set(rel, content)
       }
@@ -248,14 +250,20 @@ export async function syncProjectIntentsQuietly(projectId: string | null | undef
     storeLog.warn('intent sync failed', { projectId, error: error instanceof Error ? error.message : String(error) }))
 }
 
-/** A person deleted the intent: it leaves the record (kept with its history, never resurrected by a sync). */
-export async function markIntentDeleted(projectId: string, dirId: string, by: string): Promise<void> {
+/**
+ * A person deleted the intent: it leaves the record (kept with its history,
+ * never resurrected by a sync). An intent no sync has recorded yet gets a
+ * deleted row all the same, so a copy of it on another branch stays deleted.
+ */
+export async function markIntentDeleted(projectId: string, dirId: string, by: string, title = dirId): Promise<void> {
   const sql = getDb()
   await sql.begin(async (tx) => {
     const [row] = await tx<Array<{ intentId: string }>>`
-      UPDATE intents SET deleted_at = now(), active = false, updated_at = now()
-       WHERE project_id = ${projectId} AND dir_id = ${dirId} AND deleted_at IS NULL
-       RETURNING intent_id AS "intentId"
+      INSERT INTO intents (intent_id, project_id, dir_id, title, status, deleted_at)
+      VALUES (${randomUUID()}, ${projectId}, ${dirId}, ${title}, 'specified', now())
+      ON CONFLICT (project_id, dir_id) DO UPDATE SET deleted_at = now(), active = false, updated_at = now()
+        WHERE intents.deleted_at IS NULL
+      RETURNING intent_id AS "intentId"
     `
     if (row) await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${row.intentId}, 'deleted', NULL, 'deleted', ${by})`
   })

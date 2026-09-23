@@ -343,15 +343,23 @@ export async function addRepo(input: {
   localPath?: string
   githubRepo?: string
   isPrimary?: boolean
+  /** Primary when it is the project's first code repository (beside the governing workspace), decided under the insert's lock. */
+  primaryIfFirst?: boolean
   cloneStatus?: RepoCloneStatus
 }): Promise<RepoRow> {
   const sql = getDb()
   const repoId = randomUUID()
-  const isPrimary = input.isPrimary ?? false
   // GitHub repos start life un-cloned; the server kicks off the clone right after insert.
   const cloneStatus = input.cloneStatus ?? (input.kind === 'github' && !input.localPath ? 'pending' : null)
 
   await sql.begin(async (tx) => {
+    let isPrimary = input.isPrimary ?? false
+    if (input.isPrimary === undefined && input.primaryIfFirst) {
+      // Locked, so two attaches at once cannot both see "no code repository yet".
+      await tx`SELECT 1 FROM projects WHERE project_id = ${input.projectId} FOR UPDATE`
+      const [existing] = await tx<Array<{ n: number }>>`SELECT count(*)::int AS n FROM project_repos WHERE project_id = ${input.projectId} AND label <> 'governance'`
+      isPrimary = (existing?.n ?? 0) === 0
+    }
     if (isPrimary) {
       // Clear any existing primary on this project (unique index enforces one-at-most).
       await tx`UPDATE project_repos SET is_primary = false WHERE project_id = ${input.projectId} AND is_primary`
@@ -427,6 +435,16 @@ export async function updateRepoClone(repoId: string, patch: {
 /** Pick the repo a run should target: primary with a usable local path, else any with one. */
 export function pickRunnableRepo(repos: RepoRow[]): RepoRow | undefined {
   return repos.find((r) => r.isPrimary && r.localPath) ?? repos.find((r) => r.localPath)
+}
+
+/**
+ * A run must not start while the primary repository is a GitHub checkout that
+ * is still cloning: pickRunnableRepo would fall back to another checkout (the
+ * governing workspace) and the run would work in the wrong repository.
+ */
+export function primaryStillCloning(repos: RepoRow[]): RepoRow | undefined {
+  const primary = repos.find((r) => r.isPrimary)
+  return primary && primary.kind === 'github' && !primary.localPath && (primary.cloneStatus === 'pending' || primary.cloneStatus === 'cloning') ? primary : undefined
 }
 
 /** Explain why a project can't be run against yet — used for user-facing 400s. */

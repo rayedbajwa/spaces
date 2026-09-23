@@ -273,11 +273,11 @@ export async function syncDefaultBranch(orgId: string, cwd: string, githubRepo: 
  */
 export async function switchToFeatureBranch(cwd: string, branch: string, orgId?: string): Promise<{ switched: boolean; reason?: string }> {
   if ((await currentBranch(cwd).catch(() => '')) === branch) return { switched: false, reason: 'already on it' }
-  if (await git(cwd, ['status', '--porcelain', '--untracked-files=no']).catch(() => 'unknown')) return { switched: false, reason: 'uncommitted changes in the checkout' }
-  if (orgId) {
-    const header = await authHeader(orgId).catch(() => undefined)
-    await git(cwd, [...(header ? ['-c', `http.extraheader=${header}`] : []), 'fetch', '-q', 'origin', branch]).catch(() => undefined)
-  }
+  // Untracked files count: they would travel to the other branch and be committed there.
+  if (await git(cwd, ['status', '--porcelain']).catch(() => 'unknown')) return { switched: false, reason: 'uncommitted changes in the checkout' }
+  // Any checkout with an origin may have the branch only there; GitHub ones fetch authenticated.
+  const header = orgId ? await authHeader(orgId).catch(() => undefined) : undefined
+  await git(cwd, [...(header ? ['-c', `http.extraheader=${header}`] : []), 'fetch', '-q', 'origin', branch]).catch(() => undefined)
   if (await branchExistsLocally(cwd, branch)) {
     await git(cwd, ['checkout', '-q', branch])
     return { switched: true }
