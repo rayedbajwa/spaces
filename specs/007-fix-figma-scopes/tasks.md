@@ -173,3 +173,16 @@ Addressed the review/verification findings (code-review `CHANGES_REQUESTED` + `v
 - **Deferred (unchanged)** — AS2/AS3/SC-002 remain deferred to live UAT (require a configured Figma app + real keys, per Organization Memory: E2E tests that require keys are ignored).
 
 **Tests that should now pass for the next verify pass**: `bun test tests/oauth.test.ts` (11 pass / 1 skip / 0 fail); `bun run typecheck` clean; `bun test tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` (20 pass / 0 fail).
+
+## Verify-driven re-run (loop iteration 3, 2026-09-23)
+
+Re-read `verification-report.md` §"Unsatisfied Test Cases" first, as directed. The only entries are `[AS2]`, `[AS3]`, and `[SC-002]` — the three live Figma consent/token-exchange/connected-status/timing flows. All three require a configured Figma OAuth app and real keys and are deferred to manual/UAT per Organization Memory ("E2E tests that require keys can be ignored"); no automated or CI-viable test can close them, so there is **no production code or test change left to make**. No prior passing code was touched and no re-plan/re-architect occurred.
+
+Re-confirmed the state in `rayedbajwa/spaces` (branch `007-fix-figma-scopes`, HEAD `92deafd`, fix commit `6dfb1bd` present, clean working tree):
+
+- `bun test tests/oauth.test.ts` → **11 pass / 1 skip / 0 fail** (27 expect calls)
+- `bun run typecheck` → **clean (exit 0)**
+- `bun test tests/figma-tools.test.ts tests/figma-api.test.ts tests/integration-token.test.ts` → **20 pass / 0 fail**
+- `src/lib/oauth.ts` figma block → `scopes: ['files:read']`; comment + `notes` name `file_variables:read` as the removed Enterprise-only scope.
+
+**Outcome**: nothing further to fix. The only open work is delivery (D001–D005: push/PR → CI → review → merge → deploy), which is the separate delivery stage and requires human approval (no authenticated push origin, merge/deploy are irreversible).
