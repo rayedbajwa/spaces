@@ -142,9 +142,10 @@ inspectable artifacts each stage produces.
   documents and every change are recorded in Postgres, with the files as the
   agents' working copy; continue, rename or delete one, and open it to page
   through every artifact it produced and its history
-- **Specs travel with the code** — implementation repositories get the
-  intent's `specs/<intent>/` on the feature branch at every code stage, and
-  their own pull request linked to the governing one
+- **Specs travel with the code** — implementation repositories get their
+  repo-local change (`specs/<initiative-id>/`: `change.yaml`, the tasks they
+  own, their delta spec) at every code stage, and their own pull request linked
+  to the governing one; the rest of the intent's documents stay in Spaces
 - **Data guardrails** — secrets and personal data become tokens before
   anything reaches a model and are restored only in the commands and files
   agents write; logs, Slack, pull requests and embeddings are masked too.
