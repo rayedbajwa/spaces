@@ -62,8 +62,7 @@ own session, team creation and invites.
 
 | Method & path | Purpose |
 |---|---|
-| `POST /api/projects/:id/repos` | Add `{ label, kind: 'local' | 'github', localPath?, githubRepo?, isPrimary? }`; GitHub repos clone, learn and set up in the background |
-| `POST /api/projects/:id/repos/create` | Create `{ name, owner?, description?, visibility? }` on GitHub and attach it (`403 insufficient_permissions` / `409 github_not_connected` with a `manualUrl` fallback) |
+| `POST /api/projects/:id/repos` | Add `{ label, kind: 'local' | 'github', localPath?, githubRepo?, isPrimary?, primaryIfFirst? }` (`primaryIfFirst` makes it primary when it is the project's first code repository); GitHub repos clone, learn and set up in the background |
 | `PATCH /api/projects/:id/repos/:repoId` | Edit label / path / owner-name / primary |
 | `DELETE /api/projects/:id/repos/:repoId` | Remove (drops its brief, recomposes memory, prunes knowledge scope) |
 | `POST /api/projects/:id/repos/:repoId/clone` · `…/learn` | Re-clone / re-learn |
@@ -80,11 +79,12 @@ own session, team creation and invites.
 | `GET /api/runs/:id/events` | Server-sent events stream |
 | `POST /api/runs/:id/answer` | `{ answer }` for a paused run (`approve` / `continue` / text); queues a job that reopens the paused session on any worker and continues from the answer. `409` once the run is no longer paused (a second answer) |
 | `POST /api/runs/:id/rerun` | `{ fromStage?: string | 'start' }`; resumes the previous agent session |
-| `POST /api/projects/:slug/execute-step` | Run one stage: `{ step, force?, feature? }` |
+| `POST /api/projects/:slug/execute-step` | Run one stage: `{ step, force?, feature? }`. Specify needs a feature description of at least four words (`400`, `field: "feature"`) |
 | `POST /api/projects/:slug/accept` | Accept a feature whose verification did not pass: `{ note? }`. Records who accepted it, the verification status at the time and the reason in `acceptance.md`, and the board counts the feature as done. `409 not_verified` when there is no report yet, `409 already_passed` when verification passed |
 | `DELETE /api/projects/:slug/accept` | Withdraw that acceptance; the feature returns to whatever its verification says |
 | `GET /api/projects/:slug/features` | Every feature, newest first, with `current` (the active one), status, review and verification outcome, and documents |
-| `POST /api/projects/:slug/features/:id/activate` | Continue an undelivered feature: switches each repository to its branch where safe, then makes it active. Returns `features` and per-repository `branches`. `409 project_busy` while a run is live |
+| `POST /api/projects/:slug/features/:id/activate` | Continue an undelivered feature: switches each repository to its branch where safe, then makes it active. Returns `features` and per-repository `branches` (`{ repo, switched, reason? }`, one per repository, including those with no local checkout). `409 project_busy` while a run is live |
+| `PATCH /api/projects/:slug/features/:id` | Rename a feature: `{ title }` (up to 200 characters) rewrites the first heading of its `spec.md`; the directory and branch keep their names. Returns `features`. `400` for an empty or too long title or an unknown feature |
 | `DELETE /api/projects/:slug/features/:id` | Delete a feature that is not delivered (its directory under `specs/`). `409 delivered`, `409 project_busy` |
 | `GET /api/projects/:slug/pull-requests` | The current feature's open pull requests (`githubRepo`, `number`, `url`, `title`, `draft`), found on GitHub by head branch and cached for a minute. Board cards in Implementing and Releasing carry the same list as `pullRequests` |
 | `GET /api/projects/:slug/latest-run` · `/jobs` · `/task-tracker` | Latest run, job queue with run-aware status, tracker |

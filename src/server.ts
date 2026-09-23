@@ -85,6 +85,7 @@ import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, renameFeature } from './lib/features'
 import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
+import { featureDescriptionProblem } from './lib/feature-description'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -107,12 +108,13 @@ import {
   type IntegrationKind,
   type RepoKind,
   pickRunnableRepo,
+  primaryStillCloning,
   describeUnrunnableRepos,
   updateProjectKnowledge as projUpdateKnowledge,
   type ProjectKnowledgeConfig,
   type RepoRow,
 } from './lib/project-registry'
-import { GitHubNotConnectedError, GitHubPermissionError, createGitHubRepository, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
+import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
 import { conventional, currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, ensureIgnored, publishBranchAsPullRequest, pullRequestBody, switchToFeatureBranch } from './lib/pull-requests'
 import { getOnboardingSnapshot, refreshRepositoryKnowledge, startProjectOnboarding } from './lib/project-onboarding'
 import {
@@ -134,7 +136,6 @@ import { acceptanceRecommended, describeSummary, summarizeVerification, type Ver
 import { reapAbandonedJobs } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
-import { newRepoUrl, sanitizeRepoName } from './lib/repo-proposal'
 
 const serverLog = log.child({ mod: 'server' })
 
@@ -957,11 +958,12 @@ async function route(req: Request): Promise<Response> {
     const project = await projGet(projectId)
     if (!project) return sendJson(404, { error: 'Project not found.' })
     const denied = requireProjectRole(project, 'member', 'Only team members can add repositories.'); if (denied) return denied
-    const body = await readJson<{ label?: string; kind?: RepoKind; localPath?: string; githubRepo?: string; isPrimary?: boolean }>(req)
+    const body = await readJson<{ label?: string; kind?: RepoKind; localPath?: string; githubRepo?: string; isPrimary?: boolean; primaryIfFirst?: boolean }>(req)
     if (!body.label?.trim() || !body.kind) return sendJson(400, { error: 'label and kind are required' })
     if (body.kind === 'local' && !body.localPath) return sendJson(400, { error: 'localPath required for kind=local' })
     if (body.kind === 'github' && !body.githubRepo) return sendJson(400, { error: 'githubRepo required for kind=github' })
-    const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary: body.isPrimary })
+    // primaryIfFirst: the project's first code repository (beside the governing workspace) becomes primary.
+    const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary: body.isPrimary, primaryIfFirst: body.primaryIfFirst })
     // Once the checkout exists, learn it and recompose project memory so agents
     // (and tasks blocked on this repo) can use it.
     if (repo.kind === 'github') {
@@ -970,33 +972,6 @@ async function route(req: Request): Promise<Response> {
       void refreshRepositoryKnowledge(projectId, repo.repoId).catch(() => undefined)
     }
     return sendJson(201, repo)
-  }
-
-  // Discovery proposed a repository that does not exist yet: create it through
-  // the connected GitHub account, register it and clone it. When the token may
-  // not create repositories, answer 403 with a prefilled GitHub link instead.
-  if (method === 'POST' && /^\/api\/projects\/[0-9a-f-]{36}\/repos\/create$/.test(url.pathname)) {
-    const projectId = url.pathname.split('/')[3]!
-    const project = await projGet(projectId)
-    if (!project) return sendJson(404, { error: 'Project not found.' })
-    if (auth && project.teamId && !roleAtLeast(teamRole(project.teamId) ?? 'viewer', 'member')) return sendJson(403, { error: 'Only team members can add repositories.' })
-    const body = await readJson<{ name?: string; owner?: string; description?: string; visibility?: 'private' | 'public' }>(req)
-    const name = sanitizeRepoName(body.name ?? '')
-    if (!name) return sendJson(400, { error: 'A repository name is required (letters, digits, "-", "_" and ".").' })
-    const manualUrl = newRepoUrl({ name, owner: body.owner?.trim() || undefined, description: body.description ?? project.description ?? '', visibility: body.visibility === 'public' ? 'public' : 'private' })
-    try {
-      const created = await createGitHubRepository(await orgIdForProject(projectId), { name, owner: body.owner, description: body.description ?? project.description, private: body.visibility !== 'public' })
-      const existing = await import('./lib/project-registry').then((m) => m.listRepos(projectId))
-      const isPrimary = !existing.some((r) => r.label !== 'governance')
-      const repo = await projAddRepo({ projectId, label: created.name, kind: 'github', githubRepo: created.fullName, isPrimary })
-      void scheduleRepoClone(repo).then(() => refreshRepositoryKnowledge(projectId, repo.repoId)).catch(() => undefined)
-      serverLog.info('repository created from discovery proposal', { slug: project.slug, repo: created.fullName, by: auth?.user.email ?? 'local' })
-      return sendJson(201, { repo, fullName: created.fullName, htmlUrl: created.htmlUrl })
-    } catch (error) {
-      if (error instanceof GitHubNotConnectedError) return sendJson(409, { error: 'Connect GitHub under Organization → Integrations first, or create the repository by hand and attach it.', code: 'github_not_connected', manualUrl })
-      if (error instanceof GitHubPermissionError) return sendJson(403, { error: error.message, code: 'insufficient_permissions', manualUrl })
-      return sendJson(500, { error: error instanceof Error ? error.message : String(error), manualUrl })
-    }
   }
 
   // Re-learn one repository (inventory + brief) and recompose project memory.
@@ -1461,7 +1436,10 @@ async function route(req: Request): Promise<Response> {
     const orgId = await orgIdForProject(project.projectId)
     const branches: Array<{ repo: string; switched: boolean; reason?: string }> = []
     for (const repo of await registry.listRepos(project.projectId)) {
-      if (!repo.localPath) continue
+      if (!repo.localPath) {
+        branches.push({ repo: repo.githubRepo ?? repo.label, switched: false, reason: 'no local checkout' })
+        continue
+      }
       await ensureIgnored(repo.localPath, 'specs/.active-feature')
       const result = await switchToFeatureBranch(repo.localPath, featureId, repo.githubRepo ? orgId : undefined)
         .catch((error) => ({ switched: false, reason: error instanceof Error ? error.message.split('\n')[0] : String(error) }))
@@ -2008,9 +1986,10 @@ async function route(req: Request): Promise<Response> {
     // Without this, the run gets created, the worker picks it up, the
     // PipelineEngine constructor throws, and the UI shows a confusing
     // "adhoc-specify errored" instead of "specify needs a feature".
-    if (body.step === 'specify' && !body.feature?.trim()) {
+    const featureProblem = body.step === 'specify' ? featureDescriptionProblem(body.feature) : undefined
+    if (featureProblem) {
       return sendJson(400, {
-        error: 'The specify stage requires a feature description. Provide { "feature": "..." } in the request body.',
+        error: body.feature?.trim() ? featureProblem : `${featureProblem} Provide { "feature": "..." } in the request body.`,
         field: 'feature',
       })
     }
@@ -2028,6 +2007,8 @@ async function route(req: Request): Promise<Response> {
     }
 
     const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const cloning = primaryStillCloning(repos)
+    if (cloning) return sendJson(409, { error: `${cloning.githubRepo ?? cloning.label} is still being cloned. The run starts in it once the clone finishes; try again in a moment.`, code: 'primary_cloning' })
     const repo = pickRunnableRepo(repos)
     if (!repo?.localPath) return sendJson(400, { error: describeUnrunnableRepos(repos) })
 
@@ -2266,6 +2247,8 @@ async function route(req: Request): Promise<Response> {
     if (auth && !project.teamId) return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
 
     const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const cloning = body.targetRepoId ? undefined : primaryStillCloning(repos)
+    if (cloning) return sendJson(409, { error: `${cloning.githubRepo ?? cloning.label} is still being cloned. The run starts in it once the clone finishes; try again in a moment.`, code: 'primary_cloning' })
     const repo = body.targetRepoId
       ? repos.find((r) => r.repoId === body.targetRepoId)
       : pickRunnableRepo(repos)

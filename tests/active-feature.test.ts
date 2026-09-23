@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { activeFeatureDir, activeFeatureId, removeFeatureDir, setActiveFeature } from '../src/lib/active-feature'
+import { activeFeatureDir, activeFeatureId, chosenFeatureId, removeFeatureDir, setActiveFeature } from '../src/lib/active-feature'
 import { listFeatures } from '../src/lib/features'
 import { readCodeReviewStatus, readVerificationStatus } from '../src/lib/pipeline-branch'
 import { switchToFeatureBranch } from '../src/lib/pull-requests'
@@ -76,5 +76,36 @@ describe('switchToFeatureBranch', () => {
     await writeFile(path.join(root, 'a.txt'), 'edited\n')
     expect((await switchToFeatureBranch(root, '001-login')).reason).toContain('uncommitted')
     expect(git(root, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main')
+  })
+
+  test('an untracked file counts as uncommitted work', async () => {
+    const root = await project({ 'a.txt': '1\n' })
+    git(root, 'init', '-q', '-b', 'main'); git(root, 'add', '.'); git(root, 'commit', '-q', '-m', 'one')
+    git(root, 'branch', '001-login')
+    await writeFile(path.join(root, 'new.txt'), 'draft\n')
+    expect((await switchToFeatureBranch(root, '001-login')).reason).toContain('uncommitted')
+    expect(git(root, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('main')
+  })
+
+  test('a local repository fetches a branch that exists only on its origin', async () => {
+    const root = await project({ 'seed/a.txt': '1\n' })
+    const seed = path.join(root, 'seed')
+    git(seed, 'init', '-q', '-b', 'main'); git(seed, 'add', '.'); git(seed, 'commit', '-q', '-m', 'one')
+    git(root, 'clone', '-q', seed, 'work')
+    git(seed, 'branch', '001-login')
+    const work = path.join(root, 'work')
+    expect(await switchToFeatureBranch(work, '001-login')).toEqual({ switched: true })
+    expect(git(work, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('001-login')
+  })
+})
+
+describe('chosenFeatureId', () => {
+  test('is set only by an explicit choice of an existing feature', async () => {
+    const root = await project(twoFeatures)
+    expect(chosenFeatureId(root)).toBeNull()
+    await setActiveFeature(root, '001-login')
+    expect(chosenFeatureId(root)).toBe('001-login')
+    await setActiveFeature(root, null)
+    expect(chosenFeatureId(root)).toBeNull()
   })
 })
