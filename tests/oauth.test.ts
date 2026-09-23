@@ -1,5 +1,5 @@
-import { test, expect, describe } from 'bun:test'
-import { beginAuthorization, consumeState, type OAuthProviderConfig, PROVIDER_TEMPLATES } from '../src/lib/oauth'
+import { test, expect, describe, beforeEach, afterEach } from 'bun:test'
+import { beginAuthorization, consumeState, exchangeCode, refreshAccessToken, type OAuthProviderConfig, PROVIDER_TEMPLATES } from '../src/lib/oauth'
 
 /**
  * The oauth module holds a module-level `pendingStates` Map. Every test here
@@ -137,5 +137,92 @@ describe('Figma provider template: granular OAuth scopes', () => {
     const { redirectUrl } = beginAuthorization(figmaConfig, 'project-figma', 'https://cb.example.com/oauth/callback')
     const url = new URL(redirectUrl)
     expect(url.searchParams.get('scope')).toBe(expectedScopes.join(' '))
+  })
+})
+
+describe('Figma provider template: OAuth endpoints and auth', () => {
+  const figma = PROVIDER_TEMPLATES.figma
+
+  test('token exchange uses the current v1 endpoint (not the removed www.figma.com/api path)', () => {
+    expect(figma.tokenUrl).toBe('https://api.figma.com/v1/oauth/token')
+  })
+
+  test('token exchange authenticates with HTTP Basic auth (credentials not in body)', () => {
+    expect(figma.tokenAuth).toBe('basic')
+  })
+
+  test('refresh uses the separate v1 refresh endpoint', () => {
+    expect(figma.tokenRefreshUrl).toBe('https://api.figma.com/v1/oauth/refresh')
+  })
+
+  test('refresh omits grant_type (Figma sends only refresh_token)', () => {
+    expect(figma.refreshOmitsGrantType).toBe(true)
+  })
+})
+
+/**
+ * exchangeCode/refreshAccessToken are pure HTTP helpers; we mock global.fetch
+ * to assert the exact URL, auth scheme, and body each provider sends. This
+ * guards the Figma 404 regression (removed www.figma.com/api token path) and
+ * the Basic-auth/refresh-endpoint contract.
+ */
+describe('Figma token exchange and refresh request shape', () => {
+  const captured: { url: string; init: RequestInit }[] = []
+  let originalFetch: typeof globalThis.fetch
+
+  beforeEach(() => {
+    captured.length = 0
+    originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input, init) => {
+      captured.push({ url: String(input), init: init ?? {} })
+      return new Response(JSON.stringify({ access_token: 'tok', token_type: 'bearer', refresh_token: 'rt' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  function figmaConfig(): OAuthProviderConfig {
+    const figma = PROVIDER_TEMPLATES.figma
+    return { ...figma, clientId: 'cid', clientSecret: 'csecret' }
+  }
+
+  test('exchangeCode POSTs to the v1 token endpoint with Basic auth and no body credentials', async () => {
+    await exchangeCode(figmaConfig(), 'the-code', 'https://cb.example.com/oauth/callback')
+
+    expect(captured).toHaveLength(1)
+    const { url, init } = captured[0]
+    expect(url).toBe('https://api.figma.com/v1/oauth/token')
+    expect(init.method).toBe('POST')
+    const headers = new Headers(init.headers)
+    expect(headers.get('authorization')).toBe('Basic ' + Buffer.from('cid:csecret').toString('base64'))
+
+    const params = new URLSearchParams(init.body as string)
+    expect(params.get('grant_type')).toBe('authorization_code')
+    expect(params.get('code')).toBe('the-code')
+    expect(params.get('redirect_uri')).toBe('https://cb.example.com/oauth/callback')
+    expect(params.get('client_id')).toBeNull()
+    expect(params.get('client_secret')).toBeNull()
+  })
+
+  test('refreshAccessToken POSTs to the separate refresh endpoint with Basic auth and only refresh_token', async () => {
+    await refreshAccessToken(figmaConfig(), 'rt-123')
+
+    expect(captured).toHaveLength(1)
+    const { url, init } = captured[0]
+    expect(url).toBe('https://api.figma.com/v1/oauth/refresh')
+    expect(init.method).toBe('POST')
+    const headers = new Headers(init.headers)
+    expect(headers.get('authorization')).toBe('Basic ' + Buffer.from('cid:csecret').toString('base64'))
+
+    const params = new URLSearchParams(init.body as string)
+    expect(params.get('refresh_token')).toBe('rt-123')
+    expect(params.get('grant_type')).toBeNull()
+    expect(params.get('client_id')).toBeNull()
+    expect(params.get('client_secret')).toBeNull()
   })
 })
