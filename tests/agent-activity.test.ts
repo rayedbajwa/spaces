@@ -77,3 +77,29 @@ describe('agent activity log', () => {
     ].join('\n'))
   })
 })
+
+describe('secret masking', () => {
+  test('database URLs of any scheme, and exported connection strings', () => {
+    const line = 'export DATABASE_URL="postgresql://postgres:MPBdzwutCaZnzhSxLbjk@postgres.railway.internal:5432/agent_db"'
+    const out = redactSecrets(line)
+    expect(out).not.toContain('MPBdzwutCaZnzhSxLbjk')
+    expect(out).toContain('postgres.railway.internal')
+    for (const url of ['mysql://app:hunter2secret@db:3306/x', 'redis://default:s3cretPass@cache:6379', 'mongodb+srv://u:p4ssw0rd@c.mongodb.net/db', 'amqp://guest:guestpass@mq//']) {
+      expect(redactSecrets(url)).toMatch(/:\[redacted\]@/)
+    }
+  })
+
+  test('query parameters, JSON keys, variable names, AWS keys, JWTs and private keys', () => {
+    expect(redactSecrets('https://host/x?user=a&password=abc123&x=1')).toBe('https://host/x?user=a&password=[redacted]&x=1')
+    expect(redactSecrets('{"password": "abc123", "user": "sam"}')).toBe('{"password": "[redacted]", "user": "sam"}')
+    expect(redactSecrets('ENCRYPTION_KEY=0123456789abcdef PGPASSWORD=pw DB_PASS=x')).toBe('ENCRYPTION_KEY=[redacted] PGPASSWORD=[redacted] DB_PASS=[redacted]')
+    expect(redactSecrets('AKIAABCDEFGHIJKLMNOP')).toBe('[redacted]')
+    expect(redactSecrets('eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U')).toBe('[redacted jwt]')
+    expect(redactSecrets('-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----')).toBe('[redacted private key]')
+  })
+
+  test('ordinary text is left alone', () => {
+    const text = 'Run bun test; DATABASE_URL points at /railway. See https://github.com/o/r/pull/4 and user=sam.'
+    expect(redactSecrets(text)).toBe(text)
+  })
+})
