@@ -39,9 +39,15 @@ export function resolveVersionMetadata({ packageMetadata, env = process.env, res
     }
   }
 
+  const configuredVersion = env.SPACES_VERSION?.trim() ?? ''
+  const version =
+    configuredVersion ||
+    String(packageMetadata.version ?? '').trim() ||
+    'unknown'
+
   return {
     name: String(packageMetadata.name ?? ''),
-    version: String(packageMetadata.version ?? ''),
+    version,
     commit: commit || 'unknown',
   }
 }

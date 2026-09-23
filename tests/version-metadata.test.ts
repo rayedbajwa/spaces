@@ -53,6 +53,56 @@ describe('resolveVersionMetadata', () => {
     expect(resolveVersionMetadata({ packageMetadata: packageIdentity, env: {}, resolveGitRevision: () => '  ' }).commit).toBe('unknown')
   })
 
+  test('version prefers a trimmed non-empty SPACES_VERSION override', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: { SPACES_VERSION: ' 1.2.3 ' },
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.version).toBe('1.2.3')
+  })
+
+  test('version falls back to package.json when SPACES_VERSION is whitespace-only', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: { SPACES_VERSION: '   ' },
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.version).toBe(packageIdentity.version)
+  })
+
+  test('version falls back to package.json when SPACES_VERSION is absent', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: packageIdentity,
+      env: {},
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.version).toBe(packageIdentity.version)
+  })
+
+  test('version resolves to unknown when both SPACES_VERSION and package.json version are absent', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: {},
+      env: {},
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.version).toBe('unknown')
+  })
+
+  test('SPACES_VERSION override wins over package.json version (source vs binary mismatch)', () => {
+    const metadata = resolveVersionMetadata({
+      packageMetadata: { name: 'spaces', version: '0.1.0' },
+      env: { SPACES_VERSION: '2.0.0' },
+      resolveGitRevision: () => 'git-head',
+    })
+
+    expect(metadata.version).toBe('2.0.0')
+  })
+
   test('resolves once and reuses the captured metadata', () => {
     let gitCalls = 0
     const resolve = () => resolveVersionMetadata({

@@ -11,7 +11,7 @@ All `/api/*` routes except the ones marked public require a session cookie
 | Method & path | Purpose |
 |---|---|
 | `GET /api/auth/status` | public: `{ authEnabled, needsBootstrap, githubLogin }` |
-| `GET /api/version` | public: package name, version, and startup-resolved commit metadata |
+| `GET /api/version` | public: build identity `{ name, version, commit }` (see Version metadata) |
 | `POST /api/auth/register` | public: `{ email, password, name?, organizationName?, inviteToken? }`; the first user bootstraps the default organization and team, a registration without an invite starts its own organization, and otherwise an invite (or `OPEN_REGISTRATION=1`) is required. Sets the session cookie |
 | `POST /api/auth/login` · `POST /api/auth/logout` | public: `{ email, password, inviteToken? }` / clear session |
 | `GET /api/oauth/github/authorize?mode=login[&invite=token]` | public: GitHub sign-in (same OAuth app as the integration) |
@@ -36,6 +36,24 @@ OAuth apps, integrations, knowledge, the GitHub catalog, promotions and usage,
 reads and writes only the caller's organization — the one its active team
 belongs to. An account without a team gets `403 no_team` everywhere except its
 own session, team creation and invites.
+
+## Version metadata
+
+`GET /api/version` returns build identity only — no user, team or tenant data —
+and always responds `200` with a well-formed `{ name, version, commit }` body,
+never throwing, omitting a field, or returning an empty/whitespace value.
+
+| Field | Resolution order |
+|---|---|
+| `name` | `package.json` `name` |
+| `version` | `SPACES_VERSION` (trimmed, non-empty build label) → `package.json` `version` → `unknown` |
+| `commit` | `GIT_COMMIT` (trimmed, non-empty) → `git rev-parse HEAD` → `unknown` |
+
+`commit: "unknown"` is the sentinel for a build produced with no commit metadata;
+a packaged deployment built with metadata never reports it. Both `SPACES_VERSION`
+and `GIT_COMMIT` are build-time, non-secret variables baked into the image via
+`--build-arg` (see `.env.example`); the values are resolved once at boot and are
+stable across all requests and across restarts of the same artifact.
 
 ## Projects
 
