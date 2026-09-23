@@ -62,13 +62,18 @@ export function embeddingsAvailable(env: Env = process.env): boolean {
  * Embed texts in order. Batches requests, retries transient failures, and
  * throws (with the provider's message) when the model cannot be reached.
  */
-export async function embedTexts(texts: string[], env: Env = process.env): Promise<number[][]> {
+export async function embedTexts(texts: string[], env: Env = process.env, options: { orgId?: string } = {}): Promise<number[][]> {
   if (texts.length === 0) return []
   const endpoint = resolveEmbeddingEndpoint(env)
   if (!endpoint) throw new Error(`No stored key can serve the embedding model "${embeddingModel(env)}". Add an OpenAI or OpenRouter key under Organization → Models.`)
 
   const out: number[][] = []
-  for (const batch of batches(texts)) {
+  // AI data guardrails, under the organization's setting (documents and queries
+  // alike, so their vectors stay comparable); secrets are masked whatever it is.
+  const { maskOutput, redactSecretValues } = await import('./guardrails')
+  const { loadGuardPolicy } = await import('./guardrails-policy')
+  const policy = await loadGuardPolicy(options.orgId)
+  for (const batch of batches(texts.map((t) => maskOutput(redactSecretValues(t), policy)))) {
     const vectors = await requestWithRetry(endpoint, batch)
     out.push(...vectors)
   }
@@ -76,8 +81,8 @@ export async function embedTexts(texts: string[], env: Env = process.env): Promi
 }
 
 /** Embed one query string. */
-export async function embedQuery(text: string, env: Env = process.env): Promise<number[]> {
-  const [vector] = await embedTexts([text], env)
+export async function embedQuery(text: string, env: Env = process.env, options: { orgId?: string } = {}): Promise<number[]> {
+  const [vector] = await embedTexts([text], env, options)
   return vector!
 }
 

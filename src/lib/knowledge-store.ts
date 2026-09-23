@@ -260,7 +260,7 @@ export async function indexKnowledgeDocument(source: { sourceId: string; teamId:
   let embeddingError: string | undefined
   if (wantEmbeddings && chunks.length > 0) {
     try {
-      vectors = await embedTexts(chunks.map((c) => c.text), env)
+      vectors = await embedTexts(chunks.map((c) => c.text), env, { orgId: source.orgId })
     } catch (error) {
       embeddingError = error instanceof Error ? error.message : String(error)
       storeLog.warn('embedding failed; document indexed for full-text search only', { externalId: doc.externalId, error: embeddingError })
@@ -327,7 +327,7 @@ export async function embedPendingDocuments(orgId: string, limit = 25): Promise<
       SELECT chunk_id AS "chunkId", content FROM knowledge_chunks WHERE document_id = ${documentId} AND embedding IS NULL ORDER BY chunk_index
     `
     try {
-      const vectors = await embedTexts(chunks.map((c) => c.content), env)
+      const vectors = await embedTexts(chunks.map((c) => c.content), env, { orgId })
       await sql.begin(async (tx) => {
         for (let i = 0; i < chunks.length; i++) {
           await tx`UPDATE knowledge_chunks SET embedding = ${toVectorLiteral(vectors[i]!)}::vector, embedding_model = ${embeddingModel(env)} WHERE chunk_id = ${chunks[i]!.chunkId}`
@@ -405,7 +405,7 @@ export async function searchOrgKnowledge(options: {
   const searchEnv = await envWithProviderKeys(options.scope.orgId)
   if (embeddingsAvailable(searchEnv) && (await vectorSearchAvailable())) {
     try {
-      const literal = toVectorLiteral(await embedQuery(query, searchEnv))
+      const literal = toVectorLiteral(await embedQuery(query, searchEnv, { orgId: options.scope.orgId }))
       vectorIds = (await sql<Array<{ chunkId: number }>>`
         SELECT c.chunk_id AS "chunkId"
         FROM knowledge_chunks c

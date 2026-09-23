@@ -544,6 +544,25 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, await getOrgMemory(await orgIdOf()))
   }
 
+  // ---- Organization: AI data guardrails (owners/admins change them) ----
+
+  if (method === 'GET' && url.pathname === '/api/org/guardrails') {
+    const { loadGuardPolicy } = await import('./lib/guardrails-policy')
+    return sendJson(200, { policy: await loadGuardPolicy(await orgIdOf()) })
+  }
+  if (method === 'PUT' && url.pathname === '/api/org/guardrails') {
+    const denied = requireOrgAdmin('Only team owners or admins can change the AI data guardrails.'); if (denied) return denied
+    const body = await readJson<{ mode?: string; allow?: string[] }>(req)
+    const { GUARD_MODES } = await import('./lib/guardrails')
+    if (body.mode !== undefined && !GUARD_MODES.includes(body.mode as never)) return sendJson(400, { error: `mode must be one of ${GUARD_MODES.join(', ')}.` })
+    const { loadGuardPolicy, saveGuardPolicy } = await import('./lib/guardrails-policy')
+    const orgId = await orgIdOf()
+    const current = await loadGuardPolicy(orgId)
+    const policy = await saveGuardPolicy(orgId, { mode: body.mode ?? current.mode, allow: body.allow ?? current.allow })
+    serverLog.info('AI data guardrails changed', { orgId, mode: policy.mode, allow: policy.allow.length, by: auth?.user.email ?? 'local' })
+    return sendJson(200, { policy })
+  }
+
   // ---- LLM provider keys (organization-level, encrypted) ----
 
   if (method === 'GET' && url.pathname === '/api/org/provider-keys') {
