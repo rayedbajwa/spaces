@@ -17,12 +17,14 @@ import {
   type ToolDefinition,
 } from '@earendil-works/pi-coding-agent'
 import { log } from './logger'
+import { testTierInstruction } from './test-tiers'
 import { createActivityLog, createSecretRedactor } from './agent-activity'
 import { AgentGuard, maskOutput } from './guardrails'
 import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
-import { createAgentResourceLoader, createAgentSettings } from './agent-resources'
+import { checkoutContainerName, createAgentResourceLoader, createAgentSettings } from './agent-resources'
+import { installCommandTimeLimit, stopStageLeftovers } from './stage-limits'
 import { standingAgentInstructions } from './agent-environment'
 import { readVerificationStatus } from './pipeline-branch'
 import {
@@ -521,6 +523,8 @@ export class AIDLCFlow {
       this.guard = guard
     }
     this.guard.install(session)
+    // No shell command may hold the machine longer than the limit (lib/stage-limits.ts).
+    installCommandTimeLimit(session)
     this.session = session
     this.currentModelSpec = modelSelection.model?.id ? `${modelSelection.model.provider}/${modelSelection.model.id}` : (overrideModel ?? this.options.model)
   }
@@ -826,9 +830,15 @@ export class AIDLCFlow {
     const scope = stage === 'specify'
       ? await import('./intent-scope').then((m) => m.scopeInstruction(m.normalizeScope(this.options.intentScope)))
       : ''
-    const prompt = [inProgress, note, preamble, scope, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    // Which tests this stage runs (only what changed while implementing; everything at verify).
+    const tiers = CODE_STAGES.includes(stage)
+      ? await import('./agent-environment').then((m) => m.describeAgentEnvironment({ label: path.basename(this.options.cwd) })).then((env) => testTierInstruction(stage, env)).catch(() => '')
+      : ''
+    const prompt = [inProgress, note, preamble, scope, tiers, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
     const output = await this.streamPrompt(withSharedContext(prompt, this.options))
+    // What a code stage left running (the app on its test port, its containers) is stopped.
+    if (CODE_STAGES.includes(stage)) await this.stopStageLeftovers(stage)
     // What the guardrails kept from the model (or blocked) during this stage.
     const guarded = this.guard?.report()
     if (guarded) this.print(`\n${guarded}`)
@@ -1204,6 +1214,18 @@ export class AIDLCFlow {
       } catch (error) {
         this.print(`[specs] ${target.label}: could not sync the intent's documents (${error instanceof Error ? error.message.split('\n')[0] : String(error)}).\n`)
       }
+    }
+  }
+
+  private async stopStageLeftovers(stage: StageName): Promise<void> {
+    try {
+      const { describeAgentEnvironment } = await import('./agent-environment')
+      const env = await describeAgentEnvironment({ label: path.basename(this.options.cwd) })
+      const checkouts = [this.options.cwd, ...(this.options.repoTargets ?? []).map((t) => t.localPath).filter(Boolean)]
+      const stopped = await stopStageLeftovers({ testPort: env.testPort, containerProjects: checkouts.map(checkoutContainerName), docker: env.docker })
+      if (stopped.length) this.print(`\n[cleanup] ${stage}: stopped ${stopped.join(', ')}.\n`)
+    } catch (error) {
+      this.print(`\n[cleanup] ${stage}: could not stop leftovers (${error instanceof Error ? error.message : String(error)}).\n`)
     }
   }
 
@@ -1804,6 +1826,7 @@ export async function runAIDLCAssistantChat(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
 
   let output = ''
   let providerError: string | undefined
@@ -1886,6 +1909,7 @@ export async function summarizeCodebaseForMemory(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
 
   let output = ''
   let providerError: string | undefined
@@ -1973,6 +1997,7 @@ export async function runAIDLCMergeOrchestrator(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -2062,6 +2087,7 @@ export async function runAIDLCSpecificTask(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -2152,6 +2178,7 @@ export async function runAIDLCSpecificWorkstream(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
 
   let log = ''
   // What it said plus a line per tool call: the log a person reads.
@@ -2373,6 +2400,7 @@ export async function runAIDLCParallelSubAgents(options: {
         })
         // AI data guardrails: secrets and personal data never reach the model.
         const guard = await guardSession(session, orgId)
+    installCommandTimeLimit(session)
 
         const outputFile = path.join(outputDir, `${String(index + 1).padStart(2, '0')}-${slugify(workstream.title)}.md`)
         options.registerSession?.(workstream.title, session)
@@ -2798,6 +2826,7 @@ export async function runDevSetup(options: {
   })
   // AI data guardrails: secrets and personal data never reach the model.
   const guard = await guardSession(session, orgId)
+  installCommandTimeLimit(session)
   let output = ''
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {

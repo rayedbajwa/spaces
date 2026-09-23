@@ -316,20 +316,27 @@ export interface JobWithRun extends JobRow {
   runPauseKind?: 'clarification' | 'review'
   runError?: string
   runPipeline?: string
+  /** When the run last did anything (its newest event), else when it last changed. */
+  lastActivityAt?: string
+  /** The claiming worker's last heartbeat, when a worker holds the job. */
+  workerHeartbeatAt?: string
   displayStatus: 'queued' | 'running' | 'paused' | 'completed' | 'error' | 'cancelled' | 'claimed' | 'superseded'
 }
 
 export async function listJobsForProject(projectId: string, limit = 50): Promise<JobWithRun[]> {
   const sql = getDb()
-  const rows = await sql<Array<JobRow & { runStatus?: JobWithRun['runStatus']; runStage?: string; runPauseKind?: JobWithRun['runPauseKind']; runError?: string; runPipeline?: string }>>`
+  const rows = await sql<Array<JobRow & { runStatus?: JobWithRun['runStatus']; runStage?: string; runPauseKind?: JobWithRun['runPauseKind']; runError?: string; runPipeline?: string; lastActivityAt?: string; workerHeartbeatAt?: string }>>`
     SELECT ${sql.unsafe(JOB_COLS.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => `j.${l}`).join('\n  '))},
            r.status        AS "runStatus",
            r.current_stage AS "runStage",
            r.pause_kind    AS "runPauseKind",
            r.error_message AS "runError",
-           r.pipeline_name AS "runPipeline"
+           r.pipeline_name AS "runPipeline",
+           COALESCE((SELECT e.created_at FROM pipeline_events e WHERE e.run_id = j.run_id ORDER BY e.event_id DESC LIMIT 1), r.updated_at, j.updated_at) AS "lastActivityAt",
+           w.last_heartbeat_at AS "workerHeartbeatAt"
       FROM project_jobs j
       LEFT JOIN pipeline_runs r ON r.run_id = j.run_id
+      LEFT JOIN workers w ON w.worker_id = j.claimed_by
      WHERE j.project_id = ${projectId}
      ORDER BY j.created_at DESC
      LIMIT ${limit}

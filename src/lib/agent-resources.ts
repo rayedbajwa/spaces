@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { DefaultResourceLoader, SettingsManager, getAgentDir } from '@earendil-works/pi-coding-agent'
+import { workspaceRoot } from './github'
 import { log } from './logger'
 
 const resLog = log.child({ mod: 'agent-resources' })
@@ -79,6 +80,39 @@ export function createAgentSettings(cwd: string): SettingsManager {
   // On this instance only: the session reloads its settings, which would drop
   // a value set on the merged settings, and the setter writes to disk.
   const configured = settings.getShellCommandPrefix.bind(settings)
-  settings.getShellCommandPrefix = () => [AGENT_SHELL_PREFIX, configured()].filter(Boolean).join('\n')
+  const prefix = [AGENT_SHELL_PREFIX, agentShellSetup(cwd)].join('\n')
+  settings.getShellCommandPrefix = () => [prefix, configured()].filter(Boolean).join('\n')
   return settings
+}
+
+/** The name a checkout's containers are grouped under (Docker Compose project), from its folder. */
+export function checkoutContainerName(cwd: string): string {
+  return path.basename(path.resolve(cwd)).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'checkout'
+}
+
+/**
+ * The rest of an agent shell's setup:
+ * - package-manager caches on the persistent volume (beside the workspaces),
+ *   so installs and builds reuse what the last run downloaded instead of
+ *   starting cold after every deploy — only where the project has not set its own;
+ * - Docker Compose stacks named after the checkout, so what a stage brings up
+ *   can be found and stopped when it ends.
+ */
+export function agentShellSetup(cwd: string): string {
+  const cache = path.join(path.dirname(workspaceRoot()), 'cache')
+  const q = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`
+  const caches: Array<[string, string]> = [
+    ['BUN_INSTALL_CACHE_DIR', path.join(cache, 'bun')],
+    ['npm_config_cache', path.join(cache, 'npm')],
+    ['YARN_CACHE_FOLDER', path.join(cache, 'yarn')],
+    ['npm_config_store_dir', path.join(cache, 'pnpm')],
+    ['PIP_CACHE_DIR', path.join(cache, 'pip')],
+    ['GOCACHE', path.join(cache, 'go-build')],
+    ['GOMODCACHE', path.join(cache, 'go-mod')],
+  ]
+  return [
+    ...caches.map(([name, dir]) => `: "\${${name}:=${dir.replace(/"/g, '\\"')}}"; export ${name}`),
+    `export COMPOSE_PROJECT_NAME=${q(checkoutContainerName(cwd))}`,
+    'export DOCKER_BUILDKIT=1',
+  ].join('\n')
 }
