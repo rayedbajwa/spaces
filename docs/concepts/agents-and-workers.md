@@ -159,6 +159,14 @@ finish its current stage and then stop (a queued run is held before it
 starts), **Resume** continues a paused run from that stage, and **Cancel**
 ends it — finished stages keep their artifacts.
 
+**Interrupt** (while a run is working) opens a box for feedback: the agent reads
+it after the step it is on (its current tool calls finish first) and adjusts,
+without the stage being stopped; between stages it goes with the next stage's
+prompt. It appears in the log as `[feedback from <name>] …` and in the run's
+timeline (`feedback`, then `feedback_delivered` with when it took effect), and
+is masked by the data guardrails like any prompt. Use **Pause** or **Cancel** to
+stop the run instead.
+
 ## Workers
 
 Jobs land in a Postgres queue (`project_jobs`) with per-project concurrency.

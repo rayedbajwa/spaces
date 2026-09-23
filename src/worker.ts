@@ -859,6 +859,22 @@ async function main(): Promise<void> {
     workerLog.warn('force killed from the jobs list; exiting', { workerId })
     process.exit(137)
   })
+  // A person's feedback while a run works (the dock's Interrupt): the message
+  // is stored as the run's 'feedback' event; the notice names it. The worker
+  // holding the run steers it into the agent and records when it lands.
+  await sql.listen('run_steer', (payload) => {
+    const [runId, eventId] = payload.split(':')
+    const engine = runId ? engines.get(runId) : undefined
+    if (!runId || !eventId || !engine) return
+    void (async () => {
+      const [event] = await sql<Array<{ payload: { message?: string; by?: string } }>>`SELECT payload FROM pipeline_events WHERE event_id = ${Number(eventId)} AND run_id = ${runId} AND kind = 'feedback'`
+      const message = event?.payload?.message
+      if (!message) return
+      const when = await engine.steer(message, event.payload.by ?? 'a person')
+      await queueEvent(runId, 'feedback_delivered', { eventId: Number(eventId), when })
+      workerLog.info('feedback delivered to a running agent', { runId, when })
+    })().catch((err) => workerLog.warn('feedback not delivered', { runId, error: err instanceof Error ? err.message : String(err) }))
+  })
   await sql.listen('run_cancel', (runId) => {
     void handleRunCancel(runId).catch((err) => workerLog.error('run cancel failed', { runId }, err instanceof Error ? err : new Error(String(err))))
   })

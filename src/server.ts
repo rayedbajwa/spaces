@@ -2574,6 +2574,30 @@ async function route(req: Request): Promise<Response> {
 
   // Run controls from the agent output dock: pause at the next stage boundary
   // (or before start), resume a user pause, or cancel outright.
+  // Interrupt a running run with feedback: stored as the run's 'feedback'
+  // event, then the worker holding it steers it into the agent (mid-stage) or
+  // gives it to the next stage. Only a running run: a paused one is answered.
+  if (method === 'POST' && /^\/api\/runs\/[^/]+\/feedback$/.test(url.pathname)) {
+    const runId = url.pathname.split('/')[3]!
+    const row = await dbGetRun(runId)
+    if (!row) return sendJson(404, { error: 'Run not found.' })
+    const denied = await requireRunAccess(row, 'member', 'Only team members can give a run feedback.'); if (denied) return denied
+    if (row.status !== 'running') return sendJson(409, { error: row.status === 'paused' ? 'This run is waiting for you: answer it instead.' : `Only a running run takes feedback (this one is ${row.status}).` })
+    const body = await readJson<{ message?: string }>(req)
+    const message = body.message?.trim() ?? ''
+    if (!message) return sendJson(400, { error: 'Write the feedback first.' })
+    if (message.length > 4000) return sendJson(400, { error: 'Keep the feedback under 4,000 characters.' })
+    const by = auth?.user.name || auth?.user.email || 'local user'
+    const sql = getDb()
+    const [event] = await sql<Array<{ eventId: number }>>`
+      INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${runId}, 'feedback', ${sql.json({ message, by, stage: row.currentStage } as never)})
+      RETURNING event_id AS "eventId"
+    `
+    await sql`SELECT pg_notify('run_steer', ${`${runId}:${event!.eventId}`})`
+    serverLog.info('run feedback sent', { runId, by, stage: row.currentStage })
+    return sendJson(200, { ok: true, eventId: event!.eventId })
+  }
+
   if (method === 'POST' && /^\/api\/runs\/[^/]+\/(pause|resume|cancel)$/.test(url.pathname)) {
     const parts = url.pathname.split('/')
     const runId = parts[3]!
