@@ -230,6 +230,41 @@ export async function pushBranch(orgId: string, cwd: string, branch: string): Pr
   }
 }
 
+export interface BranchSync {
+  branch: string
+  before?: string
+  after?: string
+  /** Why the checkout was left as it was. */
+  skipped?: string
+}
+
+/**
+ * Bring a checkout to the latest default branch before new work starts: fetch,
+ * switch to the default branch, fast-forward to origin. Never discards work: a
+ * checkout with uncommitted changes, or a default branch that diverged from
+ * origin, is left alone and the reason returned.
+ */
+export async function syncDefaultBranch(orgId: string, cwd: string, githubRepo: string): Promise<BranchSync> {
+  const header = await authHeader(orgId)
+  await git(cwd, ['-c', `http.extraheader=${header}`, 'fetch', '--prune', 'origin'], { timeoutMs: 10 * 60_000 })
+  const branch = await defaultBranch(orgId, cwd, githubRepo)
+  const before = await git(cwd, ['rev-parse', 'HEAD']).catch(() => undefined)
+  if (await git(cwd, ['status', '--porcelain'])) {
+    return { branch, before, after: before, skipped: 'uncommitted changes in the checkout' }
+  }
+  const hasLocal = await branchExistsLocally(cwd, branch)
+  // Checked before switching, so a skip leaves the checkout on the branch it was on.
+  if (hasLocal && !(await git(cwd, ['merge-base', '--is-ancestor', branch, `origin/${branch}`]).then(() => true, () => false))) {
+    return { branch, before, after: before, skipped: `local ${branch} has diverged from origin/${branch}` }
+  }
+  if ((await currentBranch(cwd).catch(() => '')) !== branch) {
+    if (hasLocal) await git(cwd, ['checkout', '-q', branch])
+    else await git(cwd, ['checkout', '-q', '-b', branch, `origin/${branch}`])
+  }
+  await git(cwd, ['merge', '-q', '--ff-only', `origin/${branch}`])
+  return { branch, before, after: await git(cwd, ['rev-parse', 'HEAD']) }
+}
+
 export async function hasCommitsAhead(cwd: string, base: string, head: string): Promise<boolean> {
   try {
     const count = await git(cwd, ['rev-list', '--count', `${base}..${head}`])

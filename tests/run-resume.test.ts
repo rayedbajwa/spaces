@@ -128,6 +128,17 @@ describe('work in progress guardrail', () => {
     expect(note).toContain('already initialized')
   })
 
+  test('a requested new feature is not told to continue the unfinished one', async () => {
+    const root = await project({
+      '.specify/memory/constitution.md': '# Constitution',
+      'specs/002-roles/spec.md': '# Spec',
+    })
+    const note = await describeWorkInProgress(root, 'specify', { newFeature: true })
+    expect(note).not.toContain('002-roles')
+    expect(note).not.toContain('Do not create a new feature directory')
+    expect(note).toContain('already initialized')
+  })
+
   test('says nothing once the feature has passed verification', async () => {
     const root = await project({
       '.specify/memory/constitution.md': '# Constitution',
