@@ -53,14 +53,14 @@ export async function setActiveFeature(root: string, id: string | null): Promise
     await unlink(file).catch(() => undefined)
     return
   }
-  if (!featureDirNames(root).includes(id)) throw new Error(`Feature ${id} does not exist.`)
+  if (!featureDirNames(root).includes(id)) throw new Error(`Intent ${id} does not exist.`)
   await writeFile(file, `${id}\n`)
 }
 
 /** Remove a feature's directory; clears the active choice when it pointed at it. */
 export async function removeFeatureDir(root: string, id: string): Promise<void> {
   if (!/^[\w.-]+$/.test(id) || id.startsWith('.')) throw new Error('Invalid feature id.')
-  if (!featureDirNames(root).includes(id)) throw new Error(`Feature ${id} does not exist.`)
+  if (!featureDirNames(root).includes(id)) throw new Error(`Intent ${id} does not exist.`)
   let chosen = ''
   try { chosen = readFileSync(path.join(root, 'specs', ACTIVE_FEATURE_FILE), 'utf8').trim() } catch { /* none */ }
   await rm(path.join(root, 'specs', id), { recursive: true, force: true })

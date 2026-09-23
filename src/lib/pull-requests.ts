@@ -283,7 +283,7 @@ export async function switchToFeatureBranch(cwd: string, branch: string, orgId?:
     return { switched: true }
   }
   const remote = await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).catch(() => '')
-  if (!remote) return { switched: false, reason: 'no branch for this feature here' }
+  if (!remote) return { switched: false, reason: 'no branch for this intent here' }
   await git(cwd, ['checkout', '-q', '-b', branch, `origin/${branch}`])
   return { switched: true }
 }

@@ -183,6 +183,21 @@ describe('unfinished feature detection', () => {
     expect(await findUnfinishedFeature(root)).toBeUndefined()
   })
 
+  test('a delivered or accepted feature is finished even at partial verification', async () => {
+    const delivered = await project({
+      'specs/006-shipped/spec.md': '# Spec',
+      'specs/006-shipped/verification-report.md': 'Verification Status: PARTIAL\n',
+      'specs/006-shipped/delivery-report.md': 'Delivery Status: MERGED\n',
+    })
+    expect(await findUnfinishedFeature(delivered)).toBeUndefined()
+    const accepted = await project({
+      'specs/007-accepted/spec.md': '# Spec',
+      'specs/007-accepted/verification-report.md': 'Verification Status: PARTIAL\n',
+      'specs/007-accepted/acceptance.md': '# Acceptance\n',
+    })
+    expect(await findUnfinishedFeature(accepted)).toBeUndefined()
+  })
+
   test('a failed verification leaves the feature unfinished', async () => {
     const root = await project({
       'specs/005-failing/spec.md': '# Spec',

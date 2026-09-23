@@ -518,8 +518,8 @@ function App() {
   function promptForStageInput(field: 'feature' | 'constitution' | 'checklistDomain'): Promise<string | null> {
     const config = {
       feature: {
-        title: 'Feature to specify',
-        label: 'Describe the feature the AI should specify.',
+        title: 'Intent to specify',
+        label: 'Describe the intent the AI should specify.',
         placeholder: 'e.g. "Add reusable signing templates so users can share configs across projects."',
       },
       constitution: {
@@ -969,12 +969,12 @@ function App() {
   /** Continue an earlier, unfinished feature: it becomes the active one (and its branch is checked out where safe). */
   async function activateFeature(feature: FeatureSummary) {
     if (!selectedProjectNamespace) return
-    if (!window.confirm(`Continue "${feature.title}"? It becomes the active feature: the board, next steps and runs work on it, and each repository switches to its branch ${feature.id} where that is safe.`)) return
+    if (!window.confirm(`Continue "${feature.title}"? It becomes the active intent: the board, next steps and runs work on it, and each repository switches to its branch ${feature.id} where that is safe.`)) return
     try {
       const result = await postJson<{ features: FeatureSummary[]; branches: Array<{ repo: string; switched: boolean; reason?: string }> }>(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}/activate`, {})
       setProjectFeatures(result.features)
-      const skipped = result.branches.filter((b) => !b.switched && b.reason !== 'already on it' && b.reason !== 'no branch for this feature here')
-      setStatusMessage(`${feature.title} is the active feature.${skipped.length ? ` Left as they are: ${skipped.map((b) => `${b.repo} (${b.reason})`).join('; ')}.` : ''}`)
+      const skipped = result.branches.filter((b) => !b.switched && b.reason !== 'already on it' && b.reason !== 'no branch for this intent here')
+      setStatusMessage(`${feature.title} is the active intent.${skipped.length ? ` Left as they are: ${skipped.map((b) => `${b.repo} (${b.reason})`).join('; ')}.` : ''}`)
       await refreshBoard()
     } catch (error) {
       setStatusMessage(toMessage(error))
@@ -1023,7 +1023,7 @@ function App() {
     // Finished as the server counts it: verification passed, accepted, or merged.
     // A delivery report alone (partial, blocked) is not.
     const unfinished = Boolean(current && !(current.verification === 'pass' || current.status === 'accepted' || current.delivery === 'merged'))
-    if (unfinished && !window.confirm(`"${current!.title}" is not finished (${current!.status}). Start a new feature anyway? It stays in the Features list, and the project moves on to the new one.`)) return
+    if (unfinished && !window.confirm(`"${current!.title}" is not finished (${current!.status}). Start a new intent anyway? It stays in the Intents list, and the project moves on to the new one.`)) return
     // Always forced: this is an explicit request for a new feature, so neither the
     // duplicate check nor the engine's unfinished-feature guard may turn it into a continuation.
     await executeStep('specify', 'specs', undefined, { force: true })
@@ -1818,7 +1818,7 @@ function App() {
   /** Accept a feature whose verification did not pass, then offer its next step (review if not yet approved, else deliver). */
   async function acceptFeature(card: BoardCard) {
     const note = window.prompt(
-      `Accept ${card.projectLabel} with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the feature's acceptance record.`,
+      `Accept ${card.projectLabel} with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the intent's acceptance record.`,
       '',
     )
     if (note === null) return
@@ -1882,12 +1882,12 @@ function App() {
     if (step === 'specify') {
       const value = await promptForStageInput('feature')
       if (!value) {
-        setStatusMessage('Cancelled — the specify stage needs a feature description.')
+        setStatusMessage('Cancelled — the specify stage needs an intent description.')
         return
       }
       // A word or two ("tst") gives the agent nothing to specify; it declines and no feature is created.
       if (value.trim().split(/\s+/).length < 4) {
-        setStatusMessage(`"${value.trim()}" is too short to specify. Describe the feature in a sentence: who does what, and how you'll know it works.`)
+        setStatusMessage(`"${value.trim()}" is too short to specify. Describe the intent in a sentence: who does what, and how you'll know it works.`)
         return
       }
       extraBody.feature = value
@@ -2056,7 +2056,7 @@ function App() {
       case 'deliver':
         return selectedCardFresh && (selectedCardFresh.status === 'releasing' || selectedCardFresh.status === 'done')
           ? { ok: true }
-          : { ok: false, reason: 'Deliver starts once the code review approves the feature and verification passes or is accepted (QA tab).' }
+          : { ok: false, reason: 'Deliver starts once the code review approves the intent and verification passes or is accepted (QA tab).' }
       default: return { ok: true }
     }
   }
@@ -2241,7 +2241,7 @@ function App() {
             </div>
           </div>
           <ol className="welcome-steps">
-            <li><strong>Describe</strong><span>Name the project and its first feature. Repositories are optional; the plan names them from your GitHub catalog, and if nothing matches, discovery proposes a new one to create.</span></li>
+            <li><strong>Describe</strong><span>Name the project and its first intent. Repositories are optional; the plan names them from your GitHub catalog, and if nothing matches, discovery proposes a new one to create.</span></li>
             <li><strong>Onboard</strong><span>Repos are cloned and learned, memory and the governing workspace are built, dev environments set up.</span></li>
             <li><strong>Run</strong><span>Specify → plan → tasks → implement → review → deliver, with approval gates you control.</span></li>
           </ol>
@@ -2269,7 +2269,7 @@ function App() {
                 <tr>
                   <th>Project</th>
                   <th>Stage</th>
-                  <th>Feature</th>
+                  <th>Intent</th>
                   <th>Status</th>
                   <th>Verify</th>
                   <th>Gates</th>
@@ -2284,7 +2284,7 @@ function App() {
                       <small>{card.projectNamespace}</small>
                     </td>
                     <td><span className="mini-badge idle">{column.title}</span></td>
-                    <td className="cell-feature">{card.feature || <span className="text-subtle">No active feature</span>}</td>
+                    <td className="cell-feature">{card.feature || <span className="text-subtle">No active intent</span>}</td>
                     <td>
                       <span className={`mini-badge ${card.latestRun?.status ?? 'idle'}`}>{card.status}</span>
                       {card.automationState && card.automationState.state !== 'idle' && card.automationState.state !== 'completed' && (
@@ -2407,7 +2407,7 @@ function App() {
                       {card.archivedAt && <span className="mini-badge archived">archived</span>}
                       {card.pausedAt && !card.archivedAt && <span className="mini-badge paused">paused</span>}
                     </div>
-                    <p className="board-card-copy">{card.feature || 'No active feature yet'}</p>
+                    <p className="board-card-copy">{card.feature || 'No active intent yet'}</p>
                     <div className="summary-grid">
                       <div><span>Project</span><strong>{card.projectNamespace}</strong></div>
                       <div><span>Agent</span><strong>{card.currentAgent}</strong></div>
@@ -2473,7 +2473,7 @@ function App() {
                     {projectDetail?.pausedAt && !projectDetail.archivedAt && <span className="mini-badge paused">paused</span>}
                   </div>
                   <h1 className="project-title">{selectedCardFresh.projectLabel}</h1>
-                  <p className="project-feature">{selectedCardFresh.feature || 'No active feature yet'}</p>
+                  <p className="project-feature">{selectedCardFresh.feature || 'No active intent yet'}</p>
                   <div className="team-chips">
                     <span className={`chip lane ${selectedCardFresh.status}`}><strong>{selectedCardFresh.status}</strong> lane</span>
                     <span className={`chip run ${selectedCardFresh.latestRun?.status ?? 'idle'}`}>
@@ -2482,7 +2482,7 @@ function App() {
                     <span className={`chip verify ${selectedCardFresh.verificationStatus}`}>verify <strong>{selectedCardFresh.verificationStatus}</strong></span>
                     <UsageChip usage={selectedCardFresh.usage} label="spend" />
                     <PullRequestLinks pullRequests={projectPullRequests ?? selectedCardFresh.pullRequests} />
-                    <button className="chip chip-button new-feature" disabled={busy || runInFlight} onClick={() => void startNewFeature()} title="Start the project's next feature: pulls the latest code, refreshes memory and context, then writes a new spec" type="button">＋ New feature</button>
+                    <button className="chip chip-button new-feature" disabled={busy || runInFlight} onClick={() => void startNewFeature()} title="Start the project's next intent: pulls the latest code, refreshes memory and context, then writes a new spec" type="button">＋ New intent</button>
                     {projectDetail && <span className="chip"><strong>{projectDetail.repos.filter((r) => r.label !== 'governance').length}</strong> repositor{projectDetail.repos.filter((r) => r.label !== 'governance').length === 1 ? 'y' : 'ies'}</span>}
                     {selectedCardFresh.automationState && selectedCardFresh.automationState.state !== 'idle' && selectedCardFresh.automationState.state !== 'completed' && (
                       <button className={`chip attention chip-button`} onClick={() => setActiveProjectTab('assistant')} type="button">{selectedCardFresh.automationState.state.replace('_', ' ')} →</button>
@@ -2562,19 +2562,19 @@ function App() {
                 </div>
                 <section className="card panel slim-panel overview-section overview-features">
                   <div className="panel-heading-row">
-                    <div><h3>Features</h3><p className="panel-subtitle">What this project has built and is building, newest first.</p></div>
+                    <div><h3>Intents</h3><p className="panel-subtitle">What this project has built and is building, newest first.</p></div>
                     <div className="button-row">
                       <button className="secondary-button" onClick={() => setActiveProjectTab('specs')} type="button">Open in Specs</button>
-                      <button className="primary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New feature</button>
+                      <button className="primary-button" disabled={busy || runInFlight} onClick={() => void startNewFeature()} type="button">＋ New intent</button>
                     </div>
                   </div>
-                  {projectFeatures.length === 0 && isLoading('features') && <SkeletonRows count={2} label="Loading features…" />}
+                  {projectFeatures.length === 0 && isLoading('features') && <SkeletonRows count={2} label="Loading intents…" />}
                   {projectFeatures.length === 0 && !isLoading('features') && (
                     // A New feature run can end without a spec (the agent will not invent one from
                     // a vague description): say so instead of a bare "no features".
                     selectedCardFresh.latestRun && selectedCardFresh.latestRun.stages?.includes('specify') && ['completed', 'error'].includes(selectedCardFresh.latestRun.status)
-                      ? <p className="empty-state">The last New feature run{selectedCardFresh.latestRun.feature ? <> (<q>{selectedCardFresh.latestRun.feature}</q>)</> : null} ended without a spec. The agent needs a real description to write one: who does what, and how you'll know it works. Check its reasoning in the Assistant tab, then start again with ＋ New feature.</p>
-                      : <p className="empty-state">No features yet. Start one to write its spec.</p>
+                      ? <p className="empty-state">The last New intent run{selectedCardFresh.latestRun.feature ? <> (<q>{selectedCardFresh.latestRun.feature}</q>)</> : null} ended without a spec. The agent needs a real description to write one: who does what, and how you'll know it works. Check its reasoning in the Assistant tab, then start again with ＋ New intent.</p>
+                      : <p className="empty-state">No intents yet. Start one to write its spec.</p>
                   )}
                   <div className="feature-rows">
                     {projectFeatures.map((feature) => {
@@ -2597,13 +2597,13 @@ function App() {
                             </div>
                             <div className="feature-row-actions">
                               {!feature.current && feature.status !== 'delivered' && (
-                                <button className="ghost-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active feature and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue</button>
+                                <button className="ghost-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active intent and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue</button>
                               )}
                               {feature.documents.some((d) => d.label === 'Spec') && (
                                 <button className="ghost-button" disabled={busy} onClick={() => void renameFeatureTitle(feature)} type="button">Rename</button>
                               )}
                               {!['delivered', 'delivering'].includes(feature.status) && (
-                                <button className="ghost-button danger-text" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Delete this unfinished feature'} onClick={() => void deleteFeature(feature)} type="button">Delete</button>
+                                <button className="ghost-button danger-text" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Delete this unfinished intent'} onClick={() => void deleteFeature(feature)} type="button">Delete</button>
                               )}
                             </div>
                           </div>
@@ -3202,7 +3202,7 @@ function App() {
                         <button
                           className={selectedCardFresh.recommendedAction?.step === 'accept' ? 'primary-button' : 'secondary-button'}
                           disabled={busy}
-                          title={`Record that you accept this feature with ${selectedCardFresh.verificationStatus} verification; once the code review approves it, it moves on to releasing`}
+                          title={`Record that you accept this intent with ${selectedCardFresh.verificationStatus} verification; once the code review approves it, it moves on to releasing`}
                           onClick={() => void acceptFeature(selectedCardFresh)}
                           type="button"
                         >Accept and finish</button>
@@ -3267,9 +3267,9 @@ function App() {
                   </div>
                 </div>
                 <p className="panel-subtitle">
-                  {qaOverview?.deliveryStatus === 'merged' ? 'Delivered and merged. The feature is done.'
+                  {qaOverview?.deliveryStatus === 'merged' ? 'Delivered and merged. The intent is done.'
                     : selectedCardFresh.status === 'releasing' ? `${selectedCardFresh.accepted ? `Reviewed, and accepted at ${selectedCardFresh.accepted.verificationStatus} verification by ${selectedCardFresh.accepted.acceptedBy}.` : 'Reviewed and verified.'} Deliver merges the pull requests in order, confirms the deployment and runs UAT, asking before anything irreversible.`
-                    : 'Releasing starts once the code review approves the feature and verification passes (or you accept it). Both happen in the QA tab.'}
+                    : 'Releasing starts once the code review approves the intent and verification passes (or you accept it). Both happen in the QA tab.'}
                 </p>
                 {(projectPullRequests ?? selectedCardFresh.pullRequests ?? []).length > 0 && (
                   <>
@@ -3278,7 +3278,7 @@ function App() {
                   </>
                 )}
                 <h3>Release artifacts</h3>
-                {(qaOverview?.releaseArtifacts ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={3} label="Loading release documents…" /> : <p className="empty-state">No feature yet.</p>)}
+                {(qaOverview?.releaseArtifacts ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={3} label="Loading release documents…" /> : <p className="empty-state">No intent yet.</p>)}
                 {(qaOverview?.releaseArtifacts ?? []).map((artifact) => (
                   <details key={artifact.path} className="qa-artifact" open={artifact.exists && artifact.label === 'Delivery report'}>
                     <summary>{artifact.label} {artifact.exists ? '' : '(not written yet)'}</summary>
@@ -3574,7 +3574,7 @@ function App() {
                 // Derive the next actionable step from artifact state (highest-milestone rule).
                 if (!selectedCardFresh) return undefined
                 if (!hasArtifact('Initialized')) return { step: 'init', label: 'Initialize the project scaffolding.', reason: 'No .specify/ or AGENTS.md yet.' }
-                if (!hasArtifact('Specified')) return { step: 'specify', label: 'Write the feature specification.', reason: 'No spec.md found.' }
+                if (!hasArtifact('Specified')) return { step: 'specify', label: 'Write the intent’s specification.', reason: 'No spec.md found.' }
                 if (!hasArtifact('Planned')) return { step: 'plan', label: 'Design the implementation plan.', reason: 'Spec exists but no plan.md.' }
                 if (!hasArtifact('Tasked')) return { step: 'tasks', label: 'Break the plan into implementable tasks.', reason: 'Plan exists but no tasks.md.' }
                 if (!hasArtifact('Test Plan')) return { step: 'testplan', label: 'Draft the test plan.', reason: 'Tasks exist but no test-plan.md.' }
@@ -3585,7 +3585,7 @@ function App() {
                 if (!rec) return undefined // a run is in flight; the bar shows it
                 // Delivered: the next step is a new feature (specify asks what it is), never implement again.
                 if (rec.step === 'specify' && selectedCardFresh.status === 'done') {
-                  return { step: 'specify', label: 'Start a new feature.', reason: `${rec.reason} Describe the next feature; it gets its own spec, plan, tasks and pull requests.` }
+                  return { step: 'specify', label: 'Start a new intent.', reason: `${rec.reason} Describe the next intent; it gets its own spec, plan, tasks and pull requests.` }
                 }
                 return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
               })()}
@@ -3644,7 +3644,7 @@ function App() {
             </div>
             {inspectedRun.feature && (
               <p className="panel-subtitle" style={{ marginTop: 8 }}>
-                <strong>Feature:</strong> {inspectedRun.feature}
+                <strong>Intent:</strong> {inspectedRun.feature}
               </p>
             )}
             {inspectedRun.executiveSummary && (
@@ -3696,7 +3696,7 @@ function App() {
               {!onboarding && <button className="ghost-button icon-button" onClick={() => setIsWizardOpen(false)} type="button" aria-label="Close" title="Close (Esc)">×</button>}
             </div>
             <ol className="stepper" aria-label="Steps">
-              {([[1, 'Basics'], [2, 'Repositories'], [3, 'Integrations'], [4, 'First feature']] as Array<[1 | 2 | 3 | 4, string]>).map(([s, label]) => (
+              {([[1, 'Basics'], [2, 'Repositories'], [3, 'Integrations'], [4, 'First intent']] as Array<[1 | 2 | 3 | 4, string]>).map(([s, label]) => (
                 <li key={s} className={wizard.step === s ? 'active' : wizard.step > s ? 'done' : ''}>
                   <button type="button" onClick={() => goToStep(s)} disabled={busy || !!onboarding}>
                     <span className="stepper-index">{wizard.step > s ? '✓' : s}</span>
@@ -3720,7 +3720,7 @@ function App() {
                 <div className="card" style={{ padding: 12, marginTop: 8 }}>
                   <strong>Import from Jira / Linear</strong>
                   <p className="panel-subtitle" style={{ margin: '4px 0 8px' }}>
-                    Start from an existing ticket, epic or doc. It fills in the name, description and first feature, and is attached to the project so agents can cite it.
+                    Start from an existing ticket, epic or doc. It fills in the name, description and first intent, and is attached to the project so agents can cite it.
                     {knowledgeSources.length === 0 && ' Connect Jira, Linear, Confluence or GitHub under Integrations to enable this.'}
                   </p>
                   <div className="button-row" style={{ alignItems: 'stretch' }}>
@@ -3773,7 +3773,7 @@ function App() {
                   <p className="panel-subtitle" style={{ margin: '4px 0 0' }}>
                     Every project gets a <em>governing workspace</em> (a local git repo) that owns the Spec Kit workspace, specs, plans, tasks, reports and memory.
                     Code repositories are optional now: {githubConnected
-                      ? 'GitHub is connected, so all repositories you can see are indexed with their use cases; onboarding suggests the relevant ones and the plan names the ones each feature touches — they are cloned, learned and set up automatically.'
+                      ? 'GitHub is connected, so all repositories you can see are indexed with their use cases; onboarding suggests the relevant ones and the plan names the ones each intent touches — they are cloned, learned and set up automatically.'
                       : 'connect GitHub under Integrations to have your repositories indexed and suggested automatically, or add them here by owner/name or local path.'}
                   </p>
                 </div>
@@ -3966,13 +3966,13 @@ function App() {
                     {(() => {
                       const filled = wizard.repos.filter((r) => r.label.trim() || r.localPath.trim() || r.githubRepo.trim()).length
                       return filled === 0
-                        ? 'No code repositories yet — a governing workspace is created for specs and memory; onboarding will suggest repositories and the plan adds the ones each feature needs.'
+                        ? 'No code repositories yet — a governing workspace is created for specs and memory; onboarding will suggest repositories and the plan adds the ones each intent needs.'
                         : `${filled} code repo${filled === 1 ? '' : 's'} + a governing workspace for specs and memory`
                     })()}
                   </p>
                 </div>
                 <label>
-                  First feature (optional — leave blank to just create the project)
+                  First intent (optional — leave blank to just create the project)
                   <textarea value={wizard.firstFeature} onChange={(event) => setWizard((c) => ({ ...c, firstFeature: event.target.value }))} placeholder="Add an approval lane before documents can be sent for signature" />
                 </label>
                 <label>
@@ -4267,7 +4267,7 @@ function AiAgentOutputBar({
               <p className="panel-subtitle dock-summary" style={{ margin: '4px 0 0' }}>
                 {failed
                   ? (currentRun?.interrupted ? `The worker restarted during ${currentRun.stage ?? 'the run'}; retry continues from that stage.` : `Failed${currentRun?.stage ? ` at ${currentRun.stage}` : ''}: ${currentRun?.error?.split('\n')[0]?.slice(0, 160) ?? 'no error detail recorded'}`)
-                  : currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no feature'}` : 'No active or loaded run yet.')}
+                  : currentRun?.executiveSummary || (currentRun ? `${currentRun.pipeline ?? 'pipeline'} · ${currentRun.feature ?? 'no intent'}` : 'No active or loaded run yet.')}
               </p>
               {currentRun?.tasks && currentRun.tasks.total > 0 && (
                 <div className="dock-tasks" title={`${currentRun.tasks.done} of ${currentRun.tasks.total} tasks ticked off in tasks.md`}>

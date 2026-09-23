@@ -117,7 +117,7 @@ export async function renameFeature(projectRoot: string, id: string, title: stri
   if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
   const file = path.join(projectRoot, 'specs', id, 'spec.md')
   const spec = await readFile(file, 'utf8').catch(() => undefined)
-  if (spec === undefined) throw new Error(`Feature ${id} has no spec.md to rename.`)
+  if (spec === undefined) throw new Error(`Intent ${id} has no spec.md to rename.`)
   const lines = spec.split('\n')
   const index = lines.findIndex((line) => line.startsWith('# '))
   if (index === -1) {

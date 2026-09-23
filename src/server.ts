@@ -1420,7 +1420,7 @@ async function route(req: Request): Promise<Response> {
     const registry = await import('./lib/project-registry')
     const project = await registry.getProjectBySlug(projectNamespace)
     if (!project) return sendJson(404, { error: 'Project not found.' })
-    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch features.' : renaming ? 'Only team members can rename features.' : 'Only team members can delete features.'); if (denied) return denied
+    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch intents.' : renaming ? 'Only team members can rename intents.' : 'Only team members can delete intents.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     // Renaming only rewrites the spec's title line: no need to wait for runs.
@@ -1440,9 +1440,9 @@ async function route(req: Request): Promise<Response> {
       SELECT status, current_stage AS stage FROM pipeline_runs
        WHERE project_namespace = ${projectNamespace} AND status IN ('queued', 'running', 'paused') ORDER BY created_at DESC LIMIT 1
     `
-    if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching features' : 'deleting a feature'}.`, code: 'project_busy' })
+    if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching intents' : 'deleting an intent'}.`, code: 'project_busy' })
     const feature = (await listFeatures(projectMeta.path)).find((f) => f.id === featureId)
-    if (!feature) return sendJson(404, { error: `Feature ${featureId} does not exist.` })
+    if (!feature) return sendJson(404, { error: `Intent ${featureId} does not exist.` })
 
     if (!activating) {
       if (feature.status === 'delivered' || feature.status === 'delivering') {
@@ -1455,7 +1455,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(200, { features: await listFeatures(projectMeta.path) })
     }
 
-    if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new feature instead.`, code: 'delivered' })
+    if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new intent instead.`, code: 'delivered' })
     // Continue on the feature's own branch where it exists (Spec Kit finds the
     // feature from the branch), never over uncommitted work.
     const orgId = await orgIdForProject(project.projectId)
@@ -3195,7 +3195,7 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
   if (artifacts.deliveryStatus === 'merged') {
-    return { step: 'specify', label: 'Start a new feature', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new feature.' }
+    return { step: 'specify', label: 'Start a new intent', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new intent.' }
   }
   // Building the feature: implement, code review, then QA. Running implement
   // loops through all three on its own (lib/implement-loop.ts); these are the
@@ -3286,7 +3286,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     return { ...flags, links, diffs: artifactState.diffs.slice(0, 8) }
   }
 
-  const featurePrefix = `Feature ${latestFeature.featureId}`
+  const featurePrefix = `Intent ${latestFeature.featureId}`
   flags.currentFeature = { id: latestFeature.featureId, title: featureTitle(await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/spec.md`)), latestFeature.featureId) }
   const specPath = join(projectRoot, `${latestFeature.relativePath}/spec.md`)
   const tasksPath = join(projectRoot, `${latestFeature.relativePath}/tasks.md`)

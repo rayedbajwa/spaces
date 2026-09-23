@@ -219,6 +219,11 @@ export async function findUnfinishedFeature(projectPath: string): Promise<Unfini
   const verification = await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '')
   const verified = /(^|\n)#{0,3}\s*(overall\s+)?(status|result)\s*[:|-]?\s*\**\s*pass/i.test(verification)
   if (verified) return undefined
+  // Delivered (merged) or accepted by a person is finished too, whatever the
+  // verification said: otherwise a new feature after it was silently refused.
+  const delivery = await readFile(path.join(featureDir, 'delivery-report.md'), 'utf8').catch(() => '')
+  if (/Delivery Status:\s*\**\s*MERGED/i.test(delivery)) return undefined
+  if (await nonEmpty(path.join(featureDir, 'acceptance.md'))) return undefined
 
   const tasks = await readFile(path.join(featureDir, 'tasks.md'), 'utf8')
     .then((t) => parseTaskProgress(t))
