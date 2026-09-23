@@ -48,13 +48,17 @@ never throwing, omitting a field, or returning an empty/whitespace value.
 |---|---|
 | `name` | `package.json` `name` |
 | `version` | `SPACES_VERSION` (trimmed, non-empty build label) → `package.json` `version` → `unknown` |
-| `commit` | `GIT_COMMIT` (trimmed, non-empty) → `git rev-parse HEAD` → `unknown` |
+| `commit` | `GIT_COMMIT` (trimmed, non-empty) → `RAILWAY_GIT_COMMIT_SHA` (trimmed, platform-injected) → `git rev-parse HEAD` → `unknown` |
 
 `commit: "unknown"` is the sentinel for a build produced with no commit metadata;
 a packaged deployment built with metadata never reports it. Both `SPACES_VERSION`
 and `GIT_COMMIT` are build-time, non-secret variables baked into the image via
-`--build-arg` (see `.env.example`); the values are resolved once at boot and are
-stable across all requests and across restarts of the same artifact.
+`--build-arg` (see `.env.example`). Managed platforms such as Railway inject the
+commit SHA automatically as `RAILWAY_GIT_COMMIT_SHA`; the Dockerfile defaults
+`GIT_COMMIT` to that value when an explicit `--build-arg GIT_COMMIT` is not passed,
+so a Railway deployment reports the exact deployed commit without any manual
+configuration. The values are resolved once at boot and are stable across all
+requests and across restarts of the same artifact.
 
 ## Projects
 
