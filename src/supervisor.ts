@@ -9,6 +9,7 @@ import { getOrchestrator } from './lib/dispatcher'
 import { log } from './lib/logger'
 import { drainBudget } from './lib/drain'
 import { listLiveWorkers, pruneDeadWorkers } from './lib/worker-registry'
+import { pickSlotToFree } from './lib/worker-slots'
 
 assertEnvOrExit('supervisor')
 
@@ -126,20 +127,23 @@ async function reconcile(): Promise<void> {
         const waitedMs = Date.now() - since
         // A project must not starve behind workers that hold a slot without
         // running anything — a stuck or abandoned project would otherwise keep
-        // the fleet full for ever. After a minute of waiting, the longest-held
-        // idle slot is handed over; workers actually running jobs are left alone.
-        if (waitedMs >= STARVATION_MS) {
-          const idleHolder = [...managed.values()]
-            .filter((w) => !w.exited)
-            .filter((w) => (work.find((p) => p.projectId === w.projectId)?.inFlight ?? 0) === 0)
-            .filter((w) => Date.now() - (rotatedAt.get(w.projectId) ?? 0) > ROTATE_COOLDOWN_MS)
-            .sort((a, b) => a.startedAt - b.startedAt)[0]
-          if (idleHolder) {
-            rotatedAt.set(idleHolder.projectId, Date.now())
-            supLog.warn('handing a worker slot to a waiting project', { waiting: project.slug, waitedSeconds: Math.round(waitedMs / 1000), stopping: idleHolder.slug, workerId: idleHolder.workerId })
-            idleHolder.child.kill('SIGTERM')
-            continue
-          }
+        // the fleet full for ever. A worker whose project has no work left at
+        // all (it only waits out its idle timeout) gives its slot up at once;
+        // one whose project still has queued jobs but runs none, after a
+        // minute. Workers actually running jobs are left alone.
+        const freed = pickSlotToFree({
+          holders: [...managed.values()].filter((w) => !w.exited),
+          work,
+          waitedMs,
+          rotatedAt,
+          starvationMs: STARVATION_MS,
+          cooldownMs: ROTATE_COOLDOWN_MS,
+        })
+        if (freed) {
+          rotatedAt.set(freed.holder.projectId, Date.now())
+          supLog.warn('handing a worker slot to a waiting project', { waiting: project.slug, waitedSeconds: Math.round(waitedMs / 1000), stopping: freed.holder.slug, workerId: freed.holder.workerId, reason: freed.reason })
+          freed.holder.child.kill('SIGTERM')
+          continue
         }
         const lastLog = lastWaitLogAt.get(project.projectId) ?? 0
         if (Date.now() - lastLog > WAIT_LOG_MS) {
