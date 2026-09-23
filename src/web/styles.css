@@ -2200,11 +2200,18 @@ textarea {
 /* Tabs stick just under the top strip while the page scrolls. */
 .project-page .project-tabs { position: sticky; top: var(--strip-h); z-index: 5; }
 .project-overview { display: grid; gap: 14px; }
+/* Two independent columns: each stacks its own cards, so a long card on one
+   side never leaves a gap on the other. Status spans the top, the danger zone
+   the bottom. */
+.project-overview > .overview-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.project-overview > .overview-col > .card { margin: 0; }
 @media (min-width: 1100px) {
-  .project-overview { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; }
+  .project-overview { grid-template-columns: minmax(0, 1.6fr) minmax(320px, 1fr); align-items: start; }
   .project-overview > .project-stats { grid-column: 1 / -1; }
   .project-overview > .danger-zone { grid-column: 1 / -1; }
 }
+/* Tokens & cost in the side column: the totals wrap two by two. */
+.overview-side .usage-panel .usage-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .project-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-text { font-size: 20px; text-transform: capitalize; }
 .project-overview .slim-panel { padding: 18px 20px; }
