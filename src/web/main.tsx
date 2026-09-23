@@ -3724,7 +3724,7 @@ function App() {
                         compact
                         projectId={onboardingReview.projectId}
                         proposal={onboardingReview.suggestions.newRepository}
-                        onAttached={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Created on GitHub during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
+                        onAttached={(fullName) => { setOnboardingReview((c) => c ? { ...c, suggestions: { ...c.suggestions, newRepository: undefined, repositories: [...c.suggestions.repositories, { fullName, reason: 'Attached during discovery.', confidence: 'high', role: 'primary code', registered: true }] } } : c) }}
                       />
                     )}
                     {onboardingReview.suggestions.repositories.length > 0 && (

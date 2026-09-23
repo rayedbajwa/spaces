@@ -106,6 +106,7 @@ import {
   type IntegrationKind,
   type RepoKind,
   pickRunnableRepo,
+  primaryStillCloning,
   describeUnrunnableRepos,
   updateProjectKnowledge as projUpdateKnowledge,
   type ProjectKnowledgeConfig,
@@ -960,10 +961,7 @@ async function route(req: Request): Promise<Response> {
     if (body.kind === 'local' && !body.localPath) return sendJson(400, { error: 'localPath required for kind=local' })
     if (body.kind === 'github' && !body.githubRepo) return sendJson(400, { error: 'githubRepo required for kind=github' })
     // primaryIfFirst: the project's first code repository (beside the governing workspace) becomes primary.
-    const isPrimary = body.isPrimary ?? (body.primaryIfFirst
-      ? !(await import('./lib/project-registry').then((m) => m.listRepos(projectId))).some((r) => r.label !== 'governance')
-      : undefined)
-    const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary })
+    const repo = await projAddRepo({ projectId, label: body.label.trim(), kind: body.kind, localPath: body.localPath, githubRepo: body.githubRepo, isPrimary: body.isPrimary, primaryIfFirst: body.primaryIfFirst })
     // Once the checkout exists, learn it and recompose project memory so agents
     // (and tasks blocked on this repo) can use it.
     if (repo.kind === 'github') {
@@ -1935,6 +1933,8 @@ async function route(req: Request): Promise<Response> {
     }
 
     const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const cloning = primaryStillCloning(repos)
+    if (cloning) return sendJson(409, { error: `${cloning.githubRepo ?? cloning.label} is still being cloned. The run starts in it once the clone finishes; try again in a moment.`, code: 'primary_cloning' })
     const repo = pickRunnableRepo(repos)
     if (!repo?.localPath) return sendJson(400, { error: describeUnrunnableRepos(repos) })
 
@@ -2173,6 +2173,8 @@ async function route(req: Request): Promise<Response> {
     if (auth && !project.teamId) return sendJson(403, { error: 'This project belongs to a team you are not a member of.' })
 
     const repos = await import('./lib/project-registry').then((m) => m.listRepos(project.projectId))
+    const cloning = body.targetRepoId ? undefined : primaryStillCloning(repos)
+    if (cloning) return sendJson(409, { error: `${cloning.githubRepo ?? cloning.label} is still being cloned. The run starts in it once the clone finishes; try again in a moment.`, code: 'primary_cloning' })
     const repo = body.targetRepoId
       ? repos.find((r) => r.repoId === body.targetRepoId)
       : pickRunnableRepo(repos)

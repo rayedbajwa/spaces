@@ -53,7 +53,9 @@ export function NewRepoCard({ projectId, proposal, compact = false, onAttached }
     setLooking(true); setNote('')
     try {
       const { repos } = await json<{ repos: GitHubRepoSummary[] }>('/api/github/repos')
-      const match = repos.find((r) => r.fullName.toLowerCase() === wanted || (!owner && r.name.toLowerCase() === name.toLowerCase()))
+      // Without an owner, a name alone is only a match when exactly one visible repository has it.
+      const byName = owner ? [] : repos.filter((r) => r.name.toLowerCase() === name.toLowerCase())
+      const match = repos.find((r) => r.fullName.toLowerCase() === wanted) ?? (byName.length === 1 ? byName[0] : undefined)
       const recent = repos.filter((r) => r !== match).slice(0, 20)
       setCandidates(match ? [match, ...recent] : recent)
       setSelected((current) => current || match?.fullName || '')
@@ -64,6 +66,12 @@ export function NewRepoCard({ projectId, proposal, compact = false, onAttached }
       setLooking(false)
     }
   }, [wanted, owner, name])
+
+  // Results belong to the owner and name they were looked up for: editing either starts over.
+  useEffect(() => {
+    setCandidates(null)
+    setSelected('')
+  }, [owner, name])
 
   // Back from GitHub: look the new repository up as soon as this tab has focus again.
   useEffect(() => {
