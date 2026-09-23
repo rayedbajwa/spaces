@@ -2412,220 +2412,171 @@ function App() {
                   <div className="stat card"><span className="stat-label">Verification</span><strong className="stat-value stat-text">{selectedCardFresh.verificationStatus}</strong><span className="stat-sub">{selectedCardFresh.estimate}</span></div>
                   <div className="stat card"><span className="stat-label">Jobs</span><strong className="stat-value">{projectJobs.filter((j) => ['running', 'queued', 'claimed'].includes(j.displayStatus)).length}</strong><span className="stat-sub">{projectJobs.filter((j) => j.displayStatus === 'paused').length} paused · {projectJobs.length} recent</span></div>
                 </div>
-                <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
-                <section className="card panel slim-panel">
-                  <div className="panel-heading-row">
-                    <div><h3>Responsibilities</h3><p className="panel-subtitle">Project accountability is separate from team access roles.</p></div>
-                    {responsibilities?.repairNeeded && (me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin') && <button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void repairResponsibilities()}>{responsibilitiesBusy ? 'Repairing…' : 'Repair Owner assignments'}</button>}
-                  </div>
-                  {responsibilities?.responsibilities.map((item) => {
-                    const resolution = item.resolution
-                    const canManageResponsibilities = me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'
-                    const editing = editingResponsibility === item.responsibilityId
-                    return <div key={item.responsibilityId} className="repo-row">
-                      <div className="repo-row-main"><strong>{item.name}</strong><span className={`mini-badge ${resolution.status === 'unresolved' ? 'error' : resolution.status === 'owner-fallback' ? 'pending' : 'success'}`}>{resolution.status === 'owner-fallback' ? 'Owner fallback' : resolution.status}</span>{canManageResponsibilities && !editing && <button className="text-button" type="button" onClick={() => startResponsibilityEdit(item)}>Edit</button>}</div>
-                      {resolution.repairNeeded && <span className="error-text">Owner assignment needs repair.</span>}
-                      {!resolution.repairNeeded && resolution.assignees.length === 0 && <span className="repo-row-source">Unassigned</span>}
-                      {resolution.assignees.map((person) => <span key={person.userId} className="repo-row-source">{person.name}{person.primary ? ' · primary' : ''}</span>)}
-                      {editing && <div className="responsibility-editor" aria-label={`Edit ${item.name} assignments`}>
-                        <p className="panel-subtitle">Select active team members. Listed order controls primary and backups.</p>
-                        {responsibilityMembers.map((member) => {
-                          const selected = responsibilityDraft.includes(member.userId)
-                          const position = responsibilityDraft.indexOf(member.userId)
-                          return <div className="responsibility-editor-row" key={member.userId}>
-                            <label className="toggle"><input type="checkbox" checked={selected} onChange={() => setResponsibilityDraft((current) => selected ? current.filter((id) => id !== member.userId) : [...current, member.userId])} />{member.name} <span className="muted">{member.email}</span></label>
-                            {selected && <span><button className="text-button" type="button" disabled={position === 0} onClick={() => moveResponsibilityAssignee(member.userId, -1)}>↑</button><button className="text-button" type="button" disabled={position === responsibilityDraft.length - 1} onClick={() => moveResponsibilityAssignee(member.userId, 1)}>↓</button>{position === 0 && <span className="repo-row-source">primary</span>}</span>}
-                          </div>
-                        })}
-                        <div className="button-row"><button className="primary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void saveResponsibilityAssignments(item)}>Save assignments</button><button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => setEditingResponsibility(null)}>Cancel</button></div>
-                      </div>}
-                    </div>
-                  })}
-                  {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
-                </section>
-                <section className="card panel slim-panel">
-                  <h3>Summary</h3>
-                  <div className="auto-memory-box compact-box">
-                    <pre>{currentRun?.executiveSummary || 'No executive summary yet — it appears once a run completes a stage.'}</pre>
-                  </div>
-                  <label>
-                    Estimate
-                    <input value={estimateInput} onChange={(event) => setEstimateInput(event.target.value)} placeholder="e.g. 1-2 weeks" />
-                  </label>
-                  <div className="button-row">
-                    <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
-                  </div>
-                  <h3>Repositories</h3>
-                  {projectDetail?.suggestionsJson?.newRepository && !projectDetail.repos.some((r) => r.kind === 'github' && r.githubRepo?.split('/')[1]?.toLowerCase() === projectDetail.suggestionsJson!.newRepository!.name.toLowerCase()) && (
-                    <NewRepoCard
-                      projectId={projectDetail.projectId}
-                      proposal={projectDetail.suggestionsJson.newRepository}
-                      onCreated={async (fullName) => { setStatusMessage(`Created ${fullName} on GitHub — cloning in the background.`); await refreshProjectRepos() }}
-                      onAttachExisting={(fullName) => setRepoForm((c) => ({ ...c, open: true, kind: 'github', githubRepo: fullName, label: fullName.split('/').pop() ?? fullName }))}
-                    />
-                  )}
-                  {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
-                    <div className="repo-row" style={{ borderColor: 'rgba(94, 106, 210, 0.45)' }}>
-                      <div className="repo-row-main">
-                        <strong>Suggested from the {projectDetail.suggestionsJson.basis === 'plan' ? 'plan' : 'project description and your GitHub catalog'}</strong>
-                        <span className="repo-row-source">{formatTimestamp(projectDetail.suggestionsJson.generatedAt)}</span>
-                        <button
-                          className="ghost-button"
-                          type="button"
-                          style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 11 }}
-                          onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/suggestions`, { basis: hasArtifact('Planned') ? 'plan' : 'project' }).then(() => refreshProjectRepos()).catch((error) => setStatusMessage(`Could not refresh suggestions: ${toMessage(error)}`))}
-                        >refresh</button>
-                      </div>
-                      {projectDetail.suggestionsJson.repositories.filter((s) => !s.registered).map((s) => (
-                        <div key={s.fullName} className="repo-row-main">
-                          <code>{s.fullName}</code>
-                          <span className="mini-badge idle">{s.confidence}</span>
-                          {s.role && <span className="mini-badge idle">{s.role}</span>}
-                          <span className="repo-row-source">{s.reason}</span>
-                          <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: s.fullName.split('/')[1] ?? s.fullName, githubRepo: s.fullName })}>
-                            Add &amp; clone
-                          </button>
-                        </div>
-                      ))}
-                      {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).length > 0 && (
-                        <span className="repo-row-source">Already on the project: {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).map((s) => s.fullName).join(', ')}</span>
-                      )}
-                      {projectDetail.suggestionsJson.workAreas.length > 0 && (
-                        <div style={{ marginTop: 6 }}>
-                          <strong style={{ fontSize: 12 }}>Work areas</strong>
-                          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
-                            {projectDetail.suggestionsJson.workAreas.map((w) => (
-                              <li key={w.name} style={{ fontSize: 12, marginBottom: 4 }}>
-                                <strong>{w.name}</strong> — {w.description}
-                                {w.repositories.length > 0 && <span className="repo-row-source"> · repos: {w.repositories.join(', ')}</span>}
-                                {w.paths.length > 0 && <span className="repo-row-source"> · paths: {w.paths.join(', ')}</span>}
-                                {w.risks && <span className="repo-row-source"> · risk: {w.risks}</span>}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {projectDetail.suggestionsJson.notes && <span className="field-hint">{projectDetail.suggestionsJson.notes}</span>}
-                    </div>
-                  )}
-                  {planRepos.some((r) => !r.registered) && (
-                    <div className="repo-row" style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
-                      <strong>The plan depends on repositories not on this project</strong>
-                      <span className="repo-row-source">From plan.md “## Repositories”. Add them so implementation and QA can run in the right checkouts.</span>
-                      {planRepos.filter((r) => !r.registered).map((r) => (
-                        <div key={r.name} className="repo-row-main">
-                          <code>{r.name}</code>
-                          {r.note && <span className="repo-row-source">{r.note}</span>}
-                          {r.githubRepo ? (
-                            <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: r.githubRepo!.split('/')[1] ?? r.name, githubRepo: r.githubRepo })}>
-                              Add &amp; clone
-                            </button>
-                          ) : (
-                            <button className="ghost-button" type="button" style={{ marginLeft: 'auto' }} onClick={() => setRepoForm((c) => ({ ...c, open: true, label: r.name, kind: githubConnected ? 'github' : 'local' }))}>
-                              Add…
-                            </button>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <div className="repo-list">
-                    {(projectDetail?.repos ?? []).length === 0 && <p className="empty-state">No repositories registered.</p>}
-                    {(projectDetail?.repos ?? []).map((repo) => (
-                      <div key={repo.repoId} className="repo-row">
+                <div className="overview-col overview-main">
+                  <section className="card panel slim-panel">
+                    <h3>Repositories</h3>
+                    {projectDetail?.suggestionsJson?.newRepository && !projectDetail.repos.some((r) => r.kind === 'github' && r.githubRepo?.split('/')[1]?.toLowerCase() === projectDetail.suggestionsJson!.newRepository!.name.toLowerCase()) && (
+                      <NewRepoCard
+                        projectId={projectDetail.projectId}
+                        proposal={projectDetail.suggestionsJson.newRepository}
+                        onCreated={async (fullName) => { setStatusMessage(`Created ${fullName} on GitHub — cloning in the background.`); await refreshProjectRepos() }}
+                        onAttachExisting={(fullName) => setRepoForm((c) => ({ ...c, open: true, kind: 'github', githubRepo: fullName, label: fullName.split('/').pop() ?? fullName }))}
+                      />
+                    )}
+                    {projectDetail?.suggestionsJson && (projectDetail.suggestionsJson.repositories.length > 0 || projectDetail.suggestionsJson.workAreas.length > 0) && (
+                      <div className="repo-row" style={{ borderColor: 'rgba(94, 106, 210, 0.45)' }}>
                         <div className="repo-row-main">
-                          <strong>{repo.label}</strong>
-                          <span className="repo-row-source">{repo.kind === 'github' ? repo.githubRepo : repo.localPath}</span>
-                          {repo.isPrimary
-                            ? <span className="mini-badge">primary</span>
-                            : <button className="ghost-button" type="button" style={{ padding: '0 6px', fontSize: 11 }} title="Make this the primary repo (Spec Kit artifacts live there)" onClick={() => void updateProjectRepo(repo, { isPrimary: true })}>make primary</button>}
-                          {planRepos.some((r) => r.registered && r.repoId === repo.repoId) && <span className="mini-badge idle" title="Referenced by the current plan">in plan</span>}
+                          <strong>Suggested from the {projectDetail.suggestionsJson.basis === 'plan' ? 'plan' : 'project description and your GitHub catalog'}</strong>
+                          <span className="repo-row-source">{formatTimestamp(projectDetail.suggestionsJson.generatedAt)}</span>
                           <button
                             className="ghost-button"
                             type="button"
-                            style={{ padding: '0 6px', fontSize: 11, marginLeft: 'auto' }}
-                            onClick={() => {
-                              const next = window.prompt(repo.kind === 'github' ? 'GitHub repo (owner/name)' : 'Local path', repo.kind === 'github' ? repo.githubRepo ?? '' : repo.localPath ?? '')
-                              if (next && next.trim()) void updateProjectRepo(repo, repo.kind === 'github' ? { githubRepo: next.trim() } : { localPath: next.trim() })
-                            }}
-                          >edit</button>
-                          {repo.localPath && (
+                            style={{ marginLeft: 'auto', padding: '0 6px', fontSize: 11 }}
+                            onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/suggestions`, { basis: hasArtifact('Planned') ? 'plan' : 'project' }).then(() => refreshProjectRepos()).catch((error) => setStatusMessage(`Could not refresh suggestions: ${toMessage(error)}`))}
+                          >refresh</button>
+                        </div>
+                        {projectDetail.suggestionsJson.repositories.filter((s) => !s.registered).map((s) => (
+                          <div key={s.fullName} className="repo-row-main">
+                            <code>{s.fullName}</code>
+                            <span className="mini-badge idle">{s.confidence}</span>
+                            {s.role && <span className="mini-badge idle">{s.role}</span>}
+                            <span className="repo-row-source">{s.reason}</span>
+                            <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: s.fullName.split('/')[1] ?? s.fullName, githubRepo: s.fullName })}>
+                              Add &amp; clone
+                            </button>
+                          </div>
+                        ))}
+                        {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).length > 0 && (
+                          <span className="repo-row-source">Already on the project: {projectDetail.suggestionsJson.repositories.filter((s) => s.registered).map((s) => s.fullName).join(', ')}</span>
+                        )}
+                        {projectDetail.suggestionsJson.workAreas.length > 0 && (
+                          <div style={{ marginTop: 6 }}>
+                            <strong style={{ fontSize: 12 }}>Work areas</strong>
+                            <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                              {projectDetail.suggestionsJson.workAreas.map((w) => (
+                                <li key={w.name} style={{ fontSize: 12, marginBottom: 4 }}>
+                                  <strong>{w.name}</strong> — {w.description}
+                                  {w.repositories.length > 0 && <span className="repo-row-source"> · repos: {w.repositories.join(', ')}</span>}
+                                  {w.paths.length > 0 && <span className="repo-row-source"> · paths: {w.paths.join(', ')}</span>}
+                                  {w.risks && <span className="repo-row-source"> · risk: {w.risks}</span>}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {projectDetail.suggestionsJson.notes && <span className="field-hint">{projectDetail.suggestionsJson.notes}</span>}
+                      </div>
+                    )}
+                    {planRepos.some((r) => !r.registered) && (
+                      <div className="repo-row" style={{ borderColor: 'rgba(245, 158, 11, 0.4)' }}>
+                        <strong>The plan depends on repositories not on this project</strong>
+                        <span className="repo-row-source">From plan.md “## Repositories”. Add them so implementation and QA can run in the right checkouts.</span>
+                        {planRepos.filter((r) => !r.registered).map((r) => (
+                          <div key={r.name} className="repo-row-main">
+                            <code>{r.name}</code>
+                            {r.note && <span className="repo-row-source">{r.note}</span>}
+                            {r.githubRepo ? (
+                              <button className="secondary-button" type="button" style={{ marginLeft: 'auto' }} disabled={repoForm.busy} onClick={() => void addProjectRepo({ kind: 'github', label: r.githubRepo!.split('/')[1] ?? r.name, githubRepo: r.githubRepo })}>
+                                Add &amp; clone
+                              </button>
+                            ) : (
+                              <button className="ghost-button" type="button" style={{ marginLeft: 'auto' }} onClick={() => setRepoForm((c) => ({ ...c, open: true, label: r.name, kind: githubConnected ? 'github' : 'local' }))}>
+                                Add…
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="repo-list">
+                      {(projectDetail?.repos ?? []).length === 0 && <p className="empty-state">No repositories registered.</p>}
+                      {(projectDetail?.repos ?? []).map((repo) => (
+                        <div key={repo.repoId} className="repo-row">
+                          <div className="repo-row-main">
+                            <strong>{repo.label}</strong>
+                            <span className="repo-row-source">{repo.kind === 'github' ? repo.githubRepo : repo.localPath}</span>
+                            {repo.isPrimary
+                              ? <span className="mini-badge">primary</span>
+                              : <button className="ghost-button" type="button" style={{ padding: '0 6px', fontSize: 11 }} title="Make this the primary repo (Spec Kit artifacts live there)" onClick={() => void updateProjectRepo(repo, { isPrimary: true })}>make primary</button>}
+                            {planRepos.some((r) => r.registered && r.repoId === repo.repoId) && <span className="mini-badge idle" title="Referenced by the current plan">in plan</span>}
                             <button
                               className="ghost-button"
                               type="button"
-                              style={{ padding: '0 6px', fontSize: 11 }}
-                              title="Re-read this repository and refresh project memory/context"
-                              onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/repos/${repo.repoId}/learn`, {}).then(() => setStatusMessage(`Re-learning ${repo.label}; project memory will update shortly.`)).catch((error) => setStatusMessage(`Could not re-learn: ${toMessage(error)}`))}
-                            >relearn</button>
-                          )}
-                          {repo.kind === 'github' && repo.cloneStatus && (
-                            <span className={`mini-badge ${repo.cloneStatus === 'error' ? 'error' : repo.cloneStatus === 'ready' ? 'success' : 'pending'}`}>
-                              {CLONE_STATUS_LABEL[repo.cloneStatus]}
-                            </span>
-                          )}
-                        </div>
-                        {repo.kind === 'github' && repo.localPath && <span className="repo-row-path">{repo.localPath}</span>}
-                        {repo.kind === 'github' && repo.cloneStatus === 'error' && (
-                          <div className="repo-row-error">
-                            <span className="error-text">{repo.cloneError}</span>
-                            <button className="ghost-button" type="button" onClick={() => void retryRepoClone(repo)}>Retry clone</button>
+                              style={{ padding: '0 6px', fontSize: 11, marginLeft: 'auto' }}
+                              onClick={() => {
+                                const next = window.prompt(repo.kind === 'github' ? 'GitHub repo (owner/name)' : 'Local path', repo.kind === 'github' ? repo.githubRepo ?? '' : repo.localPath ?? '')
+                                if (next && next.trim()) void updateProjectRepo(repo, repo.kind === 'github' ? { githubRepo: next.trim() } : { localPath: next.trim() })
+                              }}
+                            >edit</button>
+                            {repo.localPath && (
+                              <button
+                                className="ghost-button"
+                                type="button"
+                                style={{ padding: '0 6px', fontSize: 11 }}
+                                title="Re-read this repository and refresh project memory/context"
+                                onClick={() => projectDetail && void postJson(`/api/projects/${projectDetail.projectId}/repos/${repo.repoId}/learn`, {}).then(() => setStatusMessage(`Re-learning ${repo.label}; project memory will update shortly.`)).catch((error) => setStatusMessage(`Could not re-learn: ${toMessage(error)}`))}
+                              >relearn</button>
+                            )}
+                            {repo.kind === 'github' && repo.cloneStatus && (
+                              <span className={`mini-badge ${repo.cloneStatus === 'error' ? 'error' : repo.cloneStatus === 'ready' ? 'success' : 'pending'}`}>
+                                {CLONE_STATUS_LABEL[repo.cloneStatus]}
+                              </span>
+                            )}
                           </div>
-                        )}
-                      </div>
-                    ))}
-                    {!repoForm.open ? (
-                      <div className="button-row">
-                        <button className="secondary-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: true, kind: githubConnected ? 'github' : 'local' }))}>+ Add repository</button>
-                      </div>
-                    ) : (
-                      <div className="repo-row">
-                        <div className="repo-row-main">
-                          <select value={repoForm.kind} onChange={(event) => setRepoForm((c) => ({ ...c, kind: event.target.value as 'github' | 'local' }))}>
-                            <option value="github">GitHub (owner/name)</option>
-                            <option value="local">Local path</option>
-                          </select>
-                          <input placeholder="Label" value={repoForm.label} onChange={(event) => setRepoForm((c) => ({ ...c, label: event.target.value }))} />
-                          {repoForm.kind === 'github' ? (
-                            <input
-                              list="github-repo-options"
-                              placeholder="owner/name"
-                              value={repoForm.githubRepo}
-                              onFocus={() => void loadGitHubRepos()}
-                              onChange={(event) => setRepoForm((c) => ({ ...c, githubRepo: event.target.value, label: c.label || event.target.value.split('/')[1] || '' }))}
-                              autoComplete="off"
-                            />
-                          ) : (
-                            <input placeholder="/absolute/path" value={repoForm.localPath} onChange={(event) => setRepoForm((c) => ({ ...c, localPath: event.target.value }))} />
+                          {repo.kind === 'github' && repo.localPath && <span className="repo-row-path">{repo.localPath}</span>}
+                          {repo.kind === 'github' && repo.cloneStatus === 'error' && (
+                            <div className="repo-row-error">
+                              <span className="error-text">{repo.cloneError}</span>
+                              <button className="ghost-button" type="button" onClick={() => void retryRepoClone(repo)}>Retry clone</button>
+                            </div>
                           )}
                         </div>
+                      ))}
+                      {!repoForm.open ? (
                         <div className="button-row">
-                          <button
-                            className="primary-button"
-                            type="button"
-                            disabled={repoForm.busy || (repoForm.kind === 'github' ? !/^[\w.-]+\/[\w.-]+$/.test(repoForm.githubRepo.trim()) : !repoForm.localPath.trim())}
-                            onClick={() => void addProjectRepo({ kind: repoForm.kind, label: repoForm.label, githubRepo: repoForm.githubRepo, localPath: repoForm.localPath })}
-                          >{repoForm.busy ? 'Adding…' : repoForm.kind === 'github' ? 'Add & clone' : 'Add'}</button>
-                          <button className="ghost-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: false, note: '' }))}>Cancel</button>
-                          {repoForm.note && <span className="error-text" style={{ margin: 0 }}>{repoForm.note}</span>}
+                          <button className="secondary-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: true, kind: githubConnected ? 'github' : 'local' }))}>+ Add repository</button>
                         </div>
-                        <datalist id="github-repo-options">
-                          {(githubRepos ?? []).map((option) => <option key={option.fullName} value={option.fullName}>{option.description?.slice(0, 80) ?? option.fullName}</option>)}
-                        </datalist>
-                      </div>
-                    )}
-                  </div>
-                  <h3>Recent changes</h3>
-                  <div className="diff-group">
-                    {selectedCardFresh.artifactDiffs.length === 0 && <p className="empty-state">No artifact diffs yet.</p>}
-                    {selectedCardFresh.artifactDiffs.map((diff) => (
-                      <div key={diff.id} className="diff-chip"><span>{diff.change}</span><strong>{diff.label}</strong></div>
-                    ))}
-                  </div>
-                </section>
-                {projectDetail && (
-                  <section className="card panel slim-panel danger-zone">
-                    <h3>{projectDetail.archivedAt ? 'Archived project' : 'Pause, archive or delete'}</h3>
-                    {!projectDetail.archivedAt && (
+                      ) : (
+                        <div className="repo-row">
+                          <div className="repo-row-main">
+                            <select value={repoForm.kind} onChange={(event) => setRepoForm((c) => ({ ...c, kind: event.target.value as 'github' | 'local' }))}>
+                              <option value="github">GitHub (owner/name)</option>
+                              <option value="local">Local path</option>
+                            </select>
+                            <input placeholder="Label" value={repoForm.label} onChange={(event) => setRepoForm((c) => ({ ...c, label: event.target.value }))} />
+                            {repoForm.kind === 'github' ? (
+                              <input
+                                list="github-repo-options"
+                                placeholder="owner/name"
+                                value={repoForm.githubRepo}
+                                onFocus={() => void loadGitHubRepos()}
+                                onChange={(event) => setRepoForm((c) => ({ ...c, githubRepo: event.target.value, label: c.label || event.target.value.split('/')[1] || '' }))}
+                                autoComplete="off"
+                              />
+                            ) : (
+                              <input placeholder="/absolute/path" value={repoForm.localPath} onChange={(event) => setRepoForm((c) => ({ ...c, localPath: event.target.value }))} />
+                            )}
+                          </div>
+                          <div className="button-row">
+                            <button
+                              className="primary-button"
+                              type="button"
+                              disabled={repoForm.busy || (repoForm.kind === 'github' ? !/^[\w.-]+\/[\w.-]+$/.test(repoForm.githubRepo.trim()) : !repoForm.localPath.trim())}
+                              onClick={() => void addProjectRepo({ kind: repoForm.kind, label: repoForm.label, githubRepo: repoForm.githubRepo, localPath: repoForm.localPath })}
+                            >{repoForm.busy ? 'Adding…' : repoForm.kind === 'github' ? 'Add & clone' : 'Add'}</button>
+                            <button className="ghost-button" type="button" onClick={() => setRepoForm((c) => ({ ...c, open: false, note: '' }))}>Cancel</button>
+                            {repoForm.note && <span className="error-text" style={{ margin: 0 }}>{repoForm.note}</span>}
+                          </div>
+                          <datalist id="github-repo-options">
+                            {(githubRepos ?? []).map((option) => <option key={option.fullName} value={option.fullName}>{option.description?.slice(0, 80) ?? option.fullName}</option>)}
+                          </datalist>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                  <section className="card panel slim-panel">
+                    <h3>Orchestrator</h3>
+                    {projectDetail && !projectDetail.archivedAt && (
                       <div className="button-row" style={{ marginBottom: 8 }}>
                         {projectDetail.pausedAt
                           ? <button type="button" className="primary-button" disabled={deletion.busy} onClick={() => void setPaused(false)}>Resume project</button>
@@ -2637,6 +2588,156 @@ function App() {
                         </span>
                       </div>
                     )}
+                    {projectWorker && (
+                      <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>
+                        Worker:{' '}
+                        <span className={`mini-badge ${projectWorker.state === 'hot' ? 'running' : projectWorker.state === 'warm' || projectWorker.state === 'shared' ? 'completed' : 'idle'}`}>
+                          {projectWorker.state === 'hot' && `● hot — ${projectWorker.worker?.activeJobs ?? 0} job${(projectWorker.worker?.activeJobs ?? 0) === 1 ? '' : 's'} running`}
+                          {projectWorker.state === 'warm' && `○ warm — idle${(projectWorker.worker?.pausedRuns ?? 0) > 0 ? `, holding ${projectWorker.worker?.pausedRuns} paused run(s)` : ''}`}
+                          {projectWorker.state === 'shared' && `shared worker (${projectWorker.sharedWorkers} online)`}
+                          {projectWorker.state === 'stale' && 'stale — heartbeat missed'}
+                          {projectWorker.state === 'none' && 'none — spawns when work is queued'}
+                        </span>
+                        {projectWorker.worker?.pid && <span style={{ marginLeft: 8 }}>pid {projectWorker.worker.pid}</span>}
+                      </p>
+                    )}
+                    <p className="panel-subtitle">
+                      Project-scoped run queue. One run in-flight per project by default; verify-loop
+                      fixes and re-runs are serialized. Autonomous mode auto-approves human gates
+                      (use only when you trust the pipeline to run unattended).
+                    </p>
+                    <div className="summary-grid details-grid">
+                      <div>
+                        <span>Autonomous mode</span>
+                        <strong>
+                          <button type="button" className={orchestrator?.autonomousMode ? 'primary-button' : 'ghost-button'} onClick={() => void toggleAutonomousMode()}>
+                            {orchestrator?.autonomousMode ? 'ON' : 'OFF'}
+                          </button>
+                        </strong>
+                      </div>
+                      <div><span>Max concurrent</span><strong>{orchestrator?.maxConcurrent ?? '—'}</strong></div>
+                      <div>
+                        <span>Speed mode</span>
+                        <strong>
+                          <select
+                            value={orchestrator?.speedMode ?? 'balanced'}
+                            onChange={(e) => void setSpeedMode(e.target.value as 'fast' | 'balanced' | 'quality')}
+                            style={{ width: 'auto', marginTop: 0, padding: '4px 8px', fontSize: 12 }}
+                            title="Fast = Haiku across most stages (cheap, quick). Balanced = per-stage defaults. Quality = Sonnet + extended thinking (Opus for merges)."
+                          >
+                            <option value="fast">Fast</option>
+                            <option value="balanced">Balanced</option>
+                            <option value="quality">Quality</option>
+                          </select>
+                        </strong>
+                      </div>
+                      {/* Queue mechanics (what max_concurrent limits): count the jobs' own states, not their runs'. */}
+                      <div><span>In-flight jobs</span><strong>{projectJobs.filter((j) => j.status === 'running' || j.status === 'claimed').length}</strong></div>
+                      <div><span>Paused runs</span><strong>{projectJobs.filter((j) => j.displayStatus === 'paused').length}</strong></div>
+                      <div><span>Queued</span><strong>{projectJobs.filter((j) => j.status === 'queued').length}</strong></div>
+                      <div>
+                        <span>Warm agents</span>
+                        <strong>
+                          {projectAgents.length === 0 ? '—' : projectAgents.map((a) => `${a.role}:${a.status}`).join(', ')}
+                        </strong>
+                      </div>
+                    </div>
+                    <h3 style={{ marginTop: 12 }}>Recent jobs</h3>
+                    <p className="panel-subtitle" style={{ marginTop: 0 }}>Click a job to open its log in a modal.</p>
+                    <div className="diff-group">
+                      {projectJobs.length === 0 && <p className="empty-state">No jobs yet.</p>}
+                      {projectJobs.slice(0, 8).map((j) => (
+                        <button
+                          key={j.jobId}
+                          type="button"
+                          className="diff-chip"
+                          style={{ cursor: j.runId ? 'pointer' : 'default', background: 'transparent', border: '1px solid #e5e7eb', textAlign: 'left', width: '100%' }}
+                          disabled={!j.runId}
+                          title={j.runId ? `Load log for run ${j.runId.slice(0, 8)}…` : 'This job has no run to inspect.'}
+                          onClick={() => j.runId && void loadRunLog(j.runId)}
+                        >
+                          <span
+                            className={`mini-badge ${j.displayStatus === 'completed' ? 'completed' : j.displayStatus === 'error' ? 'error' : j.displayStatus === 'paused' ? 'paused' : j.displayStatus === 'queued' || j.displayStatus === 'superseded' || j.displayStatus === 'cancelled' ? 'idle' : 'running'}`}
+                            title={j.displayStatus === 'superseded' ? 'An earlier attempt replaced by a later job for the same run (worker restart or rerun).' : j.runError ? j.runError : j.status !== j.displayStatus ? `Queue job state: ${j.status}; run state: ${j.displayStatus}` : undefined}
+                          >
+                            {j.displayStatus}{j.displayStatus === 'paused' && j.runPauseKind ? ` · ${j.runPauseKind}` : ''}
+                          </span>
+                          <strong>{j.runPipeline ?? j.kind}</strong>
+                          {j.runStage && <small style={{ marginLeft: 8 }}>stage {j.runStage}</small>}
+                          <small style={{ marginLeft: 8 }}>{j.triggerSource}</small>
+                          {j.runId && <small style={{ marginLeft: 8, color: '#6b7280' }}>run {j.runId.slice(0, 8)}</small>}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                  <section className="card panel slim-panel">
+                    <h3>Artifacts</h3>
+                    <div className="artifact-group">
+                      {selectedCardFresh.artifactLinks.map((artifact) => (
+                        <a key={artifact.relativePath} className="artifact-link" href={artifact.href} target="_blank" rel="noreferrer">
+                          <span>{artifact.stepLabel}</span>
+                          <strong>{artifact.label}</strong>
+                        </a>
+                      ))}
+                    </div>
+                    <h3>Recent changes</h3>
+                    <div className="diff-group">
+                      {selectedCardFresh.artifactDiffs.length === 0 && <p className="empty-state">No artifact diffs yet.</p>}
+                      {selectedCardFresh.artifactDiffs.map((diff) => (
+                        <div key={diff.id} className="diff-chip"><span>{diff.change}</span><strong>{diff.label}</strong></div>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+                <div className="overview-col overview-side">
+                  <section className="card panel slim-panel">
+                    <h3>Summary</h3>
+                    <div className="auto-memory-box compact-box">
+                      <pre>{currentRun?.executiveSummary || 'No executive summary yet — it appears once a run completes a stage.'}</pre>
+                    </div>
+                    <label>
+                      Estimate
+                      <input value={estimateInput} onChange={(event) => setEstimateInput(event.target.value)} placeholder="e.g. 1-2 weeks" />
+                    </label>
+                    <div className="button-row">
+                      <button className="secondary-button" onClick={() => void saveEstimate()} disabled={busy || !estimateInput.trim()} type="button">Save estimate</button>
+                    </div>
+                  </section>
+                  <section className="card panel slim-panel">
+                    <div className="panel-heading-row">
+                      <div><h3>Responsibilities</h3><p className="panel-subtitle">Project accountability is separate from team access roles.</p></div>
+                      {responsibilities?.repairNeeded && (me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin') && <button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void repairResponsibilities()}>{responsibilitiesBusy ? 'Repairing…' : 'Repair Owner assignments'}</button>}
+                    </div>
+                    {responsibilities?.responsibilities.map((item) => {
+                      const resolution = item.resolution
+                      const canManageResponsibilities = me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'
+                      const editing = editingResponsibility === item.responsibilityId
+                      return <div key={item.responsibilityId} className="repo-row">
+                        <div className="repo-row-main"><strong>{item.name}</strong><span className={`mini-badge ${resolution.status === 'unresolved' ? 'error' : resolution.status === 'owner-fallback' ? 'pending' : 'success'}`}>{resolution.status === 'owner-fallback' ? 'Owner fallback' : resolution.status}</span>{canManageResponsibilities && !editing && <button className="text-button" type="button" onClick={() => startResponsibilityEdit(item)}>Edit</button>}</div>
+                        {resolution.repairNeeded && <span className="error-text">Owner assignment needs repair.</span>}
+                        {!resolution.repairNeeded && resolution.assignees.length === 0 && <span className="repo-row-source">Unassigned</span>}
+                        {resolution.assignees.map((person) => <span key={person.userId} className="repo-row-source">{person.name}{person.primary ? ' · primary' : ''}</span>)}
+                        {editing && <div className="responsibility-editor" aria-label={`Edit ${item.name} assignments`}>
+                          <p className="panel-subtitle">Select active team members. Listed order controls primary and backups.</p>
+                          {responsibilityMembers.map((member) => {
+                            const selected = responsibilityDraft.includes(member.userId)
+                            const position = responsibilityDraft.indexOf(member.userId)
+                            return <div className="responsibility-editor-row" key={member.userId}>
+                              <label className="toggle"><input type="checkbox" checked={selected} onChange={() => setResponsibilityDraft((current) => selected ? current.filter((id) => id !== member.userId) : [...current, member.userId])} />{member.name} <span className="muted">{member.email}</span></label>
+                              {selected && <span><button className="text-button" type="button" disabled={position === 0} onClick={() => moveResponsibilityAssignee(member.userId, -1)}>↑</button><button className="text-button" type="button" disabled={position === responsibilityDraft.length - 1} onClick={() => moveResponsibilityAssignee(member.userId, 1)}>↓</button>{position === 0 && <span className="repo-row-source">primary</span>}</span>}
+                            </div>
+                          })}
+                          <div className="button-row"><button className="primary-button" type="button" disabled={responsibilitiesBusy} onClick={() => void saveResponsibilityAssignments(item)}>Save assignments</button><button className="secondary-button" type="button" disabled={responsibilitiesBusy} onClick={() => setEditingResponsibility(null)}>Cancel</button></div>
+                        </div>}
+                      </div>
+                    })}
+                    {!responsibilities && <p className="empty-state">Responsibility data is unavailable.</p>}
+                  </section>
+                  <ProjectUsagePanel projectNamespace={selectedCardFresh.projectNamespace} live={selectedCardFresh.latestRun?.status === 'running' || selectedCardFresh.latestRun?.status === 'paused'} />
+                </div>
+                {projectDetail && (
+                  <section className="card panel slim-panel danger-zone">
+                    <h3>{projectDetail.archivedAt ? 'Danger zone · archived project' : 'Danger zone'}</h3>
                     {projectDetail.archivedAt && (
                       <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>Archived {new Date(projectDetail.archivedAt).toLocaleString()}. Hidden from the board; runs and jobs are refused until it is unarchived. Nothing has been removed.</p>
                     )}
@@ -2699,101 +2800,6 @@ function App() {
                     )}
                   </section>
                 )}
-                <section className="card panel slim-panel">
-                  <h3>Orchestrator</h3>
-                  {projectWorker && (
-                    <p className="panel-subtitle" style={{ margin: '0 0 8px' }}>
-                      Worker:{' '}
-                      <span className={`mini-badge ${projectWorker.state === 'hot' ? 'running' : projectWorker.state === 'warm' || projectWorker.state === 'shared' ? 'completed' : 'idle'}`}>
-                        {projectWorker.state === 'hot' && `● hot — ${projectWorker.worker?.activeJobs ?? 0} job${(projectWorker.worker?.activeJobs ?? 0) === 1 ? '' : 's'} running`}
-                        {projectWorker.state === 'warm' && `○ warm — idle${(projectWorker.worker?.pausedRuns ?? 0) > 0 ? `, holding ${projectWorker.worker?.pausedRuns} paused run(s)` : ''}`}
-                        {projectWorker.state === 'shared' && `shared worker (${projectWorker.sharedWorkers} online)`}
-                        {projectWorker.state === 'stale' && 'stale — heartbeat missed'}
-                        {projectWorker.state === 'none' && 'none — spawns when work is queued'}
-                      </span>
-                      {projectWorker.worker?.pid && <span style={{ marginLeft: 8 }}>pid {projectWorker.worker.pid}</span>}
-                    </p>
-                  )}
-                  <p className="panel-subtitle">
-                    Project-scoped run queue. One run in-flight per project by default; verify-loop
-                    fixes and re-runs are serialized. Autonomous mode auto-approves human gates
-                    (use only when you trust the pipeline to run unattended).
-                  </p>
-                  <div className="summary-grid details-grid">
-                    <div>
-                      <span>Autonomous mode</span>
-                      <strong>
-                        <button type="button" className={orchestrator?.autonomousMode ? 'primary-button' : 'ghost-button'} onClick={() => void toggleAutonomousMode()}>
-                          {orchestrator?.autonomousMode ? 'ON' : 'OFF'}
-                        </button>
-                      </strong>
-                    </div>
-                    <div><span>Max concurrent</span><strong>{orchestrator?.maxConcurrent ?? '—'}</strong></div>
-                    <div>
-                      <span>Speed mode</span>
-                      <strong>
-                        <select
-                          value={orchestrator?.speedMode ?? 'balanced'}
-                          onChange={(e) => void setSpeedMode(e.target.value as 'fast' | 'balanced' | 'quality')}
-                          style={{ width: 'auto', marginTop: 0, padding: '4px 8px', fontSize: 12 }}
-                          title="Fast = Haiku across most stages (cheap, quick). Balanced = per-stage defaults. Quality = Sonnet + extended thinking (Opus for merges)."
-                        >
-                          <option value="fast">Fast</option>
-                          <option value="balanced">Balanced</option>
-                          <option value="quality">Quality</option>
-                        </select>
-                      </strong>
-                    </div>
-                    {/* Queue mechanics (what max_concurrent limits): count the jobs' own states, not their runs'. */}
-                    <div><span>In-flight jobs</span><strong>{projectJobs.filter((j) => j.status === 'running' || j.status === 'claimed').length}</strong></div>
-                    <div><span>Paused runs</span><strong>{projectJobs.filter((j) => j.displayStatus === 'paused').length}</strong></div>
-                    <div><span>Queued</span><strong>{projectJobs.filter((j) => j.status === 'queued').length}</strong></div>
-                    <div>
-                      <span>Warm agents</span>
-                      <strong>
-                        {projectAgents.length === 0 ? '—' : projectAgents.map((a) => `${a.role}:${a.status}`).join(', ')}
-                      </strong>
-                    </div>
-                  </div>
-                  <h3 style={{ marginTop: 12 }}>Recent jobs</h3>
-                  <p className="panel-subtitle" style={{ marginTop: 0 }}>Click a job to open its log in a modal.</p>
-                  <div className="diff-group">
-                    {projectJobs.length === 0 && <p className="empty-state">No jobs yet.</p>}
-                    {projectJobs.slice(0, 8).map((j) => (
-                      <button
-                        key={j.jobId}
-                        type="button"
-                        className="diff-chip"
-                        style={{ cursor: j.runId ? 'pointer' : 'default', background: 'transparent', border: '1px solid #e5e7eb', textAlign: 'left', width: '100%' }}
-                        disabled={!j.runId}
-                        title={j.runId ? `Load log for run ${j.runId.slice(0, 8)}…` : 'This job has no run to inspect.'}
-                        onClick={() => j.runId && void loadRunLog(j.runId)}
-                      >
-                        <span
-                          className={`mini-badge ${j.displayStatus === 'completed' ? 'completed' : j.displayStatus === 'error' ? 'error' : j.displayStatus === 'paused' ? 'paused' : j.displayStatus === 'queued' || j.displayStatus === 'superseded' || j.displayStatus === 'cancelled' ? 'idle' : 'running'}`}
-                          title={j.displayStatus === 'superseded' ? 'An earlier attempt replaced by a later job for the same run (worker restart or rerun).' : j.runError ? j.runError : j.status !== j.displayStatus ? `Queue job state: ${j.status}; run state: ${j.displayStatus}` : undefined}
-                        >
-                          {j.displayStatus}{j.displayStatus === 'paused' && j.runPauseKind ? ` · ${j.runPauseKind}` : ''}
-                        </span>
-                        <strong>{j.runPipeline ?? j.kind}</strong>
-                        {j.runStage && <small style={{ marginLeft: 8 }}>stage {j.runStage}</small>}
-                        <small style={{ marginLeft: 8 }}>{j.triggerSource}</small>
-                        {j.runId && <small style={{ marginLeft: 8, color: '#6b7280' }}>run {j.runId.slice(0, 8)}</small>}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-                <section className="card panel slim-panel">
-                  <h3>Artifacts</h3>
-                  <div className="artifact-group">
-                    {selectedCardFresh.artifactLinks.map((artifact) => (
-                      <a key={artifact.relativePath} className="artifact-link" href={artifact.href} target="_blank" rel="noreferrer">
-                        <span>{artifact.stepLabel}</span>
-                        <strong>{artifact.label}</strong>
-                      </a>
-                    ))}
-                  </div>
-                </section>
               </div>
             )}
 
