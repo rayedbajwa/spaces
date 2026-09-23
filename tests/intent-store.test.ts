@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { setActiveFeature } from '../src/lib/active-feature'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
-import { documentKind, getIntentDocuments, listIntents, markIntentDeleted, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
+import { documentKind, getIntentDocument, getIntentDocuments, listIntents, listIntentSummaries, markIntentDeleted, summarizeIntent, syncProjectIntents } from '../src/lib/intent-store'
 import { createProject } from '../src/lib/project-registry'
 
 describe('summarizeIntent', () => {
@@ -91,5 +91,16 @@ dbSuite('syncing intents into the database', () => {
     await markIntentDeleted(projectId, '002-billing', 'person:Sam')
     await syncProjectIntents(projectId, root, 'agent') // the directory is still on disk
     expect((await listIntents(projectId)).map((i) => i.dirId)).toEqual(['001-login'])
+  })
+
+  test('reads come from the database: the list with its documents, and a document even after its file is gone', async () => {
+    const { root, projectId } = await setup()
+    // First read imports the project.
+    const summaries = await listIntentSummaries(projectId, root)
+    expect(summaries.map((f) => [f.id, f.current, f.status])).toEqual([['002-billing', true, 'planned'], ['001-login', false, 'implementing']])
+    expect(summaries[1]!.documents).toEqual([{ label: 'Spec', path: 'specs/001-login/spec.md' }, { label: 'Verification report', path: 'specs/001-login/verification-report.md' }])
+    await rm(path.join(root, 'specs', '001-login'), { recursive: true })
+    expect((await getIntentDocument(projectId, '001-login', 'spec.md'))?.content).toBe('# Login\n')
+    expect((await listIntentSummaries(projectId, root)).map((f) => f.id)).toEqual(['002-billing', '001-login'])
   })
 })

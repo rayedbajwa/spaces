@@ -369,8 +369,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
         void queueEvent(runId, 'log', { stream: 'stderr', chunk })
       },
       onStageHandoff: async (h) => {
-        // The stage's documents are the intent's record: sync them into the database.
-        void syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
+        // The stage's documents are the intent's record: sync them in before the next stage starts.
+        await syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
         // A stage finished: keep the database copy of the conversation current.
         void saveSessionCopy(runId, engines.get(runId)?.getSessionFile())
         const sql = getDb()
@@ -478,7 +478,7 @@ async function notifyGate(runId: string, progress: FlowProgress): Promise<void> 
 
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {
   // Paused or finished: bring the intents' record up to date before anyone looks.
-  void getRun(runId).then((run) => syncProjectIntentsQuietly(run?.projectId, run?.projectPath, 'agent')).catch(() => undefined)
+  await getRun(runId).then((run) => syncProjectIntentsQuietly(run?.projectId, run?.projectPath, 'agent')).catch(() => undefined)
   // Paused or finished: the next step (an answer, a rerun) may happen on another worker.
   await saveSessionCopy(runId, progress.sessionFile)
   if (progress.status === 'paused') {

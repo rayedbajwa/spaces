@@ -260,3 +260,65 @@ export async function markIntentDeleted(projectId: string, dirId: string, by: st
     if (row) await tx`INSERT INTO intent_status_events (intent_id, field, from_value, to_value, by) VALUES (${row.intentId}, 'deleted', NULL, 'deleted', ${by})`
   })
 }
+
+/** Documents a person opens, in the order and with the names the interface shows. */
+export const DOCUMENT_LABELS: Array<[string, string]> = [
+  ['spec.md', 'Spec'],
+  ['plan.md', 'Plan'],
+  ['tasks.md', 'Tasks'],
+  ['test-plan.md', 'Test plan'],
+  ['code-review.md', 'Code review'],
+  ['verification-report.md', 'Verification report'],
+  [ACCEPTANCE_FILE, 'Acceptance'],
+  ['delivery-report.md', 'Delivery report'],
+]
+
+/** Which documents each intent has (path and when it last changed), for many intents in one query. */
+export async function listDocumentIndex(intentIds: string[]): Promise<Map<string, Array<{ path: string; updatedAt: string }>>> {
+  const index = new Map<string, Array<{ path: string; updatedAt: string }>>()
+  if (intentIds.length === 0) return index
+  const rows = await getDb()<Array<{ intentId: string; path: string; updatedAt: Date }>>`
+    SELECT intent_id AS "intentId", path, updated_at AS "updatedAt" FROM intent_documents WHERE intent_id = ANY(${intentIds}::uuid[]) ORDER BY path
+  `
+  for (const row of rows) index.set(row.intentId, [...(index.get(row.intentId) ?? []), { path: row.path, updatedAt: new Date(row.updatedAt).toISOString() }])
+  return index
+}
+
+/** One document of an intent, by the intent's directory name and the document's path inside it. */
+export async function getIntentDocument(projectId: string, dirId: string, relativePath: string): Promise<IntentDocument | undefined> {
+  const [row] = await getDb()<Array<IntentDocument & { updatedAt: Date }>>`
+    SELECT d.path, d.kind, d.content, d.sha256, d.bytes, d.updated_by AS "updatedBy", d.updated_at AS "updatedAt"
+      FROM intent_documents d JOIN intents i ON i.intent_id = d.intent_id
+     WHERE i.project_id = ${projectId} AND i.dir_id = ${dirId} AND i.deleted_at IS NULL AND d.path = ${relativePath}
+  `
+  return row ? { ...row, updatedAt: new Date(row.updatedAt).toISOString() } : undefined
+}
+
+/** Import a project the first time its intents are needed (later syncs follow stages and actions). */
+export async function ensureIntentsSynced(projectId: string, projectRoot: string): Promise<void> {
+  const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intents WHERE project_id = ${projectId}`
+  if ((row?.n ?? 0) === 0 && featureDirNames(projectRoot).length > 0) await syncProjectIntents(projectId, projectRoot, 'import')
+}
+
+/** The intents list as the interface shows it (lib/features.ts FeatureSummary), from the database. */
+export async function listIntentSummaries(projectId: string, projectRoot: string): Promise<import('./features').FeatureSummary[]> {
+  await ensureIntentsSynced(projectId, projectRoot).catch(() => undefined)
+  const intents = await listIntents(projectId)
+  const docs = await listDocumentIndex(intents.map((i) => i.intentId))
+  // No active flag yet (e.g. every intent imported before one was chosen): the newest is current.
+  const current = intents.find((i) => i.active)?.intentId ?? intents[0]?.intentId
+  return intents.map((i) => {
+    const present = new Set((docs.get(i.intentId) ?? []).map((d) => d.path))
+    return {
+      id: i.dirId,
+      relativePath: `specs/${i.dirId}`,
+      title: i.title,
+      current: i.intentId === current,
+      status: i.status,
+      ...(i.codeReviewStatus ? { codeReview: i.codeReviewStatus } : {}),
+      ...(i.verificationStatus ? { verification: i.verificationStatus } : {}),
+      ...(i.deliveryStatus ? { delivery: i.deliveryStatus } : {}),
+      documents: DOCUMENT_LABELS.filter(([file]) => present.has(file)).map(([file, label]) => ({ label, path: `specs/${i.dirId}/${file}` })),
+    }
+  })
+}

@@ -84,7 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures, renameFeature } from './lib/features'
-import { markIntentDeleted, syncProjectIntentsQuietly } from './lib/intent-store'
+import { ensureIntentsSynced, getIntentDocument, listDocumentIndex, listIntentSummaries, listIntents, markIntentDeleted, syncProjectIntentsQuietly } from './lib/intent-store'
 import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
@@ -1417,7 +1417,8 @@ async function route(req: Request): Promise<Response> {
     const denied = requireProjectRole(project, 'member', 'Only team members can view this project\'s features.'); if (denied) return denied
     const projectMeta = await readProjectMeta(projectNamespace!)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
-    return sendJson(200, { features: await listFeatures(projectMeta.path) })
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
   }
 
   // Continue an earlier feature (make it active), or delete one that is not delivered.
@@ -1445,7 +1446,7 @@ async function route(req: Request): Promise<Response> {
       await markProjectStateStale(project.projectId).catch(() => undefined)
       await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
-      return sendJson(200, { features: await listFeatures(projectMeta.path) })
+      return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
     }
     // Switching or deleting under a live run would pull its feature away from it.
     const [live] = await getDb()<Array<{ status: string; stage: string | null }>>`
@@ -1453,7 +1454,7 @@ async function route(req: Request): Promise<Response> {
        WHERE project_namespace = ${projectNamespace} AND status IN ('queued', 'running', 'paused') ORDER BY created_at DESC LIMIT 1
     `
     if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching intents' : 'deleting an intent'}.`, code: 'project_busy' })
-    const feature = (await listFeatures(projectMeta.path)).find((f) => f.id === featureId)
+    const feature = (await listIntentSummaries(project.projectId, projectMeta.path)).find((f) => f.id === featureId)
     if (!feature) return sendJson(404, { error: `Intent ${featureId} does not exist.` })
 
     if (!activating) {
@@ -1465,7 +1466,7 @@ async function route(req: Request): Promise<Response> {
       await markProjectStateStale(project.projectId).catch(() => undefined)
       void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
       serverLog.info('feature deleted', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
-      return sendJson(200, { features: await listFeatures(projectMeta.path) })
+      return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path) })
     }
 
     if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new intent instead.`, code: 'delivered' })
@@ -1488,7 +1489,7 @@ async function route(req: Request): Promise<Response> {
     await markProjectStateStale(project.projectId).catch(() => undefined)
     await syncProjectIntentsQuietly(project.projectId, projectMeta.path, `person:${auth?.user.name || auth?.user.email || 'local user'}`)
     serverLog.info('feature made active', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
-    return sendJson(200, { features: await listFeatures(projectMeta.path), branches })
+    return sendJson(200, { features: await listIntentSummaries(project.projectId, projectMeta.path), branches })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/pull-requests$/.test(url.pathname)) {
@@ -2226,6 +2227,20 @@ async function route(req: Request): Promise<Response> {
     const filePath = resolveArtifactPath(projectMeta.path, relativePath)
     if (!filePath) {
       return sendJson(400, { error: 'Invalid artifact path.' })
+    }
+
+    // An intent's document is served from the database, the record; the file
+    // (a working copy that may be on another branch, or gone) is the fallback.
+    const intentPath = /^specs\/([^/]+)\/(.+)$/.exec(normalize(relativePath).split(sep).join('/'))
+    if (intentPath) {
+      const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+      const recorded = project ? await getIntentDocument(project.projectId, intentPath[1]!, intentPath[2]!).catch(() => undefined) : undefined
+      if (recorded) {
+        if (relativePath.endsWith('.md') && url.searchParams.get('raw') !== '1') {
+          return sendHtml(200, renderMarkdownPreview({ title: relativePath, markdown: recorded.content, rawHref: `${url.pathname}?path=${encodeURIComponent(relativePath)}&raw=1` }))
+        }
+        return new Response(recorded.content, { headers: { 'content-type': `${getContentType(relativePath)}; charset=utf-8` } })
+      }
     }
 
     try {
@@ -3265,7 +3280,87 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
   return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `${basis}. Merge, deploy and run UAT.` }
 }
 
+/** Where each intent document appears among a card's artifacts: [stage label, name]. */
+const INTENT_ARTIFACTS: Array<[string, string, string]> = [
+  ['spec.md', 'Specified', 'spec'],
+  ['plan.md', 'Planned', 'plan'],
+  ['tasks.md', 'Tasked', 'tasks'],
+  ['test-plan.md', 'Test Plan', 'test plan'],
+  ['parallel-workstreams.md', 'Parallelize', 'parallel workstreams'],
+  ['merge-orchestrator.md', 'Orchestrate', 'merge orchestrator'],
+  ['verification-report.md', 'Verify', 'verification report'],
+  ['code-review.md', 'Review', 'code review'],
+  ['delivery-report.md', 'Deliver', 'delivery report'],
+  ['delivery-status.md', 'Deliver', 'delivery status'],
+  ['research.md', 'Planned', 'research'],
+  ['data-model.md', 'Planned', 'data model'],
+  ['quickstart.md', 'Planned', 'quickstart'],
+]
+
+/**
+ * A project's artifacts from the database: the active intent's row gives the
+ * statuses, its documents the links. Only the project-level Spec Kit files
+ * (constitution, hooks, agent context) are still looked up on disk. Undefined
+ * when the project has no intents in the database, so the caller reads files.
+ */
+async function collectProjectArtifactsFromDb(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts | undefined> {
+  const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
+  if (!project) return undefined
+  await ensureIntentsSynced(project.projectId, projectRoot)
+  const intents = await listIntents(project.projectId)
+  const intent = intents.find((i) => i.active) ?? intents[0]
+  if (!intent) return undefined
+  const docs = (await listDocumentIndex([intent.intentId])).get(intent.intentId) ?? []
+  const docAt = new Map(docs.map((d) => [d.path, d.updatedAt]))
+  const links: BoardArtifactLink[] = []
+  const initialized = await pathExists(join(projectRoot, '.specify'))
+  if (initialized) {
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, '.specify/memory/constitution.md', 'Initialized', 'Constitution')
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, '.specify/hooks.yml', 'Initialized', 'Hooks config')
+    await pushArtifactIfExists(links, projectNamespace, projectRoot, 'AGENTS.md', 'Initialized', 'Agent context')
+  }
+  const prefix = `Intent ${intent.dirId}`
+  const link = (rel: string, stepLabel: string, label: string) => links.push({
+    label: `${prefix} ${label}`,
+    stepLabel,
+    href: `/api/projects/${projectNamespace}/artifact?path=${encodeURIComponent(`specs/${intent.dirId}/${rel}`)}`,
+    relativePath: `specs/${intent.dirId}/${rel}`,
+  } as BoardArtifactLink)
+  for (const [rel, stepLabel, label] of INTENT_ARTIFACTS) if (docAt.has(rel)) link(rel, stepLabel, label)
+  const contracts = docs.filter((d) => d.path.startsWith('contracts/'))
+  for (const d of contracts) link(d.path, 'Planned', `contract: ${d.path.slice('contracts/'.length)}`)
+  const hasVerification = docAt.has('verification-report.md')
+  const verificationStatus = hasVerification ? (intent.verificationStatus ?? 'missing') : 'missing'
+  // Findings implemented after the review: tasks.md changed after code-review.md.
+  const reviewedAt = docAt.get('code-review.md')
+  const tasksAt = docAt.get('tasks.md')
+  return {
+    initialized,
+    specified: docAt.has('spec.md'),
+    planned: docAt.has('plan.md'),
+    tasked: docAt.has('tasks.md'),
+    verifiedPass: verificationStatus === 'pass',
+    verificationStatus,
+    accepted: intent.acceptedBy ? { verificationStatus: (intent.acceptedVerification ?? 'partial') as Acceptance['verificationStatus'], acceptedBy: intent.acceptedBy, acceptedAt: intent.acceptedAt ?? '', ...(intent.acceptedNote ? { note: intent.acceptedNote } : {}) } : undefined,
+    verificationSummary: intent.verificationSummary ?? undefined,
+    codeReviewStatus: intent.codeReviewStatus ?? undefined,
+    codeReviewStale: intent.codeReviewStatus === 'changes_requested' && Boolean(reviewedAt && tasksAt && tasksAt > reviewedAt),
+    implementationTasks: docAt.has('tasks.md') ? { done: intent.implementationDone, total: intent.implementationTotal } : undefined,
+    currentFeature: { id: intent.dirId, title: intent.title },
+    deliveryStatus: intent.deliveryStatus ?? undefined,
+    scope: { requirements: 0, tasks: 0, contracts: contracts.length, workstreams: 0 },
+    links,
+    diffs: [],
+  }
+}
+
 async function collectProjectArtifacts(projectNamespace: string, projectRoot: string): Promise<ProjectArtifacts> {
+  // The database is the record; files are read only for a project it has not seen yet.
+  const recorded = await collectProjectArtifactsFromDb(projectNamespace, projectRoot).catch((error) => {
+    serverLog.warn('reading intents from the database failed; reading files', { project: projectNamespace, error: error instanceof Error ? error.message : String(error) })
+    return undefined
+  })
+  if (recorded) return recorded
   const links: BoardArtifactLink[] = []
   const flags = {
     initialized: false,
@@ -3451,8 +3546,7 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
   const artifacts = await Promise.all(artifactPaths.map(async (artifact) => ({
     label: artifact.label,
     path: artifact.path,
-    exists: await pathExists(join(projectRoot, artifact.path)),
-    content: await readTextPreview(join(projectRoot, artifact.path)),
+    ...(await readIntentPreview(projectNamespace, projectRoot, artifact.path)),
   })))
 
   const verificationStatus = await getVerificationStatus(join(projectRoot, `${featureDir}/verification-report.md`))
@@ -3464,8 +3558,7 @@ async function buildQAOverview(projectNamespace: string, projectRoot: string): P
   ].map(async (artifact) => ({
     label: artifact.label,
     path: artifact.path,
-    exists: await pathExists(join(projectRoot, artifact.path)),
-    content: await readTextPreview(join(projectRoot, artifact.path)),
+    ...(await readIntentPreview(projectNamespace, projectRoot, artifact.path)),
   })))
   const codeReview = /Code Review Status:\s*\**\s*(APPROVED|CHANGES[_ ]REQUESTED)/i.exec(artifacts.find((a) => a.label === 'Code review')?.content ?? '')?.[1]
   const delivery = /Delivery Status:\s*\**\s*(MERGED|PARTIAL|BLOCKED)/i.exec(releaseArtifacts[1]!.content ?? '')?.[1]
@@ -3890,6 +3983,18 @@ async function verificationReportPasses(filePath: string): Promise<boolean> {
 async function readTextPreview(filePath: string): Promise<string | undefined> {
   const content = await readTextIfExists(filePath)
   return content ? content.slice(0, 6000) : undefined
+}
+
+/** A preview of an intent document: the database copy, else the file. */
+async function readIntentPreview(projectNamespace: string, projectRoot: string, relativePath: string): Promise<{ exists: boolean; content?: string }> {
+  const match = /^specs\/([^/]+)\/(.+)$/.exec(relativePath)
+  if (match) {
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace)).catch(() => undefined)
+    const recorded = project ? await getIntentDocument(project.projectId, match[1]!, match[2]!).catch(() => undefined) : undefined
+    if (recorded) return { exists: true, content: recorded.content.slice(0, 6000) }
+  }
+  const filePath = join(projectRoot, relativePath)
+  return { exists: await pathExists(filePath), content: await readTextPreview(filePath) }
 }
 
 async function safeReadDir(dir: string): Promise<string[]> {
