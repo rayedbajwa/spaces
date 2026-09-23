@@ -972,3 +972,14 @@ CREATE TABLE IF NOT EXISTS project_state (
   computed_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ALTER TABLE project_state ADD COLUMN IF NOT EXISTS project_path TEXT NOT NULL DEFAULT '';
+
+-- Each project's Slack channel (lib/slack.ts), created when Slack is connected.
+CREATE TABLE IF NOT EXISTS project_slack_channels (
+  project_id    UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  org_id        UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  channel_id    TEXT NOT NULL,
+  channel_name  TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- The Slack workspace the channel lives in; reconnecting to another workspace makes new channels.
+ALTER TABLE project_slack_channels ADD COLUMN IF NOT EXISTS team_id TEXT;

@@ -49,6 +49,7 @@ import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usageFromMessage } from './lib/run-usage'
 import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
+import { notifyProject } from './lib/slack'
 import { drainBudget } from './lib/drain'
 
 const workerLog = log.child({ mod: 'worker' })
@@ -232,6 +233,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       if (!next) {
         await updateRunStatus(runId, { status: 'completed', currentStage: null, pauseKind: null, errorMessage: null })
         await queueEvent(runId, 'run_completed', { afterRestart: true })
+        void notifyProject(run.projectId, { kind: 'run_finished' })
         await drainEvents(runId)
         return
       }
@@ -302,6 +304,8 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
     workerId: getWorkerId(),
     ...(startStage ? { fromStage: startStage, attempt: run.retryCount } : {}),
   })
+  // Slack hears about new runs; a resume after a restart or an answer is not news.
+  if (!startStage) void notifyProject(run.projectId, { kind: 'run_started', pipeline: run.pipelineName, stages: templateStages })
 
   // Wrap engine construction inside the try/catch too — the PipelineEngine
   // constructor can throw (e.g. validateStageInputs: "specify stage requires
@@ -321,6 +325,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: null })
       await queueEvent(runId, 'error', { message, reason: 'disk_full' })
       workerLog.error('refusing to start a run on a full volume', new Error(message))
+      void notifyProject(run.projectId, { kind: 'run_failed', message })
       return
     }
   }
@@ -370,6 +375,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
           INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
           VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
         `
+        void notifyProject(run.projectId, { kind: 'stage_finished', stage: h.stage, summary: stageSummary(h.summary, h.tail) })
         // Plan named repositories? Register + clone the missing ones now so the
         // following stages (tasks, implement) can work in them.
         if (h.stage === 'plan' && run.projectId) {
@@ -442,6 +448,31 @@ async function finishCancelledRun(runId: string): Promise<void> {
   workerLog.info('run stopped after cancellation', { runId })
 }
 
+/** What a stage produced, for a Slack post: the compacted handoff when there is one, else the end of its output. */
+function stageSummary(summary: string | null | undefined, tail: string | null | undefined): string | undefined {
+  const text = (summary?.trim() || tail?.trim() || '')
+  if (!text) return undefined
+  return text.length > 1500 ? `…${text.slice(-1500)}` : text
+}
+
+/**
+ * Slack notice for a run that stopped for a person: an approval carries the
+ * summary of the stage to decide on (as recorded when the stage finished); a
+ * question carries the agent's last words, which is where it asked.
+ */
+async function notifyGate(runId: string, progress: FlowProgress): Promise<void> {
+  const run = await getRun(runId).catch(() => undefined)
+  if (!run?.projectId || !progress.stage) return
+  if (progress.pauseKind === 'review') {
+    const [entry] = await getDb()<Array<{ summary: string | null; tail: string }>>`
+      SELECT summary, tail FROM run_thread_entries WHERE run_id = ${runId} AND stage = ${progress.stage} ORDER BY entry_id DESC LIMIT 1
+    `.catch(() => [] as Array<{ summary: string | null; tail: string }>)
+    await notifyProject(run.projectId, { kind: 'approval_needed', stage: progress.stage, summary: stageSummary(entry?.summary, entry?.tail ?? progress.log?.slice(-4000)) })
+  } else {
+    await notifyProject(run.projectId, { kind: 'question', stage: progress.stage, question: stageSummary(undefined, progress.log?.slice(-1500)) })
+  }
+}
+
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {
   // Paused or finished: the next step (an answer, a rerun) may happen on another worker.
   await saveSessionCopy(runId, progress.sessionFile)
@@ -491,6 +522,7 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
     })
     await queueEvent(runId, 'paused', { stage: progress.stage, pauseKind: progress.pauseKind })
     void exportRunProjectState(runId, `stage ${progress.stage ?? '?'} paused`)
+    void notifyGate(runId, progress)
     // Nothing is held while a person decides: the session file is saved on the
     // run, and the answer comes back as a job any worker can take, which reopens
     // the conversation at this gate. The worker is free to go idle meanwhile.
@@ -510,6 +542,7 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
     errorMessage: null,
   })
   await queueEvent(runId, 'run_completed', { sessionFile: progress.sessionFile })
+  void getRun(runId).then((run) => notifyProject(run?.projectId, { kind: 'run_finished' })).catch(() => undefined)
   void exportRunProjectState(runId, 'run completed')
   await drainEvents(runId)
   const engine = engines.get(runId)
@@ -604,6 +637,7 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
   // Exhausted retries — dead letter. Keep the failed stage so "Rerun from <stage>" is possible.
   await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: failedStage ?? null })
   await queueEvent(runId, retry ? 'dead_letter' : 'error', { message, attempts })
+  void notifyProject(run?.projectId, { kind: 'run_failed', stage: failedStage, message })
   await drainEvents(runId)
   const engine = engines.get(runId)
   await engine?.dispose()

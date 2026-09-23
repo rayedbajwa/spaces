@@ -9,7 +9,7 @@ with AES-256-GCM using `ENCRYPTION_KEY` and stored in Postgres.
 | Jira | `atlassian` (shared with Confluence) | Issue search (JQL or text) and full issues with comments |
 | Confluence | `atlassian` | Page search (CQL or text) and page content |
 | Linear | `linear` | Issue search and full issues with comments |
-| Slack | `slack` | Reserved for notifications |
+| Slack | `slack` | A channel per project with run updates, stage summaries and approval requests |
 
 Setup is self-serve under **Organization → Integrations**: press **Set up
 app** on a provider card, then **Connect**. Apps are organization-wide and
@@ -36,6 +36,35 @@ kind that shares it.
     the panel shows **⚠ reconnect needed** instead of *connected*, and token
     lookups fail with a message naming that cause.
 
+
+## Slack channels per project
+
+With Slack connected, every project gets a public channel, `#spaces-<code>`
+(for example `#spaces-defa-1`). The channel is created when Slack is connected
+(for every existing project), when a project is created, or at its first
+post. An existing channel with that name is joined rather than duplicated. The
+project's team members are invited when Slack knows their email.
+
+Runs post there:
+
+| When | Message |
+|---|---|
+| A run starts | The pipeline and its stages |
+| A stage finishes | Its summary (the compacted handoff the next stage receives) |
+| Approval is needed | `@here`, the summary of the stage to decide on, and an **Open in Spaces** button |
+| The agent asks a question | `@here`, the question, and the button |
+| The run finishes or fails | The outcome, and the error for a failure |
+
+Approving and answering happen in Spaces; the button links to the project
+(`PUBLIC_URL/spaces/<code>`). A channel deleted or archived in Slack is
+replaced at the next post. Slack errors never fail a run; a missing permission
+is logged once per organization.
+
+The bot needs `channels:manage`, `channels:read`, `channels:join`,
+`chat:write`, `users:read` and `users:read.email`. The **Create Slack app**
+manifest includes them. A Slack app created before these were added needs
+the scopes added under *OAuth & Permissions*, then Slack reconnected under
+Organization → Integrations.
 ## Agent tools
 
 Connected sources are exposed to every agent session as two tools:
