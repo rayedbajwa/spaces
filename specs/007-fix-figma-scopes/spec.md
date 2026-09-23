@@ -4,7 +4,7 @@ Initiative: `007-fix-figma-scopes` · Change: `007-fix-figma-scopes` · Reposito
 
 ## Scope in this repository
 
-- **Figma Provider Template Correction (Source)** — `PROVIDER_TEMPLATES.figma.scopes === ['file_content:read', 'library_content:read', 'current_user:read']` (exactly three scopes).
+- **Figma Provider Template Correction (Source)** — `PROVIDER_TEMPLATES.figma.scopes === ['current_user:read', 'file_content:read', 'library_assets:read', 'library_content:read']` (exactly four scopes).
 - **Figma Scope Test Suite (Red-Green)** — Red test (T003) proven failing against the buggy `['files:read', 'file_variables:read']` value.
 
 ## Specification (from the initiative)
