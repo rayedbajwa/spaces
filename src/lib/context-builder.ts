@@ -1,3 +1,4 @@
+import { activeFeatureId } from './active-feature'
 import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -408,10 +409,8 @@ async function pushArtifact(target: ContextArtifact[], label: string, filePath: 
 }
 
 async function getLatestFeatureDir(projectPath: string): Promise<string | null> {
-  const specsDir = join(projectPath, 'specs')
-  const dirs = await safeReadDir(specsDir)
-  const featureDirs = dirs.sort((a, b) => b.localeCompare(a))
-  return featureDirs[0] ? join('specs', featureDirs[0]) : null
+  const id = activeFeatureId(projectPath)
+  return id ? join('specs', id) : null
 }
 
 async function readTextIfExists(filePath: string): Promise<string> {

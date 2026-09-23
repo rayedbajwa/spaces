@@ -395,6 +395,29 @@ export class AIDLCFlow {
     }
   }
 
+  /**
+   * Continue put the governing workspace on an earlier feature's branch, which
+   * lacks the newer feature directories. Specify numbers the next feature from
+   * what it sees, so it goes back to the newest feature branch first (the
+   * workspace's position before Continue). A dirty checkout stays as it is.
+   */
+  private leaveContinuedFeatureBranch(continued: string): void {
+    const cwd = this.options.cwd
+    const current = getCurrentGitBranch(cwd)
+    const newest = inferLatestFeatureBranch(cwd)
+    if (current !== continued || !newest || newest === current) return
+    if (hasUncommittedChanges(cwd)) {
+      this.print(`[new feature] The workspace is still on ${current} (uncommitted changes); the new feature is numbered from there.\n`)
+      return
+    }
+    try {
+      checkoutBranch(cwd, newest)
+      this.print(`[new feature] Left ${current} (continued earlier) for ${newest}, the newest feature branch.\n`)
+    } catch (error) {
+      this.print(`[new feature] Could not leave ${current}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
+    }
+  }
+
   /** Point every checkout at the assigned database, port and key before code stages run. */
   private async prepareCheckouts(): Promise<void> {
     const { describeAgentEnvironment, prepareCheckoutEnvironment } = await import('./agent-environment')
@@ -502,7 +525,14 @@ export class AIDLCFlow {
 
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
       this.sinks.onStageStart?.({ stage, index: this.stageIndex, total: this.stages.length })
-      if (stage === 'specify') await this.prepareNewFeature()
+      if (stage === 'specify') {
+        // A new feature becomes the active one: forget an earlier "continue this feature" choice.
+        const { chosenFeatureId, setActiveFeature } = await import('./active-feature')
+        const continued = chosenFeatureId(this.options.cwd)
+        await setActiveFeature(this.options.cwd, null).catch(() => undefined)
+        if (continued) this.leaveContinuedFeatureBranch(continued)
+        await this.prepareNewFeature()
+      }
 
       const output = await this.runStage(stage)
       if (QUESTION_PATTERN.test(output)) {
@@ -935,6 +965,22 @@ export class AIDLCFlow {
     }
 
     const currentBranch = getCurrentGitBranch(this.options.cwd)
+    // A feature a person chose to continue is worked on its own branch, never
+    // on whichever feature branch happens to be checked out or is the newest.
+    const { chosenFeatureId } = await import('./active-feature')
+    const chosen = chosenFeatureId(this.options.cwd)
+    if (chosen && currentBranch !== chosen) {
+      if (!branchExists(this.options.cwd, chosen)) {
+        this.print(`[branch] ${stage}: continuing feature ${chosen}, which has no branch here; staying on ${currentBranch ?? 'the current checkout'}.\n`)
+        return
+      }
+      checkoutBranch(this.options.cwd, chosen)
+      this.activeFeatureBranch = chosen
+      this.print(`Checked out ${chosen} for ${stage}: it is the feature being continued.\n`)
+      this.alignRepoTargetsToFeatureBranch(chosen, stage)
+      return
+    }
+
     if (currentBranch && isFeatureBranchName(currentBranch)) {
       this.activeFeatureBranch = currentBranch
       this.alignRepoTargetsToFeatureBranch(currentBranch, stage)
@@ -2588,20 +2634,10 @@ Requirements:
 - Keep the report actionable and suitable for human review AND for a follow-up developer loop to consume.`
 }
 
+/** The active feature's directory (the newest, unless a person made an earlier one active): lib/active-feature.ts. */
 export async function findLatestFeatureDirAbsolute(cwd: string): Promise<string | null> {
-  const specsDir = path.join(cwd, 'specs')
-  try {
-    const entries = execFileSync('bash', ['-lc', `find ${shellEscape(specsDir)} -maxdepth 1 -mindepth 1 -type d -print | sort -r`], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-    return entries[0] ?? null
-  } catch {
-    return null
-  }
+  const { activeFeatureDir } = await import('./active-feature')
+  return activeFeatureDir(cwd)
 }
 
 async function readWorkstreams(cwd: string, featureDir: string): Promise<ParsedWorkstream[]> {

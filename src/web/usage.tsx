@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { SkeletonTiles } from './loading'
 import { json } from './auth'
 
 /** Token usage and cost, as the API reports it. */
@@ -54,7 +55,12 @@ export function ProjectUsagePanel({ projectNamespace, live }: { projectNamespace
     const timer = live ? window.setInterval(() => void load(), 10_000) : undefined
     return () => { cancelled = true; if (timer) window.clearInterval(timer) }
   }, [projectNamespace, live])
-  if (!usage) return null
+  if (!usage) return (
+    <section className="card panel team-section usage-panel">
+      <div className="team-section-head"><h3>Tokens &amp; cost</h3></div>
+      <SkeletonTiles count={4} minWidth={120} label="Loading tokens and cost…" />
+    </section>
+  )
   return (
     <section className="card panel team-section usage-panel">
       <div className="team-section-head">

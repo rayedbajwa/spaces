@@ -1,6 +1,7 @@
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { ACCEPTANCE_FILE } from './acceptance'
+import { activeFeatureId, featureDirNames, isFeatureId } from './active-feature'
 
 /**
  * A project's features, one after another.
@@ -75,9 +76,9 @@ export function featureStatus(docs: {
 /** Every feature of the project, newest (the current one) first. */
 export async function listFeatures(projectRoot: string): Promise<FeatureSummary[]> {
   const specsDir = path.join(projectRoot, 'specs')
-  const entries = await readdir(specsDir, { withFileTypes: true }).catch(() => [])
-  const ids = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name).sort((a, b) => b.localeCompare(a))
-  return await Promise.all(ids.map(async (id, index) => {
+  const ids = featureDirNames(projectRoot)
+  const active = activeFeatureId(projectRoot)
+  return await Promise.all(ids.map(async (id) => {
     const dir = path.join(specsDir, id)
     const [spec, plan, tasks, review, verification, acceptance, delivery] = await Promise.all(
       ['spec.md', 'plan.md', 'tasks.md', 'code-review.md', 'verification-report.md', ACCEPTANCE_FILE, 'delivery-report.md'].map((f) => read(path.join(dir, f))))
@@ -92,7 +93,7 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
       id,
       relativePath: `specs/${id}`,
       title: featureTitle(spec, id),
-      current: index === 0,
+      current: id === active,
       ...featureStatus({ spec, plan, tasks, verification, acceptance, delivery, hasImplementation }),
       ...(codeReview ? { codeReview: /^approved$/i.test(codeReview) ? 'approved' as const : 'changes_requested' as const } : {}),
       documents,
@@ -103,4 +104,29 @@ export async function listFeatures(projectRoot: string): Promise<FeatureSummary[
 /** A current feature that is not finished yet (not merged, accepted or verified): starting another parks it. */
 export function isUnfinished(feature: FeatureSummary | undefined): boolean {
   return Boolean(feature && !(feature.verification === 'pass' || feature.status === 'accepted' || feature.delivery === 'merged'))
+}
+
+/**
+ * Rename a feature: its title is the spec's first heading, so that line is
+ * rewritten (keeping Spec Kit's "Feature Specification:" prefix). The directory
+ * and branch keep their names — pull requests and history point at them.
+ */
+export async function renameFeature(projectRoot: string, id: string, title: string): Promise<void> {
+  const clean = title.replace(/\s+/g, ' ').trim()
+  if (!clean) throw new Error('A title is required.')
+  if (clean.length > 200) throw new Error('Keep the title under 200 characters.')
+  // The id comes from the URL: it must name a feature directory, never a path out of specs/.
+  if (!isFeatureId(id) || !featureDirNames(projectRoot).includes(id)) throw new Error(`Feature ${id} does not exist.`)
+  const file = path.join(projectRoot, 'specs', id, 'spec.md')
+  const spec = await readFile(file, 'utf8').catch(() => undefined)
+  if (spec === undefined) throw new Error(`Feature ${id} has no spec.md to rename.`)
+  const lines = spec.split('\n')
+  const index = lines.findIndex((line) => line.startsWith('# '))
+  if (index === -1) {
+    lines.unshift(`# Feature Specification: ${clean}`, '')
+  } else {
+    const prefixed = /^#\s+Feature Specification:/i.test(lines[index]!)
+    lines[index] = `# ${prefixed ? 'Feature Specification: ' : ''}${clean}`
+  }
+  await writeFile(file, lines.join('\n'))
 }
