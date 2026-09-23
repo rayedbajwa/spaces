@@ -22,7 +22,7 @@ import { AgentGuard, maskOutput } from './guardrails'
 import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildBrowserTools } from './browser-tools'
-import { createAgentResourceLoader } from './agent-resources'
+import { createAgentResourceLoader, createAgentSettings } from './agent-resources'
 import { standingAgentInstructions } from './agent-environment'
 import { readVerificationStatus } from './pipeline-branch'
 import {
@@ -484,6 +484,8 @@ export class AIDLCFlow {
         : SessionManager.inMemory(this.options.cwd)
 
     const { session } = await createAgentSession({
+      // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+      settingsManager: createAgentSettings(this.options.cwd),
       cwd: this.options.cwd,
       modelRuntime,
       model: modelSelection.model,
@@ -1790,6 +1792,8 @@ export async function runAIDLCAssistantChat(options: {
   const knowledgeTools = await buildKnowledgeTools({ projectId: options.projectId, orgId }).catch(() => [])
   const actionNames = (options.actionTools ?? []).map((t) => t.name)
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(resolveCwd(options.cwd)),
     cwd: resolveCwd(options.cwd),
     modelRuntime,
     model: modelSelection.model,
@@ -1869,6 +1873,8 @@ export async function summarizeCodebaseForMemory(options: {
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
 
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(cwd),
     cwd,
     modelRuntime,
     model: modelSelection.model,
@@ -1955,6 +1961,8 @@ export async function runAIDLCMergeOrchestrator(options: {
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(cwd),
     cwd,
     modelRuntime,
     model: modelSelection.model,
@@ -2042,6 +2050,8 @@ export async function runAIDLCSpecificTask(options: {
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(cwd),
     cwd,
     modelRuntime,
     model: modelSelection.model,
@@ -2130,6 +2140,8 @@ export async function runAIDLCSpecificWorkstream(options: {
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(cwd),
     cwd,
     modelRuntime,
     model: modelSelection.model,
@@ -2348,6 +2360,8 @@ export async function runAIDLCParallelSubAgents(options: {
             ? `\nBranch: ${prPlan.branch} (isolated git worktree, based on ${prPlan.base}${prPlan.stackedOn ? `, stacked on workstream branch ${prPlan.stackedOn}` : ''}). Do not switch branches or run git commit/push — the pipeline commits your changes and opens the pull request when you finish.`
             : '')
         const { session } = await createAgentSession({
+          // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+          settingsManager: createAgentSettings(workstreamCwd),
           cwd: workstreamCwd,
           modelRuntime,
           model: modelSelection.model,
@@ -2771,6 +2785,8 @@ export async function runDevSetup(options: {
   const modelRuntime = await createConfiguredModelRuntime(orgId)
   const modelSelection = resolveModelSelection(modelRuntime, { cwd, model: options.model, thinking: options.thinking })
   const { session } = await createAgentSession({
+    // Spaces' own secrets (its database, keys) stay out of the agent's shell.
+    settingsManager: createAgentSettings(cwd),
     cwd,
     modelRuntime,
     model: modelSelection.model,

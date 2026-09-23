@@ -87,7 +87,7 @@ describe('checkout environment', () => {
     const { evidenceRules } = await import('../src/lib/agent-environment')
     const text = evidenceRules({ docker: false, dockerCompose: false, psql: false, testPort: 3100, testDatabaseUrl: 'postgres://u:p@h:5432/agent_x' })
     expect(text).toContain('agent_x')
-    expect(text).toContain("belongs to the application running you")
+    expect(text).toContain("does not carry the application's own database or keys")
     expect(text).toContain('committed with the work')
   })
 })
