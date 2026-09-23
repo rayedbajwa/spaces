@@ -70,7 +70,7 @@ Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and t
 
     A `research` stage clones and learns the repositories a feature needs and
     loads the knowledge base before anything is specified; each implementation
-    repository then carries `specs/<initiative-id>/` with its change, tasks and
+    repository then carries `specs/<NNN-intent>/` with its change, tasks and
     delta spec on the same pull request. See
     [Pipelines & stages](concepts/pipelines-and-stages.md) and
     [Delivery](concepts/delivery.md).

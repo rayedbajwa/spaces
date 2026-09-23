@@ -1,16 +1,14 @@
-import { lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { lstat, readdir, readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * An intent's documents in the repositories that implement it.
+ * An intent's documents and the repositories that implement it.
  *
- * Spec Kit writes an intent's spec, plan, tasks and reports in the governing
- * workspace (the project's primary repository). When the code lives in other
- * repositories, their branches and pull requests carried the code but not the
- * spec it implements or the tasks it completes. Each implementation checkout
- * working on the intent gets a copy of `specs/<intent>/`, mirrored at every code
- * stage and committed with that stage's changes, so its pull request shows
- * what was asked, planned and verified next to the change itself.
+ * Implementation repositories carry only their repo-local change
+ * (lib/repo-change.ts: change.yaml, the tasks they own, their delta spec);
+ * the plan, test plan, research, contracts, reviews and reports stay in the
+ * governing workspace and in Spaces. An earlier version mirrored the whole
+ * intent directory into them; removeMirroredIntentDir takes such a copy away.
  */
 
 const DOCUMENT = /\.(md|json|ya?ml|txt)$/i
@@ -54,49 +52,43 @@ async function plainPath(root: string, dir: string): Promise<boolean> {
   return true
 }
 
-export interface SpecSyncResult {
-  /** Documents written (new or changed). */
-  written: string[]
-  /** Documents removed because they no longer exist in the governing workspace. */
-  removed: string[]
-}
+/** What an implementation repository's change directory holds (lib/repo-change.ts). */
+export const REPO_CHANGE_FILES = new Set(['change.yaml', 'tasks.md', 'spec.md'])
 
 /**
- * Mirror the intent's directory from the governing workspace into one
- * implementation checkout (same relative path, `specs/<intent>/`). Only that
- * directory is touched; nothing is written through a symbolic link.
+ * Prune what an earlier version mirrored into an implementation checkout's
+ * `specs/<NNN-intent>/` (the plan, test plan, research, contracts, reports),
+ * leaving only its repo-local change. A document is removed only when it is an
+ * exact copy of the governing one — anything written in this repository stays
+ * — and folders left empty go too. Nothing is removed through a symbolic link.
+ * Returns the documents removed.
  */
-export async function syncIntentDocuments(input: { governingRoot: string; featureDirAbs: string; targetRoot: string }): Promise<SpecSyncResult> {
-  const result: SpecSyncResult = { written: [], removed: [] }
-  const governing = path.resolve(input.governingRoot)
-  const target = path.resolve(input.targetRoot)
-  const source = path.resolve(input.featureDirAbs)
-  if (governing === target || !source.startsWith(`${governing}${path.sep}`)) return result
-  const relativeDir = path.relative(governing, source) // specs/<intent>
-  const destination = path.join(target, relativeDir)
-  if (!(await plainPath(target, destination))) return result
-
-  // Read the source first, whole: if it cannot be listed, nothing is changed.
-  const wanted = await listIntentDocuments(source)
-  for (const rel of wanted) {
-    const content = await readFile(path.join(source, rel), 'utf8').catch(() => undefined)
-    if (content === undefined) continue
-    const file = path.join(destination, rel)
-    // Every folder on the way (specs/<intent>/contracts …) must be a real directory.
-    if (!(await plainPath(target, path.dirname(file)))) continue
-    const existing = await lstat(file).catch(() => undefined)
-    if (existing?.isSymbolicLink()) continue
-    if (existing && (await readFile(file, 'utf8').catch(() => undefined)) === content) continue
-    await mkdir(path.dirname(file), { recursive: true })
-    await writeFile(file, content)
-    result.written.push(rel)
+export async function pruneMirroredDocuments(input: { governingFeatureDir: string; targetRoot: string; changeDir: string }): Promise<string[]> {
+  const dir = path.join(input.targetRoot, input.changeDir)
+  // Never the intent itself: its own directory, or any checkout of the
+  // repository that holds it, would have every document "match" and be deleted.
+  if (path.resolve(dir) === path.resolve(input.governingFeatureDir)) return []
+  const { sameRepository } = await import('./repo-change')
+  if (sameRepository(input.targetRoot, input.governingFeatureDir)) return []
+  if (!(await plainPath(input.targetRoot, dir))) return []
+  const docs = await listIntentDocuments(dir).catch(() => undefined)
+  if (!docs) return []
+  const removed: string[] = []
+  for (const rel of docs) {
+    if (REPO_CHANGE_FILES.has(rel)) continue
+    const file = path.join(dir, rel)
+    if (!(await plainPath(input.targetRoot, path.dirname(file)))) continue
+    if ((await lstat(file).catch(() => undefined))?.isSymbolicLink()) continue
+    const here = await readFile(file, 'utf8').catch(() => undefined)
+    const there = await readFile(path.join(input.governingFeatureDir, rel), 'utf8').catch(() => undefined)
+    if (here === undefined || here !== there) continue
+    await rm(file, { force: true })
+    removed.push(rel)
   }
-  const keep = new Set(wanted)
-  for (const rel of await listIntentDocuments(destination)) {
-    if (keep.has(rel)) continue
-    if (!(await plainPath(target, path.dirname(path.join(destination, rel))))) continue
-    await rm(path.join(destination, rel), { force: true })
-    result.removed.push(rel)
+  // Folders the copy left empty (contracts/, checklists/ …).
+  for (const folder of [...new Set(removed.map((r) => path.dirname(r)).filter((d) => d !== '.'))].sort((a, b) => b.length - a.length)) {
+    const full = path.join(dir, folder)
+    if ((await readdir(full).catch(() => ['x'])).length === 0) await rm(full, { recursive: true, force: true })
   }
-  return result
+  return removed
 }
