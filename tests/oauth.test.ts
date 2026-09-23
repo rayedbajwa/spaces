@@ -102,14 +102,12 @@ describe('Figma provider template: corrected OAuth scopes', () => {
     expect(figma.scopes).toContain('files:read')
   })
 
-  const removedScopes = [
-    'current_user:read',
-    'file_content:read',
-    'file_variables:read',
-    'library_assets:read',
-  ]
+  // The pre-fix scope list was ['files:read', 'file_variables:read']; the fix
+  // removes only the Enterprise-only `file_variables:read` scope, which is what
+  // caused Figma's "scope not valid" error on standard plans.
+  const removedScopes = ['file_variables:read']
   for (const scope of removedScopes) {
-    test(`scopes exclude removed/invalid/enterprise scope ${scope}`, () => {
+    test(`scopes exclude the removed Enterprise-only scope ${scope}`, () => {
       expect(figma.scopes).not.toContain(scope)
     })
   }
@@ -122,10 +120,8 @@ describe('Figma provider template: corrected OAuth scopes', () => {
     expect(figma.notes ?? '').toContain('files:read')
   })
 
-  test('notes do not advertise the removed scopes', () => {
-    for (const scope of ['current_user:read', 'file_content:read', 'library_assets:read']) {
-      expect(figma.notes ?? '').not.toContain(scope)
-    }
+  test('notes do not advertise the removed scope file_variables:read', () => {
+    expect(figma.notes ?? '').not.toContain('file_variables:read')
   })
 
   test('the Figma authorization URL requests only files:read', () => {
