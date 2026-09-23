@@ -84,6 +84,7 @@ import {
 import { findLatestFeatureDirAbsolute, parsePlanRepositories } from './lib/aidlc'
 import { findOpenPullRequests, type OpenPullRequestLink } from './lib/delivery'
 import { featureTitle, listFeatures } from './lib/features'
+import { activeFeatureId, removeFeatureDir, setActiveFeature } from './lib/active-feature'
 import { implementLoopTemplate } from './lib/implement-loop'
 import { createRun as dbCreateRun, getLatestRunForProject as dbGetLatestRunForProject, getRun as dbGetRun, listAllRuns as dbListAllRuns, listEvents as dbListEvents, requeueRunFromStage as dbRequeueRunFromStage, listRunsForProject as dbListRunsForProject, listBoardRuns, appendEvent as dbAppendEvent, resolveOpenGate as dbResolveOpenGate, updateRunStatus as dbUpdateRunStatus, type EventRow, type RunRow, appendReviewerNote, answerPausedRun } from './lib/run-store'
 import {
@@ -112,7 +113,7 @@ import {
   type RepoRow,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, GitHubPermissionError, createGitHubRepository, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
-import { conventional, currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, publishBranchAsPullRequest, pullRequestBody } from './lib/pull-requests'
+import { conventional, currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, ensureIgnored, publishBranchAsPullRequest, pullRequestBody, switchToFeatureBranch } from './lib/pull-requests'
 import { getOnboardingSnapshot, refreshRepositoryKnowledge, startProjectOnboarding } from './lib/project-onboarding'
 import {
   getKnowledgeItem,
@@ -1406,6 +1407,61 @@ async function route(req: Request): Promise<Response> {
     const projectMeta = await readProjectMeta(projectNamespace!)
     if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
     return sendJson(200, { features: await listFeatures(projectMeta.path) })
+  }
+
+  // Continue an earlier feature (make it active), or delete one that is not delivered.
+  if ((method === 'POST' || method === 'DELETE') && /^\/api\/projects\/[^/]+\/features\/[^/]+(\/activate)?$/.test(url.pathname)) {
+    const parts = url.pathname.split('/')
+    const projectNamespace = parts[3]!
+    const featureId = decodeURIComponent(parts[5]!)
+    const activating = parts[6] === 'activate'
+    if ((method === 'POST') !== activating) return sendJson(405, { error: 'Method not allowed.' })
+    const registry = await import('./lib/project-registry')
+    const project = await registry.getProjectBySlug(projectNamespace)
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const denied = requireProjectRole(project, 'member', activating ? 'Only team members can switch features.' : 'Only team members can delete features.'); if (denied) return denied
+    const projectMeta = await readProjectMeta(projectNamespace)
+    if (!projectMeta) return sendJson(404, { error: 'Project namespace not found.' })
+    // Switching or deleting under a live run would pull its feature away from it.
+    const [live] = await getDb()<Array<{ status: string; stage: string | null }>>`
+      SELECT status, current_stage AS stage FROM pipeline_runs
+       WHERE project_namespace = ${projectNamespace} AND status IN ('queued', 'running', 'paused') ORDER BY created_at DESC LIMIT 1
+    `
+    if (live) return sendJson(409, { error: `A run is ${live.status}${live.stage ? ` (${live.stage})` : ''}. Let it finish, or cancel it, before ${activating ? 'switching features' : 'deleting a feature'}.`, code: 'project_busy' })
+    const feature = (await listFeatures(projectMeta.path)).find((f) => f.id === featureId)
+    if (!feature) return sendJson(404, { error: `Feature ${featureId} does not exist.` })
+
+    if (!activating) {
+      if (feature.status === 'delivered' || feature.status === 'delivering') {
+        return sendJson(409, { error: `${feature.title} has been delivered${feature.status === 'delivering' ? ' in part' : ''}; its record stays as project history and cannot be deleted.`, code: 'delivered' })
+      }
+      await removeFeatureDir(projectMeta.path, featureId)
+      await markProjectStateStale(project.projectId).catch(() => undefined)
+      void import('./lib/project-onboarding').then((m) => m.composeProjectMemory(project.projectId)).catch(() => undefined)
+      serverLog.info('feature deleted', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
+      return sendJson(200, { features: await listFeatures(projectMeta.path) })
+    }
+
+    if (feature.status === 'delivered') return sendJson(409, { error: `${feature.title} is delivered. Start a new feature instead.`, code: 'delivered' })
+    // Continue on the feature's own branch where it exists (Spec Kit finds the
+    // feature from the branch), never over uncommitted work.
+    const orgId = await orgIdForProject(project.projectId)
+    const branches: Array<{ repo: string; switched: boolean; reason?: string }> = []
+    for (const repo of await registry.listRepos(project.projectId)) {
+      if (!repo.localPath) continue
+      await ensureIgnored(repo.localPath, 'specs/.active-feature')
+      const result = await switchToFeatureBranch(repo.localPath, featureId, repo.githubRepo ? orgId : undefined)
+        .catch((error) => ({ switched: false, reason: error instanceof Error ? error.message.split('\n')[0] : String(error) }))
+      branches.push({ repo: repo.githubRepo ?? repo.label, ...result })
+    }
+    try {
+      await setActiveFeature(projectMeta.path, featureId)
+    } catch (error) {
+      return sendJson(409, { error: `Switched branches, but ${featureId} is not on disk in the project workspace: ${error instanceof Error ? error.message : String(error)}`, branches })
+    }
+    await markProjectStateStale(project.projectId).catch(() => undefined)
+    serverLog.info('feature made active', { project: projectNamespace, feature: featureId, by: auth?.user.email ?? 'local' })
+    return sendJson(200, { features: await listFeatures(projectMeta.path), branches })
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/pull-requests$/.test(url.pathname)) {
@@ -3283,26 +3339,10 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
   return { ...flags, links, diffs: artifactState.diffs.slice(0, 8) }
 }
 
+/** The active feature (the newest, unless a person made an earlier one active): lib/active-feature.ts. */
 async function getLatestFeatureDir(projectRoot: string): Promise<{ featureId: string; relativePath: string } | null> {
-  const specsDir = join(projectRoot, 'specs')
-  const entries = await safeReadDir(specsDir)
-  const dirs: string[] = []
-
-  for (const entry of entries) {
-    if (await pathExists(join(specsDir, entry, 'spec.md')) || await pathExists(join(specsDir, entry))) {
-      dirs.push(entry)
-    }
-  }
-
-  dirs.sort((a, b) => b.localeCompare(a))
-  if (dirs.length === 0) {
-    return null
-  }
-
-  return {
-    featureId: dirs[0],
-    relativePath: `specs/${dirs[0]}`,
-  }
+  const id = activeFeatureId(projectRoot)
+  return id ? { featureId: id, relativePath: `specs/${id}` } : null
 }
 
 async function pushArtifactIfExists(

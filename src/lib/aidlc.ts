@@ -502,7 +502,11 @@ export class AIDLCFlow {
 
       this.print(`\n=== Stage ${this.stageIndex + 1}/${this.stages.length}: ${STAGE_DEFINITIONS[stage].skill} ===\n\n`)
       this.sinks.onStageStart?.({ stage, index: this.stageIndex, total: this.stages.length })
-      if (stage === 'specify') await this.prepareNewFeature()
+      if (stage === 'specify') {
+        // A new feature becomes the active one: forget an earlier "continue this feature" choice.
+        await import('./active-feature').then((m) => m.setActiveFeature(this.options.cwd, null)).catch(() => undefined)
+        await this.prepareNewFeature()
+      }
 
       const output = await this.runStage(stage)
       if (QUESTION_PATTERN.test(output)) {
@@ -2588,20 +2592,10 @@ Requirements:
 - Keep the report actionable and suitable for human review AND for a follow-up developer loop to consume.`
 }
 
+/** The active feature's directory (the newest, unless a person made an earlier one active): lib/active-feature.ts. */
 export async function findLatestFeatureDirAbsolute(cwd: string): Promise<string | null> {
-  const specsDir = path.join(cwd, 'specs')
-  try {
-    const entries = execFileSync('bash', ['-lc', `find ${shellEscape(specsDir)} -maxdepth 1 -mindepth 1 -type d -print | sort -r`], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-    return entries[0] ?? null
-  } catch {
-    return null
-  }
+  const { activeFeatureDir } = await import('./active-feature')
+  return activeFeatureDir(cwd)
 }
 
 async function readWorkstreams(cwd: string, featureDir: string): Promise<ParsedWorkstream[]> {

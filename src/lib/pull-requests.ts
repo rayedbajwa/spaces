@@ -265,6 +265,29 @@ export async function syncDefaultBranch(orgId: string, cwd: string, githubRepo: 
   return { branch, before, after: await git(cwd, ['rev-parse', 'HEAD']) }
 }
 
+/**
+ * Put a checkout on a feature's branch (named like its directory, `001-login`)
+ * to continue that feature. Uses the local branch, or origin's when only that
+ * exists; leaves a checkout with uncommitted changes, or without the branch,
+ * as it is and says why.
+ */
+export async function switchToFeatureBranch(cwd: string, branch: string, orgId?: string): Promise<{ switched: boolean; reason?: string }> {
+  if ((await currentBranch(cwd).catch(() => '')) === branch) return { switched: false, reason: 'already on it' }
+  if (await git(cwd, ['status', '--porcelain', '--untracked-files=no']).catch(() => 'unknown')) return { switched: false, reason: 'uncommitted changes in the checkout' }
+  if (orgId) {
+    const header = await authHeader(orgId).catch(() => undefined)
+    await git(cwd, [...(header ? ['-c', `http.extraheader=${header}`] : []), 'fetch', '-q', 'origin', branch]).catch(() => undefined)
+  }
+  if (await branchExistsLocally(cwd, branch)) {
+    await git(cwd, ['checkout', '-q', branch])
+    return { switched: true }
+  }
+  const remote = await git(cwd, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`]).catch(() => '')
+  if (!remote) return { switched: false, reason: 'no branch for this feature here' }
+  await git(cwd, ['checkout', '-q', '-b', branch, `origin/${branch}`])
+  return { switched: true }
+}
+
 export async function hasCommitsAhead(cwd: string, base: string, head: string): Promise<boolean> {
   try {
     const count = await git(cwd, ['rev-list', '--count', `${base}..${head}`])

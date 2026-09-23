@@ -935,6 +935,37 @@ function App() {
    * numbered feature. A current feature that is not finished is parked (it
    * stays in the Features list); the person confirms that first.
    */
+  /** Continue an earlier, unfinished feature: it becomes the active one (and its branch is checked out where safe). */
+  async function activateFeature(feature: FeatureSummary) {
+    if (!selectedProjectNamespace) return
+    if (!window.confirm(`Continue "${feature.title}"? It becomes the active feature: the board, next steps and runs work on it, and each repository switches to its branch ${feature.id} where that is safe.`)) return
+    try {
+      const result = await postJson<{ features: FeatureSummary[]; branches: Array<{ repo: string; switched: boolean; reason?: string }> }>(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}/activate`, {})
+      setProjectFeatures(result.features)
+      const skipped = result.branches.filter((b) => !b.switched && b.reason !== 'already on it' && b.reason !== 'no branch for this feature here')
+      setStatusMessage(`${feature.title} is the active feature.${skipped.length ? ` Left as they are: ${skipped.map((b) => `${b.repo} (${b.reason})`).join('; ')}.` : ''}`)
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(toMessage(error))
+    }
+  }
+
+  /** Delete a feature that was never delivered: its spec, plan, tasks and reports are removed. */
+  async function deleteFeature(feature: FeatureSummary) {
+    if (!selectedProjectNamespace) return
+    if (!window.confirm(`Delete "${feature.title}" (${feature.id})? Its spec, plan, tasks and reports are removed from the project. Git branches and pull requests on GitHub are left as they are. This cannot be undone.`)) return
+    try {
+      const response = await fetch(`/api/projects/${selectedProjectNamespace}/features/${encodeURIComponent(feature.id)}`, { method: 'DELETE' })
+      const data = (await response.json().catch(() => ({}))) as { features?: FeatureSummary[]; error?: string }
+      if (!response.ok) throw new Error(data.error ?? `${response.status}`)
+      setProjectFeatures(data.features ?? [])
+      setStatusMessage(`Deleted ${feature.title}.`)
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(toMessage(error))
+    }
+  }
+
   async function startNewFeature() {
     const current = projectFeatures[0]
     // Finished as the server counts it: verification passed, accepted, or merged.
@@ -2863,6 +2894,16 @@ function App() {
                       <p className="panel-subtitle">
                         {[feature.codeReview && `review ${feature.codeReview.replace('_', ' ')}`, feature.verification && `verification ${feature.verification}`].filter(Boolean).join(' · ') || 'Not reviewed or verified yet.'}
                       </p>
+                      {(!feature.current && feature.status !== 'delivered') || !['delivered', 'delivering'].includes(feature.status) ? (
+                        <div className="button-row" style={{ marginBottom: 8 }}>
+                          {!feature.current && feature.status !== 'delivered' && (
+                            <button className="secondary-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Make this the active feature and continue it'} onClick={() => void activateFeature(feature)} type="button">Continue this feature</button>
+                          )}
+                          {!['delivered', 'delivering'].includes(feature.status) && (
+                            <button className="danger-button" disabled={busy || runInFlight} title={runInFlight ? 'Wait for the current run to finish' : 'Delete this unfinished feature'} onClick={() => void deleteFeature(feature)} type="button">Delete</button>
+                          )}
+                        </div>
+                      ) : null}
                       <div className="artifact-group">
                         {feature.documents.map((doc) => (
                           <a key={doc.path} className="artifact-link" href={`/api/projects/${selectedProjectNamespace}/artifact?path=${encodeURIComponent(doc.path)}`} target="_blank" rel="noreferrer">
