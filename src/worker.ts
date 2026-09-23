@@ -851,6 +851,14 @@ async function main(): Promise<void> {
   })
 
   // Cancellations (project archived): dispose the live engine for that run.
+  // Force kill from the Recent jobs list: this worker is the one holding a
+  // stuck job. Exit now (a supervisor, if any, starts a fresh worker); the run
+  // was already cancelled, so nothing picks it back up.
+  await sql.listen('worker_kill', (target) => {
+    if (target !== workerId) return
+    workerLog.warn('force killed from the jobs list; exiting', { workerId })
+    process.exit(137)
+  })
   await sql.listen('run_cancel', (runId) => {
     void handleRunCancel(runId).catch((err) => workerLog.error('run cancel failed', { runId }, err instanceof Error ? err : new Error(String(err))))
   })

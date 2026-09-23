@@ -2661,3 +2661,11 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 .guardrail-mode > span { display: flex; flex-direction: column; gap: 2px; }
 .guardrail-allow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .guardrail-allow textarea { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+
+/* Recent jobs: force kill a job that has done nothing for a while. */
+.job-kill {
+  margin-left: auto; padding: 2px 8px; border-radius: var(--r-sm);
+  border: 1px solid rgba(239, 68, 68, 0.4); color: var(--red); background: var(--red-soft);
+  font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.job-kill:hover { background: rgba(239, 68, 68, 0.2); }

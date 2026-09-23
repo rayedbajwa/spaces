@@ -175,6 +175,14 @@ async function main(): Promise<void> {
   scrubProviderKeysFromEnv()
   await listenProviderKeys().catch(() => undefined)
   await sql.listen('project_job', () => { void reconcile() })
+  // Force kill (from the Recent jobs list): the worker holding a stuck job is
+  // killed outright, whether it is hung or only slow to notice a cancel.
+  await sql.listen('worker_kill', (workerId) => {
+    const target = [...managed.values()].find((w) => w.workerId === workerId && !w.exited)
+    if (!target) return
+    supLog.warn('force killing a worker', { slug: target.slug, workerId })
+    target.child.kill('SIGKILL')
+  })
   setInterval(() => { void reconcile() }, POLL_MS)
   setInterval(() => {
     void pruneDeadWorkers().then((n) => { if (n > 0) supLog.info('pruned dead worker registrations', { count: n }) }).catch(() => undefined)

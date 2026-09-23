@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { AuthRoot, navigate, useAuth } from './auth'
+import { AuthRoot, json, navigate, useAuth } from './auth'
 import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
 import { NewRepoCard, type NewRepositoryProposal } from './new-repo'
 import { ProjectUsagePanel, UsageChip, formatUsd, type UsageSummary } from './usage'
@@ -10,6 +10,7 @@ import { IntegrationsPanel } from './integrations'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import { featureDescriptionProblem } from '../lib/feature-description'
 import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/intent-scope'
+import { jobLooksStuck } from '../lib/job-stuck'
 import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import { renderMarkdown } from './markdown'
 import { IntentViewer } from './intent-viewer'
@@ -123,6 +124,8 @@ type FeatureSummary = {
   delivery?: 'merged' | 'partial' | 'blocked'
   documents: Array<{ label: string; path: string }>
 }
+
+type ProjectJob = { jobId: string; kind: string; status: string; displayStatus: string; runStage?: string; runPauseKind?: string; runError?: string; runPipeline?: string; triggerSource: string; runId?: string; createdAt: string; lastActivityAt?: string; workerHeartbeatAt?: string }
 
 type OpenPullRequestLink = { githubRepo: string; number: number; url: string; title: string; draft: boolean }
 
@@ -587,7 +590,21 @@ function App() {
   const [taskTrackerItems, setTaskTrackerItems] = useState<TaskTrackerItem[]>([])
   const [taskGraph, setTaskGraph] = useState<{ nodes: Array<{ id: string; label: string; phase: string; story?: string; parallel: boolean; status: string }>; edges: Array<{ from: string; to: string }> }>({ nodes: [], edges: [] })
   const [orchestrator, setOrchestrator] = useState<{ autonomousMode: boolean; maxConcurrent: number; speedMode?: 'fast' | 'balanced' | 'quality' } | null>(null)
-  const [projectJobs, setProjectJobs] = useState<Array<{ jobId: string; kind: string; status: string; displayStatus: string; runStage?: string; runPauseKind?: string; runError?: string; runPipeline?: string; triggerSource: string; runId?: string; createdAt: string }>>([])
+  const [projectJobs, setProjectJobs] = useState<ProjectJob[]>([])
+
+  /** Force kill a stuck job: its run is cancelled and the worker holding it killed. */
+  async function forceKillJob(job: ProjectJob) {
+    if (!selectedProjectNamespace) return
+    if (!window.confirm(`Force kill ${job.runPipeline ?? job.kind}${job.runId ? ` (run ${job.runId.slice(0, 8)})` : ''}? The run is cancelled and the worker holding it is killed; start it again afterwards if it should continue.`)) return
+    try {
+      const data = await json<{ jobs: ProjectJob[] }>(`/api/projects/${selectedProjectNamespace}/jobs/${encodeURIComponent(job.jobId)}/kill`, { method: 'POST' })
+      setProjectJobs(data.jobs)
+      setStatusMessage('Job force killed: its run is cancelled and its worker stopped.')
+      await refreshBoard()
+    } catch (error) {
+      setStatusMessage(`Could not force kill the job: ${toMessage(error)}`)
+    }
+  }
   const [projectAgents, setProjectAgents] = useState<Array<{ agentId: string; role: string; status: string; lastUsedAt?: string }>>([])
   const [inspectedRun, setInspectedRun] = useState<RunSnapshot | null>(null)
   const [projectDetail, setProjectDetail] = useState<ProjectDetailRecord | null>(null)
@@ -2876,6 +2893,16 @@ function App() {
                         {j.runStage && <small style={{ marginLeft: 8 }}>stage {j.runStage}</small>}
                         <small style={{ marginLeft: 8 }}>{j.triggerSource}</small>
                         {j.runId && <small style={{ marginLeft: 8, color: '#6b7280' }}>run {j.runId.slice(0, 8)}</small>}
+                        {jobLooksStuck(j) && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            className="job-kill"
+                            title={`No activity for ${Math.round((Date.now() - Date.parse(j.lastActivityAt ?? j.createdAt)) / 60000)} min. Cancel the run and kill the worker holding it.`}
+                            onClick={(e) => { e.stopPropagation(); void forceKillJob(j) }}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); void forceKillJob(j) } }}
+                          >Force kill</span>
+                        )}
                       </button>
                     ))}
                   </div>
