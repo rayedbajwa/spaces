@@ -27,7 +27,7 @@ export function redactSecrets(text: string): string {
     .replace(/\b((?:AKIA|ASIA)[0-9A-Z]{16})\b/g, '[redacted]')
     .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted jwt]')
     // Credentials in any URL (postgres://, mysql://, redis://, https://…): keep the user, mask the password.
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@"'`]+):([^\s/@"'`]+)@/gi, '$1$2:[redacted]@')
+.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s/:@"'`]*):([^\s/@"'`]+)@/gi, '$1$2:[redacted]@')
     // Secrets passed as query parameters.
     .replace(/([?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|sig|signature|key)=)[^&\s"'`#]+/gi, '$1[redacted]')
     .replace(/\b(Bearer|token)\s+[A-Za-z0-9._~+/=-]{16,}/gi, '$1 [redacted]')
