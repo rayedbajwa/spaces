@@ -2655,14 +2655,29 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 .log-agent { display: inline-block; margin-right: 6px; padding: 0 5px; border: 1px solid; border-radius: 4px; font-size: 0.9em; line-height: 1.35; }
 
 /* Organization → Data guardrails. */
-.guardrail-modes { display: grid; gap: 8px; margin: 4px 0 14px; }
-.guardrail-mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); cursor: pointer; }
+.guardrails-section { min-width: 0; }
+.guardrail-modes { display: grid; gap: 8px; margin: 4px 0 14px; min-width: 0; }
+.guardrail-mode {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  min-width: 0;
+}
 .guardrail-mode.selected { border-color: var(--border-focus); background: var(--accent-soft); }
 .guardrail-mode.readonly { cursor: default; }
-.guardrail-mode input { margin-top: 3px; }
-.guardrail-mode > span { display: flex; flex-direction: column; gap: 2px; }
-.guardrail-allow { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-.guardrail-allow textarea { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+/* Scope the app-wide `input { width: 100% }` away from the mode radio: it is a
+   control, not a full-width field, and its width must not vary with the label. */
+.guardrail-mode input[type="radio"] { width: auto; flex: none; margin: 3px 0 0; }
+.guardrail-mode-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.guardrail-mode-text .panel-subtitle { max-width: 62ch; overflow-wrap: anywhere; }
+.guardrail-allow-label { margin: 0; }
+.guardrail-allow-hint { display: block; margin: 0 0 6px; }
+.guardrail-allow { display: block; max-width: 100%; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; overflow-wrap: anywhere; }
 
 /* Recent jobs: force kill a job that has done nothing for a while. */
 .job-kill {
