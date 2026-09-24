@@ -2671,3 +2671,18 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
   font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap;
 }
 .job-kill:hover { background: rgba(239, 68, 68, 0.2); }
+
+/* Loading inside the intent viewer: centred in the space it stands in for. */
+.intent-viewer-loading { flex: 1; display: flex; align-items: center; justify-content: center; min-height: 160px; }
+
+/* Task lists in rendered markdown (tasks.md, checklists): a check mark per item. */
+.markdown li.task-item { list-style: none; position: relative; }
+.markdown ul:has(> li.task-item), .markdown ol:has(> li.task-item) { padding-left: 4px; }
+.markdown li.task-item > ul, .markdown li.task-item > ol { padding-left: 22px; }
+.markdown .task-box {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px;
+  border: 1.5px solid var(--border-strong); border-radius: 3px;
+  font-size: 10px; line-height: 1; font-weight: 700; color: transparent;
+}
+.markdown li.task-item.done > .task-box { background: var(--green-soft); border-color: var(--green); color: var(--green); }

@@ -175,7 +175,7 @@ export function IntentViewer({ projectNamespace, intentId, onClose }: { projectN
         </div>
 
         {error && <p className="empty-state">{error}</p>}
-        {!detail && !error && <LoadingBlock label="Loading the intent…" />}
+        {!detail && !error && <div className="intent-viewer-loading"><LoadingBlock label="Loading the intent…" /></div>}
         {detail && (
           <div className="intent-viewer-body">
             <nav className="intent-viewer-nav" aria-label="Intent documents">
@@ -244,7 +244,7 @@ export function IntentViewer({ projectNamespace, intentId, onClose }: { projectN
                     {rawUrl && <a className="ghost-button" href={rawUrl} target="_blank" rel="noreferrer">Open raw ↗</a>}
                   </div>
                   {contentError && <p className="empty-state">Could not load this document: {contentError}</p>}
-                  {!content && !contentError && <LoadingBlock label="Loading…" />}
+                  {!content && !contentError && <div className="intent-viewer-loading"><LoadingBlock label="Loading…" /></div>}
                   {content && content.path === selected && (
                     /\.md$/i.test(selected)
                       ? <div className="markdown intent-doc" dangerouslySetInnerHTML={{ __html: renderMarkdown(content.text) }} />
