@@ -115,6 +115,7 @@ import {
   updateProjectKnowledge as projUpdateKnowledge,
   type ProjectKnowledgeConfig,
   type RepoRow,
+  getProjectBySlug,
 } from './lib/project-registry'
 import { GitHubNotConnectedError, listGitHubRepos, scheduleRepoClone, workspaceRoot } from './lib/github'
 import { conventional, currentBranch as gitCurrentBranch, defaultBranch as gitDefaultBranch, ensureIgnored, publishBranchAsPullRequest, pullRequestBody, switchToFeatureBranch } from './lib/pull-requests'
@@ -1381,11 +1382,14 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/context$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
+    // The bundle carries project and team memory and imported sources: members of the owning team only.
+    const contextProject = await getProjectBySlug(projectNamespace)
+    const deniedContext = requireProjectRole(contextProject, 'viewer', 'Only team members can view the agent context of this project.'); if (deniedContext) return deniedContext
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
-    return sendJson(200, await projectContextBundle(projectNamespace, projectMeta.path))
+    return sendJson(200, await projectContextBundle(contextProject, projectNamespace, projectMeta.path))
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/latest-run$/.test(url.pathname)) {
@@ -1624,6 +1628,9 @@ async function route(req: Request): Promise<Response> {
     const parts = url.pathname.split('/').filter(Boolean)
     const projectNamespace = parts[2]
     const taskId = decodeURIComponent(parts[4])
+    // The bundle carries project and team memory and imported sources: members of the owning team only.
+    const contextProject = await getProjectBySlug(projectNamespace)
+    const deniedContext = requireProjectRole(contextProject, 'member', 'Only team members can run tasks.'); if (deniedContext) return deniedContext
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
@@ -1635,13 +1642,16 @@ async function route(req: Request): Promise<Response> {
     if (!hasTestPlan) {
       return sendJson(409, { error: 'Cannot run individual tasks before a test plan exists. Run the `testplan` stage first.' })
     }
-    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
+    const contextBundle = await projectContextBundle(contextProject, projectNamespace, projectMeta.path)
     const result = await runAIDLCSpecificTask({ cwd: projectMeta.path, orgId: await orgIdForProjectSlug(projectNamespace), taskId, sharedContextPrompt: contextBundle.promptBundle })
     return sendJson(200, result)
   }
 
   if (method === 'POST' && /^\/api\/projects\/[^/]+\/workstreams\/run$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
+    // The bundle carries project and team memory and imported sources: members of the owning team only.
+    const contextProject = await getProjectBySlug(projectNamespace)
+    const deniedContext = requireProjectRole(contextProject, 'member', 'Only team members can run workstreams.'); if (deniedContext) return deniedContext
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
@@ -1652,7 +1662,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: 'Cannot run a workstream before a test plan exists. Run the `testplan` stage first.' })
     }
     const body = await readJson<{ taskId?: string; workstreamTitle?: string }>(req)
-    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
+    const contextBundle = await projectContextBundle(contextProject, projectNamespace, projectMeta.path)
     const result = await runAIDLCSpecificWorkstream({
       cwd: projectMeta.path,
       orgId: await orgIdForProjectSlug(projectNamespace),
@@ -1689,12 +1699,15 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'POST' && /^\/api\/projects\/[^/]+\/subagents\/retry$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
+    // The bundle carries project and team memory and imported sources: members of the owning team only.
+    const contextProject = await getProjectBySlug(projectNamespace)
+    const deniedContext = requireProjectRole(contextProject, 'member', 'Only team members can run sub-agents.'); if (deniedContext) return deniedContext
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
     const body = await readJson<{ maxAgents?: number; model?: string }>(req)
-    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
+    const contextBundle = await projectContextBundle(contextProject, projectNamespace, projectMeta.path)
     const model = await resolveSubagentModel(projectNamespace, body.model)
     const { projectId: subagentProjectId, targets: repoTargets } = await subagentRepoTargets(projectNamespace)
     const job = ensureSubagentJob(projectNamespace)
@@ -1706,12 +1719,15 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'POST' && /^\/api\/projects\/[^/]+\/subagents\/run$/.test(url.pathname)) {
     const [, , , projectNamespace] = url.pathname.split('/')
+    // The bundle carries project and team memory and imported sources: members of the owning team only.
+    const contextProject = await getProjectBySlug(projectNamespace)
+    const deniedContext = requireProjectRole(contextProject, 'member', 'Only team members can run sub-agents.'); if (deniedContext) return deniedContext
     const projectMeta = await readProjectMeta(projectNamespace)
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
     const body = await readJson<{ maxAgents?: number; model?: string }>(req)
-    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
+    const contextBundle = await projectContextBundle(contextProject, projectNamespace, projectMeta.path)
     const job = ensureSubagentJob(projectNamespace)
     if (job.snapshot.status === 'running') {
       return sendJson(409, { error: 'Sub-agent job already running.' })
@@ -4005,12 +4021,12 @@ async function resolveSubagentModel(projectNamespace: string, requested?: string
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */
 /**
- * The shared context for an agent started on a project by its slug. Without the
- * project id the bundle has no project or team memory and no imported sources,
- * and organization memory comes from the default organization, not the project's.
+ * The shared context for an agent started on a project by its slug, from the
+ * project the route resolved (and checked access to). Without the project id
+ * the bundle has no project or team memory and no imported sources, and
+ * organization memory comes from the default organization, not the project's.
  */
-async function projectContextBundle(projectNamespace: string, projectPath: string): Promise<Awaited<ReturnType<typeof buildContextBundle>>> {
-  const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace)).catch(() => undefined)
+async function projectContextBundle(project: ProjectRow | undefined, projectNamespace: string, projectPath: string): Promise<Awaited<ReturnType<typeof buildContextBundle>>> {
   return buildContextBundle({ projectId: project?.projectId, projectSlug: projectNamespace, projectPath })
 }
 
