@@ -673,4 +673,4 @@ else makes the database suites skip (see
 
 ## License
 
-[MIT](LICENSE)
+Personal, non-commercial use only; no redistribution. See [LICENSE](LICENSE).
