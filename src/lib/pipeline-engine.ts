@@ -212,7 +212,7 @@ export class PipelineEngine {
   }
 
   private buildStagePreambleLoader(): FlowOptions['beforeStagePrompt'] {
-    return async ({ stageIndex, stage }) => {
+    return async ({ stageIndex, stage, freshSession }) => {
       // Steps map 1:1 to template.steps by index for the linear prefix.
       // Loop-back extensions past the original array look up the step by stage.
       const step = this.template.steps[stageIndex] ?? this.stepsByStage.get(stage)
@@ -223,8 +223,11 @@ export class PipelineEngine {
 
       const parts: string[] = []
 
-      // Cross-stage memory FIRST — it's context the model needs to reason with.
-      const handoffs = this.renderHandoffs()
+      // Cross-stage memory FIRST — it's context the model needs to reason with —
+      // but only for a session that has not seen those stages: in the same
+      // session their work is already in the history, and the summaries would
+      // tell it twice on every later turn.
+      const handoffs = freshSession === false ? '' : this.renderHandoffs()
       if (handoffs) parts.push(handoffs)
 
       // Notes a reviewer attached to an approval: the previous stage was
@@ -271,7 +274,7 @@ export class PipelineEngine {
         parts.push(
           `# Loop iteration ${previousVisits + 1} — verify-driven re-run\n\n` +
           `This step is being re-executed because the verify stage flagged remaining work.\n` +
-          `The latest \`verification-report.md\` is available in the shared context bundle above.\n\n` +
+          `Read the latest \`verification-report.md\` in the feature directory.\n\n` +
           `**Focus rules for this iteration:**\n` +
           `- Read the \`## Unsatisfied Test Cases\` section of the verification report FIRST.\n` +
           `- Fix ONLY the specific failing test cases listed there.\n` +
@@ -285,7 +288,7 @@ export class PipelineEngine {
       if (isRerun && step.stage === 'verify') {
         parts.push(
           `# Loop iteration ${previousVisits + 1} — re-verification\n\n` +
-          `Verification failed previously and code has been changed since. Re-run the test suite in full.\n` +
+          `Verification failed previously and code has been changed since. Re-run the tests of the impacted area, starting with the ones that failed.\n` +
           `Preserve the same status-line format so downstream loops keep working.\n`,
         )
       }

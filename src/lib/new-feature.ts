@@ -72,5 +72,5 @@ export async function prepareForNewFeature(input: {
   if (!primary?.localPath) return undefined
   const bundle = await buildContextBundle({ projectId: input.projectId, projectSlug: project.slug, projectPath: primary.localPath }).catch(() => undefined)
   input.print(`[new intent] Memory and context refreshed${changed.length ? `; ${changed.length} repositor${changed.length === 1 ? 'y' : 'ies'} learned again` : ''}.\n`)
-  return bundle ? { sharedContextPrompt: bundle.promptBundle, projectMemory: bundle.project.memory } : undefined
+  return bundle ? { sharedContextPrompt: bundle.runPromptBundle, projectMemory: bundle.project.memory } : undefined
 }

@@ -57,3 +57,14 @@ and `false`. `goto` names a step id or `end`; loops are capped by the target's
 onboarding, enables autonomous + fast mode, starts a run and drives it to
 completion, then writes `e2e-report.md`. Environment: `E2E_CONCURRENCY`,
 `E2E_TIMEOUT_MIN`, `E2E_MODEL`, `E2E_KEEP=1` (keep projects), `E2E_REPORT`.
+
+The report has each template's tokens (input, cache reads, output) and cost per
+stage and the size of every artifact, also written as JSON (`E2E_JSON`,
+default `e2e-report.json`). To check that a prompt change saves tokens without
+losing stages or artifacts, run the same templates before and after and pass
+the first JSON as `E2E_BASELINE`:
+
+```bash
+E2E_JSON=before.json bun run e2e aidlc-mvp       # on main
+E2E_BASELINE=before.json bun run e2e aidlc-mvp   # on the branch
+```

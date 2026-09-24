@@ -495,6 +495,9 @@ export async function initializeSpecKit(repoPath: string): Promise<SpecKitInitRe
     throw new Error(`Spec Kit templates not found at ${templatesDir}.`)
   }
   await cp(templatesDir, specifyDir, { recursive: true })
+  // Spaces' shorter spec, plan, tasks and checklist templates (lib/speckit-assets.ts).
+  const { installLeanTemplates } = await import('./speckit-assets')
+  await installLeanTemplates(specifyDir, resolveSpeckitRoot())
 
   const scriptsDir = path.join(specifyDir, 'scripts', 'bash')
   if (await exists(scriptsDir)) {

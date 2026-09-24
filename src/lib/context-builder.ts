@@ -81,6 +81,14 @@ export interface ContextBundle {
   featureArtifacts: ContextArtifact[]
   sourceSnapshots: SourceSnapshot[]
   promptBundle: string
+  /**
+   * The bundle a pipeline run starts with: the same, less the feature's files.
+   * A run keeps its bundle for all of its stages, so inlined files would be the
+   * copies from before it started — spec, plan and tasks are then rewritten by
+   * the run itself. Each stage is told which current files to read instead
+   * (lib/stage-context.ts), and pays only for the ones it needs.
+   */
+  runPromptBundle: string
 }
 
 export async function buildContextBundle(options: {
@@ -104,6 +112,21 @@ export async function buildContextBundle(options: {
   // Organization knowledge base: excerpts relevant to this project and its current feature.
   const orgKnowledge = await loadRetrievedKnowledge(projectId, projectSlug, featureArtifacts).catch(() => ({ available: false, retrieved: '' }))
 
+  const bundleInput = {
+    projectSlug,
+    projectPath,
+    org,
+    projectMemory: memory.text,
+    featureArtifacts,
+    sourceSnapshots,
+    knowledgeSources,
+    repoCatalog,
+    orgName: shared.orgName,
+    orgMemory: shared.orgMemory,
+    teamName: shared.teamName,
+    teamMemory: shared.teamMemory,
+    orgKnowledge,
+  }
   return {
     projectId,
     projectSlug,
@@ -117,21 +140,8 @@ export async function buildContextBundle(options: {
     },
     featureArtifacts,
     sourceSnapshots,
-    promptBundle: buildPromptBundle({
-      projectSlug,
-      projectPath,
-      org,
-      projectMemory: memory.text,
-      featureArtifacts,
-      sourceSnapshots,
-      knowledgeSources,
-      repoCatalog,
-      orgName: shared.orgName,
-      orgMemory: shared.orgMemory,
-      teamName: shared.teamName,
-      teamMemory: shared.teamMemory,
-      orgKnowledge,
-    }),
+    promptBundle: buildPromptBundle(bundleInput),
+    runPromptBundle: buildPromptBundle({ ...bundleInput, inlineArtifacts: false }),
   }
 }
 
@@ -282,6 +292,8 @@ function buildPromptBundle(options: {
   teamMemory?: string
   /** Organization knowledge base: whether it exists, and excerpts retrieved for this work. */
   orgKnowledge?: { available: boolean; retrieved: string }
+  /** Inline the feature's files (spec, plan, tasks…). Off for pipeline runs: see ContextBundle.runPromptBundle. */
+  inlineArtifacts?: boolean
 }): string {
   // Build each section as a labeled block so we can drop the lowest-priority
   // ones if the total exceeds the token budget.
@@ -324,7 +336,7 @@ function buildPromptBundle(options: {
     })
   }
 
-  if (options.featureArtifacts.length > 0) {
+  if (options.inlineArtifacts !== false && options.featureArtifacts.length > 0) {
     blocks.push({
       label: 'feature-artifacts',
       priority: 80,
