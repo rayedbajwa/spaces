@@ -56,17 +56,16 @@ export function GuardrailsSection({ canEdit }: { canEdit: boolean }) {
         {MODES.map((m) => (
           <label key={m.id} className={`guardrail-mode${mode === m.id ? ' selected' : ''}${!canEdit ? ' readonly' : ''}`}>
             <input type="radio" name="guardrail-mode" value={m.id} checked={mode === m.id} disabled={!canEdit || busy} onChange={() => setMode(m.id)} />
-            <span>
+            <span className="guardrail-mode-text">
               <strong>{m.label}</strong>
               <span className="panel-subtitle">{m.description}</span>
             </span>
           </label>
         ))}
       </div>
-      <label className="field-hint guardrail-allow">
-        Never mask (one per line): exact values, or /patterns/ — for example a public support address
-        <textarea value={allow} onChange={(e) => setAllow(e.target.value)} rows={4} disabled={!canEdit || busy} placeholder={'support@acme.io\n/@acme-test\\.com$/'} />
-      </label>
+      <label className="guardrail-allow-label" htmlFor="guardrail-allow">Never mask (one per line): exact values, or /patterns/ — for example a public support address</label>
+      <span id="guardrail-allow-hint" className="field-hint guardrail-allow-hint">One entry per line. Empty clears the list; /patterns/ are regular expressions.</span>
+      <textarea id="guardrail-allow" className="guardrail-allow" aria-describedby="guardrail-allow-hint" value={allow} onChange={(e) => setAllow(e.target.value)} rows={4} disabled={!canEdit || busy} placeholder={'support@acme.io\n/@acme-test\\.com$/'} />
       {canEdit
         ? <div className="button-row"><button type="button" className="primary-button" disabled={busy || !dirty} onClick={() => void save()}>{busy ? 'Saving…' : dirty ? 'Save guardrails' : 'Saved'}</button></div>
         : <p className="panel-subtitle">Only team owners or admins can change the guardrails.</p>}
