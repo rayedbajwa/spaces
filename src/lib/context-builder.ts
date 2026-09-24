@@ -98,6 +98,7 @@ export async function buildContextBundle(options: {
 }): Promise<ContextBundle> {
   const { projectId, projectPath, projectSlug } = options
   const org = await loadOrgContext()
+  const projectConstitution = await loadProjectConstitution(projectPath)
   const memory = projectId ? await loadProjectMemory(projectId) : { manualText: '', autoSummary: '', text: '' }
   const featureArtifacts = await loadFeatureArtifacts(projectPath)
   const sourceSnapshots = projectId ? await loadSourceSnapshots(projectId) : []
@@ -116,6 +117,7 @@ export async function buildContextBundle(options: {
     projectSlug,
     projectPath,
     org,
+    projectConstitution,
     projectMemory: memory.text,
     featureArtifacts,
     sourceSnapshots,
@@ -163,6 +165,17 @@ async function loadRetrievedKnowledge(projectId: string | undefined, projectSlug
   if (!query) return { available: true, retrieved: '' }
   const { hits } = await searchOrgKnowledge({ query, scope, limit: 5 })
   return { available: true, retrieved: hits.length ? renderKnowledgeHits(hits, { maxCharsPerHit: 900 }) : '' }
+}
+
+/**
+ * The project's own constitution (Spec Kit: `.specify/memory/constitution.md`).
+ * Only plan and analyze were told to read it, so every other stage worked
+ * without the project's principles. Empty until the constitution stage has
+ * filled the template in.
+ */
+export async function loadProjectConstitution(projectPath: string): Promise<string> {
+  const text = await readTextIfExists(join(projectPath, '.specify', 'memory', 'constitution.md'))
+  return /\[[A-Z][A-Z0-9_]*\]/.test(text) ? '' : text.trim()
 }
 
 async function loadOrgContext(): Promise<Record<string, string>> {
@@ -266,19 +279,21 @@ async function loadSourceSnapshots(projectId: string): Promise<SourceSnapshot[]>
  * that, we drop lower-priority sections rather than truncate mid-artifact.
  * Priority order (highest first):
  *   1. Header + AIDLC directives   — always keep (tiny)
- *   2. Project Memory              — user's own tuning
+ *   2. Memory (org, team, project) and the constitutions — always keep
  *   3. Feature Artifacts           — the actual work-in-progress
  *   4. Knowledge Sources note      — small, high-signal
- *   5. Org context (constitution, principles, security, architecture,
- *      guidelines, review policies, mcp registry) — evergreen, easy to drop
+ *   5. Org context (principles, security, architecture, guidelines,
+ *      review policies, mcp registry) — evergreen, easy to drop
  *   6. Source Snapshots            — largest, most redundant with artifacts
  */
 const BUNDLE_MAX_CHARS = 32_000
 
-function buildPromptBundle(options: {
+export function buildPromptBundle(options: {
   projectSlug?: string
   projectPath: string
   org: Record<string, string>
+  /** The project's own constitution (.specify/memory/constitution.md), when filled in. */
+  projectConstitution?: string
   projectMemory: string
   featureArtifacts: ContextArtifact[]
   sourceSnapshots: SourceSnapshot[]
@@ -325,6 +340,15 @@ function buildPromptBundle(options: {
       label: 'team-memory',
       priority: 92,
       text: `## Team Memory${options.teamName ? ` — ${options.teamName}` : ''} (this team's space)\n${options.teamMemory.trim()}`,
+    })
+  }
+
+  // Constitutions govern every stage, so they are never dropped for the budget.
+  if (options.projectConstitution?.trim()) {
+    blocks.push({
+      label: 'project-constitution',
+      priority: 91,
+      text: `## Project Constitution (.specify/memory/constitution.md)\nNon-negotiable for this project; where it and the organization constitution differ, this one is more specific.\n${options.projectConstitution.trim()}`,
     })
   }
 
@@ -375,7 +399,7 @@ function buildPromptBundle(options: {
   for (const [name, content] of Object.entries(options.org)) {
     blocks.push({
       label: `org-${name}`,
-      priority: 50,
+      priority: name === 'constitution' ? 91 : 50,
       text: `## Org ${humanizeKey(name)}\n${content.trim()}`,
     })
   }
