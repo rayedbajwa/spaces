@@ -1385,7 +1385,7 @@ async function route(req: Request): Promise<Response> {
     if (!projectMeta) {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
-    return sendJson(200, await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path }))
+    return sendJson(200, await projectContextBundle(projectNamespace, projectMeta.path))
   }
 
   if (method === 'GET' && /^\/api\/projects\/[^/]+\/latest-run$/.test(url.pathname)) {
@@ -1635,7 +1635,7 @@ async function route(req: Request): Promise<Response> {
     if (!hasTestPlan) {
       return sendJson(409, { error: 'Cannot run individual tasks before a test plan exists. Run the `testplan` stage first.' })
     }
-    const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
+    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
     const result = await runAIDLCSpecificTask({ cwd: projectMeta.path, orgId: await orgIdForProjectSlug(projectNamespace), taskId, sharedContextPrompt: contextBundle.promptBundle })
     return sendJson(200, result)
   }
@@ -1652,7 +1652,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: 'Cannot run a workstream before a test plan exists. Run the `testplan` stage first.' })
     }
     const body = await readJson<{ taskId?: string; workstreamTitle?: string }>(req)
-    const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
+    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
     const result = await runAIDLCSpecificWorkstream({
       cwd: projectMeta.path,
       orgId: await orgIdForProjectSlug(projectNamespace),
@@ -1694,7 +1694,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
     const body = await readJson<{ maxAgents?: number; model?: string }>(req)
-    const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
+    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
     const model = await resolveSubagentModel(projectNamespace, body.model)
     const { projectId: subagentProjectId, targets: repoTargets } = await subagentRepoTargets(projectNamespace)
     const job = ensureSubagentJob(projectNamespace)
@@ -1711,7 +1711,7 @@ async function route(req: Request): Promise<Response> {
       return sendJson(404, { error: 'Project namespace not found.' })
     }
     const body = await readJson<{ maxAgents?: number; model?: string }>(req)
-    const contextBundle = await buildContextBundle({ projectSlug: projectNamespace, projectPath: projectMeta.path })
+    const contextBundle = await projectContextBundle(projectNamespace, projectMeta.path)
     const job = ensureSubagentJob(projectNamespace)
     if (job.snapshot.status === 'running') {
       return sendJson(409, { error: 'Sub-agent job already running.' })
@@ -4004,6 +4004,16 @@ async function resolveSubagentModel(projectNamespace: string, requested?: string
 }
 
 /** Repositories with local checkouts, so multi-repo workstreams can run in the right one. */
+/**
+ * The shared context for an agent started on a project by its slug. Without the
+ * project id the bundle has no project or team memory and no imported sources,
+ * and organization memory comes from the default organization, not the project's.
+ */
+async function projectContextBundle(projectNamespace: string, projectPath: string): Promise<Awaited<ReturnType<typeof buildContextBundle>>> {
+  const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace)).catch(() => undefined)
+  return buildContextBundle({ projectId: project?.projectId, projectSlug: projectNamespace, projectPath })
+}
+
 async function subagentRepoTargets(projectNamespace: string): Promise<{ projectId?: string; targets: import('./lib/aidlc').WorkstreamRepoTarget[] }> {
   const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(projectNamespace))
   if (!project) return { targets: [] }
