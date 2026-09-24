@@ -43,6 +43,8 @@ import {
 } from './pull-requests'
 import { refreshDeliveryStatus } from './delivery'
 import { buildWebTools } from './web-tools'
+import { stageContextFor } from './stage-context'
+import { installLeanTemplates, skillPathFor } from './speckit-assets'
 
 const aidlcLog = log.child({ mod: 'aidlc' })
 
@@ -77,6 +79,9 @@ const CODE_STAGES: StageName[] = ['implement', 'orchestrate', 'review', 'verify'
 const EVIDENCE_STAGES: StageName[] = ['review', 'verify', 'orchestrate']
 
 export const FEATURE_BRANCH_STAGES: StageName[] = ['clarify', 'plan', 'tasks', 'testplan', 'parallelize', 'analyze', 'implement', 'orchestrate', 'review', 'verify', 'checklist', 'taskstoissues', 'deliver']
+/** Stages that fill a .specify/templates/ file. */
+const TEMPLATE_STAGES: StageName[] = ['specify', 'plan', 'tasks', 'checklist']
+
 export const QUESTION_PATTERN = /(##\s*Question\s+\d+|Your choice:|Wait for user response|Please respond|\[NEEDS CLARIFICATION:)/i
 export const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 
@@ -168,7 +173,13 @@ export interface FlowOptions {
    * prepend to the stage prompt (empty string = no injection). Used by
    * PipelineEngine to inject role-specific persona system prompts.
    */
-  beforeStagePrompt?: (ctx: { stageIndex: number; stage: StageName }) => Promise<string> | string
+  /**
+   * `freshSession`: the stage runs in a session with no history yet (the first
+   * stage, a model switch, or a new shared context), so it needs the earlier
+   * stages' hand-off summaries; in a session that already holds them, they
+   * would be the same work told twice.
+   */
+  beforeStagePrompt?: (ctx: { stageIndex: number; stage: StageName; freshSession: boolean }) => Promise<string> | string
   /**
    * Begin at this stage instead of the first one. Used to rerun/resume a run
    * from the stage where it failed or was interrupted; earlier stages' artifacts
@@ -277,6 +288,8 @@ export class AIDLCFlow {
   private guard?: AgentGuard
   private vaultWriter?: ReturnType<typeof createVaultWriter>
   private currentModelSpec?: string
+  /** The shared context the open session's system prompt carries (see sessionContext()). */
+  private sessionContextText?: string
   private stageIndex = 0
   private waitState?: WaitState
   private log = ''
@@ -417,9 +430,23 @@ export class AIDLCFlow {
   private async standingInstructions(): Promise<string[]> {
     const { describeAgentEnvironment, evidenceRules, renderAgentEnvironment } = await import('./agent-environment')
     const machine = await describeAgentEnvironment({ label: path.basename(this.options.cwd) }).catch(() => undefined)
-    if (!machine) return []
     const reportsEvidence = this.stages.some((stage) => EVIDENCE_STAGES.includes(stage))
-    return [renderAgentEnvironment(machine), reportsEvidence ? evidenceRules(machine) : '']
+    const context = this.sessionContext()
+    this.sessionContextText = context
+    return [machine ? renderAgentEnvironment(machine) : '', machine && reportsEvidence ? evidenceRules(machine) : '', context]
+  }
+
+  /**
+   * The run's shared context (memory, org standards, knowledge, repositories)
+   * goes into the session's system prompt once, instead of on top of every
+   * stage prompt: in one session each stage's copy stayed in the history, so a
+   * run paid for it once per stage on every later turn. In the system prompt it
+   * is sent once, survives compaction and stays a cacheable prefix.
+   */
+  private sessionContext(): string {
+    if (this.options.sharedContextPrompt?.trim()) return this.options.sharedContextPrompt.trim()
+    if (this.options.projectMemory?.trim()) return `Project long-term memory:\n${this.options.projectMemory.trim()}`
+    return ''
   }
 
   /**
@@ -836,6 +863,13 @@ export class AIDLCFlow {
   private async runStage(stage: StageName): Promise<string> {
     this.activeStage = stage
     await this.ensureFeatureBranchForStage(stage)
+    // A new intent refreshed the shared context (prepareNewFeature): the session's
+    // system prompt carries the old one, so the stage starts a session with the new.
+    if (this.session && this.sessionContextText !== undefined && this.sessionContextText !== this.sessionContext()) {
+      this.print(`\n[context] Shared context refreshed; ${stage} starts a new session with it.\n`)
+      this.session.dispose()
+      this.session = undefined
+    }
     await this.maybeSwapSessionForStage(stage)
     // Code stages need a working dev environment: install, build, tests known to run.
     await this.ensureDevEnvironment(stage)
@@ -852,15 +886,23 @@ export class AIDLCFlow {
       }
     }
 
+    // Projects set up before the shorter templates get them, unless they edited their own.
+    if (TEMPLATE_STAGES.includes(stage)) {
+      const replaced = await installLeanTemplates(path.join(this.options.cwd, '.specify'), this.speckitRoot).catch(() => [])
+      if (replaced.length) this.print(`\n[speckit] Updated .specify/templates to the shorter versions: ${replaced.join(', ')}.\n`)
+    }
     const skillPrompt = await loadStagePrompt({
       speckitRoot: this.speckitRoot,
       stage,
       stageArgument: getStageArgument(stage, this.options),
     })
 
+    const freshSession = (this.session?.messages.length ?? 0) === 0
     const preamble = this.options.beforeStagePrompt
-      ? (await this.options.beforeStagePrompt({ stageIndex: this.stageIndex, stage })).trim()
+      ? (await this.options.beforeStagePrompt({ stageIndex: this.stageIndex, stage, freshSession })).trim()
       : ''
+    // Which of the intent's current files this stage reads (by path, not inlined), and how it ends.
+    const stageFiles = await stageContextFor(stage, this.options.cwd, (await findLatestFeatureDirAbsolute(this.options.cwd)) ?? undefined).catch(() => '')
     // Stages that can scaffold (init, specify) are told what already exists, so an
     // interrupted project is continued instead of being created a second time.
     const { describeWorkInProgress } = await import('./run-resume')
@@ -888,9 +930,10 @@ export class AIDLCFlow {
       const scope = stage === 'review' || stage === 'verify' ? await this.changeScope() : undefined
       return testTierInstruction(stage, own.env, scope) + others
     }).catch(() => '') : ''
-    const prompt = [inProgress, note, preamble, scope, tiers, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
+    const prompt = [inProgress, note, preamble, scope, tiers, stageFiles, skillPrompt].filter((part) => part && part.trim()).join('\n\n---\n\n')
 
-    const output = await this.streamPrompt(withSharedContext(prompt, this.options))
+    // The shared context is in the session's system prompt (standingInstructions).
+    const output = await this.streamPrompt(prompt)
     // What a code stage left running (the app on its test port, its containers) is stopped.
     if (CODE_STAGES.includes(stage)) await this.stopStageLeftovers(stage)
     // What the guardrails kept from the model (or blocked) during this stage.
@@ -945,7 +988,7 @@ export class AIDLCFlow {
       await ensurePlaywrightCliConfig(this.options.cwd).catch(() => undefined)
       this.print(`\n[setup] Preparing the development environment before ${stage} (${state.exists ? `previous status ${state.status ?? 'unknown'}` : 'no setup record yet'})…\n`)
       try {
-        await this.streamPrompt(withSharedContext(buildDevSetupPrompt(), { sharedContextPrompt: this.options.sharedContextPrompt }))
+        await this.streamPrompt(buildDevSetupPrompt())
         const after = await readDevSetupState(this.options.cwd)
         this.print(`\n[setup] Dev Setup Status: ${after.status ?? 'not recorded'} — continuing with ${stage}.\n`)
       } catch (error) {
@@ -1678,8 +1721,9 @@ export function resolveSpeckitRoot(): string {
   return path.dirname(packageJsonPath)
 }
 
+/** Spaces' shorter skill for the stage when it has one (data/speckit/), else the package's. */
 function getSkillPath(speckitRoot: string, stage: StageName): string {
-  return path.join(speckitRoot, 'skills', STAGE_DEFINITIONS[stage].skill, 'SKILL.md')
+  return skillPathFor(speckitRoot, STAGE_DEFINITIONS[stage].skill)
 }
 
 function getStageArgument(stage: StageName, options: FlowOptions): string {
@@ -2566,7 +2610,7 @@ export async function runAIDLCParallelSubAgents(options: {
         })
 
         const prompt = withSharedContext(
-          `You are an implementation sub-agent assigned to one approved workstream only.\n\nWorkstream: ${workstream.title}\n\nRepository: ${repoLine}\nOnly edit files inside this working directory. The Spec Kit feature directory (specs, tasks, reports) lives in the primary checkout at ${cwd}.\n\nTasks:\n${workstream.tasks || '(not specified)'}\n\nInputs:\n${workstream.inputs || '(not specified)'}\n\nOutputs:\n${workstream.outputs || '(not specified)'}\n\nDependencies:\n${workstream.dependencies || '(not specified)'}\n\nScoped Files:\n${workstream.scopedFiles || '(not specified)'}\n\nQA Focus:\n${workstream.qaFocus || '(not specified)'}\n\nYour job:\n1. Implement this workstream by editing code and tests only within the scoped area.\n2. Add or update tests that prove the workstream behavior.\n3. Avoid touching files outside the scoped area unless absolutely necessary for imports or wiring.\n4. Write a workstream report to ${outputFile} summarizing files changed, tests added, risks, and follow-ups.\n5. End with a concise status summary in chat.${changeNote}`,
+          `You are an implementation sub-agent assigned to one approved workstream only.\n\nWorkstream: ${workstream.title}\n\nRepository: ${repoLine}\nOnly edit files inside this working directory. The Spec Kit feature directory (specs, tasks, reports) lives in the primary checkout at ${cwd}; read its spec.md and plan.md when a task needs the requirement or design behind it.\n\nTasks:\n${workstream.tasks || '(not specified)'}\n\nInputs:\n${workstream.inputs || '(not specified)'}\n\nOutputs:\n${workstream.outputs || '(not specified)'}\n\nDependencies:\n${workstream.dependencies || '(not specified)'}\n\nScoped Files:\n${workstream.scopedFiles || '(not specified)'}\n\nQA Focus:\n${workstream.qaFocus || '(not specified)'}\n\nYour job:\n1. Implement this workstream by editing code and tests only within the scoped area.\n2. Add or update tests that prove the workstream behavior.\n3. Avoid touching files outside the scoped area unless absolutely necessary for imports or wiring.\n4. Write a workstream report to ${outputFile} summarizing files changed, tests added, risks, and follow-ups.\n5. End with a concise status summary in chat.${changeNote}`,
           { sharedContextPrompt: options.sharedContextPrompt },
         )
 
@@ -2801,6 +2845,7 @@ async function loadStagePrompt(options: {
 
   const basePrompt = rawSkill
     .replaceAll('SKILL_PATH', skillPath)
+    .replaceAll('SPECKIT_ROOT', options.speckitRoot)
     .replaceAll('$ARGUMENTS', options.stageArgument)
 
   if (options.stage === 'specify') {

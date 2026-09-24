@@ -536,6 +536,13 @@ live in the agent output bar, on the board card, in the project hero and in a
 the organization overview shows spend for the last 30 days and by project.
 `GET /api/projects/:slug/usage` and `GET /api/org/usage` expose the numbers.
 
+Prompts are kept small: Spaces' own, shorter Spec Kit skills and templates
+(`data/speckit/`); the shared context sent once per agent session, in its
+system prompt; each stage reads only the intent's files it needs, told to it by
+path; and hand-off summaries only where a session has not seen the earlier
+stages. `bun run e2e` reports each template's tokens and cost per stage, and
+`E2E_BASELINE=<earlier .json>` compares two runs.
+
 ### Implementation harness: tasks → PR + CI → code review → QA
 
 In the feature template the code stages form a loop: `implement` executes the

@@ -122,10 +122,17 @@ Spaces created inside it. A clone shared with another project is kept.
 ## Memory and context
 
 Each run receives a **shared context bundle**: org context, AIDLC directives,
-project memory (auto summary + your notes), the current feature's artifacts,
-imported knowledge snapshots, the repository catalog and a note about the
-knowledge tools available. It is capped at roughly 8k tokens; lower-priority
-sections are dropped first.
+project memory (auto summary + your notes), imported knowledge snapshots, the
+repository catalog and a note about the knowledge tools available. It is capped
+at roughly 8k tokens; lower-priority sections are dropped first.
+
+A run's bundle goes into its agent session's system prompt once, not on top of
+every stage prompt, so it is not paid for again on every later turn. It leaves
+out the intent's own files (spec, plan, tasks…): each stage is told which
+current files to read first and which others exist, by path (see
+[Pipelines & stages](pipelines-and-stages.md#what-each-stage-reads)). The
+bundle `GET /api/projects/:slug/context` shows, and the one the assistant and
+single-task agents get, still inline them.
 
 The **assistant** (Assistant tab) sees the same bundle plus a live operations
 snapshot — runs with timelines and log tails, jobs, workers, repositories,
