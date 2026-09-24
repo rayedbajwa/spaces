@@ -21,7 +21,7 @@ function fakes(syncs: Record<string, BranchSync | Error>) {
     },
     refreshRepositoryKnowledge: (async (_projectId: string, repoId: string) => { calls.learned.push(repoId) }) as never,
     composeProjectMemory: (async () => { calls.memory += 1 }) as never,
-    buildContextBundle: (async () => { calls.bundle += 1; return { promptBundle: 'fresh context', project: { memory: 'fresh memory' } } }) as never,
+    buildContextBundle: (async () => { calls.bundle += 1; return { promptBundle: 'fresh context with files', runPromptBundle: 'fresh context', project: { memory: 'fresh memory' } } }) as never,
   }
   return { calls, deps }
 }

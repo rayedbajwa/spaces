@@ -204,6 +204,29 @@ isolated git worktree on its own branch and gets its own PR, stacked on a
 dependency's branch when one is named. `orchestrate` merges the branches back
 into the feature branch.
 
+## What each stage reads
+
+Spaces keeps shorter versions of the Spec Kit stage skills and of the spec,
+plan, tasks and checklist templates in `data/speckit/` (about 75% smaller than
+the `@the-agency/pi-spec-kit` originals). They keep every step, output format
+and quality gate, and drop what does not apply here: extension-hook checks,
+steps Spaces already does, and long example lists. A skill missing there falls
+back to the package's. Projects get the shorter templates when they are set up,
+and older projects on their next specify, plan, tasks or checklist stage,
+unless they edited a template themselves.
+
+Each stage prompt then carries:
+
+- a **Files for this stage** list: the intent's files the stage reads first
+  (clarify: the spec; tasks: spec and plan; implement: tasks, plan and any
+  review or QA findings; verify: test plan, spec, tasks, code review), then
+  the other files by name and size, read only when needed;
+- the earlier stages' **hand-off summaries**, only when the stage starts a new
+  agent session (a model switch, a refreshed context). A session that did those
+  stages already has their work;
+- a rule for the **final message**: a short summary (files written, decisions,
+  anything open). The files carry the work.
+
 ## Reruns keep context
 
 Re-running or resuming from a stage reopens the previous attempt's agent

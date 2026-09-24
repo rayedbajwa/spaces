@@ -15,9 +15,16 @@
  * Against a deployed instance (sign-in on, no local fixture repos):
  *   E2E_BASE_URL=https://spaces.example.com E2E_COOKIE='spaces_session=…' \
  *   E2E_REPO=none E2E_MODEL=auto E2E_KEEP=1 bun run scripts/e2e-pipelines.ts test-minimal
+ *
+ * Token use: the report has each template's tokens and cost per stage and the
+ * size of every artifact, and the same as JSON (E2E_JSON, default next to the
+ * report). E2E_BASELINE=<an earlier JSON> adds a comparison with that run, to
+ * check a prompt change saves tokens without losing stages or artifacts:
+ *   E2E_JSON=before.json bun run e2e aidlc-express     # on main
+ *   E2E_BASELINE=before.json bun run e2e aidlc-express # on the branch
  */
 import { execFile } from 'node:child_process'
-import { mkdir, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
@@ -46,6 +53,10 @@ const PLAN_CONTEXT = process.env.E2E_PLAN_CONTEXT?.trim() || 'Single TypeScript 
 const PROJECT_NAME = process.env.E2E_PROJECT_NAME?.trim()
 const ROOT = path.join(homedir(), '.aidlc', 'e2e')
 const REPORT = process.env.E2E_REPORT ?? path.join(process.cwd(), 'e2e-report.md')
+const REPORT_JSON = process.env.E2E_JSON ?? REPORT.replace(/\.md$/, '') + '.json'
+const BASELINE = process.env.E2E_BASELINE?.trim()
+
+interface Usage { calls: number; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; totalTokens: number; costUsd: number }
 
 interface StageRecord { stage: string; status: 'completed' | 'error' | 'paused' | 'skipped' | 'unknown'; note?: string }
 interface Result {
@@ -61,6 +72,10 @@ interface Result {
   answers: number
   durationMs: number
   error?: string
+  /** The project's model usage, in total and per stage ("other" is onboarding). */
+  usage?: Usage & { byStage: Array<{ stage: string; summary: Usage }> }
+  /** Bytes of each artifact the run left, by path. */
+  artifactBytes?: Record<string, number>
 }
 
 async function api<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -219,9 +234,11 @@ async function runTemplate(template: string): Promise<Result> {
     result.stageRecords = [...seen.values()]
 
     // Artifacts on disk (from the board card for this project).
-    const board = await api<{ columns: Array<{ cards: Array<{ projectNamespace: string; artifactLinks: Array<{ stepLabel: string; relativePath: string }> }> }> }>('GET', '/api/board')
+    const board = await api<{ columns: Array<{ cards: Array<{ projectNamespace: string; artifactLinks: Array<{ stepLabel: string; relativePath: string; href?: string }> }> }> }>('GET', '/api/board')
     const card = board.columns.flatMap((c) => c.cards).find((c) => c.projectNamespace === project.slug)
     result.artifacts = card?.artifactLinks.map((a) => `${a.stepLabel}: ${a.relativePath}`) ?? []
+    result.artifactBytes = await artifactSizes(card?.artifactLinks ?? [])
+    result.usage = await api<Result['usage']>('GET', `/api/projects/${project.slug}/usage`).catch(() => undefined)
   } catch (error) {
     result.error = error instanceof Error ? error.message : String(error)
     if (result.runId) result.status = 'error'
@@ -232,6 +249,48 @@ async function runTemplate(template: string): Promise<Result> {
     }
   }
   return result
+}
+
+/** Size of each artifact, read through the same endpoint the UI previews it with. */
+async function artifactSizes(links: Array<{ relativePath: string; href?: string }>): Promise<Record<string, number>> {
+  const sizes: Record<string, number> = {}
+  for (const link of links) {
+    if (!link.href) continue
+    const response = await fetch(`${BASE}${link.href}`, { headers: COOKIE ? { cookie: COOKIE } : {} }).catch(() => undefined)
+    if (response?.ok) sizes[link.relativePath] = (await response.arrayBuffer()).byteLength
+  }
+  return sizes
+}
+
+const n = (value: number) => value.toLocaleString('en-US')
+const usd = (value: number) => `$${value.toFixed(4)}`
+const pct = (after: number, before: number) => (before ? `${after <= before ? '−' : '+'}${Math.round(Math.abs(after - before) / before * 100)}%` : '—')
+
+/** Per template: tokens and cost per stage, and artifact sizes. */
+function usageSection(r: Result): string[] {
+  if (!r.usage?.calls) return ['Usage: none recorded']
+  const bytes = Object.values(r.artifactBytes ?? {}).reduce((a, b) => a + b, 0)
+  return [
+    `Usage: ${n(r.usage.totalTokens)} tokens (${n(r.usage.inputTokens)} input, ${n(r.usage.cacheReadTokens)} cache read, ${n(r.usage.outputTokens)} output) · ${usd(r.usage.costUsd)} · ${r.usage.calls} calls · artifacts ${n(bytes)} bytes`,
+    ' ',
+    '| Stage | Calls | Input | Cache read | Output | Cost |',
+    '|---|---|---|---|---|---|',
+    ...r.usage.byStage.map(({ stage, summary: u }) => `| ${stage} | ${u.calls} | ${n(u.inputTokens)} | ${n(u.cacheReadTokens)} | ${n(u.outputTokens)} | ${usd(u.costUsd)} |`),
+    ' ',
+    ...(r.artifactBytes && Object.keys(r.artifactBytes).length ? ['Artifact sizes: ' + Object.entries(r.artifactBytes).map(([file, size]) => `\`${file.split('/').slice(2).join('/') || file}\` ${n(size)}`).join(', ')] : []),
+  ]
+}
+
+/** This run against an earlier report: tokens, cost and artifact bytes per template, and the stages each completed. */
+function comparisonSection(results: Result[], baseline: Result[]): string[] {
+  const rows = results.map((r) => {
+    const b = baseline.find((x) => x.template === r.template)
+    if (!b) return `| ${r.template} | — | — | — | — | not in the baseline |`
+    const bytes = (x: Result) => Object.values(x.artifactBytes ?? {}).reduce((a, c) => a + c, 0)
+    const done = (x: Result) => x.stageRecords.filter((s) => s.status === 'completed').length
+    return `| ${r.template} | ${b.status} → ${r.status} | ${n(b.usage?.totalTokens ?? 0)} → ${n(r.usage?.totalTokens ?? 0)} (${pct(r.usage?.totalTokens ?? 0, b.usage?.totalTokens ?? 0)}) | ${usd(b.usage?.costUsd ?? 0)} → ${usd(r.usage?.costUsd ?? 0)} (${pct(r.usage?.costUsd ?? 0, b.usage?.costUsd ?? 0)}) | ${n(bytes(b))} → ${n(bytes(r))} (${pct(bytes(r), bytes(b))}) | ${done(b)} → ${done(r)} stages completed |`
+  })
+  return ['## Compared with the baseline', ' ', `Baseline: \`${BASELINE}\``, ' ', '| Template | Result | Tokens | Cost | Artifact bytes | Stages |', '|---|---|---|---|---|---|', ...rows, ' ']
 }
 
 async function main(): Promise<void> {
@@ -271,10 +330,16 @@ async function main(): Promise<void> {
       r.stageRecords.length ? `Stage events: ${r.stageRecords.map((s) => `${s.stage}=${s.status}`).join(', ')}` : '',
       r.artifacts.length ? `Artifacts:\n${r.artifacts.map((a) => `- ${a}`).join('\n')}` : 'Artifacts: none recorded',
       r.error ? `Error: ${r.error}` : '',
+      ...usageSection(r),
       '',
     ]),
   ].filter((l) => l !== '')
+  if (BASELINE) {
+    const baseline = await readFile(BASELINE, 'utf8').then((text) => JSON.parse(text) as Result[]).catch((error) => { console.error(`baseline ${BASELINE} not read: ${error instanceof Error ? error.message : String(error)}`); return undefined })
+    if (baseline) lines.splice(4, 0, ...comparisonSection(results, baseline))
+  }
   await writeFile(REPORT, `${lines.join('\n')}\n`)
+  await writeFile(REPORT_JSON, `${JSON.stringify(results, null, 2)}\n`)
   const ok = results.filter((r) => r.status === 'completed').length
   console.log(`\n${ok}/${results.length} templates completed. Report: ${REPORT}`)
   process.exitCode = ok === results.length ? 0 : 1

@@ -2313,7 +2313,7 @@ async function route(req: Request): Promise<Response> {
         ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
         repoTargets: (await subagentRepoTargets(project.slug)).targets,
         projectMemory: contextBundle.project.memory,
-        sharedContextPrompt: contextBundle.promptBundle,
+        sharedContextPrompt: contextBundle.runPromptBundle,
         persistSession: true,
         nonInteractive: false,
         verbose: false,
@@ -2521,7 +2521,7 @@ async function route(req: Request): Promise<Response> {
       options: {
         ...options,
         projectMemory: contextBundle.project.memory,
-        sharedContextPrompt: contextBundle.promptBundle,
+        sharedContextPrompt: contextBundle.runPromptBundle,
         autonomousMode: orchestrator.autonomousMode,
       },
       template,
