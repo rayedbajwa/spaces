@@ -1,6 +1,6 @@
 # Spaces
 
-**An open-source, agent-driven SDLC orchestrator for software development teams.**
+**A source-available, agent-driven SDLC orchestrator for software development teams.**
 
 Spaces runs an AI-driven Software Development Life Cycle — `specify → plan →
 tasks → implement → verify` — across a fleet of specialized agents, with a web
@@ -673,4 +673,4 @@ else makes the database suites skip (see
 
 ## License
 
-[MIT](LICENSE)
+Personal, non-commercial use only; no redistribution. See [LICENSE](LICENSE).
