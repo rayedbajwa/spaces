@@ -84,6 +84,16 @@ specifying, and every stage starts with the excerpts relevant to its project.
 
 ![Knowledge base](docs/screenshots/knowledge-base.png)
 
+### Data guardrails
+
+Choose what AI models may see, per organization: **Mask** (the default)
+swaps secrets and personal data for tokens before anything reaches a model
+and restores them only in the commands and files agents write; **Strict**
+also keeps agents out of secret files; **Warn only** and **Off** relax it.
+Values that should never be masked go in an allowlist.
+
+![Data guardrails](docs/screenshots/guardrails.png)
+
 ### Team page
 
 Members and roles, invite links, team memory and the knowledge defaults new
@@ -101,12 +111,14 @@ their consoles. Credentials are stored encrypted. Nothing lives in `.env`.
 
 ![Integrations](docs/screenshots/integrations.png)
 
-### Generated artifacts, browsable in-app
+### Every intent, browsable in-app
 
 Every stage produces markdown artifacts (`spec.md`, `plan.md`, `tasks.md`,
-`test-plan.md`, `verification-report.md`, etc.) that render inline in the app.
+`test-plan.md`, `verification-report.md`, etc.). Open an intent to page
+through all of them, grouped by specification, planning and quality, with
+its status and history.
 
-![Generated spec.md rendered in the browser](docs/screenshots/generated-spec.png)
+![An intent's spec.md in the intent viewer](docs/screenshots/generated-spec.png)
 
 ---
 

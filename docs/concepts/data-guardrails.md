@@ -4,6 +4,8 @@ Secrets and personal data are kept away from AI models. Before anything
 reaches a provider, each value is swapped for a stable token; the model works
 with the tokens, and the real value is put back only where an agent needs it.
 
+![Data guardrails settings](../screenshots/guardrails.png)
+
 ## What is detected
 
 | Kind | Examples |
