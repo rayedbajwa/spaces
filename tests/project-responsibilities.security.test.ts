@@ -104,3 +104,20 @@ describe('responsibility authorization matrix', () => {
     expect(after.body.responsibilities).toEqual(before.body.responsibilities)
   })
 })
+
+describe('agent context routes follow the owning team', () => {
+  // The shared context carries project and team memory and imported sources.
+  test('only the owning team can read the context or start agents with it', async () => {
+    const slug = projectA.slug
+    for (const cookie of [cookies.otherTeam, cookies.outsider, cookies.crossOrg]) {
+      expect((await api('GET', `/api/projects/${slug}/context`, cookie)).status).toBe(403)
+    }
+    expect((await api('GET', `/api/projects/${slug}/context`, cookies.viewer)).status).not.toBe(403)
+    const agentRoutes = [`/api/projects/${slug}/tasks/T001/run`, `/api/projects/${slug}/workstreams/run`, `/api/projects/${slug}/subagents/run`, `/api/projects/${slug}/subagents/retry`]
+    for (const path of agentRoutes) {
+      for (const cookie of [cookies.viewer, cookies.otherTeam, cookies.crossOrg]) {
+        expect((await api('POST', path, cookie, {})).status).toBe(403)
+      }
+    }
+  })
+})

@@ -139,7 +139,7 @@ jobs:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
           RESPONSIBILITY_BASE_URL: http://localhost:3100
-        run: bun test tests/project-responsibilities.e2e.test.ts
+        run: bun test tests/project-responsibilities.e2e.test.ts tests/guardrails-page.e2e.test.ts
 
       - name: Stop responsibility server
         if: always()
