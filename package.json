@@ -15,7 +15,6 @@
   "license": "SEE LICENSE IN LICENSE",
   "keywords": [
     "aidlc",
-    "aidlc-workflows",
     "agentic-workflows",
     "agentic-ai",
     "ai-agents",
@@ -26,6 +25,7 @@
     "pipeline-orchestrator",
     "llm-orchestration",
     "spec-kit",
+    "spec-driven-development",
     "claude",
     "anthropic",
     "pi-sdk",

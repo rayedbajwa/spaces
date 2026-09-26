@@ -11,9 +11,14 @@ Think of it as a project board where every card is powered by a persistent
 agent that knows the codebase, your team's conventions, and the artifacts of
 every previous stage.
 
-Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
-(AI-Driven Development Life Cycle) and the
+Stages run on GitHub's [Spec Kit](https://github.com/github/spec-kit)
+(through [`@the-agency/pi-spec-kit`](https://www.npmjs.com/package/@the-agency/pi-spec-kit),
+with Spaces' own shorter skills and templates) and the
 [Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+The pipeline follows the ideas of AWS's
+[AI-Driven Development Life Cycle](https://github.com/awslabs/aidlc-workflows)
+(AIDLC): inception and construction phases, role-based agents and human
+approval gates. Spaces does not use the AIDLC workflow files themselves.
 
 **Tags:** `agentic-workflows` · `aidlc` · `sdlc-automation` · `ai-development` ·
 `llm-orchestration` · `pipeline-orchestrator` · `spec-kit` · `claude` ·
@@ -114,7 +119,7 @@ Every stage produces markdown artifacts (`spec.md`, `plan.md`, `tasks.md`,
   spans multiple projects, remembers prior context per project, and reuses
   warm agent sessions across runs.
 - **Anyone experimenting with agentic SDLC patterns** who wants a real,
-  runnable reference implementation of the AIDLC framework backed by
+  runnable implementation of AIDLC-style, spec-driven delivery backed by
   Postgres, a job queue, and a project-board UI.
 
 Spaces is **not** a code generator you fire and forget. It's a workflow
