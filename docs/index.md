@@ -12,8 +12,12 @@ Think of it as a project board where every card is backed by agents that know
 the codebase, your team's conventions, the tickets behind the work and the
 artifacts of every previous stage.
 
-Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows) and the
-[Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+Stages run on GitHub's [Spec Kit](https://github.com/github/spec-kit) (through
+[`@the-agency/pi-spec-kit`](https://www.npmjs.com/package/@the-agency/pi-spec-kit))
+and the [Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+The pipeline follows the ideas of AWS's
+[AI-Driven Development Life Cycle](https://github.com/awslabs/aidlc-workflows)
+(AIDLC), not its workflow files.
 
 ![The board](screenshots/board.png)
 
