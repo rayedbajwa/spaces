@@ -137,6 +137,8 @@ context, memory and promotions. Paused runs show an answer box (**Approve and
 continue** for review gates, **Continue** or a typed answer for clarifications).
 Failed or interrupted runs offer **Rerun from &lt;stage&gt;**.
 
+![The agent output sheet](screenshots/agent-output.png)
+
 ## Next steps
 
 - Understand the [pipeline templates](reference/templates.md) and pick one per

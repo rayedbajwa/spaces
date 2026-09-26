@@ -78,6 +78,8 @@ Click an intent's title in **Overview → Intents** to open the **intent viewer*
   acceptance, delivery, scope, current intent, deletion) with who made it and
   when, and when each document last changed.
 
+![The intent viewer on a spec](../screenshots/generated-spec.png)
+
 ## In implementation repositories
 
 When the code lives outside the governing workspace, each implementation

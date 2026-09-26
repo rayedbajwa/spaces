@@ -126,14 +126,25 @@ the team, change roles, create invite links and set the knowledge defaults
 that new projects inherit; every member can edit team memory, and anyone can
 leave from the Members section.
 
+![The team page](../screenshots/team-page.png)
+
+The team switcher at the top of the sidebar moves between your teams and
+links to **Organization → Teams**.
+
+![The team switcher](../screenshots/team-switcher.png)
+
 ## The organization page
 
 **Organization** in the sidebar opens `/organization`; Knowledge base,
-Memory, Integrations, Models and Promotions are its sections, each one a
-sidebar entry. It gathers everything shared across teams: the organization
+Memory, Integrations, Models, Data guardrails and Promotions are its
+sections, each one a sidebar entry. It gathers everything shared across teams: the organization
 name and memory, the knowledge base (imports and search), promotion proposals
 from projects with approve and reject, and your teams with a way to start a
-new one. Owners and admins of any team edit; everyone reads.
+new one. Owners and admins of any team edit; everyone reads. Its overview
+shows teams, projects, knowledge, pending promotions and the last 30 days'
+spend per project.
+
+![The organization page](../screenshots/organization.png)
 
 ### Organization integrations
 

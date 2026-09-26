@@ -16,6 +16,8 @@ app** on a provider card, then **Connect**. Apps are organization-wide and
 required before a provider can be connected; nothing about integrations is
 read from `.env`.
 
+![Organization → Integrations](../screenshots/integrations.png)
+
 ![GitHub App setup](../screenshots/github-app-setup.png)
 
 | Provider | Setup |
@@ -94,8 +96,10 @@ project as a *source snapshot* that appears in every stage's context.
 ## Organization knowledge base (RAG)
 
 Beyond on-demand lookups, whole bodies of knowledge can be **imported** into a
-searchable knowledge base from **Organization memory & knowledge** in the user
-menu:
+searchable knowledge base from **Knowledge base** in the sidebar:
+
+![The knowledge base](../screenshots/knowledge-base.png)
+
 
 | Import | Picks from | What is indexed |
 |---|---|---|

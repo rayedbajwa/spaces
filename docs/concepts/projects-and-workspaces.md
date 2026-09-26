@@ -13,6 +13,8 @@ project's own page at `/spaces/PLAT-12`, so it can be linked, bookmarked and
 refreshed. Click the code on the page to copy its link; **← Board** or Esc
 returns to the board. `GET /api/projects/by-code/PLAT-12` resolves a code.
 
+![A project page](../screenshots/project-page.png)
+
 ## The governing workspace
 
 Every new project gets a **governing workspace**: a local git repository
