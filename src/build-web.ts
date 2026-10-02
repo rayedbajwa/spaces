@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises'
+import { copyFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { log } from './lib/logger'
@@ -8,6 +8,10 @@ const buildLog = log.child({ mod: 'build-web' })
 const srcDir = dirname(fileURLToPath(import.meta.url))
 const webDir = join(srcDir, 'web')
 const publicDir = join(srcDir, '..', 'public')
+const screenshotsDir = join(srcDir, '..', 'docs', 'screenshots')
+
+/** Docs screenshots the landing page shows, served from /screenshots/. */
+const LANDING_SCREENSHOTS = ['board.png', 'project-page.png', 'agent-output.png', 'generated-spec.png']
 
 export async function ensureFrontendBuilt(): Promise<void> {
   // Production images ship prebuilt assets in a read-only, root-owned public/;
@@ -27,6 +31,11 @@ export async function ensureFrontendBuilt(): Promise<void> {
   if (!result.success) {
     const messages = result.logs.map((log) => log.message).join('\n')
     throw new Error(`Frontend build failed:\n${messages}`)
+  }
+
+  await mkdir(join(publicDir, 'screenshots'), { recursive: true })
+  for (const name of LANDING_SCREENSHOTS) {
+    await copyFile(join(screenshotsDir, name), join(publicDir, 'screenshots', name))
   }
 }
 
