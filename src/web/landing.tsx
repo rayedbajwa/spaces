@@ -7,7 +7,9 @@
  * hand over to the sign-in screen in the matching mode.
  */
 
+import { useEffect } from 'react'
 import { FactoryAnimation } from './landing-animation'
+import { WaitlistForm } from './landing-waitlist'
 
 const DOCS_URL = 'https://rayedbajwa.github.io/spaces/'
 const REPO_URL = 'https://github.com/rayedbajwa/spaces'
@@ -36,7 +38,17 @@ const FEATURES: { title: string; body: string }[] = [
   { title: 'One tenant per organization', body: 'Teams, keys, integrations, knowledge and projects stay inside their organization. Two organizations share nothing.' },
 ]
 
-export function LandingPage({ onSignIn, onGetStarted }: { onSignIn: () => void; onGetStarted: () => void }) {
+/** Invite only (no OPEN_REGISTRATION): the calls to action lead to the waitlist instead of sign-up. */
+export function LandingPage({ openRegistration, onSignIn, onGetStarted }: { openRegistration: boolean; onSignIn: () => void; onGetStarted: () => void }) {
+  // Arriving at /#waitlist (from the sign-in screen): the section exists only once rendered.
+  useEffect(() => {
+    if (window.location.hash === '#waitlist') document.getElementById('waitlist')?.scrollIntoView({ block: 'center' })
+  }, [])
+  const toWaitlist = () => {
+    document.getElementById('waitlist')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    window.setTimeout(() => document.querySelector<HTMLInputElement>('#waitlist input[type=email]')?.focus({ preventScroll: true }), 400)
+  }
+  const getStarted = openRegistration ? onGetStarted : toWaitlist
   return (
     <div className="landing">
       <header className="landing-nav">
@@ -60,7 +72,7 @@ export function LandingPage({ onSignIn, onGetStarted }: { onSignIn: () => void; 
             conventions and the tickets behind the work. You approve at the gates; the factory does the rest.
           </p>
           <div className="landing-cta">
-            <button type="button" className="primary-button" onClick={onGetStarted}>Get started</button>
+            <button type="button" className="primary-button" onClick={getStarted}>{openRegistration ? 'Get started' : 'Join the waitlist'}</button>
             <button type="button" className="secondary-button" onClick={onSignIn}>Sign in</button>
             <a className="link-button" href={DOCS_URL} target="_blank" rel="noreferrer">Read the docs →</a>
           </div>
@@ -153,10 +165,20 @@ export function LandingPage({ onSignIn, onGetStarted }: { onSignIn: () => void; 
             Spaces is a production line with inspection points. Every station leaves an artifact you can read,
             every gate waits for a person, and every run can be paused, resumed or sent back.
           </p>
-          <div className="landing-cta">
-            <button type="button" className="primary-button" onClick={onGetStarted}>Open your factory</button>
-            <a className="link-button" href={`${DOCS_URL}getting-started/`} target="_blank" rel="noreferrer">Self-host it →</a>
-          </div>
+          {openRegistration ? (
+            <div className="landing-cta">
+              <button type="button" className="primary-button" onClick={onGetStarted}>Open your factory</button>
+              <a className="link-button" href={`${DOCS_URL}getting-started/`} target="_blank" rel="noreferrer">Self-host it →</a>
+            </div>
+          ) : (
+            <div id="waitlist" className="landing-waitlist">
+              <p className="eyebrow">Invite only, for now</p>
+              <h3>Get your team on the line</h3>
+              <p>We're opening Spaces to teams in small batches. Join the waitlist and we'll send you a link to set up your organization.</p>
+              <WaitlistForm />
+              <p className="landing-waitlist-alt">Have an account? <button type="button" className="link-button" onClick={onSignIn}>Sign in</button> · <a className="link-button" href={`${DOCS_URL}getting-started/`} target="_blank" rel="noreferrer">Self-host it →</a></p>
+            </div>
+          )}
         </section>
       </main>
 

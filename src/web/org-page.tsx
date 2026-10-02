@@ -7,6 +7,7 @@ import { IntegrationsPanel } from './integrations'
 import { PageHead } from './shell'
 import { ModelsSection } from './models'
 import { formatTokens, formatUsd, type UsageSummary } from './usage'
+import { WaitlistSection } from './waitlist-admin'
 
 /**
  * Organization page at /organization: the layer every team shares.
@@ -33,7 +34,7 @@ interface PromotionProposal {
 
 interface KnowledgeStatus { sources: number; documents: number; chunks: number; embeddings: { available: boolean; model: string }; vectorSearch: boolean; lastSyncAt: string | null }
 
-type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'guardrails' | 'promotions' | 'teams'
+type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'guardrails' | 'promotions' | 'teams' | 'waitlist'
 
 const SECTION_BLURB: Record<Section, string> = {
   overview: '',
@@ -44,6 +45,7 @@ const SECTION_BLURB: Record<Section, string> = {
   integrations: 'Set each provider app up once. Connections are shared by every team.',
   models: 'Bring your own Anthropic, OpenAI or OpenRouter key. Routing picks a model per task by cost and speed.',
   guardrails: 'Keep secrets and personal data from AI models: masked before they are sent, restored only where agents need them.',
+  waitlist: 'Who asked for access on the landing page. Invite someone to send them a link that sets up their own organization.',
 }
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [
@@ -55,6 +57,7 @@ const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string 
   { id: 'integrations', label: 'Integrations', hint: 'App credentials and connections', group: 'Setup' },
   { id: 'models', label: 'Models', hint: 'Provider keys and routing', group: 'Setup' },
   { id: 'guardrails', label: 'Data guardrails', hint: 'Secrets and personal data', group: 'Setup' },
+  { id: 'waitlist', label: 'Waitlist', hint: 'Who asked for access', group: 'Setup' },
 ]
 
 export function OrgPage() {
@@ -205,6 +208,10 @@ export function OrgPage() {
           {section === 'promotions' && promotions !== null && (
             <PromotionsSection proposals={promotions ?? []} canDecide={canEdit} busy={busy} act={act} />
           )}
+
+          {section === 'waitlist' && (me?.siteAdmin
+            ? <WaitlistSection />
+            : <p className="empty-state">Only owners and admins of the default organization manage the waitlist.</p>)}
 
           {section === 'teams' && (
             <TeamsSection teams={teams} busy={busy} act={act} onCreated={refresh} />

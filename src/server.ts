@@ -132,6 +132,9 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
+import { createSignupLimiter, getWaitlistInvite, inviteFromWaitlist, joinWaitlist, listWaitlist, markWaitlistJoined, parseWaitlistInput, removeFromWaitlist } from './lib/waitlist'
+
+const waitlistLimiter = createSignupLimiter()
 import { EMPTY_USAGE, summarizeOrgUsage, summarizeProjectUsage, summarizeRunUsage, summarizeUsageForProjects, type UsageSummary } from './lib/run-usage'
 import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
 import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProjectState } from './lib/project-state'
@@ -310,7 +313,7 @@ async function route(req: Request): Promise<Response> {
   }
 
   // Client-side routes (sign-in page, invite acceptance, project pages) load the SPA shell.
-  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname === '/organization')) {
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname === '/organization')) {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
     return sendHtml(200, html)
   }
@@ -340,25 +343,38 @@ async function route(req: Request): Promise<Response> {
   }
   /** The caller's organization (tenant): the active team's, or the default one when sign-in is disabled. */
   const orgIdOf = async (): Promise<string> => auth?.orgId ?? (await getDefaultOrgId())
+  /** Owners and admins of the default organization run the deployment: the waitlist is theirs. */
+  const isSiteAdmin = async (): Promise<boolean> => {
+    if (authDisabled()) return true
+    if (!auth) return false
+    const defaultOrg = await getDefaultOrgId()
+    return auth.teams.some((t) => t.orgId === defaultOrg && roleAtLeast(t.role, 'admin'))
+  }
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
     const statusOrg = await getDefaultOrgId()
     // Sign-in belongs to the deployment, not to a tenant: it has its own GitHub app.
     const githubLogin = Boolean(resolveGitHubLoginProvider())
-    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin, defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
+    return sendJson(200, { authEnabled: !authDisabled(), needsBootstrap: (await countUsers()) === 0, githubLogin, openRegistration: process.env.OPEN_REGISTRATION === '1', defaultModel: await defaultModel(statusOrg), modelsReady: (await configuredProvidersFor(statusOrg)).length > 0 })
   }
 
   if (method === 'POST' && url.pathname === '/api/auth/register') {
-    const body = await readJson<{ email?: string; password?: string; name?: string; inviteToken?: string; organizationName?: string }>(req)
+    const body = await readJson<{ email?: string; password?: string; name?: string; inviteToken?: string; waitlistToken?: string; organizationName?: string }>(req)
     const email = body.email?.trim()
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return sendJson(400, { error: 'A valid email is required.' })
     if (!body.password || body.password.length < 10) return sendJson(400, { error: 'Password must be at least 10 characters.' })
     if (await getUserByEmail(email)) return sendJson(409, { error: 'An account with this email already exists. Sign in instead.' })
     const first = (await countUsers()) === 0
     const invite = body.inviteToken ? await getInviteByToken(body.inviteToken) : undefined
-    // Registration is open only for the very first user or with a valid invite.
-    if (!first && !invite && process.env.OPEN_REGISTRATION !== '1') {
-      return sendJson(403, { error: body.inviteToken ? 'This invite link is invalid, expired or already used.' : 'Registration is by invitation. Ask a team owner or admin for an invite link.' })
+    // A join link from the waitlist: registers that email into its own organization.
+    const waitlisted = !invite && body.waitlistToken ? await getWaitlistInvite(body.waitlistToken) : undefined
+    if (body.waitlistToken && !invite && !waitlisted) return sendJson(403, { error: 'This join link is invalid, expired or already used.' })
+    if (waitlisted && waitlisted.email !== email.toLowerCase()) {
+      return sendJson(400, { error: `This join link was issued to ${waitlisted.email}; register with that address.` })
+    }
+    // Registration is open only for the very first user, with a valid invite or join link, or when OPEN_REGISTRATION=1.
+    if (!first && !invite && !waitlisted && process.env.OPEN_REGISTRATION !== '1') {
+      return sendJson(403, { error: body.inviteToken ? 'This invite link is invalid, expired or already used.' : 'Registration is by invitation. Join the waitlist on the home page, or ask a team owner or admin for an invite link.' })
     }
     // Check the invite before creating anything, so a mismatched email does not leave a stray account.
     if (invite && invite.email.toLowerCase() !== email.toLowerCase()) {
@@ -369,6 +385,7 @@ async function route(req: Request): Promise<Response> {
     if (invite) teamId = (await acceptInvite(body.inviteToken!, user)).teamId
     // Without an invite the account starts its own organization (the first one adopts anything from before tenancy).
     else teamId = (await bootstrapOrganization(user, { organizationName: body.organizationName, adoptLegacy: first })).team.teamId
+    if (waitlisted) await markWaitlistJoined(waitlisted.entryId)
     const { token } = await createSession(user.userId, req, teamId)
     return new Response(JSON.stringify({ ok: true, user, bootstrapped: first }), { status: 201, headers: { 'content-type': 'application/json', 'set-cookie': sessionCookie(token, req) } })
   }
@@ -392,6 +409,31 @@ async function route(req: Request): Promise<Response> {
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json', 'set-cookie': clearSessionCookie() } })
   }
 
+  // Waitlist signup from the landing page: public, rate-limited per IP, and the
+  // answer is the same whether or not the email was already on the list.
+  if (method === 'POST' && url.pathname === '/api/waitlist') {
+    const body = await readJson<Record<string, unknown>>(req)
+    // A field people never see: a bot that fills it in gets a quiet "thanks".
+    if (typeof body.website === 'string' && body.website.trim()) return sendJson(200, { ok: true })
+    const parsed = parseWaitlistInput(body)
+    if (!parsed.ok) return sendJson(400, { error: parsed.error })
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || server.requestIP(req)?.address || 'unknown'
+    if (!waitlistLimiter(ip)) return sendJson(429, { error: 'Too many signups from here. Try again in a few minutes.' })
+    const { created, entry } = await joinWaitlist(parsed.input)
+    if (created) {
+      serverLog.info('waitlist signup', { entryId: entry.entryId })
+      void import('./lib/slack').then((m) => m.notifyWaitlistSignup(entry)).catch(() => undefined)
+    }
+    return sendJson(200, { ok: true })
+  }
+
+  // Join-link preview (public: the person is not signed in yet).
+  if (method === 'GET' && /^\/api\/waitlist\/join\/[^/]+$/.test(url.pathname)) {
+    const entry = await getWaitlistInvite(decodeURIComponent(url.pathname.split('/')[4]!))
+    if (!entry) return sendJson(404, { error: 'This join link is invalid, expired or already used.' })
+    return sendJson(200, { email: entry.email, name: entry.name, company: entry.company })
+  }
+
   // Invite preview is public (the invitee is not signed in yet); acceptance needs a session.
   if (method === 'GET' && /^\/api\/invites\/[^/]+$/.test(url.pathname)) {
     const invite = await getInviteByToken(decodeURIComponent(url.pathname.split('/')[3]!))
@@ -408,7 +450,26 @@ async function route(req: Request): Promise<Response> {
     const modelsReady = (await configuredProvidersFor(meOrg)).length > 0
     const organization = await getOrganization(meOrg).catch(() => undefined)
     if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady })
-    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady })
+    return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady, siteAdmin: await isSiteAdmin() })
+  }
+
+  // ---- Waitlist (the deployment's; managed by the default organization's owners and admins) ----
+
+  if (url.pathname === '/api/admin/waitlist' || url.pathname.startsWith('/api/admin/waitlist/')) {
+    if (!(await isSiteAdmin())) return sendJson(403, { error: 'Only owners and admins of the default organization manage the waitlist.' })
+    if (method === 'GET' && url.pathname === '/api/admin/waitlist') return sendJson(200, { entries: await listWaitlist() })
+    const invitePath = /^\/api\/admin\/waitlist\/([^/]+)\/invite$/.exec(url.pathname)
+    if (method === 'POST' && invitePath) {
+      const issued = await inviteFromWaitlist(decodeURIComponent(invitePath[1]!), auth?.user.userId ?? null)
+      if (!issued) return sendJson(404, { error: 'Not on the waitlist, or already joined.' })
+      serverLog.info('waitlist invite issued', { entryId: issued.entry.entryId, by: auth?.user.email })
+      return sendJson(200, { entry: issued.entry, link: `${origin}/join/${issued.token}` })
+    }
+    const entryPath = /^\/api\/admin\/waitlist\/([^/]+)$/.exec(url.pathname)
+    if (method === 'DELETE' && entryPath) {
+      return (await removeFromWaitlist(decodeURIComponent(entryPath[1]!))) ? sendJson(200, { ok: true }) : sendJson(404, { error: 'Not on the waitlist.' })
+    }
+    return sendJson(404, { error: 'Not found.' })
   }
 
   if (method === 'POST' && url.pathname === '/api/me/team' && auth) {

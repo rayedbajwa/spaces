@@ -1160,3 +1160,23 @@ ALTER TABLE deployment_records ADD CONSTRAINT deployment_records_target_id_fkey
   FOREIGN KEY (target_id) REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS deployment_records_project_idx
   ON deployment_records (project_id, created_at DESC);
+
+-- Waitlist: people who asked for access from the landing page while
+-- registration is by invitation (deployment-wide; lib/waitlist.ts). An invite
+-- from it is a join link for that email that starts its own organization.
+CREATE TABLE IF NOT EXISTS waitlist (
+  entry_id     UUID PRIMARY KEY,
+  email        TEXT NOT NULL UNIQUE,
+  name         TEXT,
+  company      TEXT,
+  team_size    TEXT,
+  note         TEXT,
+  status       TEXT NOT NULL DEFAULT 'waiting' CHECK (status IN ('waiting','invited','joined')),
+  token_hash   TEXT UNIQUE,
+  invited_by   UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  invited_at   TIMESTAMPTZ,
+  expires_at   TIMESTAMPTZ,
+  joined_at    TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS waitlist_created_idx ON waitlist (created_at DESC);

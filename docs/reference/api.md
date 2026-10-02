@@ -12,10 +12,13 @@ All `/api/*` routes except the ones marked public require a session cookie
 |---|---|
 | `GET /api/auth/status` | public: `{ authEnabled, needsBootstrap, githubLogin }` |
 | `GET /api/version` | public: build identity `{ name, version, commit }` (see Version metadata) |
-| `POST /api/auth/register` | public: `{ email, password, name?, organizationName?, inviteToken? }`; the first user bootstraps the default organization and team, a registration without an invite starts its own organization, and otherwise an invite (or `OPEN_REGISTRATION=1`) is required. Sets the session cookie |
+| `POST /api/auth/register` | public: `{ email, password, name?, organizationName?, inviteToken?, waitlistToken? }`; the first user bootstraps the default organization and team, a registration without an invite starts its own organization, and otherwise an invite, a waitlist join link (`waitlistToken`, for its email; starts its own organization) or `OPEN_REGISTRATION=1` is required. Sets the session cookie |
 | `POST /api/auth/login` · `POST /api/auth/logout` | public: `{ email, password, inviteToken? }` / clear session |
 | `GET /api/oauth/github/authorize?mode=login[&invite=token]` | public: GitHub sign-in (same OAuth app as the integration) |
 | `GET /api/invites/:token` | public: invite preview (team, role, email) |
+| `POST /api/waitlist` | public: `{ email, name?, company?, teamSize? }` joins the waitlist; the same `{ ok: true }` whether or not the email was already on it; 5 signups per IP per 10 minutes |
+| `GET /api/waitlist/join/:token` | public: join-link preview (email, name, company) |
+| `GET /api/admin/waitlist` · `POST /api/admin/waitlist/:id/invite` · `DELETE /api/admin/waitlist/:id` | owners and admins of the default organization: list, issue a join link (`{ link }`), remove |
 | `POST /api/invites/:token/accept` | Join the team the invite is for (email must match) |
 | `GET /api/me` · `POST /api/me/team` | Current user, teams, active team and the active `organization` / switch active team `{ teamId }` |
 | `GET /api/teams` · `POST /api/teams` | My teams / create a team in the caller's organization (creator becomes owner) |

@@ -60,6 +60,13 @@ top of the sidebar.
   from an invite joins the inviting team's organization instead.
 - After the first account, **registration is by invitation** unless
   `OPEN_REGISTRATION=1`.
+- While registration is by invitation, the landing page offers a **waitlist**
+  instead of sign-up. Owners and admins of the default organization see it under
+  **Organization → Waitlist** (and in the sidebar). **Invite** makes a join link
+  for that email, valid for 14 days, which they send themselves; registering
+  through it starts the person's own organization. With Slack connected to the
+  default organization, each signup is posted to `#spaces-waitlist` (name,
+  company and team size; not the email).
 - `AUTH_DISABLED=1` turns authentication off for single-user local use.
 
 ## Roles

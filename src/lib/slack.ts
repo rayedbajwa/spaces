@@ -293,3 +293,43 @@ export async function notifyProject(projectId: string | null | undefined, notice
     reportSlackError(orgId, `post ${notice.kind.replace('_', ' ')}`, error)
   }
 }
+
+let waitlistChannel: { orgId: string; channelId: string } | undefined
+
+/**
+ * A new waitlist signup, posted to #spaces-waitlist in the default
+ * organization's Slack (created or joined on first use). The email is left out:
+ * Slack is outside the guardrails, and the waitlist page has it.
+ */
+export async function notifyWaitlistSignup(entry: { name: string | null; company: string | null; teamSize: string | null }): Promise<void> {
+  let orgId = ''
+  try {
+    const { getDefaultOrgId } = await import('./orgs')
+    orgId = await getDefaultOrgId()
+    const token = await slackToken(orgId)
+    if (!token) return
+    if (waitlistChannel?.orgId !== orgId) {
+      const name = 'spaces-waitlist'
+      let channelId: string
+      try {
+        channelId = (await slackApi<SlackResponse & { channel: { id: string } }>(token, 'conversations.create', { name, is_private: false })).channel.id
+      } catch (error) {
+        if (!(error instanceof SlackApiError && error.code === 'name_taken')) throw error
+        const found = await findChannel(token, name)
+        if (!found) throw error
+        channelId = found.id
+        if (!found.isMember) await slackApi(token, 'conversations.join', { channel: channelId })
+      }
+      waitlistChannel = { orgId, channelId }
+    }
+    const who = [entry.name, entry.company].filter(Boolean).map((v) => slackText(v!, 120)).join(' · ') || 'Someone'
+    const size = entry.teamSize ? ` (team of ${slackText(entry.teamSize, 20)})` : ''
+    const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
+    const blocks: unknown[] = [{ type: 'section', text: { type: 'mrkdwn', text: `📝 *New waitlist signup:* ${who}${size}` } }]
+    if (base) blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Open the waitlist' }, url: `${base}/organization?section=waitlist` }] })
+    await slackApi(token, 'chat.postMessage', { channel: waitlistChannel.channelId, text: `New waitlist signup: ${who}${size}`, blocks, unfurl_links: false })
+  } catch (error) {
+    if (error instanceof SlackApiError && ['channel_not_found', 'is_archived'].includes(error.code)) waitlistChannel = undefined
+    reportSlackError(orgId, 'post waitlist signup', error)
+  }
+}
