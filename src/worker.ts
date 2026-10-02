@@ -953,7 +953,12 @@ async function shutdown(signal: string): Promise<void> {
       const run = await getRun(runId)
       // Trust the engine, not the DB row: a run whose answer is being processed
       // can still read 'paused' in the DB for a moment while the engine is busy.
-      if (run && engine.isWaitingForInput()) {
+      if (run && engine.isWaitingForInput() && run.status !== 'paused') {
+        // Answered while the engine still waited: the answer is already a queued
+        // job. Rewriting the row as paused here used to leave it paused with no
+        // pause kind, which neither answering nor resuming accepted.
+        await clearRunOwner(runId)
+      } else if (run && engine.isWaitingForInput()) {
         // Nothing was executing. Keep the run paused; the next answer restarts
         // the stage on a fresh worker (see handleAnswerJob's no-engine path).
         await updateRunStatus(runId, {

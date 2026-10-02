@@ -2742,7 +2742,18 @@ async function route(req: Request): Promise<Response> {
     // boundary): there is no gate to answer, so the answer resumes the run from
     // the stage it stopped at. Anything beyond a bare "approve" / "continue" is
     // kept as a reviewer note the restarted stage applies.
-    if (row.pauseKind === 'user') {
+    // Paused with no kind (left by an older worker restart): the open gate, if
+    // any, says what it waits for; with no gate there is nothing to answer, so
+    // the run resumes like a person's pause.
+    if (!row.pauseKind) {
+      const sql = getDb()
+      const [gate] = await sql<Array<{ kind: string }>>`SELECT kind FROM pipeline_gates WHERE run_id = ${runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1`
+      if (gate?.kind === 'review' || gate?.kind === 'clarification') {
+        await sql`UPDATE pipeline_runs SET pause_kind = ${gate.kind} WHERE run_id = ${runId} AND status = 'paused' AND pause_kind IS NULL`
+        row.pauseKind = gate.kind
+      }
+    }
+    if (row.pauseKind === 'user' || !row.pauseKind) {
       const parsed = parseApprovalAnswer(answer)
       const note = parsed.approved ? parsed.note : answer
       if (note) await appendReviewerNote(runId, row.currentStage ?? null, note)
@@ -2841,7 +2852,7 @@ async function route(req: Request): Promise<Response> {
         return sendJson(409, { error: `Only a queued or running run can be paused (this one is ${row.status}).` })
       }
     } else if (action === 'resume') {
-      if (row.status !== 'paused' || row.pauseKind !== 'user') return sendJson(409, { error: 'Only a run paused by a user can be resumed here; answer or approve other pauses instead.' })
+      if (row.status !== 'paused' || (row.pauseKind && row.pauseKind !== 'user')) return sendJson(409, { error: 'Only a run paused by a user can be resumed here; answer or approve other pauses instead.' })
       const requeued = await requeueRun(row, (row.currentStage as StageName | null) ?? undefined, 'Resumed by a user.', 'user')
       if (!requeued.ok) return sendJson(409, { error: requeued.error })
       await dbAppendEvent({ runId, kind: 'resumed', payload: { by, fromStage: row.currentStage } })
