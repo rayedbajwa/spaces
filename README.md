@@ -1,6 +1,6 @@
 # Spaces
 
-**An open-source, agent-driven SDLC orchestrator for software development teams.**
+**A source-available, agent-driven SDLC orchestrator for software development teams.**
 
 Spaces runs an AI-driven Software Development Life Cycle — `specify → plan →
 tasks → implement → verify` — across a fleet of specialized agents, with a web
@@ -11,9 +11,14 @@ Think of it as a project board where every card is powered by a persistent
 agent that knows the codebase, your team's conventions, and the artifacts of
 every previous stage.
 
-Built on the [AIDLC framework](https://github.com/awslabs/aidlc-workflows)
-(AI-Driven Development Life Cycle) and the
+Stages run on GitHub's [Spec Kit](https://github.com/github/spec-kit)
+(through [`@the-agency/pi-spec-kit`](https://www.npmjs.com/package/@the-agency/pi-spec-kit),
+with Spaces' own shorter skills and templates) and the
 [Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+The pipeline follows the ideas of AWS's
+[AI-Driven Development Life Cycle](https://github.com/awslabs/aidlc-workflows)
+(AIDLC): inception and construction phases, role-based agents and human
+approval gates. Spaces does not use the AIDLC workflow files themselves.
 
 **Tags:** `agentic-workflows` · `aidlc` · `sdlc-automation` · `ai-development` ·
 `llm-orchestration` · `pipeline-orchestrator` · `spec-kit` · `claude` ·
@@ -79,6 +84,16 @@ specifying, and every stage starts with the excerpts relevant to its project.
 
 ![Knowledge base](docs/screenshots/knowledge-base.png)
 
+### Data guardrails
+
+Choose what AI models may see, per organization: **Mask** (the default)
+swaps secrets and personal data for tokens before anything reaches a model
+and restores them only in the commands and files agents write; **Strict**
+also keeps agents out of secret files; **Warn only** and **Off** relax it.
+Values that should never be masked go in an allowlist.
+
+![Data guardrails](docs/screenshots/guardrails.png)
+
 ### Team page
 
 Members and roles, invite links, team memory and the knowledge defaults new
@@ -96,12 +111,14 @@ their consoles. Credentials are stored encrypted. Nothing lives in `.env`.
 
 ![Integrations](docs/screenshots/integrations.png)
 
-### Generated artifacts, browsable in-app
+### Every intent, browsable in-app
 
 Every stage produces markdown artifacts (`spec.md`, `plan.md`, `tasks.md`,
-`test-plan.md`, `verification-report.md`, etc.) that render inline in the app.
+`test-plan.md`, `verification-report.md`, etc.). Open an intent to page
+through all of them, grouped by specification, planning and quality, with
+its status and history.
 
-![Generated spec.md rendered in the browser](docs/screenshots/generated-spec.png)
+![An intent's spec.md in the intent viewer](docs/screenshots/generated-spec.png)
 
 ---
 
@@ -114,7 +131,7 @@ Every stage produces markdown artifacts (`spec.md`, `plan.md`, `tasks.md`,
   spans multiple projects, remembers prior context per project, and reuses
   warm agent sessions across runs.
 - **Anyone experimenting with agentic SDLC patterns** who wants a real,
-  runnable reference implementation of the AIDLC framework backed by
+  runnable implementation of AIDLC-style, spec-driven delivery backed by
   Postgres, a job queue, and a project-board UI.
 
 Spaces is **not** a code generator you fire and forget. It's a workflow
@@ -673,4 +690,4 @@ else makes the database suites skip (see
 
 ## License
 
-[MIT](LICENSE)
+Personal, non-commercial use only; no redistribution. See [LICENSE](LICENSE).

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Spaces — an open-source, agent-driven SDLC orchestrator. Runs an AIDLC pipeline (specify → plan → tasks → implement → verify) with per-project sub-agents, warm agent pool, and app-wide integrations for GitHub, Jira, Confluence, and Slack.",
+  "description": "Spaces — a source-available (personal use only), agent-driven SDLC orchestrator. Runs an AIDLC pipeline (specify → plan → tasks → implement → verify) with per-project sub-agents, warm agent pool, and app-wide integrations for GitHub, Jira, Confluence, and Slack.",
   "homepage": "https://github.com/rayedbajwa/spaces",
   "repository": {
     "type": "git",
@@ -12,10 +12,9 @@
   "bugs": {
     "url": "https://github.com/rayedbajwa/spaces/issues"
   },
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "keywords": [
     "aidlc",
-    "aidlc-workflows",
     "agentic-workflows",
     "agentic-ai",
     "ai-agents",
@@ -26,6 +25,7 @@
     "pipeline-orchestrator",
     "llm-orchestration",
     "spec-kit",
+    "spec-driven-development",
     "claude",
     "anthropic",
     "pi-sdk",

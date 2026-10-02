@@ -90,3 +90,11 @@ Please use the issue templates in `.github/ISSUE_TEMPLATE/`. Include:
 
 If you discover a security issue, please **do not** open a public issue.
 See [SECURITY.md](SECURITY.md).
+
+## Licensing of contributions
+
+Spaces is source-available under a personal-use license (see
+[LICENSE](LICENSE)), not an open-source one. By submitting a contribution, you
+confirm you have the right to submit it, and you grant the copyright holder a
+perpetual, worldwide, royalty-free license to use, modify, sublicense and
+relicense it, including under the terms in [LICENSE](LICENSE).
