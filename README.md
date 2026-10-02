@@ -1,15 +1,26 @@
 # Spaces
 
-**A source-available, agent-driven SDLC orchestrator for software development teams.**
+**The AI software factory for your team. Specs go in, reviewed and tested pull requests come out.**
 
-Spaces runs an AI-driven Software Development Life Cycle — `specify → plan →
-tasks → implement → verify` — across a fleet of specialized agents, with a web
-UI to inspect every step, human-in-the-loop review gates, and app-wide OAuth
-integrations for GitHub, Jira, Confluence, and Slack.
+Spaces is a source-available software factory. Every feature moves down an
+assembly line of specialised agents — `research → specify → plan → tasks →
+implement → review → verify → deliver` — that know your codebase, your team's
+conventions and the tickets behind the work. You approve at the gates; the
+factory does the rest.
 
-Think of it as a project board where every card is powered by a persistent
-agent that knows the codebase, your team's conventions, and the artifacts of
-every previous stage.
+- **Raw material in:** a Jira or Linear ticket, a Confluence page, a GitHub
+  issue or an idea in plain words.
+- **The line:** each station is an agent with one job, with human gates after
+  specify, plan, tasks, implement and verify, and built-in loops (fix until
+  green, review until approved, deliver until merged).
+- **Finished goods out:** a branch and a Conventional-Commits pull request per
+  workstream, with CI green, code reviewed, QA done and the spec committed
+  alongside the code — then merged and deployed once you say so.
+
+A web UI shows the whole floor: a board where every card is a feature on the
+line, live agent output, and the artifact each station leaves behind.
+Integrations for GitHub, Jira, Confluence, Linear and Slack are set up in the
+app.
 
 Stages run on GitHub's [Spec Kit](https://github.com/github/spec-kit)
 (through [`@the-agency/pi-spec-kit`](https://www.npmjs.com/package/@the-agency/pi-spec-kit),
@@ -20,7 +31,7 @@ The pipeline follows the ideas of AWS's
 (AIDLC): inception and construction phases, role-based agents and human
 approval gates. Spaces does not use the AIDLC workflow files themselves.
 
-**Tags:** `agentic-workflows` · `aidlc` · `sdlc-automation` · `ai-development` ·
+**Tags:** `software-factory` · `agentic-workflows` · `aidlc` · `sdlc-automation` · `ai-development` ·
 `llm-orchestration` · `pipeline-orchestrator` · `spec-kit` · `claude` ·
 `developer-tools`
 

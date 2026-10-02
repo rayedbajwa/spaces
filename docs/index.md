@@ -1,16 +1,22 @@
 # Spaces
 
-**A source-available, agent-driven SDLC orchestrator for software development teams.**
+**The AI software factory for your team. Specs go in, reviewed and tested pull requests come out.**
 
-Spaces runs an AI-driven software development life cycle — `specify → plan →
-tasks → implement → review → verify → deliver` — across a fleet of specialised
-agents, with a web UI to inspect every step, human-in-the-loop gates at the
-points that matter, and app-wide integrations for GitHub, Jira, Confluence,
-Linear and Slack.
+Spaces is a source-available software factory. Every feature moves down an
+assembly line of specialised agents — `research → specify → plan → tasks →
+implement → review → verify → deliver` — that know your codebase, your team's
+conventions and the tickets behind the work. Humans sign off at the gates that
+matter; the factory does the rest.
 
-Think of it as a project board where every card is backed by agents that know
-the codebase, your team's conventions, the tickets behind the work and the
-artifacts of every previous stage.
+| | |
+|---|---|
+| **Raw material in** | A Jira or Linear ticket, a Confluence page, a GitHub issue or an idea in plain words |
+| **The line** | One agent per station, human gates after specify, plan, tasks, implement and verify, and loops that fix until green, review until approved and deliver until merged |
+| **Finished goods out** | A branch and a Conventional-Commits PR per workstream: CI green, code reviewed, QA done, spec committed with the code, then merged and deployed |
+
+A web UI shows the whole floor — a board where every card is a feature on the
+line, live agent output and the artifact each station leaves — with
+integrations for GitHub, Jira, Confluence, Linear and Slack set up in the app.
 
 Stages run on GitHub's [Spec Kit](https://github.com/github/spec-kit) (through
 [`@the-agency/pi-spec-kit`](https://www.npmjs.com/package/@the-agency/pi-spec-kit))
@@ -121,8 +127,8 @@ The pipeline follows the ideas of AWS's
 - **Anyone experimenting with agentic SDLC patterns** who wants a runnable
   reference implementation backed by Postgres, a job queue and a project board.
 
-Spaces is **not** a code generator you fire and forget. It is a workflow runtime
-that puts explicit gates between stages and gives you inspectable artifacts for
-each one.
+Spaces is **not** a code generator you fire and forget. It is a production line
+with inspection points: explicit gates between stations, and an artifact you
+can read, approve or send back at each one.
 
 Ready? Continue with [Getting started](getting-started.md).

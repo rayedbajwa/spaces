@@ -1,10 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { LandingPage } from './landing'
 import { LoadingBlock } from './loading'
 
 /**
  * Authentication + teams for the web UI.
  *
- *  <AuthRoot>   loads /api/auth/status and /api/me; renders the sign-in screen
+ *  <AuthRoot>   loads /api/auth/status and /api/me; renders the landing page
+ *               (signed-out visitors at `/`) and the sign-in screen
  *               (register / login / GitHub / invite acceptance) until a session
  *               exists, then the app. Listens for `spaces:unauthenticated`
  *               (dispatched by the fetch helpers on 401) to fall back to it.
@@ -40,6 +42,9 @@ export function AuthRoot({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const [signedOut, setSignedOut] = useState(false)
+  // Only a fresh visit to `/` gets the landing page; a sign-out or an expired
+  // session goes straight to the sign-in form.
+  const [authView, setAuthView] = useState<'landing' | 'login' | 'register'>(() => (window.location.pathname === '/' ? 'landing' : 'login'))
 
   const refresh = useCallback(async () => {
     try {
@@ -59,7 +64,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void refresh()
-    const onUnauth = () => { setMe(null); setSignedOut(true) }
+    const onUnauth = () => { setMe(null); setSignedOut(true); setAuthView('login') }
     window.addEventListener('spaces:unauthenticated', onUnauth)
     return () => window.removeEventListener('spaces:unauthenticated', onUnauth)
   }, [refresh])
@@ -68,6 +73,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
     setMe(null)
     setSignedOut(true)
+    setAuthView('login')
   }, [])
 
   const switchTeam = useCallback(async (teamId: string) => {
@@ -78,7 +84,10 @@ export function AuthRoot({ children }: { children: ReactNode }) {
 
   if (loading) return <div className="auth-screen"><div className="auth-card"><LoadingBlock label="Loading Spaces…" /></div></div>
   if (status?.authEnabled && (signedOut || !me?.user)) {
-    return <SignInScreen needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} onSignedIn={refresh} />
+    if (authView === 'landing' && !status.needsBootstrap && !inviteTokenFromPath()) {
+      return <LandingPage onSignIn={() => setAuthView('login')} onGetStarted={() => setAuthView('register')} />
+    }
+    return <SignInScreen key={authView} needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} initialMode={authView === 'register' ? 'register' : 'login'} onBack={window.location.pathname === '/' ? () => setAuthView('landing') : undefined} onSignedIn={refresh} />
   }
   return <AuthContext.Provider value={{ me, refresh, signOut, switchTeam }}>{children}</AuthContext.Provider>
 }
@@ -92,11 +101,11 @@ function inviteTokenFromPath(): string | undefined {
   return match ? decodeURIComponent(match[1]!) : undefined
 }
 
-function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; onSignedIn: () => Promise<void> }) {
+function SignInScreen({ needsBootstrap, githubLogin, initialMode, onBack, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; initialMode: 'login' | 'register'; onBack?: () => void; onSignedIn: () => Promise<void> }) {
   const inviteToken = inviteTokenFromPath()
   const [invite, setInvite] = useState<{ email: string; role: string; teamName: string } | null>(null)
   const [inviteError, setInviteError] = useState('')
-  const [mode, setMode] = useState<'login' | 'register'>(needsBootstrap || inviteToken ? 'register' : 'login')
+  const [mode, setMode] = useState<'login' | 'register'>(needsBootstrap || inviteToken ? 'register' : initialMode)
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [organizationName, setOrganizationName] = useState('')
@@ -134,7 +143,7 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
   return (
     <div className="auth-screen">
       <div className="auth-card card">
-        <p className="eyebrow">Agent-driven SDLC</p>
+        <p className="eyebrow">AI software factory</p>
         <h1>Spaces</h1>
         {needsBootstrap && (
           <p className="panel-subtitle">No accounts yet. Create the first one — it becomes the owner of the default team and adopts existing projects.</p>
@@ -169,6 +178,9 @@ function SignInScreen({ needsBootstrap, githubLogin, onSignedIn }: { needsBootst
             ? <>New here? <button type="button" className="link-button" onClick={() => setMode('register')}>Create an account</button></>
             : <>Already have an account? <button type="button" className="link-button" onClick={() => setMode('login')}>Sign in</button></>}
         </p>
+        {onBack && !needsBootstrap && !inviteToken && (
+          <p className="panel-subtitle auth-back"><button type="button" className="link-button" onClick={onBack}>← What is Spaces?</button></p>
+        )}
       </div>
     </div>
   )

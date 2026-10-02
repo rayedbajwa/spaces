@@ -4602,6 +4602,8 @@ function getContentType(filePath: string): string {
       return 'text/html; charset=utf-8'
     case '.json':
       return 'application/json; charset=utf-8'
+    case '.png':
+      return 'image/png'
     case '.md':
     case '.txt':
     case '.log':
