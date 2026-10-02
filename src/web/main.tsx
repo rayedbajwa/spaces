@@ -3327,6 +3327,7 @@ function App() {
                     <PullRequestLinks pullRequests={projectPullRequests ?? selectedCardFresh.pullRequests} />
                   </>
                 )}
+                <ProjectDeploymentSection namespace={selectedProjectNamespace} canManage={me?.activeTeam?.role === 'owner' || me?.activeTeam?.role === 'admin'} />
                 <h3>Release artifacts</h3>
                 {(qaOverview?.releaseArtifacts ?? []).length === 0 && (!qaOverview && isLoading('qa') ? <SkeletonRows count={3} label="Loading release documents…" /> : <p className="empty-state">No intent yet.</p>)}
                 {(qaOverview?.releaseArtifacts ?? []).map((artifact) => (
@@ -4867,3 +4868,168 @@ function toMessage(error: unknown): string {
 }
 
 createRoot(document.getElementById('root')!).render(<AuthRoot><App /></AuthRoot>)
+
+interface DeploymentTargetResponse {
+  targetId: string
+  serviceName: string
+  environmentName: string
+  railwayProjectName: string
+  linkState: 'valid' | 'invalid'
+  linkError?: string | null
+}
+interface DeploymentView {
+  connection: { status: string; reconnectNeeded: boolean; workspaceName?: string }
+  target?: DeploymentTargetResponse
+  status?: { state: string; railwayStatus: string | null; serviceUrl: string | null; lastDeployedAt: string | null; deploymentUrl: string | null; linkState: 'valid' | 'invalid'; message?: string; stale?: boolean; lastCheckedAt?: string | null; error?: string | null }
+  history: Array<{ deploymentId: string; status: string; railwayStatus: string | null; deploymentUrl: string | null; error: string | null; completedAt: string | null; createdAt: string }>
+  canManage?: boolean
+}
+interface DeploymentTargets {
+  workspaces: Array<{ id: string; name: string; projects: Array<{ id: string; name: string; services: Array<{ id: string; name: string }>; environments: Array<{ id: string; name: string }> }> }>
+}
+
+const DEPLOYMENT_BADGE: Record<string, string> = { success: 'completed', failed: 'error', unconfirmed: 'error', building: 'paused', deploying: 'paused', queued: 'paused', in_progress: 'paused', sleeping: 'idle', unknown: 'idle' }
+
+/** The project's Railway deployment: link one service + environment, see live status. */
+function ProjectDeploymentSection({ namespace, canManage }: { namespace: string | undefined; canManage: boolean }) {
+  const [view, setView] = useState<DeploymentView | null>(null)
+  const [targets, setTargets] = useState<DeploymentTargets['workspaces']>([])
+  const [showPicker, setShowPicker] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [workspaceId, setWorkspaceId] = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [serviceId, setServiceId] = useState('')
+  const [environmentId, setEnvironmentId] = useState('')
+
+  const load = async () => {
+    if (!namespace) return
+    try {
+      setView(await getJson<DeploymentView>(`/api/projects/${namespace}/deployment`))
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+  }
+  useEffect(() => { void load() }, [namespace])
+  useEffect(() => {
+    if (!showPicker || !namespace) return
+    setError('')
+    getJson<DeploymentTargets>(`/api/projects/${namespace}/deployment/targets`)
+      .then((data) => {
+        setTargets(data.workspaces)
+        const ws = data.workspaces[0]
+        setWorkspaceId(ws?.id ?? '')
+        setProjectId(ws?.projects[0]?.id ?? '')
+        setServiceId(ws?.projects[0]?.services[0]?.id ?? '')
+        setEnvironmentId(ws?.projects[0]?.environments[0]?.id ?? '')
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [showPicker, namespace])
+
+  if (!namespace) return null
+
+  const refresh = async () => {
+    setBusy(true); setError('')
+    try { await postJson(`/api/projects/${namespace}/deployment/refresh`, {}); await load() }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+  const link = async () => {
+    setBusy(true); setError('')
+    try {
+      await postJson(`/api/projects/${namespace}/deployment/target`, { workspaceId, railwayProjectId: projectId, serviceId, environmentId })
+      setShowPicker(false); await load()
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+  const unlink = async () => {
+    if (!window.confirm('Unlink this deployment target? The project returns to merge-based delivery; deployment history is kept.')) return
+    setBusy(true); setError('')
+    try { await json(`/api/projects/${namespace}/deployment/target`, { method: 'DELETE' }); await load() }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+
+  const workspace = targets.find((w) => w.id === workspaceId)
+  const project = workspace?.projects.find((p) => p.id === projectId)
+  const status = view?.status
+  // The server decides who may link/refresh; the team-role prop is only a fallback.
+  const canManageTarget = view?.canManage ?? canManage
+
+  return (
+    <section className="deployment-section">
+      <div className="section-header-row">
+        <h3>Deployment (Railway)</h3>
+        <div className="button-row">
+          {view?.target && <button className="secondary-button" type="button" disabled={busy} onClick={() => void refresh()}>Refresh</button>}
+          {view?.target && canManageTarget && <button className="ghost-button" type="button" disabled={busy} onClick={() => void unlink()}>Unlink</button>}
+          {!view?.target && canManageTarget && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowPicker((v) => !v)}>{showPicker ? 'Cancel' : 'Link target'}</button>}
+        </div>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+      {view?.connection.status !== 'connected' && (
+        <p className="empty-state">Railway is not connected for this organization. Connect it under Organization → Integrations to link a target.</p>
+      )}
+      {view?.connection.reconnectNeeded && <p className="error-text">Railway needs reconnecting under Organization → Integrations.</p>}
+      {view?.connection.status === 'connected' && !view.target && !showPicker && (
+        <p className="empty-state">No deployment target linked. This project delivers by merge only.</p>
+      )}
+      {view?.target && (
+        <div className="deployment-status">
+          <p>
+            <strong>{view.target.serviceName}</strong> @ <em>{view.target.environmentName}</em> · Railway project {view.target.railwayProjectName}
+          </p>
+          {status && (
+            <p>
+              <span className={`mini-badge ${DEPLOYMENT_BADGE[status.state] ?? 'idle'}`}>{status.state}</span>
+              {status.stale ? <span className="mini-badge paused">stale</span> : null}
+              {status.serviceUrl ? <> · <a href={status.serviceUrl} target="_blank" rel="noreferrer">service URL ↗</a></> : null}
+              {status.lastDeployedAt ? <> · last deployed {new Date(status.lastDeployedAt).toLocaleString()}</> : null}
+              {status.deploymentUrl ? <> · <a href={status.deploymentUrl} target="_blank" rel="noreferrer">deployment ↗</a></> : null}
+            </p>
+          )}
+          {view.target.linkState === 'invalid' && <p className="error-text">{view.target.linkError ?? 'The linked target is no longer reachable. Re-link it.'}</p>}
+          {status?.stale && status.error && <p className="error-text">Last refresh could not reach Railway: {status.error}. The state shown is the last known one.</p>}
+          {status?.message && status.state !== 'success' && <p className="panel-subtitle">{status.message}</p>}
+          {view.history.length > 0 && (
+            <ul className="deployment-history">
+              {view.history.slice(0, 5).map((record) => (
+                <li key={record.deploymentId}>
+                  <span className={`mini-badge ${DEPLOYMENT_BADGE[record.status] ?? 'idle'}`}>{record.status}</span>
+                  <span className="text-subtle">{new Date(record.completedAt ?? record.createdAt).toLocaleString()}</span>
+                  {record.error && <span className="text-subtle">{record.error}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {!view?.target && showPicker && (
+        <div className="deployment-picker">
+          <p className="panel-subtitle">Link one Railway service and environment. The release triggers on the delivery approval gate; Spaces never reconfigures Railway.</p>
+          <label>Workspace
+            <select value={workspaceId} onChange={(e) => { const ws = targets.find((w) => w.id === e.target.value); setWorkspaceId(e.target.value); setProjectId(ws?.projects[0]?.id ?? ''); setServiceId(ws?.projects[0]?.services[0]?.id ?? ''); setEnvironmentId(ws?.projects[0]?.environments[0]?.id ?? '') }}>
+              {targets.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          </label>
+          <label>Project
+            <select value={projectId} onChange={(e) => { const p = workspace?.projects.find((x) => x.id === e.target.value); setProjectId(e.target.value); setServiceId(p?.services[0]?.id ?? ''); setEnvironmentId(p?.environments[0]?.id ?? '') }}>
+              {(workspace?.projects ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <label>Service
+            <select value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
+              {(project?.services ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </label>
+          <label>Environment
+            <select value={environmentId} onChange={(e) => setEnvironmentId(e.target.value)}>
+              {(project?.environments ?? []).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </label>
+          <div className="button-row">
+            <button className="primary-button" type="button" disabled={busy || !serviceId || !environmentId} onClick={() => void link()}>Link target</button>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}

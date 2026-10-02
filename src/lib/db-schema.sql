@@ -294,7 +294,7 @@ ALTER TABLE project_repos ADD COLUMN IF NOT EXISTS clone_error  TEXT;
 -- enum can grow (constraint name is Postgres' default for an inline CHECK).
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear','figma'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway'));
 
 -- Per-project knowledge scope: which connected integrations agents may query for
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
@@ -614,7 +614,7 @@ ALTER TABLE oauth_apps ADD COLUMN IF NOT EXISTS config_json JSONB NOT NULL DEFAU
 -- Re-create the oauth_apps provider CHECK so it can grow on existing databases.
 ALTER TABLE oauth_apps DROP CONSTRAINT IF EXISTS oauth_apps_provider_check;
 ALTER TABLE oauth_apps ADD CONSTRAINT oauth_apps_provider_check
-  CHECK (provider IN ('github','atlassian','slack','linear','figma'));
+  CHECK (provider IN ('github','atlassian','slack','linear','figma','railway'));
 
 -- Token usage and cost per model call, rolled up per run / project / organization.
 CREATE TABLE IF NOT EXISTS run_usage (
@@ -1063,3 +1063,100 @@ CREATE TABLE IF NOT EXISTS run_guard_vaults (
   sealed      TEXT NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ============================================================================
+-- Railway deployment integration (010-railway-deployment)
+-- Railway joins the app-level integrations and OAuth providers; targets and
+-- release attempts are per project and org-scoped through the project's team.
+-- ============================================================================
+ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
+ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway'));
+
+ALTER TABLE oauth_apps DROP CONSTRAINT IF EXISTS oauth_apps_provider_check;
+ALTER TABLE oauth_apps ADD CONSTRAINT oauth_apps_provider_check
+  CHECK (provider IN ('github','atlassian','slack','linear','figma','railway'));
+
+-- One active Railway service + environment per project.
+CREATE TABLE IF NOT EXISTS project_deployment_targets (
+  target_id            UUID PRIMARY KEY,
+  project_id           UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  org_id               UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  workspace_id         TEXT NOT NULL,
+  railway_project_id   TEXT NOT NULL,
+  railway_project_name TEXT NOT NULL,
+  service_id           TEXT NOT NULL,
+  service_name         TEXT NOT NULL,
+  environment_id       TEXT NOT NULL,
+  environment_name     TEXT NOT NULL,
+  service_url          TEXT,
+  link_state           TEXT NOT NULL DEFAULT 'valid' CHECK (link_state IN ('valid','invalid')),
+  last_status          TEXT,
+  last_railway_status  TEXT,
+  last_deployment_id   TEXT,
+  last_deployed_at     TIMESTAMPTZ,
+  last_checked_at      TIMESTAMPTZ,
+  link_error           TEXT,
+  status_error         TEXT,
+  linked_by            UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE project_deployment_targets ADD COLUMN IF NOT EXISTS status_error TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS project_deployment_targets_one_per_project
+  ON project_deployment_targets (project_id);
+CREATE INDEX IF NOT EXISTS project_deployment_targets_org_idx
+  ON project_deployment_targets (org_id);
+
+-- The human decision audit for a release (one row per decision).
+CREATE TABLE IF NOT EXISTS deployment_approvals (
+  approval_id      UUID PRIMARY KEY,
+  project_id       UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  target_id        UUID REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL,
+  run_id           UUID REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+  approver_user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  approver_role    TEXT NOT NULL,
+  decision         TEXT NOT NULL CHECK (decision IN ('approved','rejected')),
+  reason           TEXT,
+  superseded       BOOLEAN NOT NULL DEFAULT false,
+  decided_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS deployment_approvals_project_idx
+  ON deployment_approvals (project_id, decided_at DESC);
+-- Unlinking a target must keep the approval audit (FR-017/SC-008): an approval
+-- outlives its target, exactly like deployment_records. These statements repair
+-- databases created before the constraint was relaxed.
+ALTER TABLE deployment_approvals ALTER COLUMN target_id DROP NOT NULL;
+ALTER TABLE deployment_approvals DROP CONSTRAINT IF EXISTS deployment_approvals_target_id_fkey;
+ALTER TABLE deployment_approvals ADD CONSTRAINT deployment_approvals_target_id_fkey
+  FOREIGN KEY (target_id) REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL;
+
+-- One row per release attempt; the audit and board evidence.
+CREATE TABLE IF NOT EXISTS deployment_records (
+  deployment_id         UUID PRIMARY KEY,
+  project_id            UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  target_id             UUID REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL,
+  run_id                UUID REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+  approval_id           UUID REFERENCES deployment_approvals(approval_id) ON DELETE SET NULL,
+  railway_deployment_id TEXT,
+  status                TEXT NOT NULL CHECK (status IN ('pending_approval','in_progress','success','failed','unconfirmed','rejected')),
+  railway_status        TEXT,
+  service_url           TEXT,
+  deployment_url        TEXT,
+  error                 TEXT,
+  requested_by          UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  triggered_at          TIMESTAMPTZ,
+  completed_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS deployment_records_one_per_run_target
+  ON deployment_records (run_id, target_id) WHERE status <> 'rejected';
+
+-- Unlinking keeps deployment history: the record survives with a null target.
+ALTER TABLE deployment_records ALTER COLUMN target_id DROP NOT NULL;
+ALTER TABLE deployment_records DROP CONSTRAINT IF EXISTS deployment_records_target_id_fkey;
+ALTER TABLE deployment_records ADD CONSTRAINT deployment_records_target_id_fkey
+  FOREIGN KEY (target_id) REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS deployment_records_project_idx
+  ON deployment_records (project_id, created_at DESC);

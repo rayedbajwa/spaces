@@ -23,6 +23,7 @@ import { AgentGuard, maskOutput } from './guardrails'
 import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildFigmaToolDefinitions } from './figma-tools'
+import { buildDeploymentTools, reconcileProjectDeployments, refreshDeploymentStatus } from './deployment'
 import { buildBrowserTools } from './browser-tools'
 import { checkoutContainerName, createAgentResourceLoader, createAgentSettings } from './agent-resources'
 import { installCommandTimeLimit, stopStageLeftovers } from './stage-limits'
@@ -41,7 +42,7 @@ import {
   conventionalTypeForStage,
   findOpenPullRequest,
 } from './pull-requests'
-import { refreshDeliveryStatus } from './delivery'
+import { refreshDeliveryStatus, type DeploymentEvidence } from './delivery'
 import { buildWebTools } from './web-tools'
 import { stageContextFor } from './stage-context'
 import { installLeanTemplates, skillPathFor } from './speckit-assets'
@@ -563,6 +564,7 @@ export class AIDLCFlow {
       customTools: [
         ...(await buildKnowledgeTools({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])),
         ...(await buildFigmaToolDefinitions({ projectId: this.options.projectId, orgId: await this.orgId() }).catch(() => [])),
+        ...(this.options.projectId ? await buildDeploymentTools({ projectId: this.options.projectId }).catch(() => []) : []),
         ...buildWebTools(),
         ...buildBrowserTools(this.options.cwd),
       ],
@@ -877,8 +879,33 @@ export class AIDLCFlow {
     if (stage === 'deliver' || stage === 'review') {
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       if (featureDirAbs) {
+        // A linked project's release is observed from Railway first: reconcile
+        // in-flight records, refresh deployment-status.md, and carry the outcome
+        // into the delivery report as deterministic evidence (FR-023).
+        let deploymentEvidence: DeploymentEvidence | undefined
+        if (this.options.projectId) {
+          try {
+            await reconcileProjectDeployments(this.options.projectId)
+            const deployment = await refreshDeploymentStatus(this.options.projectId, { featureDirAbs })
+            deploymentEvidence = deployment.target
+              ? {
+                  state: deployment.status.state,
+                  serviceName: deployment.target.serviceName,
+                  environmentName: deployment.target.environmentName,
+                  railwayProjectName: deployment.target.railwayProjectName,
+                  serviceUrl: deployment.status.serviceUrl,
+                  deploymentUrl: deployment.status.deploymentUrl,
+                  completedAt: deployment.status.lastDeployedAt,
+                  error: deployment.status.error ?? deployment.status.message ?? null,
+                }
+              : undefined
+            this.print(`\n[deliver] Deployment Status: ${deployment.status.state}${deployment.target ? ` — ${deployment.target.serviceName} @ ${deployment.target.environmentName}` : ' (no target linked)'}.\n`)
+          } catch (error) {
+            this.print(`\n[deliver] Could not refresh deployment status: ${error instanceof Error ? error.message : String(error)}\n`)
+          }
+        }
         try {
-          const snapshot = await refreshDeliveryStatus(await this.orgId(), featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })))
+          const snapshot = await refreshDeliveryStatus(await this.orgId(), featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })), deploymentEvidence)
           this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
         } catch (error) {
           this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
@@ -1976,7 +2003,7 @@ export async function runAIDLCAssistantChat(options: {
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: ['read', 'bash', 'grep', 'find', 'ls'],
-    customTools: [...knowledgeTools, ...figmaTools, ...buildWebTools(), ...(options.actionTools ?? [])],
+    customTools: [...knowledgeTools, ...figmaTools, ...(options.projectId ? await buildDeploymentTools({ projectId: options.projectId }).catch(() => []) : []), ...buildWebTools(), ...(options.actionTools ?? [])],
     sessionManager: SessionManager.inMemory(options.cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
@@ -3058,14 +3085,15 @@ function buildDeliveryPrompt(): string {
 
 Inputs (read them first):
 - delivery-status.md in the active feature directory — auto-generated just now from GitHub: every PR, its review/CI/merge/deploy state, stack order and suggested next action.
+- deployment-status.md when it exists — the project's Railway deployment target and confirmed outcome. A project with a target is a linked project: its release is approved at this step's human gate and triggered by Spaces (deterministic code), never by you.
 - tasks.md "## Delivery" tasks, test-plan.md (UAT / acceptance scenarios), verification-report.md, plan.md "## Repositories", ${DEV_SETUP_FILE} (commands, environments, deploy pipeline notes) and project memory.
 
 Act, don't advise. You have git, bash and the GitHub token available through git:
 1. For each PR in stack order that is not merged: fix what blocks it yourself — rebase onto its base and push when there is a conflict, fix failing CI (run the project's lint/test commands locally first), mark drafts ready, respond to review comments with code changes. Open any PR that is still missing (tasks or workstreams delivered without one): commit, push the branch and create the PR with a Conventional Commits title (\`type(scope): subject\`) and a body linking the spec/plan/tasks.
 2. Ask for approval, then stop and wait, ONLY before irreversible or costly actions: merging a PR, triggering a deployment, deleting or migrating data, or anything outside the repositories in scope. Ask with a heading of the exact form "## Question 1: <what you want to do>" followed by the concrete command/action and its effect, then end your message. When the run resumes with "approve"/"continue", perform the action.
-3. After merges: confirm the deployment (GitHub Deployments/Actions, or the pipeline documented in the README/dev-setup notes) reached its environment. If deployment is manual and you were approved to trigger it, do so.
+3. After merges: confirm the deployment reached its environment. For a linked project, do NOT trigger Railway yourself — the human approval at this step's gate triggers exactly one deployment, and deployment-status.md is refreshed from Railway. Do NOT write \`Delivery Status: MERGED\` for a linked project until deployment-status.md shows a confirmed success; if it is failed/unconfirmed, write PARTIAL or BLOCKED with the actionable reason. For an unlinked project, confirm the deployment via GitHub Deployments/Actions or the pipeline documented in the README/dev-setup notes, and write an explicit "No deployment performed" line in the report.
 4. UAT / final testing: run the acceptance scenarios from test-plan.md against the deployed environment when a URL/environment is known (use its health/smoke endpoints, CLI, or the test suite pointed at that environment); otherwise run the full local suite on the merged base and state clearly that UAT still needs an environment.
-5. Write delivery-report.md in the active feature directory starting with the exact line \`Delivery Status: MERGED\`, \`Delivery Status: PARTIAL\` (some PRs still open/waiting) or \`Delivery Status: BLOCKED\` (needs a human decision or an external fix), then: PR table (repo, PR, state, merged at, deploy), what you fixed/did, UAT results (scenario → pass/fail), what still needs approval or waits on someone (with the exact question), and the next re-check.
+5. Write delivery-report.md in the active feature directory starting with the exact line \`Delivery Status: MERGED\`, \`Delivery Status: PARTIAL\` (some PRs still open/waiting) or \`Delivery Status: BLOCKED\` (needs a human decision or an external fix), then: PR table (repo, PR, state, merged at, deploy), a \`## Deployment\` section carrying the target, outcome, completion time and deployment link (or an explicit "No deployment performed" line for an unlinked project), what you fixed/did, UAT results (scenario → pass/fail), what still needs approval or waits on someone (with the exact question), and the next re-check.
 Keep the report concise and factual; every claim about a PR or deployment must come from delivery-status.md or a command you ran.`
 }
 

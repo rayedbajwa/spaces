@@ -16,7 +16,7 @@ import { INTEGRATION_CATEGORIES, calculateCategoryStatus } from '../lib/integrat
  */
 
 interface OAuthApp {
-  provider: 'github' | 'atlassian' | 'slack' | 'linear' | 'figma'
+  provider: 'github' | 'atlassian' | 'slack' | 'linear' | 'figma' | 'railway'
   label: string
   kinds: string[]
   configured: boolean
@@ -48,13 +48,14 @@ interface OAuthApp {
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
 
-const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma' }
+const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma', railway: 'Railway' }
 const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   github: 'Repository catalog, cloning, pull requests, issue search and GitHub sign-in.',
   atlassian: 'Jira issues and Confluence pages for agents and the knowledge base. One app covers both.',
   linear: 'Linear issues, projects and initiatives for agents and the knowledge base.',
   slack: 'A channel per project (#spaces-<code>) with run updates, stage summaries and approval requests.',
   figma: 'Figma files, design tokens, style definitions, and component libraries for agent visual inspection and knowledge base ingestion.',
+  railway: 'Railway deployment targets, release approval and live deployment state. OAuth connections are observation-only; releases require a workspace or project token. Connect once per organization; a project links one service and environment.',
 }
 
 export function IntegrationsPanel({ embedded = false, readOnly = false }: { embedded?: boolean; readOnly?: boolean }) {
@@ -68,6 +69,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
   const [notice, setNotice] = useState('')
   const [editing, setEditing] = useState<OAuthApp['provider'] | null>(null)
   const [showFigmaPatModal, setShowFigmaPatModal] = useState(false)
+  const [showRailwayTokenModal, setShowRailwayTokenModal] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -226,6 +228,11 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                                         Update Token
                                       </button>
                                     )}
+                                    {app.provider === 'railway' && canManage && (
+                                      <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} onClick={() => setShowRailwayTokenModal(true)}>
+                                        Update credential
+                                      </button>
+                                    )}
                                   </>
                                 )
                                 : (
@@ -246,6 +253,15 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                                         onClick={() => setShowFigmaPatModal(true)}
                                       >
                                         {needsReconnect ? 'Reconnect with Token (PAT)' : 'Connect with Token (PAT)'}
+                                      </button>
+                                    )}
+                                    {app.provider === 'railway' && canManage && (
+                                      <button
+                                        type="button"
+                                        className={app.configured ? 'ghost-button' : 'primary-button'}
+                                        onClick={() => setShowRailwayTokenModal(true)}
+                                      >
+                                        {needsReconnect ? 'Reconnect with Token' : 'Connect with Token'}
                                       </button>
                                     )}
                                     {!app.configured && app.provider !== 'figma' && (
@@ -279,6 +295,16 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       {showFigmaPatModal && (
         <FigmaTokenModal
           onClose={() => setShowFigmaPatModal(false)}
+          onSaved={async (m) => {
+            await load()
+            flash(m)
+          }}
+          onError={setError}
+        />
+      )}
+      {showRailwayTokenModal && (
+        <RailwayTokenModal
+          onClose={() => setShowRailwayTokenModal(false)}
           onSaved={async (m) => {
             await load()
             flash(m)
@@ -527,6 +553,112 @@ function FigmaTokenModal({
             <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
             <button type="submit" className="primary-button" disabled={busy || !token.trim()}>
               {busy ? 'Connecting…' : 'Connect Figma'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function RailwayTokenModal({
+  onClose,
+  onSaved,
+  onError,
+}: {
+  onClose: () => void
+  onSaved: (message: string) => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [token, setToken] = useState('')
+  const [tokenType, setTokenType] = useState<'workspace' | 'account' | 'project'>('workspace')
+  const [displayName, setDisplayName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<string | null>(null)
+
+  const describeIdentity = (result: { identity?: { workspaceName?: string; accountName?: string; projectId?: string; environmentId?: string } }) =>
+    result.identity?.workspaceName ?? result.identity?.accountName ?? result.identity?.projectId ?? 'the credential'
+
+  const handleVerify = async () => {
+    if (!token.trim()) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await json<{ ok: boolean; identity?: { workspaceName?: string; accountName?: string; projectId?: string; environmentId?: string }; error?: string }>(
+        '/api/integrations/railway/verify',
+        { method: 'POST', body: JSON.stringify({ token: token.trim(), tokenType }) }
+      )
+      setTestResult(res.ok ? `✓ Valid Railway credential for ${describeIdentity(res)}` : `✗ ${res.error || 'Verification failed'}`)
+    } catch (err) {
+      setTestResult(`✗ ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!token.trim()) return
+    setBusy(true)
+    try {
+      await json('/api/integrations/railway/token', {
+        method: 'POST',
+        body: JSON.stringify({ token: token.trim(), tokenType, displayName: displayName.trim() || undefined }),
+      })
+      await onSaved('Railway connected successfully.')
+      onClose()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-shell" style={{ maxWidth: 560, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            <h2>Connect Railway</h2>
+            <p className="panel-subtitle">Create a token under Railway → Account → Tokens. A <strong>workspace token</strong> scoped to the workspace holding your deployable projects is preferred; a project token is narrowest (one environment), an account token is broadest.</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="modal-body" style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+          <label>
+            <span>Credential type</span>
+            <select value={tokenType} onChange={(e) => { setTokenType(e.target.value as 'workspace' | 'account' | 'project'); setTestResult(null) }}>
+              <option value="workspace">Workspace token (recommended)</option>
+              <option value="project">Project token (one environment)</option>
+              <option value="account">Account token (broadest — discouraged)</option>
+            </select>
+          </label>
+          <label>
+            <span>Token</span>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => { setToken(e.target.value); setTestResult(null) }}
+              placeholder="Railway token"
+              required
+              autoFocus
+            />
+          </label>
+          <label>
+            <span>Display Name (optional)</span>
+            <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Acme Workspace" />
+          </label>
+          {testResult && (
+            <div style={{ fontSize: 13, color: testResult.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{testResult}</div>
+          )}
+          <div className="button-row" style={{ marginTop: 8, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" className="ghost-button" disabled={busy || testing || !token.trim()} onClick={handleVerify}>
+              {testing ? 'Verifying…' : 'Test credential'}
+            </button>
+            <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary-button" disabled={busy || !token.trim()}>
+              {busy ? 'Connecting…' : 'Connect Railway'}
             </button>
           </div>
         </form>

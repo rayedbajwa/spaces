@@ -10,11 +10,44 @@ with AES-256-GCM using `ENCRYPTION_KEY` and stored in Postgres.
 | Confluence | `atlassian` | Page search (CQL or text) and page content |
 | Linear | `linear` | Issue search and full issues with comments |
 | Slack | `slack` | A channel per project with run updates, stage summaries and approval requests |
+| Railway | `railway` | Deployment targets and live deployment state (read-only to agents); releases after approval |
 
 Setup is self-serve under **Organization → Integrations**: press **Set up
 app** on a provider card, then **Connect**. Apps are organization-wide and
 required before a provider can be connected; nothing about integrations is
-read from `.env`.
+read from `.env`. Railway is the exception to the app-first rule: it can be
+connected with an OAuth app or directly with a workspace/project token.
+
+## Deployment (Railway)
+
+Railway is a first-class, organization-scoped **deployment platform** under the
+**Deployment** category. An owner or admin connects it once, either through
+Railway OAuth 2.0/OIDC (viewer scopes only) or with a token. The dialog prefers
+a **workspace token** scoped to the workspace that holds the organization's
+deployable projects; a **project token** is the narrowest (one environment) and
+an account token is the broadest and discouraged. All credentials are sealed in
+`app_integrations` like every other integration and never returned by the API.
+
+A project links **one** Railway service + environment in the **Deployment**
+section of its **Releasing** tab (team admin, or the project's Release Manager
+or Owner). The project then shows the live state, service URL and last
+deployment time; a target that is removed or renamed in Railway is flagged
+**invalid** with re-link guidance rather than shown as stale-current. Unlink
+returns the project to merge-based delivery.
+
+The existing human gate on the `delivery` step is the release approval — no
+separate prompt. Resolving it with approval makes deterministic Spaces code
+trigger exactly one `serviceInstanceDeployV2` deployment (idempotent per run and
+target) and records the approver, time and target; rejection deploys nothing.
+Invalid credentials, an invalid or missing target, or an unauthorized approver
+fail closed. Agents receive a single read-only `deployment_status` tool and can
+never deploy, cancel, roll back or reconfigure Railway.
+
+A linked project reaches **Done** only once delivery is merged **and** the
+deployment is confirmed successful; the delivery report carries the target,
+outcome, completion time and deployment link (or an explicit "no deployment
+performed" for an unlinked project). Unlinked projects keep today's merge-only
+behaviour.
 
 ![GitHub App setup](../screenshots/github-app-setup.png)
 

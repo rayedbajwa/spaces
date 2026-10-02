@@ -13,12 +13,13 @@ import type { AppIntegrationKind } from '../src/lib/app-integrations'
 
 describe('Integration Categories Domain Model', () => {
   describe('TC-CAT-001: Canonical Categories Ordering & Definitions', () => {
-    test('contains exactly 4 categories in canonical order', () => {
-      expect(INTEGRATION_CATEGORIES).toHaveLength(4)
+    test('contains exactly 5 categories in canonical order', () => {
+      expect(INTEGRATION_CATEGORIES).toHaveLength(5)
       expect(INTEGRATION_CATEGORIES.map((c) => c.id)).toEqual([
         'source_control',
         'project_management',
         'design',
+        'deployment',
         'communication',
       ])
     })
@@ -61,7 +62,7 @@ describe('Integration Categories Domain Model', () => {
   })
 
   describe('TC-CAT-003: Kind Exhaustiveness', () => {
-    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma']
+    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma', 'railway']
 
     test('every AppIntegrationKind maps to exactly one category', () => {
       for (const kind of allKinds) {
@@ -79,7 +80,30 @@ describe('Integration Categories Domain Model', () => {
       expect(getCategoryForKind('confluence')?.id).toBe('project_management')
       expect(getCategoryForKind('linear')?.id).toBe('project_management')
       expect(getCategoryForKind('figma')?.id).toBe('design')
+      expect(getCategoryForKind('railway')?.id).toBe('deployment')
       expect(getCategoryForKind('slack')?.id).toBe('communication')
+    })
+
+    test('Deployment category maps Railway and has a clear identity', () => {
+      const deployment = INTEGRATION_CATEGORIES.find((c) => c.id === 'deployment')!
+      expect(deployment.label).toBe('Deployment')
+      expect(deployment.description.trim().length).toBeGreaterThan(0)
+      expect(deployment.providers).toEqual(['railway'])
+      expect(deployment.kinds).toEqual(['railway'])
+      expect(getCategoryForProvider('railway')?.id).toBe('deployment')
+    })
+
+    test('Deployment category transitions empty → configured → connected → reconnect', () => {
+      const deployment = INTEGRATION_CATEGORIES.find((c) => c.id === 'deployment')!
+      expect(calculateCategoryStatus(deployment, [], []).state).toBe('empty')
+      const configured = [{ provider: 'railway', configured: true, kinds: ['railway'] }]
+      expect(calculateCategoryStatus(deployment, configured, []).state).toBe('configured_unconnected')
+      const connected = [{ kind: 'railway', status: 'connected', credentialsOk: true }]
+      const summary = calculateCategoryStatus(deployment, configured, connected)
+      expect(summary.state).toBe('connected')
+      expect(summary.summaryBadge).toBe('Connected')
+      const broken = [{ kind: 'railway', status: 'connected', credentialsOk: false }]
+      expect(calculateCategoryStatus(deployment, configured, broken).state).toBe('needs_reconnect')
     })
   })
 
@@ -206,6 +230,7 @@ describe('Integration Categories Domain Model', () => {
         { provider: 'atlassian', configured: false, kinds: ['jira', 'confluence'] },
         { provider: 'linear', configured: false, kinds: ['linear'] },
         { provider: 'figma', configured: true, kinds: ['figma'] },
+        { provider: 'railway', configured: true, kinds: ['railway'] },
         { provider: 'slack', configured: true, kinds: ['slack'] },
       ]
 
@@ -213,6 +238,7 @@ describe('Integration Categories Domain Model', () => {
         source_control: [],
         project_management: [],
         design: [],
+        deployment: [],
         communication: [],
       }
       const orphaned: AppLike[] = []
@@ -230,6 +256,7 @@ describe('Integration Categories Domain Model', () => {
       expect(grouped.source_control.map((a) => a.provider)).toEqual(['github'])
       expect(grouped.project_management.map((a) => a.provider)).toEqual(['atlassian', 'linear'])
       expect(grouped.design.map((a) => a.provider)).toEqual(['figma'])
+      expect(grouped.deployment.map((a) => a.provider)).toEqual(['railway'])
       expect(grouped.communication.map((a) => a.provider)).toEqual(['slack'])
     })
   })

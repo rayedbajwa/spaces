@@ -1,7 +1,7 @@
 import type { OAuthProviderId } from './oauth'
 import type { AppIntegrationKind } from './app-integrations'
 
-export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'communication'
+export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'deployment' | 'communication'
 
 export type CategoryReadinessState =
   | 'connected'
@@ -67,6 +67,14 @@ export const INTEGRATION_CATEGORIES: readonly IntegrationCategoryDefinition[] = 
     emptyGuidance: 'Connect Figma so autonomous agents can inspect design mockups, extract layout tokens, and match components to design specs.',
     providers: ['figma'],
     kinds: ['figma'],
+  },
+  {
+    id: 'deployment',
+    label: 'Deployment',
+    description: 'Railway deployment targets, release approval, live deployment state, and deployment evidence for delivery.',
+    emptyGuidance: 'Connect Railway so a project can be linked to a service and environment, released only after explicit approval, and tracked to a confirmed deployment.',
+    providers: ['railway'],
+    kinds: ['railway'],
   },
   {
     id: 'communication',

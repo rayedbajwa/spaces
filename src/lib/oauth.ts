@@ -106,7 +106,7 @@ export async function exchangeCode(cfg: OAuthProviderConfig, code: string, callb
 
 // -------- Provider definitions --------
 
-export type OAuthProviderId = 'github' | 'atlassian' | 'slack' | 'linear' | 'figma'
+export type OAuthProviderId = 'github' | 'atlassian' | 'slack' | 'linear' | 'figma' | 'railway'
 
 export interface OAuthProviderTemplate extends Omit<OAuthProviderConfig, 'clientId' | 'clientSecret' | 'provider'> {
   provider: OAuthProviderId
@@ -169,6 +169,21 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     scopes: ['read', 'write'],
     extraAuthorizeParams: { prompt: 'consent' },
     consoleUrl: 'https://linear.app/settings/api/applications',
+  },
+  railway: {
+    provider: 'railway',
+    label: 'Railway',
+    kinds: ['railway'],
+    authorizeUrl: 'https://backboard.railway.com/oauth/auth',
+    tokenUrl: 'https://backboard.railway.com/oauth/token',
+    // OIDC-compatible flow with least-privilege viewer scopes; offline_access
+    // (with prompt=consent) is required to obtain a refresh token so unattended
+    // status checks keep working. Never requests workspace:admin/project:member.
+    scopes: ['openid', 'email', 'profile', 'offline_access', 'workspace:viewer', 'project:viewer'],
+    tokenAuth: 'basic',
+    extraAuthorizeParams: { prompt: 'consent' },
+    consoleUrl: 'https://railway.com/account/oauth-apps',
+    notes: 'OAuth 2.0 / OIDC app. Railway authenticates the token exchange and refresh with HTTP Basic auth (client id : client secret) and rotates the refresh token. Request the viewer scopes; Spaces never asks for admin access. OAuth is observation-only: reconnect with a workspace or project token to trigger releases.',
   },
   figma: {
     provider: 'figma',
