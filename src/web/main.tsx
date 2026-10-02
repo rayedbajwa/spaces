@@ -918,7 +918,8 @@ function App() {
       .catch(() => undefined)
     return () => { cancelled = true }
   }, [selectedProjectNamespace])
-  const canAnswer = currentRun?.status === 'paused' && currentRun?.resumable !== false
+  // A run paused by a person has no question to answer; the dock offers Resume instead.
+  const canAnswer = currentRun?.status === 'paused' && currentRun?.resumable !== false && currentRun?.pauseKind !== 'user'
 
   useEffect(() => {
     void refreshBoard()
