@@ -800,6 +800,16 @@ textarea {
 
 .recommended-banner p { margin: 4px 0 0; color: var(--text); }
 
+/* Accept and finish: accept with a note, or send notes back to implement. */
+.accept-decision { display: grid; gap: 8px; flex: 0 1 420px; min-width: 0; }
+.accept-decision textarea { width: 100%; resize: vertical; min-height: 64px; font: inherit; }
+.accept-decision .button-row { justify-content: flex-end; }
+.agent-dock .accept-decision { margin-top: 8px; max-width: 560px; margin-left: auto; }
+@media (max-width: 700px) {
+  .recommended-banner { flex-direction: column; align-items: stretch; }
+  .accept-decision { flex-basis: auto; }
+}
+
 .prompt-box {
   border-color: rgba(234, 179, 8, 0.28);
   background: rgba(234, 179, 8, 0.06);

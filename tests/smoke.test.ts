@@ -192,6 +192,33 @@ suite('smoke: execute-step validation surfaces field errors', () => {
       createdProjectIds.delete(projectId)
     }
   })
+
+  test('POST /api/projects/:slug/execute-step with changeRequest on a stage other than implement → 400 with field:"changeRequest"', async () => {
+    const uniqueName = `smoke-change-request-${Date.now()}`
+    const createRes = await fetch(`${BASE_URL}/api/projects`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: uniqueName, description: 'created by smoke.test.ts (change request case)' }),
+    })
+    expect([200, 201]).toContain(createRes.status)
+    const created = await createRes.json()
+    createdProjectIds.add(created.projectId)
+    const { slug, projectId } = created
+
+    try {
+      const res = await fetch(`${BASE_URL}/api/projects/${slug}/execute-step`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ step: 'plan', changeRequest: 'Handle the empty state.' }),
+      })
+      expect(res.status).toBe(400)
+      const body = await res.json()
+      expect(body.field).toBe('changeRequest')
+    } finally {
+      await cleanupProject(projectId)
+      createdProjectIds.delete(projectId)
+    }
+  })
 })
 
 suite('smoke: rerun on a nonexistent run → 404', () => {

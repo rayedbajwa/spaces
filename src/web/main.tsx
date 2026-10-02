@@ -1857,8 +1857,8 @@ function App() {
   // be unit-tested without a DOM. Both are pure functions imported at the top.
 
   /** Accept a feature whose verification did not pass, then offer its next step (review if not yet approved, else deliver). */
-  async function acceptFeature(card: BoardCard) {
-    const note = window.prompt(
+  async function acceptFeature(card: BoardCard, presetNote?: string) {
+    const note = presetNote ?? window.prompt(
       `Accept ${card.projectLabel} with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the intent's acceptance record.`,
       '',
     )
@@ -1874,6 +1874,16 @@ function App() {
     } catch (error) {
       setStatusMessage(error instanceof Error ? error.message : String(error))
     }
+  }
+
+  /**
+   * The other answer to "Accept and finish": not good enough yet. Implement
+   * runs again with the person's notes as the changes to make, then loops
+   * through review and verify as usual.
+   */
+  async function requestChanges(card: BoardCard, notes: string) {
+    if (!notes.trim()) return
+    await executeStep('implement', 'implementation', card, { changeRequest: notes.trim() })
   }
 
   async function handleBoardDrop(card: BoardCard, targetLane: BoardStatus) {
@@ -1900,7 +1910,7 @@ function App() {
    * different project without opening its modal first — used by board drag+drop
    * so a card dropped onto its next-eligible lane triggers the action inline.
    */
-  async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard, options: { force?: boolean } = {}) {
+  async function executeStep(step: string, preferredTab?: ProjectModalTab, targetCard?: BoardCard, options: { force?: boolean; changeRequest?: string } = {}) {
     const namespace = targetCard?.projectNamespace ?? selectedProjectNamespace
     if (!namespace) return
     // "Accept and finish" is a recommended next step but not a pipeline stage:
@@ -1954,7 +1964,7 @@ function App() {
       const raw = await fetch(`/api/projects/${namespace}/execute-step`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ step, ...extraBody, ...(options.force ? { force: true } : {}) }),
+        body: JSON.stringify({ step, ...extraBody, ...(options.force ? { force: true } : {}), ...(options.changeRequest ? { changeRequest: options.changeRequest } : {}) }),
       })
       if (raw.status === 404) {
         // Stale project card — refresh the board and close the modal so the
@@ -2561,6 +2571,13 @@ function App() {
                   <strong>Next step: {selectedCardFresh.recommendedAction.label}</strong>
                   <p>{selectedCardFresh.recommendedAction.reason}</p>
                 </div>
+                {selectedCardFresh.recommendedAction.step === 'accept' ? (
+                  <AcceptDecision
+                    busy={busy}
+                    onAccept={(note) => void acceptFeature(selectedCardFresh, note)}
+                    onRequestChanges={(notes) => void requestChanges(selectedCardFresh, notes)}
+                  />
+                ) : (
                 <div className="button-row">
                   <button
                     className="primary-button"
@@ -2575,6 +2592,7 @@ function App() {
                     Open {TAB_LABELS[selectedCardFresh.recommendedAction.tab] ?? selectedCardFresh.recommendedAction.tab}
                   </button>
                 </div>
+                )}
               </div>
             )}
 
@@ -3641,6 +3659,8 @@ function App() {
                 return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
               })()}
               onRunNext={(step) => void executeStep(step, mapStageToTab(step))}
+              onAccept={(note) => void acceptFeature(selectedCardFresh!, note)}
+              onRequestChanges={(notes) => void requestChanges(selectedCardFresh!, notes)}
               canAnswer={canAnswer}
               onSendAnswer={(a) => void sendAnswer(a)}
               onRerun={(fromStage) => void rerunRun(fromStage)}
@@ -4222,10 +4242,37 @@ function useStreamSettled(log: string | undefined, waiting: boolean, quietMs = 9
   return settled
 }
 
+/**
+ * "Accept and finish" as a decision: accept the intent as it stands (the note
+ * is recorded with the acceptance), or request changes (the notes go to
+ * implement, which then reviews and verifies again).
+ */
+function AcceptDecision({ busy, onAccept, onRequestChanges }: { busy?: boolean; onAccept: (note: string) => void; onRequestChanges: (notes: string) => void }) {
+  const [notes, setNotes] = useState('')
+  return (
+    <div className="accept-decision">
+      <textarea
+        value={notes}
+        onChange={(e) => setNotes(e.target.value)}
+        placeholder="Notes: why it is good enough, or what still needs to change"
+        rows={3}
+        maxLength={4000}
+        aria-label="Notes"
+      />
+      <div className="button-row">
+        <button type="button" className="primary-button" disabled={busy} onClick={() => onAccept(notes.trim())} title="Accept the intent as it stands; your notes are recorded with the acceptance">Accept</button>
+        <button type="button" className="secondary-button" disabled={busy || !notes.trim()} onClick={() => onRequestChanges(notes)} title={notes.trim() ? 'Run implement with these notes as the changes to make, then review and verify again' : 'Write the changes you want first'}>Request changes</button>
+      </div>
+    </div>
+  )
+}
+
 function AiAgentOutputBar({
   currentRun,
   nextStep,
   onRunNext,
+  onAccept,
+  onRequestChanges,
   runInFlight,
   canAnswer,
   onSendAnswer,
@@ -4240,6 +4287,9 @@ function AiAgentOutputBar({
   currentRun: RunSnapshot | null
   nextStep?: { step: string; label: string; reason?: string }
   onRunNext?: (step: string) => void
+  /** Next step is "Accept and finish": accept with a note, or send notes back to implement. */
+  onAccept?: (note: string) => void
+  onRequestChanges?: (notes: string) => void
   runInFlight?: boolean
   canAnswer?: boolean
   onSendAnswer?: (answer: string) => void
@@ -4554,7 +4604,7 @@ function AiAgentOutputBar({
             <span>{nextStep.label}</span>
             {nextStep.reason && <div style={{ fontSize: 12, color: '#0369a1', marginTop: 4 }}>{nextStep.reason}</div>}
           </div>
-          {onRunNext && (
+          {nextStep.step !== 'accept' && onRunNext && (
             <button
               type="button"
               className="primary-button"
@@ -4566,6 +4616,9 @@ function AiAgentOutputBar({
             </button>
           )}
         </div>
+      )}
+      {expanded && nextStep?.step === 'accept' && !isActive && !canAnswer && onAccept && onRequestChanges && (
+        <AcceptDecision busy={busy || runInFlight} onAccept={onAccept} onRequestChanges={onRequestChanges} />
       )}
       </div>
     </section>

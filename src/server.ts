@@ -2344,6 +2344,8 @@ async function route(req: Request): Promise<Response> {
       scope?: string
       constitution?: string
       checklistDomain?: string
+      /** "Request changes" instead of accepting: notes implement works through first. */
+      changeRequest?: string
     }>(req)
     if (!body.step || !(body.step in STAGE_DEFINITIONS)) {
       return sendJson(400, { error: `Step is required and must be one of ${Object.keys(STAGE_DEFINITIONS).join(', ')}` })
@@ -2366,6 +2368,11 @@ async function route(req: Request): Promise<Response> {
         field: 'constitution',
       })
     }
+    const changeRequest = body.changeRequest?.trim() ?? ''
+    if (changeRequest && body.step !== 'implement') {
+      return sendJson(400, { error: 'Requested changes go to implement; send them with { "step": "implement" }.', field: 'changeRequest' })
+    }
+    if (changeRequest.length > 4000) return sendJson(400, { error: 'Keep the requested changes under 4,000 characters.', field: 'changeRequest' })
     if (body.step === 'checklist' && !body.checklistDomain?.trim()) {
       return sendJson(400, {
         error: 'The checklist stage requires a checklist domain. Provide { "checklistDomain": "..." } in the request body.',
@@ -2478,7 +2485,9 @@ async function route(req: Request): Promise<Response> {
         ...(repo.githubRepo ? { pullRequests: { githubRepo: repo.githubRepo } } : {}),
         repoTargets: (await subagentRepoTargets(project.slug)).targets,
         projectMemory: contextBundle.project.memory,
-        sharedContextPrompt: contextBundle.runPromptBundle,
+        sharedContextPrompt: changeRequest
+          ? `${contextBundle.runPromptBundle}\n\n${changeRequestSection(changeRequest, auth?.user.name || auth?.user.email || 'local user')}`
+          : contextBundle.runPromptBundle,
         persistSession: true,
         nonInteractive: false,
         verbose: false,
@@ -2496,6 +2505,9 @@ async function route(req: Request): Promise<Response> {
       projectId: project.projectId,
       repoId: repo.repoId,
     })
+    if (changeRequest) {
+      await dbAppendEvent({ runId: row.runId, kind: 'changes_requested', payload: { notes: changeRequest, by: auth?.user.name || auth?.user.email || 'local user' } }).catch(() => undefined)
+    }
     await enqueueJob({ projectId: project.projectId, kind: 'task_run', triggerSource: 'user', payload: { runId: row.runId }, runId: row.runId })
     return sendJson(200, { ok: true, message: `Queued ${body.step} with model ${model}.`, runId: row.runId })
   }
@@ -3403,6 +3415,21 @@ function attachDbEventStream(req: Request, runId: string): Response {
       connection: 'keep-alive',
     },
   })
+}
+
+/**
+ * A person's "Request changes" at the accept step, as run context: every stage
+ * of the implement loop (implement, review, verify) sees it in the session's
+ * system prompt.
+ */
+function changeRequestSection(notes: string, by: string): string {
+  return [
+    `## Changes requested by ${by}`,
+    'Verification came back short and, instead of accepting the intent as it stands, a person asked for these changes.',
+    'Work through them first, alongside the findings in the verification report; review and verify check them as acceptance criteria.',
+    '',
+    notes,
+  ].join('\n')
 }
 
 async function isRunResumable(runId: string): Promise<boolean> {
