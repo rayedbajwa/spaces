@@ -7,6 +7,8 @@
  * hand over to the sign-in screen in the matching mode.
  */
 
+import { FactoryAnimation } from './landing-animation'
+
 const DOCS_URL = 'https://rayedbajwa.github.io/spaces/'
 const REPO_URL = 'https://github.com/rayedbajwa/spaces'
 
@@ -62,9 +64,9 @@ export function LandingPage({ onSignIn, onGetStarted }: { onSignIn: () => void; 
             <button type="button" className="secondary-button" onClick={onSignIn}>Sign in</button>
             <a className="link-button" href={DOCS_URL} target="_blank" rel="noreferrer">Read the docs →</a>
           </div>
-          <figure className="landing-shot landing-shot-hero">
-            <img src="/screenshots/board.png" alt="The Spaces board: every feature is a card moving through the lanes of the line" />
-          </figure>
+          <div className="landing-shot-hero">
+            <FactoryAnimation />
+          </div>
         </section>
 
         <section className="landing-section" id="how">
