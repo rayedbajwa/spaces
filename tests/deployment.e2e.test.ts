@@ -105,6 +105,15 @@ describe('Railway deployment E2E (mock)', () => {
     expect(refreshed.status.serviceUrl).toBe('https://acme-web.up.railway.app')
   })
 
+  test('TC-E2E-005: a linked project is not Done while its delivery is not merged', async () => {
+    const board = await page.evaluate(async () => (await fetch('/api/board')).json()) as { columns: Array<{ cards: Array<{ projectNamespace: string; status: string }> }> }
+    const cards = board.columns.flatMap((column) => column.cards)
+    const card = cards.find((item) => item.projectNamespace === projectSlug)
+    expect(card).toBeTruthy()
+    // The deployment is confirmed, but no delivery report has merged, so it must not be Done.
+    expect(card!.status).not.toBe('done')
+  })
+
   test('TC-E2E-003: approving the delivery gate triggers exactly one deployment and records it', async () => {
     const sql = getDb()
     const runId = randomUUID()
