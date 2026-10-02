@@ -182,7 +182,7 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     scopes: ['openid', 'email', 'profile', 'offline_access', 'workspace:viewer', 'project:viewer'],
     tokenAuth: 'basic',
     extraAuthorizeParams: { prompt: 'consent' },
-    consoleUrl: 'https://railway.com/account/oauth-apps',
+    consoleUrl: 'https://railway.com/workspace/developer/apps/new',
     notes: 'OAuth 2.0 / OIDC app. Railway authenticates the token exchange and refresh with HTTP Basic auth (client id : client secret) and rotates the refresh token. Request the viewer scopes; Spaces never asks for admin access. OAuth is observation-only: reconnect with a workspace or project token to trigger releases.',
   },
   figma: {

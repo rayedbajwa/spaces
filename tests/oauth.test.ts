@@ -226,3 +226,9 @@ describe('Figma token exchange and refresh request shape', () => {
     expect(params.get('client_secret')).toBeNull()
   })
 })
+
+describe('Railway provider template: OAuth app setup', () => {
+  test('links to the Railway developer apps page where a new OAuth app is created', () => {
+    expect(PROVIDER_TEMPLATES.railway.consoleUrl).toBe('https://railway.com/workspace/developer/apps/new')
+  })
+})
