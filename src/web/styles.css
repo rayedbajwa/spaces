@@ -1440,6 +1440,56 @@ textarea {
 .landing-footer-links { display: flex; gap: 16px; }
 .landing-footer-links a { color: var(--text-muted); }
 
+/* Hero animation: a feature card riding the line (landing-animation.tsx). */
+.factory-anim { border: 1px solid var(--border-strong); border-radius: var(--r-xl); background: var(--bg-elevated); box-shadow: var(--shadow-lg); overflow: hidden; text-align: left; }
+.factory-anim-chrome { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elevated-2); }
+.factory-anim-chrome > span:not(.factory-anim-url) { width: 10px; height: 10px; border-radius: 50%; background: var(--border-strong); }
+.factory-anim-url { margin: 0 auto; padding: 2px 12px; border-radius: 999px; background: var(--bg-input); color: var(--text-muted); font-size: 11px; font-family: var(--font-mono); }
+.factory-anim-body { padding: 28px 28px 22px; display: grid; gap: 22px; }
+
+.factory-anim-lane { position: relative; height: 128px; }
+.factory-anim-card { position: absolute; top: 0; width: min(250px, 100%); padding: 12px 14px; display: grid; gap: 4px; border-radius: var(--r-lg); border: 1px solid var(--border-strong); background: var(--bg-app); box-shadow: var(--shadow-md);
+  transition: left 0.8s cubic-bezier(0.65, 0, 0.35, 1), transform 0.8s cubic-bezier(0.65, 0, 0.35, 1), border-color 0.3s ease, box-shadow 0.3s ease; }
+.factory-anim-card.gate { border-color: rgba(234, 179, 8, 0.55); box-shadow: 0 0 0 4px var(--amber-soft), var(--shadow-md); }
+.factory-anim-card.approved, .factory-anim-card.done { border-color: rgba(76, 183, 130, 0.55); }
+.factory-anim-card.done { box-shadow: 0 0 0 4px var(--green-soft), var(--shadow-md); }
+.factory-anim-card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.factory-anim-code { font-family: var(--font-mono); font-size: 11px; color: var(--accent-text); }
+.factory-anim-badge { padding: 1px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600; background: var(--accent-soft); color: var(--accent-text); }
+.factory-anim-badge.gate { background: var(--amber-soft); color: var(--amber); }
+.factory-anim-badge.approved, .factory-anim-badge.done { background: var(--green-soft); color: var(--green); }
+.factory-anim-title { color: var(--text-strong); font-size: 14px; }
+.factory-anim-status { color: var(--text-muted); font-size: 12px; min-height: 18px; }
+.factory-anim-actions { display: flex; gap: 6px; margin-top: 4px; animation: factory-anim-in 0.25s ease both; }
+.factory-anim-btn { padding: 3px 9px; border-radius: var(--r-sm); border: 1px solid var(--border-strong); font-size: 11px; color: var(--text); }
+.factory-anim-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; animation: factory-anim-press 1.3s ease both; }
+
+.factory-anim-track { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(8, 1fr); position: relative; }
+.factory-anim-track::before { content: ""; position: absolute; left: 6.25%; right: 6.25%; top: 13px; height: 2px; background: var(--border-strong); }
+.factory-anim-node { position: relative; display: grid; justify-items: center; gap: 8px; }
+.factory-anim-dot { position: relative; z-index: 1; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; font-size: 11px; font-weight: 600; font-family: var(--font-mono);
+  background: var(--bg-elevated-2); border: 1px solid var(--border-strong); color: var(--text-subtle); transition: background 0.3s ease, border-color 0.3s ease, color 0.3s ease; }
+.factory-anim-node.done .factory-anim-dot { background: var(--green-soft); border-color: rgba(76, 183, 130, 0.6); color: var(--green); }
+.factory-anim-node.current .factory-anim-dot { background: var(--accent); border-color: var(--accent); color: #fff; animation: factory-anim-pulse 1.4s ease-out infinite; }
+.factory-anim-node.gate .factory-anim-dot { background: var(--amber-soft); border-color: var(--amber); color: var(--amber); }
+.factory-anim-label { font-size: 12px; color: var(--text-muted); }
+.factory-anim-node.current .factory-anim-label, .factory-anim-node.gate .factory-anim-label { color: var(--text-strong); }
+.factory-anim-gate { position: absolute; top: -5px; left: calc(50% + 9px); z-index: 2; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px var(--bg-elevated); }
+
+.factory-anim-log { height: calc(5 * 1.75em + 26px); padding: 12px 14px; overflow: hidden; border-radius: var(--r-md); background: var(--bg-input); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 12px; line-height: 1.75; display: flex; flex-direction: column; justify-content: flex-end; }
+.factory-anim-line { display: flex; gap: 12px; color: var(--text-muted); animation: factory-anim-in 0.35s ease both; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.factory-anim-line.ok { color: var(--green); }
+.factory-anim-line.final { color: var(--text-strong); }
+.factory-anim-who { flex: 0 0 76px; color: var(--text-subtle); }
+
+@keyframes factory-anim-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes factory-anim-pulse { 0% { box-shadow: 0 0 0 0 rgba(94, 106, 210, 0.55); } 100% { box-shadow: 0 0 0 10px rgba(94, 106, 210, 0); } }
+@keyframes factory-anim-press { 0%, 70% { transform: none; filter: none; } 80% { transform: scale(0.94); filter: brightness(1.25); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .factory-anim-card, .factory-anim-dot { transition: none; }
+  .factory-anim-line, .factory-anim-actions, .factory-anim-btn.primary, .factory-anim-node.current .factory-anim-dot { animation: none; }
+}
+
 @media (max-width: 900px) {
   .landing-stations, .landing-features { grid-template-columns: repeat(2, 1fr); }
   .landing-flow, .landing-gallery { grid-template-columns: 1fr; }
@@ -1451,6 +1501,15 @@ textarea {
   .landing-hero { padding-top: 40px; }
   .landing-stations, .landing-features { grid-template-columns: 1fr; }
   .landing-closing { padding: 28px 20px; }
+  .factory-anim-body { padding: 18px 14px 14px; gap: 16px; }
+  .factory-anim-lane { height: 138px; }
+  .factory-anim-label { display: none; }
+  .factory-anim-node.current .factory-anim-label, .factory-anim-node.gate .factory-anim-label { display: block; position: absolute; top: 34px; font-size: 11px; white-space: nowrap; }
+  .factory-anim-track { margin-bottom: 14px; }
+  .factory-anim-dot { width: 24px; height: 24px; font-size: 10px; }
+  .factory-anim-track::before { top: 11px; }
+  .factory-anim-who { flex-basis: 64px; }
+  .factory-anim-log { font-size: 11px; }
 }
 .link-button { background: none; border: 0; padding: 0; color: var(--accent-text); cursor: pointer; font: inherit; }
 .link-button:hover { color: var(--accent-hover); text-decoration: underline; }
