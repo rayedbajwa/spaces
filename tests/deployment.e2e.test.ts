@@ -59,7 +59,15 @@ describe('Railway deployment E2E (mock)', () => {
       await sql`DELETE FROM project_deployment_targets WHERE project_id = ${projectId}`.catch(() => undefined)
       await sql`DELETE FROM projects WHERE project_id = ${projectId}`.catch(() => undefined)
     }
-    if (fixture?.orgId) await sql`DELETE FROM app_integrations WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
+    if (fixture?.orgId) {
+      await sql`DELETE FROM app_integrations WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
+      await sql`DELETE FROM oauth_apps WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
+      await sql`DELETE FROM teams WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
+      await sql`DELETE FROM organizations WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
+    }
+    if (fixture?.users) {
+      await sql`DELETE FROM users WHERE user_id IN (${fixture.users.owner}, ${fixture.users.member}) AND email LIKE '%@example.test'`.catch(() => undefined)
+    }
   })
 
   test('TC-E2E-001: connect Railway with a workspace token from Organization → Integrations', async () => {
