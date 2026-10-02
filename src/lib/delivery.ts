@@ -293,7 +293,7 @@ export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string
     ...prs.map((p, i) => `| ${i + 1} | ${p.githubRepo} | [#${p.number}](${p.url}) ${p.title.replace(/\|/g, '/').slice(0, 60)} | \`${p.head}\` → \`${p.base}\`${p.stackedOn ? ' (stacked)' : ''} | ${p.merged ? `merged ${p.mergedAt?.slice(0, 16) ?? ''}` : p.state}${p.draft ? ' (draft)' : ''} | ${p.review} | ${p.checks} | ${p.deployments.length ? p.deployments.map((d) => `${d.environment}: ${d.state}`).join('<br>') : '—'} | ${nextAction(p)} |`),
     '',
     errors.length ? `## Lookup errors\n${errors.map((e) => `- ${e}`).join('\n')}` : '',
-    deploymentEvidence !== undefined ? formatDeploymentEvidence(deploymentEvidence) : '',
+    formatDeploymentEvidence(deploymentEvidence),
     `## Rules`,
     `- Merge order follows the stack: a PR whose base is another workstream branch merges after that branch's PR.`,
     `- "Deploy" lists GitHub Deployments recorded for the merge commit; if the project deploys another way, check the pipeline named in .aidlc/dev-setup.md or the README.`,

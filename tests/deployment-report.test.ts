@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { formatDeploymentEvidence } from '../src/lib/delivery'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { formatDeploymentEvidence, refreshDeliveryStatus } from '../src/lib/delivery'
 
 describe('delivery-report deployment evidence (010-railway-deployment)', () => {
   test('TC-DREP-001: an unlinked project says explicitly that no deployment was performed', () => {
@@ -29,5 +32,27 @@ describe('delivery-report deployment evidence (010-railway-deployment)', () => {
     const failed = formatDeploymentEvidence({ state: 'failed', serviceName: 'api', environmentName: 'staging', error: 'Railway reported the deployment failed.' })
     expect(failed).toContain('Outcome: failed')
     expect(failed).toContain('Error: Railway reported the deployment failed.')
+  })
+
+  test('TC-DREP-004: refreshDeliveryStatus writes the deterministic deployment section into delivery-status.md', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'spaces-delivery-report-'))
+    try {
+      await refreshDeliveryStatus('00000000-0000-0000-0000-000000000000', dir, [], {
+        state: 'success',
+        serviceName: 'web',
+        environmentName: 'production',
+        railwayProjectName: 'Acme App',
+        serviceUrl: 'https://acme-web.up.railway.app',
+        deploymentUrl: 'https://railway.com/project/proj-1/service/svc-1',
+        completedAt: '2026-10-02T12:00:00.000Z',
+      })
+      const markdown = await readFile(path.join(dir, 'delivery-status.md'), 'utf8')
+      expect(markdown).toContain('## Deployment')
+      expect(markdown).toContain('Target: web @ production (Railway project Acme App)')
+      expect(markdown).toContain('Outcome: success')
+      expect(markdown).toContain('https://acme-web.up.railway.app')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

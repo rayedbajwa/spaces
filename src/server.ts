@@ -25,7 +25,7 @@ import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, i
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, getAppIntegration, getAppIntegrationCredentials, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { verifyRailwayCredential, type RailwayTokenType } from './lib/railway'
-import { decideRelease, DeploymentTargetError, getProjectDeployment, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, unlinkDeploymentTarget, type ProjectDeploymentView } from './lib/deployment'
+import { decideRelease, DeploymentTargetError, getDeploymentTarget, getProjectDeployment, getProjectDeployments, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, unlinkDeploymentTarget, type DecideReleaseResult, type ProjectDeploymentView } from './lib/deployment'
 import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
@@ -2267,7 +2267,7 @@ async function route(req: Request): Promise<Response> {
 
     if (method === 'GET' && !action) {
       const denied = requireProjectRole(project, 'viewer', 'Only team members can view the project deployment.'); if (denied) return denied
-      return sendJson(200, await getProjectDeployment(project.projectId))
+      return sendJson(200, { ...(await getProjectDeployment(project.projectId)), canManage: await canManageDeployment() })
     }
 
     if (method === 'GET' && action === 'targets') {
@@ -2713,6 +2713,19 @@ async function route(req: Request): Promise<Response> {
     if (row.pauseKind !== 'review' && row.pauseKind !== 'clarification') {
       return sendJson(409, { error: 'This run was paused by a person, not waiting for an answer. Resume it instead.', code: 'resume_instead' })
     }
+    // A release is authorized before the delivery gate is resolved, so an
+    // unauthorized approval never advances the run or writes a swallowed event.
+    const deliverGate = row.pauseKind === 'review' && row.currentStage === 'deliver'
+    const gateApproved = parseApprovalAnswer(answer).approved
+    if (deliverGate && gateApproved) {
+      const target = await getDeploymentTarget(row.projectId).catch(() => undefined)
+      if (target) {
+        const authority = await releaseAuthorityFor(row.projectId, auth?.user.userId ?? null)
+        if (!authority.allowed) {
+          return sendJson(403, { error: authority.reason ?? 'You are not authorized to approve a release.', code: 'not_authorized' })
+        }
+      }
+    }
     const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
     if (!answered.ok) {
       return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
@@ -2722,17 +2735,15 @@ async function route(req: Request): Promise<Response> {
     // rejection) through deterministic code — never the agent. A run with no gate
     // decision (autonomous mode, unlinked project) never reaches Railway.
     if (answered.stage === 'deliver' && answered.pauseKind === 'review') {
-      const approved = parseApprovalAnswer(answer).approved
+      const approved = gateApproved
       const outcome = await decideRelease({
         runId,
         projectId: row.projectId,
         decision: approved ? 'approved' : 'rejected',
         reason: approved ? undefined : answer,
         actorUserId: auth?.user.userId ?? null,
-      }).catch((error) => ({ ok: false as const, decision: approved ? 'approved' as const : 'rejected' as const, status: 'blocked' as const, error: error instanceof Error ? error.message : String(error) }))
-      if (outcome.status !== 'blocked') {
-        await dbAppendEvent({ runId, kind: 'deployment_outcome', payload: { decision: outcome.decision, status: outcome.status, ...(outcome.record ? { deploymentId: outcome.record.deploymentId, targetId: outcome.record.targetId } : {}), ...(outcome.error ? { error: outcome.error } : {}) } }).catch(() => undefined)
-      }
+      }).catch((error): DecideReleaseResult => ({ ok: false, decision: approved ? 'approved' : 'rejected', status: 'blocked', error: error instanceof Error ? error.message : String(error) }))
+      await dbAppendEvent({ runId, kind: 'deployment_outcome', payload: { decision: outcome.decision, status: outcome.status, ...(outcome.record ? { deploymentId: outcome.record.deploymentId, targetId: outcome.record.targetId } : {}), ...(outcome.error ? { error: outcome.error } : {}) } }).catch(() => undefined)
     }
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
@@ -3298,6 +3309,11 @@ function eventKindToTitle(kind: string, payload: Record<string, unknown>): strin
     case 'run_completed': return 'Run completed'
     case 'paused':        return `Paused for ${(payload.pauseKind as string) ?? 'input'}`
     case 'gate_resolved': return 'Human response applied'
+    case 'deployment_outcome': {
+      const decision = typeof payload.decision === 'string' ? payload.decision : 'release'
+      const status = typeof payload.status === 'string' ? payload.status : 'unknown'
+      return `Deployment ${decision}: ${status}`
+    }
     case 'error':         return typeof payload.message === 'string' ? `Error: ${payload.message}` : 'Error'
     default:              return kind
   }
@@ -3484,11 +3500,12 @@ function cachedOpenPullRequests(projectNamespace: string): OpenPullRequestLink[]
  */
 async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
   const registry = await import('./lib/project-registry')
-  const [reposByProject, boardRuns, usageByProject, states] = await Promise.all([
+  const [reposByProject, boardRuns, usageByProject, states, deployments] = await Promise.all([
     registry.listReposForProjects(projectRows.map((p) => p.projectId)),
     listBoardRuns(projectRows.map((p) => p.slug)),
     summarizeUsageForProjects(projectRows.map((p) => p.slug)),
     loadProjectStates<ProjectArtifacts>(projectRows.map((p) => p.projectId)),
+    getProjectDeployments(projectRows.map((p) => p.projectId)).catch(() => new Map()),
   ])
   const runBySlug = new Map(boardRuns.map((row) => [row.projectNamespace, row]))
   const cards: BoardCard[] = []
@@ -3529,7 +3546,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       ['Orchestrate', 'Verify', 'Review', 'Deliver'].includes(link.stepLabel))
     // For a linked project the board claims Done only on a confirmed deployment,
     // so every card carries the latest deployment outcome alongside its artifacts.
-    const deployment = await getProjectDeployment(row.projectId).catch(() => undefined)
+    const deployment = deployments.get(row.projectId)
     artifacts.deploymentLinked = Boolean(deployment?.target)
     artifacts.deploymentStatus = deploymentLaneStatus(deployment)
     const status = laneForProject({

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { closeDb, getDb } from '../src/lib/db'
 import { createProject } from '../src/lib/project-registry'
 import { upsertAppIntegration } from '../src/lib/app-integrations'
-import { getDeploymentRecord, linkDeploymentTarget, reconcileDeployment, refreshDeploymentStatus } from '../src/lib/deployment'
+import { getDeploymentRecord, getProjectDeployment, linkDeploymentTarget, reconcileDeployment, refreshDeploymentStatus } from '../src/lib/deployment'
 import { defaultMockRailway, startMockRailway, type MockRailwayServer } from './helpers/mock-railway'
 
 async function databaseReachable(): Promise<boolean> {
@@ -131,6 +131,30 @@ suite('Deployment status and evidence', () => {
     expect(result?.record.status).toBe('unconfirmed')
     const stored = await getDeploymentRecord(deploymentId)
     expect(stored?.status).toBe('unconfirmed')
+  })
+
+  test('TC-DSTAT-007: a transient Railway failure marks the status stale with the error, never current', async () => {
+    await linkDeploymentTarget({ projectId, orgId, workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', environmentId: 'env-1', actorUserId: ownerId })
+    const confirmed = await refreshDeploymentStatus(projectId)
+    expect(confirmed.status.state).toBe('success')
+    expect(confirmed.status.stale).toBe(false)
+
+    mock.state.rateLimit = true
+    try {
+      const stale = await refreshDeploymentStatus(projectId, { featureDirAbs: featureDir })
+      expect(stale.status.stale).toBe(true)
+      expect(stale.status.error).toBeTruthy()
+      expect(stale.target?.statusError).toBeTruthy()
+      const view = await getProjectDeployment(projectId)
+      expect(view.status?.stale).toBe(true)
+      expect(view.status?.error).toBeTruthy()
+    } finally {
+      mock.state.rateLimit = false
+    }
+
+    // A later successful refresh clears the stale marker.
+    const recovered = await refreshDeploymentStatus(projectId)
+    expect(recovered.status.stale).toBe(false)
   })
 
   test('TC-DSTAT-006: a successful Railway deployment reconciles an in-progress record to success', async () => {

@@ -55,7 +55,7 @@ const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   linear: 'Linear issues, projects and initiatives for agents and the knowledge base.',
   slack: 'A channel per project (#spaces-<code>) with run updates, stage summaries and approval requests.',
   figma: 'Figma files, design tokens, style definitions, and component libraries for agent visual inspection and knowledge base ingestion.',
-  railway: 'Railway deployment targets, release approval and live deployment state. Connect once per organization; a project links one service and environment.',
+  railway: 'Railway deployment targets, release approval and live deployment state. OAuth connections are observation-only; releases require a workspace or project token. Connect once per organization; a project links one service and environment.',
 }
 
 export function IntegrationsPanel({ embedded = false, readOnly = false }: { embedded?: boolean; readOnly?: boolean }) {

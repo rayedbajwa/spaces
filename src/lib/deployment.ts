@@ -12,8 +12,8 @@ import { randomUUID } from 'node:crypto'
 import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { getDb } from './db'
-import { getMembership, roleAtLeast, type TeamRole } from './auth'
-import { orgIdForProject } from './orgs'
+import { authDisabled, getMembership, roleAtLeast, type TeamRole } from './auth'
+import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { resolveResponsibility } from './project-responsibilities'
 import { listAppIntegrations } from './app-integrations'
 import {
@@ -57,6 +57,7 @@ export interface DeploymentTargetRow {
   lastDeployedAt: string | null
   lastCheckedAt: string | null
   linkError: string | null
+  statusError: string | null
   linkedBy: string | null
   createdAt: string
   updatedAt: string
@@ -65,7 +66,8 @@ export interface DeploymentTargetRow {
 export interface DeploymentRecordRow {
   deploymentId: string
   projectId: string
-  targetId: string
+  /** Null once the project's target is unlinked; history is kept. */
+  targetId: string | null
   runId: string | null
   approvalId: string | null
   railwayDeploymentId: string | null
@@ -102,6 +104,10 @@ export interface DeploymentStatusView {
   deploymentUrl: string | null
   linkState: LinkState
   message?: string
+  /** The last refresh could not reach Railway; the shown state is the last known one. */
+  stale?: boolean
+  lastCheckedAt?: string | null
+  error?: string | null
 }
 
 export interface ProjectDeploymentView {
@@ -131,7 +137,7 @@ const TARGET_COLS = `
   service_url AS "serviceUrl", link_state AS "linkState",
   last_status AS "lastStatus", last_railway_status AS "lastRailwayStatus", last_deployment_id AS "lastDeploymentId",
   last_deployed_at AS "lastDeployedAt", last_checked_at AS "lastCheckedAt", link_error AS "linkError",
-  linked_by AS "linkedBy", created_at AS "createdAt", updated_at AS "updatedAt"
+  status_error AS "statusError", linked_by AS "linkedBy", created_at AS "createdAt", updated_at AS "updatedAt"
 `
 
 const RECORD_COLS = `
@@ -206,6 +212,7 @@ export async function linkDeploymentTarget(input: {
       environment_name = EXCLUDED.environment_name,
       link_state = 'valid',
       link_error = NULL,
+      status_error = NULL,
       last_status = NULL,
       last_railway_status = NULL,
       last_deployment_id = NULL,
@@ -230,6 +237,9 @@ export type ReleaseAuthority = { allowed: boolean; role?: string; reason?: strin
 
 /** Team owner/admin, or the project's assigned Release Manager or Owner. Never an agent. */
 export async function releaseAuthorityFor(projectId: string, userId: string | null | undefined): Promise<ReleaseAuthority> {
+  // Single-user local installs have no signed-in user; the same mode is authorized
+  // for every other management action, so a release is allowed there too.
+  if (authDisabled()) return { allowed: true, role: 'local' }
   if (!userId) return { allowed: false, reason: 'Sign in as a team owner/admin or the project\'s Release Manager to approve a release.' }
   const sql = getDb()
   const [project] = await sql<Array<{ teamId: string | null }>>`SELECT team_id AS "teamId" FROM projects WHERE project_id = ${projectId}`
@@ -275,13 +285,23 @@ function statusFromTarget(target: DeploymentTargetRow): DeploymentStatusView {
   }
   const normalized = normalizeRailwayStatus(target.lastRailwayStatus)
   const confirmed = target.lastStatus === 'success' && normalized === 'success'
+  // A hand-edited or legacy row can carry `last_status = success` with a
+  // non-SUCCESS Railway status; never report that mismatch as a current success.
+  const state: DeploymentUiState = confirmed
+    ? 'success'
+    : target.lastStatus === 'success'
+      ? 'unknown'
+      : (target.lastStatus as DeploymentUiState | null) ?? 'unknown'
   return {
-    state: confirmed ? 'success' : (target.lastStatus as DeploymentUiState | null) ?? 'unknown',
+    state,
     railwayStatus: target.lastRailwayStatus,
     serviceUrl: target.serviceUrl,
     lastDeployedAt: target.lastDeployedAt,
     deploymentUrl: target.lastDeploymentId ? `https://railway.com/project/${target.railwayProjectId}/service/${target.serviceId}` : null,
     linkState: target.linkState,
+    stale: Boolean(target.statusError),
+    lastCheckedAt: target.lastCheckedAt,
+    ...(target.statusError ? { error: target.statusError } : {}),
   }
 }
 
@@ -306,7 +326,7 @@ export async function refreshDeploymentStatus(projectId: string, options: Refres
       const deployment = await getLatestDeployment(target.orgId, targetRef(target))
       const [updated] = await sql<DeploymentTargetRow[]>`
         UPDATE project_deployment_targets SET
-          link_state = 'valid', link_error = NULL,
+          link_state = 'valid', link_error = NULL, status_error = NULL,
           last_status = ${deployment.status}, last_railway_status = ${deployment.railwayStatus},
           last_deployment_id = ${deployment.id}, last_deployed_at = ${deployment.createdAt},
           service_url = COALESCE(${deployment.serviceUrl}, service_url),
@@ -319,16 +339,23 @@ export async function refreshDeploymentStatus(projectId: string, options: Refres
       if (error instanceof RailwayError && (error.code === 'railway_target_missing' || error.code === 'railway_forbidden' || error.code === 'railway_auth')) {
         const [updated] = await sql<DeploymentTargetRow[]>`
           UPDATE project_deployment_targets SET
-            link_state = 'invalid', link_error = ${error.message}, last_status = 'unknown',
+            link_state = 'invalid', link_error = ${error.message}, status_error = NULL, last_status = 'unknown',
             last_checked_at = now(), updated_at = now()
           WHERE target_id = ${target.targetId}
           RETURNING ${sql.unsafe(TARGET_COLS)}
         `
         if (updated) target = updated
       } else {
-        // Transient (rate limit, 5xx, network): keep the link but mark the check time.
-        deploymentLog.warn('deployment status refresh failed', { projectId, code: error instanceof RailwayError ? error.code : 'unknown', error: error instanceof Error ? error.message : String(error) })
-        await sql`UPDATE project_deployment_targets SET last_checked_at = now(), updated_at = now() WHERE target_id = ${target.targetId}`.catch(() => undefined)
+        // Transient (rate limit, 5xx, network): keep the link and the last known
+        // state, but record the error so it is shown as stale, never current.
+        const message = error instanceof RailwayError ? error.message : error instanceof Error ? error.message : 'Railway could not be reached.'
+        deploymentLog.warn('deployment status refresh failed', { projectId, code: error instanceof RailwayError ? error.code : 'unknown', error: message })
+        const [updated] = await sql<DeploymentTargetRow[]>`
+          UPDATE project_deployment_targets SET last_checked_at = now(), status_error = ${message}, updated_at = now()
+          WHERE target_id = ${target.targetId}
+          RETURNING ${sql.unsafe(TARGET_COLS)}
+        `.catch(() => [] as DeploymentTargetRow[])
+        if (updated) target = updated
       }
     }
   }
@@ -380,6 +407,77 @@ export async function getProjectDeployment(projectId: string): Promise<ProjectDe
       triggeredAt: r.triggeredAt, completedAt: r.completedAt, createdAt: r.createdAt,
     })),
   }
+}
+
+/**
+ * Batch variant of `getProjectDeployment` for the board: targets, history and
+ * Railway connections are fetched once for every card instead of once per card.
+ */
+export async function getProjectDeployments(projectIds: string[]): Promise<Map<string, ProjectDeploymentView>> {
+  const views = new Map<string, ProjectDeploymentView>()
+  if (!projectIds.length) return views
+  const sql = getDb()
+  const [targets, records] = await Promise.all([
+    sql<DeploymentTargetRow[]>`SELECT ${sql.unsafe(TARGET_COLS)} FROM project_deployment_targets WHERE project_id IN ${sql(projectIds)}`,
+    sql<DeploymentRecordRow[]>`SELECT ${sql.unsafe(RECORD_COLS)} FROM deployment_records WHERE project_id IN ${sql(projectIds)} ORDER BY created_at DESC`,
+  ])
+  const targetByProject = new Map(targets.map((target) => [target.projectId, target]))
+  const historyByProject = new Map<string, DeploymentRecordRow[]>()
+  for (const record of records) {
+    const history = historyByProject.get(record.projectId) ?? []
+    if (history.length < 20) history.push(record)
+    historyByProject.set(record.projectId, history)
+  }
+  const orgByProject = new Map(targets.map((target) => [target.projectId, target.orgId]))
+  const missing = projectIds.filter((projectId) => !orgByProject.has(projectId))
+  if (missing.length) {
+    const rows = await sql<Array<{ projectId: string; orgId: string | null }>>`
+      SELECT p.project_id AS "projectId", t.org_id AS "orgId"
+        FROM projects p LEFT JOIN teams t ON t.team_id = p.team_id
+       WHERE p.project_id IN ${sql(missing)}`
+    const defaultOrgId = rows.some((row) => !row.orgId) ? await getDefaultOrgId() : undefined
+    for (const row of rows) orgByProject.set(row.projectId, row.orgId ?? defaultOrgId!)
+  }
+  const integrationsByOrg = new Map<string, Awaited<ReturnType<typeof listAppIntegrations>>>()
+  await Promise.all([...new Set(orgByProject.values())].map(async (orgId) => {
+    integrationsByOrg.set(orgId, await listAppIntegrations(orgId).catch(() => []))
+  }))
+  for (const projectId of projectIds) {
+    const target = targetByProject.get(projectId)
+    const integration = orgByProject.get(projectId)
+      ? integrationsByOrg.get(orgByProject.get(projectId)!)?.find((row) => row.kind === 'railway')
+      : undefined
+    const reconnectNeeded = integration?.status === 'connected' && integration.credentialsOk === false
+    views.set(projectId, {
+      connection: {
+        status: integration?.status ?? 'not_connected',
+        reconnectNeeded,
+        ...(integration?.configJson?.workspaceName ? { workspaceName: String(integration.configJson.workspaceName) } : {}),
+        ...(integration?.configJson?.workspaceId ? { workspaceId: String(integration.configJson.workspaceId) } : {}),
+      },
+      ...(target ? {
+        target: {
+          targetId: target.targetId,
+          workspaceId: target.workspaceId,
+          railwayProjectId: target.railwayProjectId,
+          railwayProjectName: target.railwayProjectName,
+          serviceId: target.serviceId,
+          serviceName: target.serviceName,
+          environmentId: target.environmentId,
+          environmentName: target.environmentName,
+          linkState: target.linkState,
+          linkError: target.linkError,
+        },
+      } : {}),
+      status: target ? statusFromTarget(target) : undefined,
+      history: (historyByProject.get(projectId) ?? []).map((r) => ({
+        deploymentId: r.deploymentId, status: r.status, railwayStatus: r.railwayStatus,
+        serviceUrl: r.serviceUrl, deploymentUrl: r.deploymentUrl, error: r.error,
+        triggeredAt: r.triggeredAt, completedAt: r.completedAt, createdAt: r.createdAt,
+      })),
+    })
+  }
+  return views
 }
 
 // ---- records ----
@@ -442,6 +540,19 @@ export async function decideRelease(input: DecideReleaseInput): Promise<DecideRe
   const authority = await releaseAuthorityFor(input.projectId, input.actorUserId)
   if (!authority.allowed) {
     return { ok: false, decision: input.decision, status: 'blocked', code: 'not_authorized', error: authority.reason ?? 'You are not authorized to approve a release.' }
+  }
+
+  // OAuth connections request only viewer scopes, so they can observe but never
+  // release. Fail closed with guidance to reconnect with a deploy-capable token.
+  const connection = (await listAppIntegrations(target.orgId).catch(() => [])).find((row) => row.kind === 'railway')
+  if (connection?.configJson?.authType === 'oauth') {
+    return {
+      ok: false,
+      decision: input.decision,
+      status: 'blocked',
+      code: 'oauth_observation_only',
+      error: 'Railway was connected with OAuth, which is observation-only. Reconnect Railway with a workspace or project token to release.',
+    }
   }
 
   if (input.decision === 'rejected') {

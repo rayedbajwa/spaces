@@ -133,6 +133,27 @@ describe('Railway deployment E2E (mock)', () => {
     await sql`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
   })
 
+  test('TC-E2E-004: an invalid link is surfaced, then unlinking restores merge-based delivery', async () => {
+    const sql = getDb()
+    await sql`UPDATE project_deployment_targets SET environment_id = 'env-gone' WHERE project_id = ${projectId}`
+    const invalid = await page.evaluate(async (slug) => {
+      await fetch(`/api/projects/${slug}/deployment/refresh`, { method: 'POST' })
+      return (await fetch(`/api/projects/${slug}/deployment`)).json()
+    }, projectSlug)
+    expect(invalid.target.linkState).toBe('invalid')
+    expect(invalid.status.state).toBe('unknown')
+
+    const unlink = await page.evaluate(async (slug) => {
+      const res = await fetch(`/api/projects/${slug}/deployment/target`, { method: 'DELETE' })
+      return { status: res.status, body: await res.json() }
+    }, projectSlug)
+    expect(unlink.status).toBe(200)
+    expect(unlink.body.ok).toBe(true)
+    const after = await page.evaluate(async (slug) => (await fetch(`/api/projects/${slug}/deployment`)).json(), projectSlug)
+    expect(after.target).toBeUndefined()
+    expect(after.status).toBeUndefined()
+  })
+
   test.skipIf(!process.env.RAILWAY_TEST_TOKEN)('TC-E2E-LIVE: a live Railway credential validates when provided', async () => {
     const result = await verifyRailwayCredential(process.env.RAILWAY_TEST_TOKEN!, 'workspace')
     expect(result.ok).toBe(true)

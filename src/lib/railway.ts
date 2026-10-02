@@ -11,7 +11,7 @@
  * array is always inspected — a raw HTTP status is not enough.
  */
 
-import { getAppIntegration, getAppIntegrationCredentials, IntegrationCredentialsError } from './app-integrations'
+import { getAppIntegration, IntegrationCredentialsError } from './app-integrations'
 import { getIntegrationAccessToken, IntegrationNotConnectedError } from './integration-token'
 
 export const RAILWAY_API_URL = 'https://backboard.railway.com/graphql/v2'
@@ -51,11 +51,6 @@ export function railwayAuthHeaders(token: string, tokenType: RailwayTokenType = 
   return tokenType === 'project'
     ? { 'Project-Access-Token': token }
     : { Authorization: `Bearer ${token}` }
-}
-
-/** Human-facing label for a token type, used in actionable messages. */
-export function railwayTokenTypeLabel(tokenType: RailwayTokenType): string {
-  return tokenType === 'account' ? 'account token' : tokenType === 'project' ? 'project token' : 'workspace token'
 }
 
 export type NormalizedDeploymentStatus =
@@ -443,13 +438,3 @@ export function targetRef(row: { railwayProjectId: string; serviceId: string; en
   return { workspaceId: row.workspaceId, railwayProjectId: row.railwayProjectId, serviceId: row.serviceId, environmentId: row.environmentId }
 }
 
-/** Fetch the raw (unsealed) credential type for diagnostics without exposing the secret. */
-export async function railwayCredentialKind(orgId: string): Promise<{ tokenType: RailwayTokenType; hasRefreshToken: boolean } | undefined> {
-  const row = await getAppIntegration(orgId, 'railway')
-  if (!row) return undefined
-  const creds = await getAppIntegrationCredentials(orgId, 'railway').catch(() => undefined)
-  return {
-    tokenType: (row.configJson?.tokenType as RailwayTokenType | undefined) ?? 'workspace',
-    hasRefreshToken: typeof creds?.refresh_token === 'string' && creds.refresh_token.length > 0,
-  }
-}

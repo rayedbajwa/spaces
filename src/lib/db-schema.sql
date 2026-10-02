@@ -1097,10 +1097,12 @@ CREATE TABLE IF NOT EXISTS project_deployment_targets (
   last_deployed_at     TIMESTAMPTZ,
   last_checked_at      TIMESTAMPTZ,
   link_error           TEXT,
+  status_error         TEXT,
   linked_by            UUID REFERENCES users(user_id) ON DELETE SET NULL,
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE project_deployment_targets ADD COLUMN IF NOT EXISTS status_error TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS project_deployment_targets_one_per_project
   ON project_deployment_targets (project_id);
 CREATE INDEX IF NOT EXISTS project_deployment_targets_org_idx
@@ -1126,7 +1128,7 @@ CREATE INDEX IF NOT EXISTS deployment_approvals_project_idx
 CREATE TABLE IF NOT EXISTS deployment_records (
   deployment_id         UUID PRIMARY KEY,
   project_id            UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  target_id             UUID NOT NULL REFERENCES project_deployment_targets(target_id) ON DELETE RESTRICT,
+  target_id             UUID REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL,
   run_id                UUID REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
   approval_id           UUID REFERENCES deployment_approvals(approval_id) ON DELETE SET NULL,
   railway_deployment_id TEXT,
@@ -1143,5 +1145,11 @@ CREATE TABLE IF NOT EXISTS deployment_records (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS deployment_records_one_per_run_target
   ON deployment_records (run_id, target_id) WHERE status <> 'rejected';
+
+-- Unlinking keeps deployment history: the record survives with a null target.
+ALTER TABLE deployment_records ALTER COLUMN target_id DROP NOT NULL;
+ALTER TABLE deployment_records DROP CONSTRAINT IF EXISTS deployment_records_target_id_fkey;
+ALTER TABLE deployment_records ADD CONSTRAINT deployment_records_target_id_fkey
+  FOREIGN KEY (target_id) REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS deployment_records_project_idx
   ON deployment_records (project_id, created_at DESC);

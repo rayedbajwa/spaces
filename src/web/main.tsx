@@ -4880,8 +4880,9 @@ interface DeploymentTargetResponse {
 interface DeploymentView {
   connection: { status: string; reconnectNeeded: boolean; workspaceName?: string }
   target?: DeploymentTargetResponse
-  status?: { state: string; railwayStatus: string | null; serviceUrl: string | null; lastDeployedAt: string | null; deploymentUrl: string | null; linkState: 'valid' | 'invalid'; message?: string }
+  status?: { state: string; railwayStatus: string | null; serviceUrl: string | null; lastDeployedAt: string | null; deploymentUrl: string | null; linkState: 'valid' | 'invalid'; message?: string; stale?: boolean; lastCheckedAt?: string | null; error?: string | null }
   history: Array<{ deploymentId: string; status: string; railwayStatus: string | null; deploymentUrl: string | null; error: string | null; completedAt: string | null; createdAt: string }>
+  canManage?: boolean
 }
 interface DeploymentTargets {
   workspaces: Array<{ id: string; name: string; projects: Array<{ id: string; name: string; services: Array<{ id: string; name: string }>; environments: Array<{ id: string; name: string }> }> }>
@@ -4950,6 +4951,8 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
   const workspace = targets.find((w) => w.id === workspaceId)
   const project = workspace?.projects.find((p) => p.id === projectId)
   const status = view?.status
+  // The server decides who may link/refresh; the team-role prop is only a fallback.
+  const canManageTarget = view?.canManage ?? canManage
 
   return (
     <section className="deployment-section">
@@ -4957,8 +4960,8 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
         <h3>Deployment (Railway)</h3>
         <div className="button-row">
           {view?.target && <button className="secondary-button" type="button" disabled={busy} onClick={() => void refresh()}>Refresh</button>}
-          {view?.target && canManage && <button className="ghost-button" type="button" disabled={busy} onClick={() => void unlink()}>Unlink</button>}
-          {!view?.target && canManage && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowPicker((v) => !v)}>{showPicker ? 'Cancel' : 'Link target'}</button>}
+          {view?.target && canManageTarget && <button className="ghost-button" type="button" disabled={busy} onClick={() => void unlink()}>Unlink</button>}
+          {!view?.target && canManageTarget && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowPicker((v) => !v)}>{showPicker ? 'Cancel' : 'Link target'}</button>}
         </div>
       </div>
       {error && <p className="error-text">{error}</p>}
@@ -4977,12 +4980,14 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
           {status && (
             <p>
               <span className={`mini-badge ${DEPLOYMENT_BADGE[status.state] ?? 'idle'}`}>{status.state}</span>
+              {status.stale ? <span className="mini-badge paused">stale</span> : null}
               {status.serviceUrl ? <> · <a href={status.serviceUrl} target="_blank" rel="noreferrer">service URL ↗</a></> : null}
               {status.lastDeployedAt ? <> · last deployed {new Date(status.lastDeployedAt).toLocaleString()}</> : null}
               {status.deploymentUrl ? <> · <a href={status.deploymentUrl} target="_blank" rel="noreferrer">deployment ↗</a></> : null}
             </p>
           )}
           {view.target.linkState === 'invalid' && <p className="error-text">{view.target.linkError ?? 'The linked target is no longer reachable. Re-link it.'}</p>}
+          {status?.stale && status.error && <p className="error-text">Last refresh could not reach Railway: {status.error}. The state shown is the last known one.</p>}
           {status?.message && status.state !== 'success' && <p className="panel-subtitle">{status.message}</p>}
           {view.history.length > 0 && (
             <ul className="deployment-history">

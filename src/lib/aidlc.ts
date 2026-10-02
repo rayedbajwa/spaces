@@ -42,7 +42,7 @@ import {
   conventionalTypeForStage,
   findOpenPullRequest,
 } from './pull-requests'
-import { refreshDeliveryStatus } from './delivery'
+import { refreshDeliveryStatus, type DeploymentEvidence } from './delivery'
 import { buildWebTools } from './web-tools'
 import { stageContextFor } from './stage-context'
 import { installLeanTemplates, skillPathFor } from './speckit-assets'
@@ -879,22 +879,36 @@ export class AIDLCFlow {
     if (stage === 'deliver' || stage === 'review') {
       const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
       if (featureDirAbs) {
-        try {
-          const snapshot = await refreshDeliveryStatus(await this.orgId(), featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })))
-          this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
-        } catch (error) {
-          this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
-        }
-        // A linked project's release is observed from Railway: reconcile in-flight
-        // records and refresh the deterministic deployment-status.md the stage reads.
+        // A linked project's release is observed from Railway first: reconcile
+        // in-flight records, refresh deployment-status.md, and carry the outcome
+        // into the delivery report as deterministic evidence (FR-023).
+        let deploymentEvidence: DeploymentEvidence | undefined
         if (this.options.projectId) {
           try {
             await reconcileProjectDeployments(this.options.projectId)
             const deployment = await refreshDeploymentStatus(this.options.projectId, { featureDirAbs })
+            deploymentEvidence = deployment.target
+              ? {
+                  state: deployment.status.state,
+                  serviceName: deployment.target.serviceName,
+                  environmentName: deployment.target.environmentName,
+                  railwayProjectName: deployment.target.railwayProjectName,
+                  serviceUrl: deployment.status.serviceUrl,
+                  deploymentUrl: deployment.status.deploymentUrl,
+                  completedAt: deployment.status.lastDeployedAt,
+                  error: deployment.status.error ?? deployment.status.message ?? null,
+                }
+              : undefined
             this.print(`\n[deliver] Deployment Status: ${deployment.status.state}${deployment.target ? ` — ${deployment.target.serviceName} @ ${deployment.target.environmentName}` : ' (no target linked)'}.\n`)
           } catch (error) {
             this.print(`\n[deliver] Could not refresh deployment status: ${error instanceof Error ? error.message : String(error)}\n`)
           }
+        }
+        try {
+          const snapshot = await refreshDeliveryStatus(await this.orgId(), featureDirAbs, (this.options.repoTargets ?? []).map((t) => ({ githubRepo: t.githubRepo, localPath: t.localPath })), deploymentEvidence)
+          this.print(`\n[deliver] Delivery Status: ${snapshot.status} — ${snapshot.pullRequests.length} PR(s), ${snapshot.pendingCount} pending (delivery-status.md refreshed).\n`)
+        } catch (error) {
+          this.print(`\n[deliver] Could not refresh delivery status from GitHub: ${error instanceof Error ? error.message : String(error)}\n`)
         }
       }
     }

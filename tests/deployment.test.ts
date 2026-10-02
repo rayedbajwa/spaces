@@ -14,6 +14,7 @@ import {
   releaseAuthorityFor,
   unlinkDeploymentTarget,
 } from '../src/lib/deployment'
+import { listResponsibilities, replaceAssignments } from '../src/lib/project-responsibilities'
 import { defaultMockRailway, startMockRailway, type MockRailwayServer } from './helpers/mock-railway'
 
 async function databaseReachable(): Promise<boolean> {
@@ -75,8 +76,6 @@ suite('Railway deployment integration', () => {
       (${teamId}, ${memberId}, 'member')`
     const project = await createProject({ name: `Deploy project ${suffix}`, slug: `deploy-project-${suffix}`, teamId, createdBy: ownerId })
     projectId = project.projectId
-    // Assign the Release Manager responsibility explicitly for one test.
-    await sql`UPDATE responsibility_assignments a SET active = true WHERE a.user_id = ${releaseManagerId}`.catch(() => undefined)
     mock = startMockRailway(defaultMockRailway({ token: TOKEN }))
     process.env.RAILWAY_API_URL = mock.url
   })
@@ -106,7 +105,9 @@ suite('Railway deployment integration', () => {
     await sql`DELETE FROM deployment_records WHERE project_id = ${projectId}`.catch(() => undefined)
     await sql`DELETE FROM deployment_approvals WHERE project_id = ${projectId}`.catch(() => undefined)
     await sql`DELETE FROM project_deployment_targets WHERE project_id = ${projectId}`.catch(() => undefined)
-    await disconnectAppIntegration(orgId, 'railway')
+    // Delete rather than disconnect: upsert merges config, so a leftover
+    // `authType: oauth` would leak into the next test.
+    await sql`DELETE FROM app_integrations WHERE org_id = ${orgId} AND kind = 'railway'`.catch(() => undefined)
   })
 
   test('TC-DEP-001: a connected Railway token is sealed and never returned', async () => {
@@ -185,7 +186,44 @@ suite('Railway deployment integration', () => {
     expect((await releaseAuthorityFor(projectId, memberId)).allowed).toBe(false)
     expect((await releaseAuthorityFor(projectId, outsiderId)).allowed).toBe(false)
     expect((await releaseAuthorityFor(projectId, null)).allowed).toBe(false)
-    // No assignment was seeded for the release manager, so an ordinary member is denied.
+
+    // A regular team member explicitly assigned the Release Manager responsibility may approve.
+    const releaseManager = (await listResponsibilities(projectId)).find((item) => item.standardKey === 'release-manager')!
+    expect(releaseManager).toBeTruthy()
+    await replaceAssignments(projectId, releaseManager.responsibilityId, [releaseManagerId], ownerId)
+    const positive = await releaseAuthorityFor(projectId, releaseManagerId)
+    expect(positive.allowed).toBe(true)
+    expect(positive.role).toBe('release-manager')
+    // An ordinary member who is not assigned it still cannot approve.
+    expect((await releaseAuthorityFor(projectId, memberId)).allowed).toBe(false)
+    await replaceAssignments(projectId, releaseManager.responsibilityId, [], ownerId)
+  })
+
+  test('TC-DEP-015: AUTH_DISABLED single-user mode may release', async () => {
+    const previous = process.env.AUTH_DISABLED
+    process.env.AUTH_DISABLED = '1'
+    try {
+      await upsertAppIntegration({ orgId, kind: 'railway', status: 'connected', config: { tokenType: 'workspace' }, credentials: { access_token: TOKEN, isPat: true } })
+      await linkDeploymentTarget({ projectId, orgId, workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', environmentId: 'env-1', actorUserId: null })
+      expect((await releaseAuthorityFor(projectId, null)).allowed).toBe(true)
+      const result = await decideRelease({ runId: await newRunId(), projectId, decision: 'approved', actorUserId: null })
+      expect(result.ok).toBe(true)
+      expect(result.status).toBe('in_progress')
+      expect(mock.state.triggerCount).toBe(1)
+    } finally {
+      if (previous === undefined) delete process.env.AUTH_DISABLED
+      else process.env.AUTH_DISABLED = previous
+    }
+  })
+
+  test('TC-DEP-016: an OAuth observation-only connection cannot release', async () => {
+    await upsertAppIntegration({ orgId, kind: 'railway', status: 'connected', config: { authType: 'oauth', tokenType: 'workspace' }, credentials: { access_token: TOKEN } })
+    await linkDeploymentTarget({ projectId, orgId, workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', environmentId: 'env-1', actorUserId: ownerId })
+    const result = await decideRelease({ runId: await newRunId(), projectId, decision: 'approved', actorUserId: ownerId })
+    expect(result.ok).toBe(false)
+    expect(result.code).toBe('oauth_observation_only')
+    expect(result.error).toContain('token')
+    expect(mock.state.triggerCount).toBe(0)
   })
 
   test('TC-DEP-007: approval triggers exactly one deployment; a repeat decision is idempotent', async () => {
@@ -283,5 +321,20 @@ suite('Railway deployment integration', () => {
     expect(view.connection.workspaceName).toBe('Acme Workspace')
     expect(view.target?.serviceName).toBe('web')
     expect(view.target?.linkState).toBe('valid')
+  })
+
+  test('TC-DEP-017: unlinking keeps deployment history and removes the target', async () => {
+    await upsertAppIntegration({ orgId, kind: 'railway', status: 'connected', config: { tokenType: 'workspace' }, credentials: { access_token: TOKEN, isPat: true } })
+    await linkDeploymentTarget({ projectId, orgId, workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', environmentId: 'env-1', actorUserId: ownerId })
+    const release = await decideRelease({ runId: await newRunId(), projectId, decision: 'approved', actorUserId: ownerId })
+    expect(release.ok).toBe(true)
+
+    await unlinkDeploymentTarget(projectId)
+    expect(await getDeploymentTarget(projectId)).toBeUndefined()
+    const [record] = await sql<Array<{ targetId: string | null }>>`SELECT target_id AS "targetId" FROM deployment_records WHERE deployment_id = ${release.record!.deploymentId}`
+    expect(record!.targetId).toBeNull()
+    const view = await getProjectDeployment(projectId)
+    expect(view.target).toBeUndefined()
+    expect(view.history.length).toBeGreaterThan(0)
   })
 })
