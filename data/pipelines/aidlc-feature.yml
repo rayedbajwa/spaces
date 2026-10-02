@@ -105,6 +105,10 @@ steps:
   # Drive PRs through review → merge (stack order) → deploy → UAT. Pauses at the
   # human gate; while anything is still open the loop re-runs deliver after
   # approval, which refreshes delivery-status.md from GitHub and re-checks.
+  # For a project linked to a Railway deployment target, this same human gate IS
+  # the release approval: resolving it triggers exactly one deployment in
+  # deterministic code, and deliver waits for a confirmed deployment-status.md
+  # before writing `Delivery Status: MERGED`.
   - id: delivery
     stage: deliver
     phase: construction

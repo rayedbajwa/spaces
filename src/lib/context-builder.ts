@@ -224,6 +224,7 @@ async function loadFeatureArtifacts(projectPath: string): Promise<ContextArtifac
   await pushArtifact(artifacts, 'Data model', join(projectPath, featureDir, 'data-model.md'))
   await pushArtifact(artifacts, 'Quickstart', join(projectPath, featureDir, 'quickstart.md'))
   await pushArtifact(artifacts, 'Delivery status', join(projectPath, featureDir, 'delivery-status.md'))
+  await pushArtifact(artifacts, 'Deployment status', join(projectPath, featureDir, 'deployment-status.md'))
   await pushArtifact(artifacts, 'Delivery report', join(projectPath, featureDir, 'delivery-report.md'))
 
   // Dev-environment notes written by the setup step (repo root, local-only).

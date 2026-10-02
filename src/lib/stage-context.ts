@@ -26,7 +26,7 @@ const REQUIRED: Partial<Record<StageName, string[]>> = {
   orchestrate: ['parallel-workstreams.md', 'tasks.md'],
   review: ['spec.md', 'tasks.md', 'delivery-status.md'],
   verify: ['test-plan.md', 'spec.md', 'tasks.md', 'code-review.md'],
-  deliver: ['tasks.md', 'test-plan.md', 'verification-report.md', 'delivery-status.md', 'plan.md'],
+  deliver: ['tasks.md', 'test-plan.md', 'verification-report.md', 'delivery-status.md', 'deployment-status.md', 'plan.md'],
   taskstoissues: ['tasks.md'],
 }
 
@@ -36,7 +36,7 @@ const NO_FEATURE_FILES: StageName[] = ['init', 'research', 'constitution', 'spec
 /** Every file of an intent a stage may be pointed at, in reading order. */
 const KNOWN = [
   'spec.md', 'plan.md', 'research.md', 'data-model.md', 'quickstart.md', 'tasks.md', 'test-plan.md',
-  'parallel-workstreams.md', 'code-review.md', 'verification-report.md', 'delivery-status.md', 'delivery-report.md',
+  'parallel-workstreams.md', 'code-review.md', 'verification-report.md', 'delivery-status.md', 'deployment-status.md', 'delivery-report.md',
 ]
 
 export interface StageFile {

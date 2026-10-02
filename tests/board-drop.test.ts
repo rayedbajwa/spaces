@@ -167,3 +167,32 @@ describe('a lane is a phase, not one step', () => {
     expect(isEligibleDrop(card('specify'), 'done')).toBe(false)
   })
 })
+
+describe('deployment-driven Done (010-railway-deployment)', () => {
+  const released = {
+    initialized: true,
+    specified: true,
+    planned: true,
+    tasked: true,
+    verificationStatus: 'pass' as const,
+    codeReviewStatus: 'approved' as const,
+    activeStage: null,
+    deliveryStatus: 'merged' as const,
+  }
+
+  test('an unlinked project reaches done on merge, unchanged', () => {
+    expect(laneForProject(released)).toBe('done')
+    expect(laneForProject({ ...released, deploymentLinked: false, deploymentStatus: 'no_target' })).toBe('done')
+  })
+
+  test('a linked project reaches done only with a confirmed deployment success', () => {
+    expect(laneForProject({ ...released, deploymentLinked: true, deploymentStatus: 'success' })).toBe('done')
+    for (const deploymentStatus of ['failed', 'unconfirmed', 'in_progress', 'unknown', 'no_target'] as const) {
+      expect(laneForProject({ ...released, deploymentLinked: true, deploymentStatus })).toBe('releasing')
+    }
+  })
+
+  test('a linked project with no deployment status yet stays in releasing', () => {
+    expect(laneForProject({ ...released, deploymentLinked: true })).toBe('releasing')
+  })
+})

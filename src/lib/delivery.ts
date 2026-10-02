@@ -37,6 +37,41 @@ export interface TrackedPullRequest {
 
 export type DeliveryStatus = 'MERGED' | 'PARTIAL' | 'BLOCKED' | 'NONE'
 
+/** Deployment facts the delivery report must carry (FR-023). */
+export interface DeploymentEvidence {
+  state: string
+  serviceName?: string | null
+  environmentName?: string | null
+  railwayProjectName?: string | null
+  serviceUrl?: string | null
+  deploymentUrl?: string | null
+  completedAt?: string | null
+  error?: string | null
+}
+
+/**
+ * Deterministic deployment block for the delivery report: target, outcome,
+ * completion time and link — or an explicit "no deployment performed" for an
+ * unlinked project. Used by the deliver stage prompt and artifact checks.
+ */
+export function formatDeploymentEvidence(evidence: DeploymentEvidence | undefined): string {
+  if (!evidence) {
+    return ['## Deployment', '- No deployment performed — this project delivers by merge only.'].join('\n')
+  }
+  const target = evidence.serviceName && evidence.environmentName
+    ? `${evidence.serviceName} @ ${evidence.environmentName}${evidence.railwayProjectName ? ` (Railway project ${evidence.railwayProjectName})` : ''}`
+    : 'unknown'
+  return [
+    '## Deployment',
+    `- Target: ${target}`,
+    `- Outcome: ${evidence.state}`,
+    `- Completed: ${evidence.completedAt ?? '—'}`,
+    `- Service URL: ${evidence.serviceUrl ?? '—'}`,
+    `- Deployment: ${evidence.deploymentUrl ?? '—'}`,
+    ...(evidence.error ? [`- Error: ${evidence.error}`] : []),
+  ].join('\n')
+}
+
 export interface DeliverySnapshot {
   status: DeliveryStatus
   pullRequests: TrackedPullRequest[]
@@ -208,7 +243,7 @@ function orderByStack(prs: TrackedPullRequest[]): TrackedPullRequest[] {
  * Gather every PR for the feature, inspect it on GitHub, order by stack, write
  * `<feature>/delivery-status.md`, and return the snapshot.
  */
-export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[] = []): Promise<DeliverySnapshot> {
+export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string, repos: DeliveryRepoHint[] = [], deploymentEvidence?: DeploymentEvidence): Promise<DeliverySnapshot> {
   const links = await collectPullRequestLinks(featureDirAbs)
   const seen = new Set(links.map((l) => `${l.githubRepo}#${l.number}`))
   for (const link of await discoverPullRequestsByBranch(orgId, featureDirAbs, repos).catch(() => [])) {
@@ -258,6 +293,7 @@ export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string
     ...prs.map((p, i) => `| ${i + 1} | ${p.githubRepo} | [#${p.number}](${p.url}) ${p.title.replace(/\|/g, '/').slice(0, 60)} | \`${p.head}\` → \`${p.base}\`${p.stackedOn ? ' (stacked)' : ''} | ${p.merged ? `merged ${p.mergedAt?.slice(0, 16) ?? ''}` : p.state}${p.draft ? ' (draft)' : ''} | ${p.review} | ${p.checks} | ${p.deployments.length ? p.deployments.map((d) => `${d.environment}: ${d.state}`).join('<br>') : '—'} | ${nextAction(p)} |`),
     '',
     errors.length ? `## Lookup errors\n${errors.map((e) => `- ${e}`).join('\n')}` : '',
+    deploymentEvidence !== undefined ? formatDeploymentEvidence(deploymentEvidence) : '',
     `## Rules`,
     `- Merge order follows the stack: a PR whose base is another workstream branch merges after that branch's PR.`,
     `- "Deploy" lists GitHub Deployments recorded for the merge commit; if the project deploys another way, check the pipeline named in .aidlc/dev-setup.md or the README.`,

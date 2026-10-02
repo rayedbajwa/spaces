@@ -24,6 +24,8 @@ import { withExpiry } from './lib/integration-token'
 import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, isProviderId, listenProviderKeys, listProviderKeys, reverifyProviderKey, saveProviderKey, scrubProviderKeysFromEnv } from './lib/provider-keys'
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, getAppIntegration, getAppIntegrationCredentials, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
+import { verifyRailwayCredential, type RailwayTokenType } from './lib/railway'
+import { decideRelease, DeploymentTargetError, getProjectDeployment, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, unlinkDeploymentTarget, type ProjectDeploymentView } from './lib/deployment'
 import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
@@ -2056,6 +2058,58 @@ async function route(req: Request): Promise<Response> {
     })
   }
 
+  if (method === 'POST' && url.pathname === '/api/integrations/railway/verify') {
+    const denied = requireOrgAdmin('Only team owners or admins can verify Railway credentials.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { token?: string; tokenType?: RailwayTokenType }
+    const orgId = await orgIdOf()
+    let token = body.token?.trim()
+    let tokenType = body.tokenType ?? 'workspace'
+    if (!token) {
+      const creds = await getAppIntegrationCredentials(orgId, 'railway')
+      if (typeof creds?.access_token === 'string') {
+        token = creds.access_token
+        tokenType = (creds.tokenType as RailwayTokenType | undefined) ?? tokenType
+      }
+    }
+    if (!token) return sendJson(400, { ok: false, error: 'No Railway credentials found. Provide a token or connect Railway first.' })
+    const result = await verifyRailwayCredential(token, tokenType)
+    return sendJson(result.ok ? 200 : 400, result)
+  }
+
+  if (method === 'POST' && url.pathname === '/api/integrations/railway/token') {
+    const denied = requireOrgAdmin('Only team owners or admins can connect Railway via token.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { token?: string; tokenType?: RailwayTokenType; displayName?: string }
+    const token = body.token?.trim()
+    if (!token) return sendJson(400, { ok: false, error: 'Token is required.' })
+    const tokenType: RailwayTokenType = body.tokenType === 'account' || body.tokenType === 'project' ? body.tokenType : 'workspace'
+    const verification = await verifyRailwayCredential(token, tokenType)
+    if (!verification.ok) return sendJson(400, { ok: false, error: verification.error || 'Failed to verify the Railway credential.' })
+
+    const orgId = await orgIdOf()
+    const identity = verification.identity
+    const scopeName = identity?.workspaceName ?? identity?.accountName
+    const autoName = scopeName ? `Railway (${scopeName})` : 'Railway'
+    const displayName = body.displayName?.trim() || autoName
+    const row = await upsertAppIntegration({
+      orgId,
+      kind: 'railway',
+      status: 'connected',
+      displayName,
+      config: {
+        authType: 'token',
+        tokenType,
+        workspaceId: identity?.workspaceId,
+        workspaceName: identity?.workspaceName,
+        accountName: identity?.accountName,
+      },
+      credentials: { access_token: token, isPat: true, tokenType },
+    })
+    return sendJson(200, {
+      ok: true,
+      integration: { kind: 'railway', status: 'connected', displayName: row.displayName, credentialsOk: true, lastSyncedAt: new Date().toISOString() },
+    })
+  }
+
   // ---- OAuth authorize + callback (app-level, no projectId) ----
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
@@ -2159,6 +2213,24 @@ async function route(req: Request): Promise<Response> {
             displayName = 'Figma'
           }
         }
+        if (kind === 'railway') {
+          try {
+            const info = await verifyRailwayCredential(tokens.access_token, 'workspace')
+            if (info.ok && info.identity) {
+              const scopeName = info.identity.workspaceName ?? info.identity.accountName
+              displayName = scopeName ? `Railway (${scopeName})` : 'Railway'
+              config = {
+                authType: 'oauth',
+                tokenType: 'workspace',
+                workspaceId: info.identity.workspaceId,
+                workspaceName: info.identity.workspaceName,
+                accountName: info.identity.accountName,
+              }
+            }
+          } catch {
+            displayName = 'Railway'
+          }
+        }
         await upsertAppIntegration({ orgId: callbackOrg, kind, status: 'connected', displayName, config, credentials })
       }
       // GitHub connected → index every visible repository (name, language,
@@ -2176,6 +2248,67 @@ async function route(req: Request): Promise<Response> {
       return sendHtml(200, `<!doctype html><html><body style="font-family:system-ui;padding:40px;text-align:center"><h1>✅ ${provider} connected</h1><p>App-level integration stored. You can close this window and return to the app.</p><p><a href="/organization?section=integrations">Back to Spaces</a></p><script>window.close()</script></body></html>`)
     } catch (error) {
       return sendJson(500, { error: `OAuth token exchange failed: ${error instanceof Error ? error.message : String(error)}` })
+    }
+  }
+
+  // ---- Project deployment (Railway) ----
+  const deploymentRoute = /^\/api\/projects\/([^/]+)\/deployment(?:\/(targets|target|refresh))?$/.exec(url.pathname)
+  if (deploymentRoute) {
+    const slug = deploymentRoute[1]!
+    const action = deploymentRoute[2]
+    const project = await import('./lib/project-registry').then((m) => m.getProjectBySlug(slug))
+    if (!project) return sendJson(404, { error: 'Project not found.' })
+    const canManageDeployment = async (): Promise<boolean> => {
+      if (authDisabled()) return true
+      const role = project.teamId ? teamRole(project.teamId) : undefined
+      if (role && roleAtLeast(role, 'admin')) return true
+      return (await releaseAuthorityFor(project.projectId, auth?.user.userId)).allowed
+    }
+
+    if (method === 'GET' && !action) {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can view the project deployment.'); if (denied) return denied
+      return sendJson(200, await getProjectDeployment(project.projectId))
+    }
+
+    if (method === 'GET' && action === 'targets') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can view Railway targets.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can choose a deployment target.' })
+      const orgId = await orgIdForProject(project.projectId)
+      try {
+        return sendJson(200, { workspaces: await listAccessibleTargets(orgId) })
+      } catch (error) {
+        return sendJson(409, { error: error instanceof Error ? error.message : 'Railway is not available.' })
+      }
+    }
+
+    if (method === 'POST' && action === 'target') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can link a deployment target.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can link a deployment target.' })
+      const body = (await req.json().catch(() => ({}))) as { workspaceId?: string; railwayProjectId?: string; serviceId?: string; environmentId?: string }
+      if (!body.workspaceId || !body.railwayProjectId || !body.serviceId || !body.environmentId) {
+        return sendJson(400, { error: 'workspaceId, railwayProjectId, serviceId and environmentId are required.' })
+      }
+      const orgId = await orgIdForProject(project.projectId)
+      try {
+        const target = await linkDeploymentTarget({ projectId: project.projectId, orgId, workspaceId: body.workspaceId, railwayProjectId: body.railwayProjectId, serviceId: body.serviceId, environmentId: body.environmentId, actorUserId: auth?.user.userId ?? null })
+        return sendJson(200, { ok: true, target, status: (await getProjectDeployment(project.projectId)).status })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not link the deployment target.'
+        return sendJson(error instanceof DeploymentTargetError && error.code === 'inaccessible' ? 400 : 409, { error: message })
+      }
+    }
+
+    if (method === 'DELETE' && action === 'target') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can unlink a deployment target.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can unlink a deployment target.' })
+      await unlinkDeploymentTarget(project.projectId)
+      return sendJson(200, { ok: true })
+    }
+
+    if (method === 'POST' && action === 'refresh') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can refresh the project deployment.'); if (denied) return denied
+      const snapshot = await refreshDeploymentStatus(project.projectId)
+      return sendJson(200, { ok: true, status: snapshot.status })
     }
   }
 
@@ -2583,6 +2716,23 @@ async function route(req: Request): Promise<Response> {
     const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
     if (!answered.ok) {
       return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
+    }
+    // The delivery step's existing human gate is the release approval. For a linked
+    // project, resolving it triggers exactly one Railway deployment (or records a
+    // rejection) through deterministic code — never the agent. A run with no gate
+    // decision (autonomous mode, unlinked project) never reaches Railway.
+    if (answered.stage === 'deliver' && answered.pauseKind === 'review') {
+      const approved = parseApprovalAnswer(answer).approved
+      const outcome = await decideRelease({
+        runId,
+        projectId: row.projectId,
+        decision: approved ? 'approved' : 'rejected',
+        reason: approved ? undefined : answer,
+        actorUserId: auth?.user.userId ?? null,
+      }).catch((error) => ({ ok: false as const, decision: approved ? 'approved' as const : 'rejected' as const, status: 'blocked' as const, error: error instanceof Error ? error.message : String(error) }))
+      if (outcome.status !== 'blocked') {
+        await dbAppendEvent({ runId, kind: 'deployment_outcome', payload: { decision: outcome.decision, status: outcome.status, ...(outcome.record ? { deploymentId: outcome.record.deploymentId, targetId: outcome.record.targetId } : {}), ...(outcome.error ? { error: outcome.error } : {}) } }).catch(() => undefined)
+      }
     }
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
@@ -3377,6 +3527,11 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
     }
     const hasLaterArtifact = artifacts.links.some((link) =>
       ['Orchestrate', 'Verify', 'Review', 'Deliver'].includes(link.stepLabel))
+    // For a linked project the board claims Done only on a confirmed deployment,
+    // so every card carries the latest deployment outcome alongside its artifacts.
+    const deployment = await getProjectDeployment(row.projectId).catch(() => undefined)
+    artifacts.deploymentLinked = Boolean(deployment?.target)
+    artifacts.deploymentStatus = deploymentLaneStatus(deployment)
     const status = laneForProject({
       initialized: artifacts.initialized,
       specified: artifacts.specified,
@@ -3385,6 +3540,8 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       verificationStatus: artifacts.verifiedPass ? 'pass' : artifacts.verificationStatus,
       accepted: Boolean(artifacts.accepted),
       deliveryStatus: artifacts.deliveryStatus,
+      deploymentLinked: artifacts.deploymentLinked,
+      deploymentStatus: artifacts.deploymentStatus,
       codeReviewStatus: artifacts.codeReviewStatus === 'changes_requested' || artifacts.codeReviewStale ? 'changes_requested' : artifacts.codeReviewStatus,
       implementationArtifacts: hasLaterArtifact,
       tasksDone,
@@ -3432,6 +3589,21 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
   }
 }
 
+/** The board's view of a project's latest deployment outcome. */
+function deploymentLaneStatus(view: ProjectDeploymentView | undefined): ProjectArtifacts['deploymentStatus'] {
+  if (!view?.target) return 'no_target'
+  const latest = view.history.find((r) => r.status !== 'rejected')
+  if (!latest) return 'unknown'
+  switch (latest.status) {
+    case 'success': return 'success'
+    case 'failed': return 'failed'
+    case 'unconfirmed': return 'unconfirmed'
+    case 'in_progress':
+    case 'pending_approval': return 'in_progress'
+    default: return 'unknown'
+  }
+}
+
 /** Highest-milestone rule: the first stage whose artifact is missing is the next step. */
 function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'] {
   const has = (stepLabel: string) => artifacts.links.some((l) => l.stepLabel === stepLabel)
@@ -3442,6 +3614,9 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!has('Test Plan')) return { step: 'testplan', label: 'Run testplan', tab: 'testplan', reason: 'Tasks exist but no test-plan.md.' }
   if (!has('Parallelize')) return { step: 'parallelize', label: 'Run parallelize', tab: 'implementation', reason: 'No parallel-workstreams.md yet.' }
   if (artifacts.deliveryStatus === 'merged') {
+    if (artifacts.deploymentLinked && artifacts.deploymentStatus !== 'success') {
+      return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `Merged, but the deployment is ${artifacts.deploymentStatus ?? 'unconfirmed'}. Run deliver to observe the approved release before the project is Done.` }
+    }
     return { step: 'specify', label: 'Start a new intent', tab: 'specs', reason: 'Delivered and merged. The next specify run starts a new intent.' }
   }
   // Building the feature: implement, code review, then QA. Running implement
@@ -3492,6 +3667,9 @@ function releaseStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedActi
     : `Reviewed, and accepted by ${artifacts.accepted!.acceptedBy} at ${artifacts.accepted!.verificationStatus} verification`
   if (artifacts.deliveryStatus) {
     return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `Delivery is ${artifacts.deliveryStatus}: re-check the pull requests, then merge and deploy.` }
+  }
+  if (artifacts.deploymentLinked) {
+    return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `${basis}. Merge, then approve the release at the delivery gate; the deployment is observed from Railway.` }
   }
   return { step: 'deliver', label: 'Run deliver', tab: 'releasing', reason: `${basis}. Merge, deploy and run UAT.` }
 }
@@ -4667,6 +4845,10 @@ interface ProjectArtifacts {
   tasksDone?: number
   /** From delivery-report.md; MERGED is what finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
+  /** True when the project has an active Railway deployment target. */
+  deploymentLinked?: boolean
+  /** The latest deployment outcome, used to gate `done` for linked projects. */
+  deploymentStatus?: 'success' | 'failed' | 'unconfirmed' | 'in_progress' | 'unknown' | 'no_target'
   scope: {
     requirements: number
     tasks: number

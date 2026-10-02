@@ -22,6 +22,7 @@ export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId> = {
   slack: 'slack',
   linear: 'linear',
   figma: 'figma',
+  railway: 'railway',
 }
 
 const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
@@ -30,6 +31,7 @@ const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
   slack: ['slack'],
   linear: ['linear'],
   figma: ['figma'],
+  railway: ['railway'],
 }
 
 /** Refresh a little early so a token never dies mid-request. */

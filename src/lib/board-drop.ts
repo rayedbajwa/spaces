@@ -102,6 +102,10 @@ export interface LaneEvidence {
   accepted?: boolean
   /** From delivery-report.md; only MERGED finishes a feature. */
   deliveryStatus?: 'merged' | 'partial' | 'blocked'
+  /** True when the project has an active Railway deployment target. */
+  deploymentLinked?: boolean
+  /** From deployment-status.md / the deployment record; only `success` confirms a linked release. */
+  deploymentStatus?: 'success' | 'failed' | 'unconfirmed' | 'in_progress' | 'unknown' | 'no_target'
   /** From code-review.md; a feature is released only once its code review approved it. */
   codeReviewStatus?: 'approved' | 'changes_requested'
 }
@@ -125,7 +129,12 @@ const IMPLEMENTATION_STAGES = ['testplan', 'parallelize', 'implement', 'orchestr
  * the card by that stage.
  */
 export function laneForProject(evidence: LaneEvidence): BoardStatus {
-  if (evidence.deliveryStatus === 'merged') return 'done'
+  if (evidence.deliveryStatus === 'merged') {
+    // A linked project is done only once its deployment is confirmed; a failed,
+    // unconfirmed or in-flight release stays in releasing with a reason.
+    if (evidence.deploymentLinked && evidence.deploymentStatus !== 'success') return 'releasing'
+    return 'done'
+  }
   if (evidence.activeStage === 'deliver') return 'releasing'
   const buildingNow = Boolean(evidence.activeStage && IMPLEMENTATION_STAGES.includes(evidence.activeStage))
   const qaDone = evidence.verificationStatus === 'pass' || Boolean(evidence.accepted)
