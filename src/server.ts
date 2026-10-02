@@ -2318,6 +2318,7 @@ async function route(req: Request): Promise<Response> {
 
     if (method === 'POST' && action === 'refresh') {
       const denied = requireProjectRole(project, 'viewer', 'Only team members can refresh the project deployment.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can refresh the project deployment.' })
       const snapshot = await refreshDeploymentStatus(project.projectId)
       return sendJson(200, { ok: true, status: snapshot.status })
     }

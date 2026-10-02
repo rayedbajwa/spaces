@@ -211,6 +211,23 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
 }
 
 /**
+ * Override a provider's endpoints from the environment. This exists so tests and
+ * self-hosted deployments can point OAuth at a local mock or a compatible
+ * endpoint without editing the template; normally all three are unset.
+ */
+function endpointOverrides(provider: OAuthProviderId): Partial<Pick<OAuthProviderConfig, 'authorizeUrl' | 'tokenUrl' | 'tokenRefreshUrl'>> {
+  const upper = provider.toUpperCase()
+  const authorizeUrl = process.env[`OAUTH_${upper}_AUTHORIZE_URL`]?.trim()
+  const tokenUrl = process.env[`OAUTH_${upper}_TOKEN_URL`]?.trim()
+  const tokenRefreshUrl = process.env[`OAUTH_${upper}_REFRESH_URL`]?.trim()
+  return {
+    ...(authorizeUrl ? { authorizeUrl } : {}),
+    ...(tokenUrl ? { tokenUrl } : {}),
+    ...(tokenRefreshUrl ? { tokenRefreshUrl } : {}),
+  }
+}
+
+/**
  * Provider config with credentials, or undefined when none are set. Credentials
  * come from the oauth_apps table, set in the Integrations panel.
  */
@@ -221,7 +238,7 @@ export async function resolveProvider(orgId: string, provider: string): Promise<
   const creds = await getOAuthAppCredentials(orgId, id)
   if (!creds) return undefined
   const { label: _label, kinds: _kinds, consoleUrl: _console, notes: _notes, ...rest } = PROVIDER_TEMPLATES[id]
-  return { ...rest, clientId: creds.clientId, clientSecret: creds.clientSecret }
+  return { ...rest, ...endpointOverrides(id), clientId: creds.clientId, clientSecret: creds.clientSecret }
 }
 
 /**

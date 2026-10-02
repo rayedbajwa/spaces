@@ -265,10 +265,25 @@ suite('Railway deployment integration', () => {
     expect(result.record?.status).toBe('failed')
   })
 
-  test('TC-DEP-010: cross-org targets are not reachable', async () => {
-    await upsertAppIntegration({ orgId, kind: 'railway', status: 'connected', config: { tokenType: 'workspace' }, credentials: { access_token: TOKEN, isPat: true } })
-    const targets = await listAccessibleTargets(otherOrgId).catch(() => [])
-    expect(targets).toEqual([])
+  test('TC-DEP-010: cross-org credentials and targets are not reachable', async () => {
+    // Two organizations, each with its own Railway credential. The mock answers
+    // workspaces per token, so org B's credential can see only org B's targets.
+    const betaWorkspace = { id: 'ws-other', name: 'Beta Workspace', projects: [{ id: 'proj-other', name: 'Beta App', services: [{ id: 'svc-other', name: 'beta-web' }], environments: [{ id: 'env-other', name: 'production' }] }] }
+    const acmeWorkspaces = mock.state.workspaces
+    const otherToken = `beta-token-${suffix}`
+    mock.state.workspacesByToken = { [TOKEN]: acmeWorkspaces, [otherToken]: [betaWorkspace] }
+    try {
+      await upsertAppIntegration({ orgId, kind: 'railway', status: 'connected', config: { tokenType: 'workspace' }, credentials: { access_token: TOKEN, isPat: true } })
+      const orgATargets = await listAccessibleTargets(orgId)
+      expect(orgATargets.map((w) => w.name)).toEqual(['Acme Workspace'])
+
+      await upsertAppIntegration({ orgId: otherOrgId, kind: 'railway', status: 'connected', config: { tokenType: 'workspace' }, credentials: { access_token: otherToken, isPat: true } })
+      const orgBTargets = await listAccessibleTargets(otherOrgId)
+      expect(orgBTargets.map((w) => w.name)).toEqual(['Beta Workspace'])
+      expect(orgBTargets.map((w) => w.name)).not.toContain('Acme Workspace')
+    } finally {
+      delete mock.state.workspacesByToken
+    }
   })
 
   test('TC-DEP-011: the read-only tool exists only when linked and exposes no mutation or credential', async () => {
