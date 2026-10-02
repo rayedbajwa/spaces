@@ -1440,6 +1440,29 @@ textarea {
 .landing-footer-links { display: flex; gap: 16px; }
 .landing-footer-links a { color: var(--text-muted); }
 
+/* Waitlist (landing-waitlist.tsx), in the closing card while registration is by invitation. */
+.landing-waitlist { max-width: 560px; margin: 28px auto 0; padding-top: 28px; border-top: 1px solid var(--border); scroll-margin-top: 80px; }
+.landing-waitlist h3 { font-size: 18px; margin-bottom: 8px; }
+.landing-waitlist > p:not(.eyebrow):not(.landing-waitlist-alt) { font-size: 14px; margin-bottom: 18px; }
+.waitlist-form { display: grid; gap: 10px; text-align: left; }
+.waitlist-row { display: flex; gap: 8px; }
+.waitlist-row input, .waitlist-row select { flex: 1; min-width: 0; padding: 9px 12px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px; }
+.waitlist-row input:focus, .waitlist-row select:focus { outline: none; border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-soft); }
+.waitlist-row .primary-button { flex: 0 0 auto; padding: 9px 16px; font-size: 14px; }
+.waitlist-optional input, .waitlist-optional select { font-size: 13px; padding: 7px 10px; }
+.waitlist-trap { position: absolute; left: -10000px; width: 1px; height: 1px; opacity: 0; }
+.waitlist-done { display: grid; gap: 4px; padding: 16px; border-radius: var(--r-md); background: var(--green-soft); border: 1px solid rgba(76, 183, 130, 0.35); color: var(--text); font-size: 14px; }
+.waitlist-done > strong { color: var(--green); }
+.landing-waitlist-alt { margin: 16px 0 0 !important; font-size: 13px !important; }
+@media (max-width: 600px) {
+  .waitlist-row { flex-direction: column; }
+}
+
+.waitlist-table td { vertical-align: top; }
+.waitlist-link { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.waitlist-link code { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.waitlist-actions { justify-content: flex-end; flex-wrap: nowrap; }
+
 /* Hero animation: a feature card riding the line (landing-animation.tsx). */
 .factory-anim { border: 1px solid var(--border-strong); border-radius: var(--r-xl); background: var(--bg-elevated); box-shadow: var(--shadow-lg); overflow: hidden; text-align: left; }
 .factory-anim-chrome { display: flex; align-items: center; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg-elevated-2); }

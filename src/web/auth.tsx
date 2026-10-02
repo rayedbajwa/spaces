@@ -17,7 +17,7 @@ import { LoadingBlock } from './loading'
 export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer'
 export interface MeUser { userId: string; email: string; name: string; avatarUrl?: string | null; githubLogin?: string | null }
 export interface MeTeam { teamId: string; name: string; slug: string; role: TeamRole; memberCount: number; projectCount: number }
-export interface Me { authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string; /** A model provider key is stored; projects cannot be created without one. */ modelsReady?: boolean }
+export interface Me { /** Owner or admin of the default organization: manages the deployment's waitlist. */ siteAdmin?: boolean; authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string; /** A model provider key is stored; projects cannot be created without one. */ modelsReady?: boolean }
 
 interface AuthState { me: Me | null; refresh: () => Promise<void>; signOut: () => Promise<void>; switchTeam: (teamId: string) => Promise<void> }
 
@@ -37,8 +37,10 @@ export async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return data
 }
 
+interface AuthStatus { authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; openRegistration?: boolean; defaultModel?: string; modelsReady?: boolean }
+
 export function AuthRoot({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string; modelsReady?: boolean } | null>(null)
+  const [status, setStatus] = useState<AuthStatus | null>(null)
   const [me, setMe] = useState<Me | null>(null)
   const [loading, setLoading] = useState(true)
   const [signedOut, setSignedOut] = useState(false)
@@ -48,7 +50,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const s = await json<{ authEnabled: boolean; needsBootstrap: boolean; githubLogin: boolean; defaultModel?: string; modelsReady?: boolean }>('/api/auth/status')
+      const s = await json<AuthStatus>('/api/auth/status')
       setStatus(s)
       if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel, modelsReady: s.modelsReady }); setSignedOut(false); return }
       const m = await json<Me>('/api/me')
@@ -84,10 +86,10 @@ export function AuthRoot({ children }: { children: ReactNode }) {
 
   if (loading) return <div className="auth-screen"><div className="auth-card"><LoadingBlock label="Loading Spaces…" /></div></div>
   if (status?.authEnabled && (signedOut || !me?.user)) {
-    if (authView === 'landing' && !status.needsBootstrap && !inviteTokenFromPath()) {
-      return <LandingPage onSignIn={() => setAuthView('login')} onGetStarted={() => setAuthView('register')} />
+    if (authView === 'landing' && !status.needsBootstrap && !inviteTokenFromPath() && !waitlistTokenFromPath()) {
+      return <LandingPage openRegistration={Boolean(status.openRegistration)} onSignIn={() => setAuthView('login')} onGetStarted={() => setAuthView('register')} />
     }
-    return <SignInScreen key={authView} needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} initialMode={authView === 'register' ? 'register' : 'login'} onBack={window.location.pathname === '/' ? () => setAuthView('landing') : undefined} onSignedIn={refresh} />
+    return <SignInScreen key={authView} needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} openRegistration={Boolean(status.openRegistration)} initialMode={authView === 'register' ? 'register' : 'login'} onBack={window.location.pathname === '/' ? () => setAuthView('landing') : undefined} onSignedIn={refresh} />
   }
   return <AuthContext.Provider value={{ me, refresh, signOut, switchTeam }}>{children}</AuthContext.Provider>
 }
@@ -101,11 +103,19 @@ function inviteTokenFromPath(): string | undefined {
   return match ? decodeURIComponent(match[1]!) : undefined
 }
 
-function SignInScreen({ needsBootstrap, githubLogin, initialMode, onBack, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; initialMode: 'login' | 'register'; onBack?: () => void; onSignedIn: () => Promise<void> }) {
+/** A join link from the waitlist: /join/<token>. */
+function waitlistTokenFromPath(): string | undefined {
+  const match = /^\/join\/([^/]+)/.exec(window.location.pathname)
+  return match ? decodeURIComponent(match[1]!) : undefined
+}
+
+function SignInScreen({ needsBootstrap, githubLogin, openRegistration, initialMode, onBack, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; openRegistration: boolean; initialMode: 'login' | 'register'; onBack?: () => void; onSignedIn: () => Promise<void> }) {
   const inviteToken = inviteTokenFromPath()
+  const waitlistToken = inviteToken ? undefined : waitlistTokenFromPath()
+  const [joinLink, setJoinLink] = useState<{ email: string; name: string | null; company: string | null } | null>(null)
   const [invite, setInvite] = useState<{ email: string; role: string; teamName: string } | null>(null)
   const [inviteError, setInviteError] = useState('')
-  const [mode, setMode] = useState<'login' | 'register'>(needsBootstrap || inviteToken ? 'register' : initialMode)
+  const [mode, setMode] = useState<'login' | 'register'>(needsBootstrap || inviteToken || waitlistToken ? 'register' : initialMode)
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [organizationName, setOrganizationName] = useState('')
@@ -120,16 +130,27 @@ function SignInScreen({ needsBootstrap, githubLogin, initialMode, onBack, onSign
       .catch((e) => setInviteError(e instanceof Error ? e.message : String(e)))
   }, [inviteToken])
 
+  useEffect(() => {
+    if (!waitlistToken) return
+    json<{ email: string; name: string | null; company: string | null }>(`/api/waitlist/join/${encodeURIComponent(waitlistToken)}`)
+      .then((j) => {
+        setJoinLink(j); setEmail(j.email)
+        if (j.name) setName(j.name)
+        if (j.company) setOrganizationName(j.company)
+      })
+      .catch((e) => setInviteError(e instanceof Error ? e.message : String(e)))
+  }, [waitlistToken])
+
   async function submit() {
     setBusy(true)
     setError('')
     try {
       if (mode === 'register') {
-        await json('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password, inviteToken, organizationName: organizationName.trim() || undefined }) })
+        await json('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password, inviteToken, waitlistToken, organizationName: organizationName.trim() || undefined }) })
       } else {
         await json('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password, inviteToken }) })
       }
-      if (inviteToken) window.history.replaceState({}, '', '/')
+      if (inviteToken || waitlistToken) window.history.replaceState({}, '', '/')
       await onSignedIn()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -151,9 +172,12 @@ function SignInScreen({ needsBootstrap, githubLogin, initialMode, onBack, onSign
         {inviteToken && invite && (
           <p className="auth-invite">You are invited to join <strong>{invite.teamName}</strong> as <strong>{invite.role}</strong>. Sign in or create your account with <strong>{invite.email}</strong>.</p>
         )}
-        {inviteToken && inviteError && <p className="error-text">{inviteError}</p>}
-        {!needsBootstrap && !inviteToken && mode === 'register' && (
-          <p className="panel-subtitle">New accounts usually need an invitation. If this site is open to sign-ups, your account starts its own organization: model keys, integrations, knowledge and projects are never shared with another one.</p>
+        {waitlistToken && joinLink && (
+          <p className="auth-invite">You're off the waitlist. Create your account with <strong>{joinLink.email}</strong>; it starts your own organization, and model keys, integrations, knowledge and projects are never shared with another one.</p>
+        )}
+        {(inviteToken || waitlistToken) && inviteError && <p className="error-text">{inviteError}</p>}
+        {!needsBootstrap && !inviteToken && !waitlistToken && mode === 'register' && (
+          <p className="panel-subtitle">Your account starts its own organization: model keys, integrations, knowledge and projects are never shared with another one.</p>
         )}
 
         <form onSubmit={(e) => { e.preventDefault(); void submit() }}>
@@ -163,19 +187,22 @@ function SignInScreen({ needsBootstrap, githubLogin, initialMode, onBack, onSign
           {mode === 'register' && !inviteToken && (
             <label>Organization<input value={organizationName} onChange={(e) => setOrganizationName(e.target.value)} placeholder="Your company" autoComplete="organization" /></label>
           )}
-          <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" required readOnly={Boolean(invite)} /></label>
+          <label>Email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@company.com" autoComplete="email" required readOnly={Boolean(invite || joinLink)} /></label>
           <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === 'register' ? 'At least 10 characters' : '••••••••••'} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} required minLength={mode === 'register' ? 10 : undefined} /></label>
           {error && <p className="error-text">{error}</p>}
           <div className="button-row">
             <button className="primary-button" type="submit" disabled={busy}>
               {busy ? 'Please wait…' : mode === 'register' ? (needsBootstrap ? 'Create the first account' : inviteToken ? 'Create account & join' : 'Create account') : inviteToken ? 'Sign in & join' : 'Sign in'}
             </button>
-            {githubLogin && <a className="secondary-button auth-github" href={githubHref}>Continue with GitHub</a>}
+            {githubLogin && !waitlistToken && <a className="secondary-button auth-github" href={githubHref}>Continue with GitHub</a>}
           </div>
         </form>
         <p className="panel-subtitle auth-switch">
           {mode === 'login'
-            ? <>New here? <button type="button" className="link-button" onClick={() => setMode('register')}>Create an account</button></>
+            ? (openRegistration || needsBootstrap
+              ? <>New here? <button type="button" className="link-button" onClick={() => setMode('register')}>Create an account</button></>
+              // Registration is by invitation: newcomers join the waitlist on the landing page.
+              : <>New here? <button type="button" className="link-button" onClick={() => { if (onBack) { window.history.replaceState({}, '', '/#waitlist'); onBack() } else window.location.assign('/#waitlist') }}>Join the waitlist</button></>)
             : <>Already have an account? <button type="button" className="link-button" onClick={() => setMode('login')}>Sign in</button></>}
         </p>
         {onBack && !needsBootstrap && !inviteToken && (

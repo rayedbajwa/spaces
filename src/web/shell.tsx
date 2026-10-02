@@ -135,6 +135,7 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
       ...(active ? [{ id: 'people', label: 'People', icon: I.users, path: `/teams/${encodeURIComponent(active.slug)}`, match: (l: { pathname: string }) => l.pathname.startsWith('/teams/'), hint: active.name } as NavItem] : []),
       { id: 'organization', label: 'Organization', icon: I.building, path: '/organization', match: () => onOrg('overview') || onOrg('teams') },
       { id: 'promotions', label: 'Promotions', icon: I.megaphone, path: orgPath('promotions'), match: () => onOrg('promotions'), count: promotionsPending },
+      ...(me?.siteAdmin ? [{ id: 'waitlist', label: 'Waitlist', icon: I.users, path: orgPath('waitlist'), match: () => onOrg('waitlist') } as NavItem] : []),
     ],
   ]
 
