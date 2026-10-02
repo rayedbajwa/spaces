@@ -86,7 +86,8 @@ export interface DeploymentRecordRow {
 export interface DeploymentApprovalRow {
   approvalId: string
   projectId: string
-  targetId: string
+  /** Null once the target is unlinked and the audit row is preserved. */
+  targetId: string | null
   runId: string | null
   approverUserId: string | null
   approverRole: string

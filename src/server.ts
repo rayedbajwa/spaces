@@ -2278,6 +2278,10 @@ async function route(req: Request): Promise<Response> {
 
     if (method === 'GET' && !action) {
       const denied = requireProjectRole(project, 'viewer', 'Only team members can view the project deployment.'); if (denied) return denied
+      // FR-012/SC-003: a participant's view refreshes the status from Railway
+      // (read-only). Managers additionally get the explicit refresh action; the
+      // view must never present stored state as current for a plain member.
+      await refreshDeploymentStatus(project.projectId).catch(() => undefined)
       return sendJson(200, { ...(await getProjectDeployment(project.projectId)), canManage: await canManageDeployment() })
     }
 

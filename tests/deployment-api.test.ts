@@ -163,6 +163,24 @@ describe('Railway deployment HTTP authorization', () => {
     expect((await api('DELETE', `/api/projects/${projectSlug}/deployment/target`, ownerCookie)).status).toBe(200)
   })
 
+  test('TC-API-006: a plain member\'s view refreshes and returns current status (FR-012, SC-003)', async () => {
+    await connectToken(fixture.orgId)
+    const body = { workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', environmentId: 'env-1' }
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/target`, ownerCookie, body)).status).toBe(200)
+
+    // A member may not choose the target, but opening the project must show the
+    // current Railway state (not a stored snapshot) without needing a refresh.
+    mock.state.requests.length = 0
+    const viewStartedAt = Date.now()
+    const view = await api<{ canManage: boolean; status: { state: string; serviceUrl: string | null } }>('GET', `/api/projects/${projectSlug}/deployment`, memberCookie)
+    expect(Date.now() - viewStartedAt).toBeLessThan(60_000)
+    expect(view.status).toBe(200)
+    expect(view.body.status.state).toBe('success')
+    expect(view.body.status.serviceUrl).toBe('https://acme-web.up.railway.app')
+    expect(view.body.canManage).toBe(false)
+    expect(mock.state.requests.some((request) => request.operation === 'deployments')).toBe(true)
+  })
+
   test('TC-API-003: an assigned Release Manager may link through the route (FR-009)', async () => {
     await connectToken(fixture.orgId)
     const releaseManager = (await listResponsibilities(projectId)).find((item) => item.standardKey === 'release-manager')!
