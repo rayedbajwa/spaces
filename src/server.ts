@@ -2738,8 +2738,22 @@ async function route(req: Request): Promise<Response> {
     // take, which reopens the paused conversation at this gate and continues it.
     // Leaving 'paused', resolving the gate and queuing the job happen together.
     if (!row.projectId) return sendJson(409, { error: 'This run is not attached to a project, so it cannot be resumed.' })
+    // Paused by a person (Pause, or an Interrupt that stopped at the stage
+    // boundary): there is no gate to answer, so the answer resumes the run from
+    // the stage it stopped at. Anything beyond a bare "approve" / "continue" is
+    // kept as a reviewer note the restarted stage applies.
+    if (row.pauseKind === 'user') {
+      const parsed = parseApprovalAnswer(answer)
+      const note = parsed.approved ? parsed.note : answer
+      if (note) await appendReviewerNote(runId, row.currentStage ?? null, note)
+      const requeued = await requeueRun(row, (row.currentStage as StageName | null) ?? undefined, 'Resumed by a user\'s answer.', 'user')
+      if (!requeued.ok) return sendJson(409, { error: requeued.error })
+      await dbAppendEvent({ runId, kind: 'resumed', payload: { by: auth?.user.email ?? 'local', fromStage: row.currentStage, ...(note ? { note } : {}) } })
+      const resumed = await dbGetRun(runId)
+      return sendJson(200, await snapshotFromRow(resumed ?? row))
+    }
     if (row.pauseKind !== 'review' && row.pauseKind !== 'clarification') {
-      return sendJson(409, { error: 'This run was paused by a person, not waiting for an answer. Resume it instead.', code: 'resume_instead' })
+      return sendJson(409, { error: 'This run is paused but not waiting for an answer. Resume it instead.', code: 'resume_instead' })
     }
     // A release is authorized before the delivery gate is resolved, so an
     // unauthorized approval never advances the run or writes a swallowed event.
