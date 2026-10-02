@@ -2,6 +2,8 @@
 
 **The AI software factory for your team. Specs go in, reviewed and tested pull requests come out.**
 
+**Try it at [spacesos.dev](https://spacesos.dev)** · [Docs](https://rayedbajwa.github.io/spaces/)
+
 Spaces is a source-available software factory. Every feature moves down an
 assembly line of specialised agents — `research → specify → plan → tasks →
 implement → review → verify → deliver` — that know your codebase, your team's

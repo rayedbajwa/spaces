@@ -1,6 +1,8 @@
 site_name: Spaces — the AI software factory
 site_description: The AI software factory for your team — specs go in, reviewed and tested pull requests come out. Source-available, built on GitHub Spec Kit and the Pi Coding Agent SDK, following AIDLC principles.
 site_url: https://rayedbajwa.github.io/spaces/
+extra:
+  homepage: https://spacesos.dev
 repo_url: https://github.com/rayedbajwa/spaces
 repo_name: rayedbajwa/spaces
 edit_uri: edit/main/docs/
