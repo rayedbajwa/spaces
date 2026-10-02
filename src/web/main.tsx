@@ -4959,7 +4959,7 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
       <div className="section-header-row">
         <h3>Deployment (Railway)</h3>
         <div className="button-row">
-          {view?.target && <button className="secondary-button" type="button" disabled={busy} onClick={() => void refresh()}>Refresh</button>}
+          {view?.target && canManageTarget && <button className="secondary-button" type="button" disabled={busy} onClick={() => void refresh()}>Refresh</button>}
           {view?.target && canManageTarget && <button className="ghost-button" type="button" disabled={busy} onClick={() => void unlink()}>Unlink</button>}
           {!view?.target && canManageTarget && <button className="secondary-button" type="button" disabled={busy} onClick={() => setShowPicker((v) => !v)}>{showPicker ? 'Cancel' : 'Link target'}</button>}
         </div>

@@ -30,6 +30,8 @@ export interface MockRailwayState {
   accountName: string
   accountEmail: string
   workspaces: MockRailwayWorkspace[]
+  /** Workspaces keyed by the credential token; falls back to `workspaces` when unset. */
+  workspacesByToken?: Record<string, MockRailwayWorkspace[]>
   /** Latest deployment keyed by `serviceId:environmentId`. */
   deployments: Record<string, MockRailwayDeployment>
   /** Number of serviceInstanceDeployV2 mutations received. */
@@ -44,6 +46,8 @@ export interface MockRailwayState {
   rateLimit?: boolean
   /** Answer every request with HTTP 503 instead of GraphQL. */
   unavailable?: boolean
+  /** Answer the OAuth token endpoint with a 400 instead of an access token. */
+  oauthTokenError?: boolean
 }
 
 export function defaultMockRailway(overrides: Partial<MockRailwayState> = {}): MockRailwayState {
@@ -98,18 +102,20 @@ function graphql(body: unknown): Record<string, unknown> {
   if (state.rejectAuth) return { errors: [{ message: 'Not Authorized' }] }
 
   const variables = request.variables ?? {}
+  const authToken = (currentHeaders.authorization?.replace(/^Bearer\s+/i, '') || currentHeaders['project-access-token'] || '')
+  const workspaces = state.workspacesByToken?.[authToken] ?? state.workspaces
   switch (operation) {
     case 'me': {
-      const workspaces = state.workspaces.map((w) => ({ id: w.id, name: w.name }))
-      return { data: { me: { id: 'user-1', name: state.accountName, email: state.accountEmail, workspaces } } }
+      const list = workspaces.map((w) => ({ id: w.id, name: w.name }))
+      return { data: { me: { id: 'user-1', name: state.accountName, email: state.accountEmail, workspaces: list } } }
     }
     case 'projects': {
-      const workspace = state.workspaces.find((w) => w.id === variables.workspaceId) ?? state.workspaces[0]
+      const workspace = workspaces.find((w) => w.id === variables.workspaceId) ?? workspaces[0]
       return { data: { projects: { edges: (workspace?.projects ?? []).map((p) => ({ node: { id: p.id, name: p.name } })) } } }
     }
     case 'project': {
       const id = variables.id
-      for (const w of state.workspaces) {
+      for (const w of workspaces) {
         const project = w.projects.find((p) => p.id === id)
         if (project) {
           return {
@@ -127,7 +133,7 @@ function graphql(body: unknown): Record<string, unknown> {
       return { data: { project: null } }
     }
     case 'projectToken': {
-      const project = state.workspaces.flatMap((w) => w.projects)[0]
+      const project = workspaces.flatMap((w) => w.projects)[0]
       return { data: { projectToken: { projectId: project?.id ?? 'proj-1', environmentId: project?.environments[0]?.id ?? 'env-1' } } }
     }
     case 'deployments': {
@@ -174,6 +180,17 @@ export function startMockRailway(state: MockRailwayState = defaultMockRailway())
     async fetch(request) {
       currentHeaders = Object.fromEntries(request.headers.entries())
       const url = new URL(request.url)
+      // The OAuth token endpoint shares the mock's origin so the callback flow
+      // can be exercised with `OAUTH_RAILWAY_TOKEN_URL` pointed at it.
+      if (url.pathname.endsWith('/oauth/token')) {
+        if (state.oauthTokenError) {
+          return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400, headers: { 'content-type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ access_token: state.token, token_type: 'bearer', refresh_token: 'mock-refresh-token', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
       if (!url.pathname.endsWith('/graphql/v2')) return new Response('not found', { status: 404 })
       const body = await request.json().catch(() => ({}))
       const result = graphql(body) as Record<string, unknown>

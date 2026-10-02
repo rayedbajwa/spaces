@@ -141,6 +141,15 @@ jobs:
           RESPONSIBILITY_BASE_URL: http://localhost:3100
         run: bun test tests/project-responsibilities.e2e.test.ts tests/guardrails-page.e2e.test.ts
 
+      # The Railway deployment suites (unit + HTTP + browser) start their own
+      # server on :3369 and a mock GraphQL endpoint, so they run after the
+      # browser install and alongside no other test process on that port.
+      - name: Run deployment (Railway) tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test tests/railway.test.ts tests/deployment.test.ts tests/deployment-status.test.ts tests/deployment-approval.test.ts tests/deployment-report.test.ts tests/integration-categories.test.ts tests/deployment-api.test.ts tests/deployment.e2e.test.ts
+
       - name: Stop responsibility server
         if: always()
         run: |
