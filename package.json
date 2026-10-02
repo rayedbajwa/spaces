@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Spaces — a source-available (personal use only), agent-driven SDLC orchestrator. Runs an AIDLC pipeline (specify → plan → tasks → implement → verify) with per-project sub-agents, warm agent pool, and app-wide integrations for GitHub, Jira, Confluence, and Slack.",
+  "description": "Spaces — the AI software factory for your team (source-available, personal use only). Specs go in, reviewed and tested pull requests come out: an AIDLC assembly line (research → specify → plan → tasks → implement → review → verify → deliver) of specialised agents with human gates, and integrations for GitHub, Jira, Confluence, Linear and Slack.",
   "homepage": "https://github.com/rayedbajwa/spaces",
   "repository": {
     "type": "git",
@@ -14,6 +14,8 @@
   },
   "license": "SEE LICENSE IN LICENSE",
   "keywords": [
+    "software-factory",
+    "ai-software-factory",
     "aidlc",
     "agentic-workflows",
     "agentic-ai",
