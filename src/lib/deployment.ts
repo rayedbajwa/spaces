@@ -376,7 +376,7 @@ export async function getProjectDeployment(projectId: string): Promise<ProjectDe
   let connection: ProjectDeploymentView['connection'] = { status: 'not_connected', reconnectNeeded: false }
   if (orgId) {
     const integration = (await listAppIntegrations(orgId).catch(() => [])).find((row) => row.kind === 'railway')
-    const reconnectNeeded = integration?.status === 'connected' && integration.credentialsOk === false
+    const reconnectNeeded = integration?.status === 'error' || (integration?.status === 'connected' && integration.credentialsOk === false)
     connection = {
       status: integration?.status ?? 'not_connected',
       reconnectNeeded,
@@ -447,7 +447,7 @@ export async function getProjectDeployments(projectIds: string[]): Promise<Map<s
     const integration = orgByProject.get(projectId)
       ? integrationsByOrg.get(orgByProject.get(projectId)!)?.find((row) => row.kind === 'railway')
       : undefined
-    const reconnectNeeded = integration?.status === 'connected' && integration.credentialsOk === false
+    const reconnectNeeded = integration?.status === 'error' || (integration?.status === 'connected' && integration.credentialsOk === false)
     views.set(projectId, {
       connection: {
         status: integration?.status ?? 'not_connected',
@@ -745,12 +745,13 @@ export async function buildDeploymentTools(context: { projectId: string }): Prom
       description: 'Read the project\'s current Railway deployment state (target, normalized status, service URL, last deployment time, link validity) and recent deployment history. Read-only: it cannot deploy, cancel, roll back or reconfigure anything.',
       parameters: {
         type: 'object',
-        properties: { projectId: { type: 'string', description: 'The project id (defaults to the current project).' } },
+        properties: {},
         required: [],
       },
-      async execute(_toolCallId, params) {
-        const projectId = typeof params.projectId === 'string' && params.projectId ? params.projectId : context.projectId
-        const view = await getProjectDeployment(projectId)
+      async execute() {
+        // Always the run's own project: an agent-supplied project id must never
+        // reach another project or organization (FR-006/FR-026).
+        const view = await getProjectDeployment(context.projectId)
         const lines = [
           `Deployment target: ${view.target ? `${view.target.serviceName} @ ${view.target.environmentName} (${view.target.railwayProjectName})` : 'none'}`,
           `Link state: ${view.target?.linkState ?? 'n/a'}`,

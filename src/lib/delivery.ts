@@ -283,6 +283,7 @@ export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string
     if (p.mergeable === false) return 'merge conflict — rebase'
     return 'ready to merge'
   }
+  const deploymentSection = formatDeploymentEvidence(deploymentEvidence)
   const markdown = [
     `# Delivery status`,
     `Delivery Status: ${status}`,
@@ -293,12 +294,36 @@ export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string
     ...prs.map((p, i) => `| ${i + 1} | ${p.githubRepo} | [#${p.number}](${p.url}) ${p.title.replace(/\|/g, '/').slice(0, 60)} | \`${p.head}\` → \`${p.base}\`${p.stackedOn ? ' (stacked)' : ''} | ${p.merged ? `merged ${p.mergedAt?.slice(0, 16) ?? ''}` : p.state}${p.draft ? ' (draft)' : ''} | ${p.review} | ${p.checks} | ${p.deployments.length ? p.deployments.map((d) => `${d.environment}: ${d.state}`).join('<br>') : '—'} | ${nextAction(p)} |`),
     '',
     errors.length ? `## Lookup errors\n${errors.map((e) => `- ${e}`).join('\n')}` : '',
-    formatDeploymentEvidence(deploymentEvidence),
+    deploymentSection,
     `## Rules`,
     `- Merge order follows the stack: a PR whose base is another workstream branch merges after that branch's PR.`,
     `- "Deploy" lists GitHub Deployments recorded for the merge commit; if the project deploys another way, check the pipeline named in .aidlc/dev-setup.md or the README.`,
     `- Re-run the deliver stage (or approve the pending gate) to refresh this file.`,
   ].filter((line) => line !== '').join('\n')
   await writeFile(path.join(featureDirAbs, 'delivery-status.md'), `${markdown}\n`)
+  // FR-023: the deliver-stage report is a stage artifact, but its Deployment
+  // block is deterministic. When the report exists, replace or append it so the
+  // report carries the same facts as delivery-status.md.
+  await upsertDeploymentSection(featureDirAbs, deploymentSection).catch(() => undefined)
   return { status, pullRequests: prs, pendingCount: open.length + closedUnmerged.length, markdown, generatedAt }
+}
+
+/**
+ * Replace the `## Deployment` block in `delivery-report.md` (or append it when
+ * absent). A no-op when the deliver stage has not written the report yet.
+ */
+async function upsertDeploymentSection(featureDirAbs: string, section: string): Promise<void> {
+  const reportPath = path.join(featureDirAbs, 'delivery-report.md')
+  let report: string
+  try { report = await readFile(reportPath, 'utf8') } catch { return }
+  const lines = report.split('\n')
+  const start = lines.findIndex((line) => line.trim() === '## Deployment')
+  if (start === -1) {
+    await writeFile(reportPath, `${report.replace(/\s*$/, '')}\n\n${section}\n`)
+    return
+  }
+  let end = start + 1
+  while (end < lines.length && !lines[end]!.startsWith('## ')) end += 1
+  const next = [...lines.slice(0, start), ...section.split('\n'), ...lines.slice(end)].join('\n')
+  await writeFile(reportPath, next.endsWith('\n') ? next : `${next}\n`)
 }

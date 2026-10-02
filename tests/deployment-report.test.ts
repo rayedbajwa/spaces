@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { formatDeploymentEvidence, refreshDeliveryStatus } from '../src/lib/delivery'
@@ -51,6 +51,31 @@ describe('delivery-report deployment evidence (010-railway-deployment)', () => {
       expect(markdown).toContain('Target: web @ production (Railway project Acme App)')
       expect(markdown).toContain('Outcome: success')
       expect(markdown).toContain('https://acme-web.up.railway.app')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('TC-DREP-005: the deterministic deployment section is written into delivery-report.md too', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'spaces-delivery-report-'))
+    try {
+      await writeFile(path.join(dir, 'delivery-report.md'), ['Delivery Status: PARTIAL', '', '## Deployment', '- Target: stale', '## Next', '- keep me'].join('\n'))
+      await refreshDeliveryStatus('00000000-0000-0000-0000-000000000000', dir, [], {
+        state: 'success',
+        serviceName: 'web',
+        environmentName: 'production',
+        railwayProjectName: 'Acme App',
+        serviceUrl: 'https://acme-web.up.railway.app',
+        deploymentUrl: 'https://railway.com/project/proj-1/service/svc-1',
+        completedAt: '2026-10-02T12:00:00.000Z',
+      })
+      const report = await readFile(path.join(dir, 'delivery-report.md'), 'utf8')
+      expect(report).toContain('## Deployment')
+      expect(report).toContain('Target: web @ production (Railway project Acme App)')
+      expect(report).toContain('Outcome: success')
+      expect(report).toContain('## Next')
+      expect(report).not.toContain('Target: stale')
+      expect(report.match(/## Deployment/g)).toHaveLength(1)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

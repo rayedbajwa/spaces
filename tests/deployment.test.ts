@@ -287,6 +287,11 @@ suite('Railway deployment integration', () => {
     const output = await tools[0]!.execute('call', { projectId })
     expect(output.content[0]!.text).toContain('Deployment target: web @ production')
     expect(output.content[0]!.text).not.toContain(TOKEN)
+    // An arbitrary projectId is ignored: the tool always reads the run's project,
+    // so it cannot cross a project or organization boundary (FR-006/FR-026).
+    const ignored = await tools[0]!.execute('call', { projectId: randomUUID() })
+    expect(ignored.content[0]!.text).toContain('Deployment target: web @ production')
+    expect(JSON.stringify(tools[0]!.parameters)).not.toContain('projectId')
   })
 
   test('TC-DEP-013: the migration is idempotent and the Railway kind/provider are accepted', async () => {
@@ -333,6 +338,15 @@ suite('Railway deployment integration', () => {
     expect(await getDeploymentTarget(projectId)).toBeUndefined()
     const [record] = await sql<Array<{ targetId: string | null }>>`SELECT target_id AS "targetId" FROM deployment_records WHERE deployment_id = ${release.record!.deploymentId}`
     expect(record!.targetId).toBeNull()
+    // The approval audit outlives the target it approved (FR-017/SC-008).
+    const [approval] = await sql<Array<{ targetId: string | null; approverRole: string; decision: string; decidedAt: string | null }>>`
+      SELECT target_id AS "targetId", approver_role AS "approverRole", decision, decided_at AS "decidedAt"
+        FROM deployment_approvals WHERE approval_id = ${release.approval!.approvalId}`
+    expect(approval).toBeTruthy()
+    expect(approval!.targetId).toBeNull()
+    expect(approval!.decision).toBe('approved')
+    expect(approval!.approverRole).toBeTruthy()
+    expect(approval!.decidedAt).toBeTruthy()
     const view = await getProjectDeployment(projectId)
     expect(view.target).toBeUndefined()
     expect(view.history.length).toBeGreaterThan(0)

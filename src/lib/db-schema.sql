@@ -1112,7 +1112,7 @@ CREATE INDEX IF NOT EXISTS project_deployment_targets_org_idx
 CREATE TABLE IF NOT EXISTS deployment_approvals (
   approval_id      UUID PRIMARY KEY,
   project_id       UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  target_id        UUID NOT NULL REFERENCES project_deployment_targets(target_id) ON DELETE CASCADE,
+  target_id        UUID REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL,
   run_id           UUID REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
   approver_user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   approver_role    TEXT NOT NULL,
@@ -1123,6 +1123,13 @@ CREATE TABLE IF NOT EXISTS deployment_approvals (
 );
 CREATE INDEX IF NOT EXISTS deployment_approvals_project_idx
   ON deployment_approvals (project_id, decided_at DESC);
+-- Unlinking a target must keep the approval audit (FR-017/SC-008): an approval
+-- outlives its target, exactly like deployment_records. These statements repair
+-- databases created before the constraint was relaxed.
+ALTER TABLE deployment_approvals ALTER COLUMN target_id DROP NOT NULL;
+ALTER TABLE deployment_approvals DROP CONSTRAINT IF EXISTS deployment_approvals_target_id_fkey;
+ALTER TABLE deployment_approvals ADD CONSTRAINT deployment_approvals_target_id_fkey
+  FOREIGN KEY (target_id) REFERENCES project_deployment_targets(target_id) ON DELETE SET NULL;
 
 -- One row per release attempt; the audit and board evidence.
 CREATE TABLE IF NOT EXISTS deployment_records (

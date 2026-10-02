@@ -180,5 +180,21 @@ describe('Railway client', () => {
         expect((error as Error).message).not.toContain(TOKEN)
       }
     })
+
+    test('an unmapped GraphQL error that echoes the credential is redacted', async () => {
+      const spy = (async () => new Response(
+        JSON.stringify({ errors: [{ message: `Unexpected failure while using token ${TOKEN}` }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )) as typeof fetch
+      try {
+        await railwayGraphQLRequest(TOKEN, 'workspace', 'query { me { id } }', {}, spy)
+        throw new Error('expected a RailwayError')
+      } catch (error) {
+        expect(error).toBeInstanceOf(RailwayError)
+        expect((error as RailwayError).code).toBe('railway_error')
+        expect((error as Error).message).not.toContain(TOKEN)
+        expect((error as Error).message).toContain('[redacted]')
+      }
+    })
   })
 })

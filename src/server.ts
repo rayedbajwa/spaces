@@ -2198,6 +2198,9 @@ async function route(req: Request): Promise<Response> {
       const kinds: AppIntegrationKind[] = provider === 'atlassian' ? ['jira', 'confluence'] : [provider as AppIntegrationKind]
       // expires_at lets token lookups refresh before expiry (GitHub App user tokens, Atlassian).
       const credentials = withExpiry(tokens as unknown as Record<string, unknown>)
+      // Railway OAuth is observation-only; a failed identity probe stores the
+      // connection as `error` so the UI asks for a reconnect.
+      let railwayOauthStatus: 'connected' | 'error' = 'connected'
       for (const kind of kinds) {
         let displayName: string | undefined
         let config: Record<string, unknown> | undefined
@@ -2214,6 +2217,10 @@ async function route(req: Request): Promise<Response> {
           }
         }
         if (kind === 'railway') {
+          // OAuth is observation-only. Persist that fact even when the identity
+          // probe fails, so `decideRelease` fails closed with reconnect guidance
+          // instead of treating a failed connection as release-capable.
+          config = { authType: 'oauth', tokenType: 'workspace' }
           try {
             const info = await verifyRailwayCredential(tokens.access_token, 'workspace')
             if (info.ok && info.identity) {
@@ -2226,12 +2233,16 @@ async function route(req: Request): Promise<Response> {
                 workspaceName: info.identity.workspaceName,
                 accountName: info.identity.accountName,
               }
+            } else {
+              railwayOauthStatus = 'error'
+              displayName = 'Railway (reconnect needed)'
             }
           } catch {
-            displayName = 'Railway'
+            railwayOauthStatus = 'error'
+            displayName = 'Railway (reconnect needed)'
           }
         }
-        await upsertAppIntegration({ orgId: callbackOrg, kind, status: 'connected', displayName, config, credentials })
+        await upsertAppIntegration({ orgId: callbackOrg, kind, status: kind === 'railway' ? railwayOauthStatus : 'connected', displayName, config, credentials })
       }
       // GitHub connected → index every visible repository (name, language,
       // topics, README use case) so plans can name repos without upfront selection.
@@ -2717,7 +2728,7 @@ async function route(req: Request): Promise<Response> {
     // unauthorized approval never advances the run or writes a swallowed event.
     const deliverGate = row.pauseKind === 'review' && row.currentStage === 'deliver'
     const gateApproved = parseApprovalAnswer(answer).approved
-    if (deliverGate && gateApproved) {
+    if (deliverGate) {
       const target = await getDeploymentTarget(row.projectId).catch(() => undefined)
       if (target) {
         const authority = await releaseAuthorityFor(row.projectId, auth?.user.userId ?? null)

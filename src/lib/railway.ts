@@ -147,9 +147,11 @@ function parseRetryAfter(header: string | null): number | undefined {
 }
 
 /** Map GraphQL error text to a structured, actionable, token-free error. */
-function errorFromGraphQLErrors(errors: Array<{ message?: string; extensions?: { code?: string } }>): RailwayError {
+function errorFromGraphQLErrors(errors: Array<{ message?: string; extensions?: { code?: string } }>, token?: string): RailwayError {
   const first = errors[0]
-  const message = (first?.message ?? 'Railway returned an error.').trim()
+  const raw = (first?.message ?? 'Railway returned an error.').trim()
+  // A GraphQL error may echo the submitted credential; never let it surface.
+  const message = token ? raw.split(token).join('[redacted]') : raw
   const lower = message.toLowerCase()
   if (lower.includes('not authorized') || lower.includes('unauthenticated') || lower.includes('unauthorized')) {
     return new RailwayError('railway_auth', 'Railway rejected the credential. Reconnect Railway under Organization → Integrations.')
@@ -212,7 +214,7 @@ export async function railwayGraphQLRequest<T>(
   } catch {
     throw new RailwayError('railway_unavailable', `Railway returned an unreadable response (${response.status}).`, { retryable: true, status: response.status })
   }
-  if (body.errors?.length) throw errorFromGraphQLErrors(body.errors)
+  if (body.errors?.length) throw errorFromGraphQLErrors(body.errors, token)
   if (!response.ok) {
     throw new RailwayError('railway_error', `Railway returned ${response.status}.`, { status: response.status })
   }
