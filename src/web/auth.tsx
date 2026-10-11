@@ -86,6 +86,11 @@ export function AuthRoot({ children }: { children: ReactNode }) {
 
   if (loading) return <div className="auth-screen"><div className="auth-card"><LoadingBlock label="Loading Spaces…" /></div></div>
   if (status?.authEnabled && (signedOut || !me?.user)) {
+    // An approval link may be opened signed out: render the app so the link page
+    // can show its own inline sign-in and return to the same link.
+    if (window.location.pathname.startsWith('/approvals/')) {
+      return <AuthContext.Provider value={{ me, refresh, signOut, switchTeam }}>{children}</AuthContext.Provider>
+    }
     if (authView === 'landing' && !status.needsBootstrap && !inviteTokenFromPath() && !waitlistTokenFromPath()) {
       return <LandingPage openRegistration={Boolean(status.openRegistration)} onSignIn={() => setAuthView('login')} onGetStarted={() => setAuthView('register')} />
     }
@@ -109,7 +114,7 @@ function waitlistTokenFromPath(): string | undefined {
   return match ? decodeURIComponent(match[1]!) : undefined
 }
 
-function SignInScreen({ needsBootstrap, githubLogin, openRegistration, initialMode, onBack, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; openRegistration: boolean; initialMode: 'login' | 'register'; onBack?: () => void; onSignedIn: () => Promise<void> }) {
+export function SignInScreen({ needsBootstrap, githubLogin, openRegistration, initialMode, onBack, onSignedIn }: { needsBootstrap: boolean; githubLogin: boolean; openRegistration: boolean; initialMode: 'login' | 'register'; onBack?: () => void; onSignedIn: () => Promise<void> }) {
   const inviteToken = inviteTokenFromPath()
   const waitlistToken = inviteToken ? undefined : waitlistTokenFromPath()
   const [joinLink, setJoinLink] = useState<{ email: string; name: string | null; company: string | null } | null>(null)

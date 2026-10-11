@@ -1,7 +1,7 @@
 import type { OAuthProviderId } from './oauth'
 import type { AppIntegrationKind } from './app-integrations'
 
-export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'deployment' | 'communication'
+export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'deployment' | 'communication' | 'notifications'
 
 export type CategoryReadinessState =
   | 'connected'
@@ -83,6 +83,14 @@ export const INTEGRATION_CATEGORIES: readonly IntegrationCategoryDefinition[] = 
     emptyGuidance: 'Connect message channels to receive stage updates, review notifications, and pipeline approval gates directly in your team\'s chat.',
     providers: ['slack'],
     kinds: ['slack'],
+  },
+  {
+    id: 'notifications',
+    label: 'Email & Notifications',
+    description: 'Direct approval requests and decision confirmations delivered to the accountable owner by email (Resend), independent of chat channels.',
+    emptyGuidance: 'Connect email to deliver approval links straight to the accountable owner when chat is unavailable, or rely on the platform sender.',
+    providers: [],
+    kinds: ['email'],
   },
 ] as const
 

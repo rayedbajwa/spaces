@@ -18,12 +18,12 @@ import { orgIdForProject } from './orgs'
  * missing permission is reported once per organization with what to do.
  *
  * Bot scopes: channels:manage (create, invite), channels:read, channels:join,
- * chat:write, users:read, users:read.email.
+ * chat:write, users:read, users:read.email, and im:write (deliver approval DMs).
  */
 
 const slackLog = log.child({ mod: 'slack' })
 
-export const SLACK_BOT_SCOPES = ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email']
+export const SLACK_BOT_SCOPES = ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email', 'im:write']
 
 export class SlackApiError extends Error {
   constructor(readonly method: string, readonly code: string, readonly needed?: string) {
@@ -331,5 +331,69 @@ export async function notifyWaitlistSignup(entry: { name: string | null; company
   } catch (error) {
     if (error instanceof SlackApiError && ['channel_not_found', 'is_archived'].includes(error.code)) waitlistChannel = undefined
     reportSlackError(orgId, 'post waitlist signup', error)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Direct approval messages (011-owner-approval-link)
+// ---------------------------------------------------------------------------
+
+/**
+ * The Block Kit message for a direct approval request. Exported and pure so its
+ * content can be asserted without Slack. It contains exactly the one link given
+ * and never a shared-channel substitute.
+ */
+export function renderApprovalDm(input: {
+  project: { name: string; code: string | null; slug: string }
+  stage: string
+  summary?: string | null
+  link: string
+  responsibility?: string | null
+  fallback?: boolean
+}): { text: string; blocks: unknown[] } {
+  const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
+  const safeLabel = slackText(label, 300)
+  const stage = slackText(input.stage, 200)
+  const role = input.responsibility ? slackText(input.responsibility, 120) : ''
+  const who = role ? `${role}${input.fallback ? ' (Owner fallback)' : ''}` : (input.fallback ? 'Owner fallback' : '')
+  const text = `Approval needed: ${safeLabel} · ${stage}`
+  const blocks: unknown[] = [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
+    { type: 'section', text: { type: 'mrkdwn', text: `🟡 *Approval needed* on *${stage}*${who ? ` — ${who}` : ''}.` } },
+  ]
+  const summary = input.summary?.trim()
+  if (summary) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(summary, 2600).replace(/\n/g, '\n>')}` } })
+  blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Review and decide' }, url: input.link, style: 'primary' }] })
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'This link is personal and can be used once. The in-app gate stays available.' }] })
+  return { text, blocks }
+}
+
+/**
+ * Send an approval request as a Slack DM. Never throws: `users_not_found` means
+ * "fall back to email", not an error. Returns the matched Slack user on success.
+ */
+export async function sendDirectMessage(input: {
+  orgId: string
+  email: string
+  text: string
+  blocks: unknown[]
+}): Promise<{ ok: true; slackUserId: string } | { ok: false; reason: 'no_slack' | 'users_not_found' | 'slack_error'; message?: string }> {
+  const token = await slackToken(input.orgId)
+  if (!token) return { ok: false, reason: 'no_slack' }
+  try {
+    let slackUserId: string
+    try {
+      const found = await slackApi<SlackResponse & { user: { id: string } }>(token, 'users.lookupByEmail', { email: input.email })
+      slackUserId = found.user.id
+    } catch (error) {
+      if (error instanceof SlackApiError && error.code === 'users_not_found') return { ok: false, reason: 'users_not_found' }
+      throw error
+    }
+    const opened = await slackApi<SlackResponse & { channel: { id: string } }>(token, 'conversations.open', { users: slackUserId })
+    await slackApi(token, 'chat.postMessage', { channel: opened.channel.id, text: input.text, blocks: input.blocks, unfurl_links: false })
+    return { ok: true, slackUserId }
+  } catch (error) {
+    reportSlackError(input.orgId, 'send an approval DM', error)
+    return { ok: false, reason: 'slack_error', message: error instanceof Error ? error.message : String(error) }
   }
 }

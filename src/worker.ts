@@ -54,6 +54,9 @@ import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usa
 import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
 import { notifyProject } from './lib/slack'
+import { createApprovalRequests, resolveGateRecipients, stageSummary, summaryForGate } from './lib/approval-store'
+import { notifyApprovalRequests } from './lib/approval-notify'
+import { STANDARD_RESPONSIBILITIES } from './lib/project-responsibilities'
 import { drainBudget } from './lib/drain'
 
 const workerLog = log.child({ mod: 'worker' })
@@ -484,28 +487,52 @@ async function finishCancelledRun(runId: string): Promise<void> {
 }
 
 /** What a stage produced, for a Slack post: the compacted handoff when there is one, else the end of its output. */
-function stageSummary(summary: string | null | undefined, tail: string | null | undefined): string | undefined {
-  const text = (summary?.trim() || tail?.trim() || '')
-  if (!text) return undefined
-  return text.length > 1500 ? `…${text.slice(-1500)}` : text
-}
 
 /**
  * Slack notice for a run that stopped for a person: an approval carries the
  * summary of the stage to decide on (as recorded when the stage finished); a
- * question carries the agent's last words, which is where it asked.
+ * question carries the agent's last words, which is where it asked. The same
+ * gate also gets direct owner approval requests, best effort and never blocking.
  */
 async function notifyGate(runId: string, progress: FlowProgress): Promise<void> {
   const run = await getRun(runId).catch(() => undefined)
   if (!run?.projectId || !progress.stage) return
-  if (progress.pauseKind === 'review') {
-    const [entry] = await getDb()<Array<{ summary: string | null; tail: string }>>`
-      SELECT summary, tail FROM run_thread_entries WHERE run_id = ${runId} AND stage = ${progress.stage} ORDER BY entry_id DESC LIMIT 1
-    `.catch(() => [] as Array<{ summary: string | null; tail: string }>)
-    await notifyProject(run.projectId, { kind: 'approval_needed', stage: progress.stage, summary: stageSummary(entry?.summary, entry?.tail ?? progress.log?.slice(-4000)) })
-  } else {
-    await notifyProject(run.projectId, { kind: 'question', stage: progress.stage, question: stageSummary(undefined, progress.log?.slice(-1500)) })
-  }
+  const stage = progress.stage
+  const kind: 'review' | 'clarification' = progress.pauseKind === 'review' ? 'review' : 'clarification'
+  const summary = kind === 'review'
+    ? await summaryForGate(runId, stage, progress.log?.slice(-4000))
+    : stageSummary(undefined, progress.log?.slice(-1500))
+  await notifyProject(run.projectId, kind === 'review'
+    ? { kind: 'approval_needed', stage, summary }
+    : { kind: 'question', stage, question: summary })
+  void deliverApprovalRequests(runId, run.projectId, stage, kind, summary)
+    .catch((error) => workerLog.warn('direct approval delivery failed', { runId, stage, error: error instanceof Error ? error.message : String(error) }))
+}
+
+/** Create (idempotently) and deliver one request per accountable recipient for an open gate. */
+async function deliverApprovalRequests(runId: string, projectId: string, stage: string, kind: 'review' | 'clarification', summary: string | undefined): Promise<void> {
+  const [project] = await getDb()<Array<{ name: string; code: string | null; slug: string }>>`
+    SELECT name, code, slug FROM projects WHERE project_id = ${projectId}
+  `.catch(() => [] as Array<{ name: string; code: string | null; slug: string }>)
+  if (!project) return
+  const recipients = await resolveGateRecipients(projectId, stage)
+  if (recipients.recipients.length === 0) return
+  const [gate] = await getDb()<Array<{ gateId: string }>>`
+    SELECT gate_id AS "gateId" FROM pipeline_gates WHERE run_id = ${runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1
+  `.catch(() => [] as Array<{ gateId: string }>)
+  if (!gate) return
+  const created = await createApprovalRequests({
+    runId, gateId: gate.gateId, projectId, stage, kind, summary: summary ?? null,
+    recipients: recipients.recipients, responsibilityId: recipients.responsibilityId,
+    responsibilityKey: recipients.responsibilityKey, fallback: recipients.fallback,
+  })
+  if (created.length === 0) return
+  const role = STANDARD_RESPONSIBILITIES.find((item) => item.key === recipients.responsibilityKey)?.name ?? recipients.responsibilityKey
+  await notifyApprovalRequests(created, {
+    project: { projectId, name: project.name, code: project.code, slug: project.slug },
+    stage, kind, summary: summary ?? null, responsibility: role,
+    fallback: recipients.fallback, origin: process.env.PUBLIC_URL,
+  })
 }
 
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {

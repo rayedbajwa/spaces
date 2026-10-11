@@ -1,7 +1,7 @@
 import { getDb } from './db'
 import { sealCredentials, unsealCredentials } from './crypto-vault'
 
-export type AppIntegrationKind = 'github' | 'jira' | 'confluence' | 'slack' | 'linear' | 'figma' | 'railway'
+export type AppIntegrationKind = 'github' | 'jira' | 'confluence' | 'slack' | 'linear' | 'figma' | 'railway' | 'email'
 export type AppIntegrationStatus = 'not_connected' | 'pending' | 'connected' | 'error'
 
 export interface AppIntegrationRow {
@@ -35,7 +35,9 @@ export async function listAppIntegrations(orgId: string): Promise<Array<AppInteg
     let credentialsOk = row.status !== 'connected'
     if (row.status === 'connected') {
       const creds = credentialsJson ? unsealCredentials(credentialsJson) : undefined
-      credentialsOk = typeof creds?.access_token === 'string' && creds.access_token.length > 0
+      // OAuth connections store an access_token; the email integration stores an api_key.
+      credentialsOk = (typeof creds?.access_token === 'string' && creds.access_token.length > 0)
+        || (typeof creds?.api_key === 'string' && creds.api_key.length > 0)
     }
     return { ...row, credentialsOk }
   })

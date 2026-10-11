@@ -245,6 +245,10 @@ export async function requeueRunFromStage(runId: string, fromStage: StageName | 
  * any step fails, none of it happened and the run is still waiting — the answer
  * can never be lost between "no longer paused" and "a job carries it".
  *
+ * With a `decision` payload (owner approval links) the approval decision row is
+ * inserted, the link consumed and sibling requests/links invalidated inside the
+ * same transaction, so the recorded decision and its run effect cannot diverge.
+ *
  * Unlike a re-queue after a failure it does not count as a retry, and the stage
  * stays the one that paused: the worker reopens the conversation there. Only
  * review and clarification pauses take answers; a run a person paused is
@@ -254,6 +258,15 @@ export async function answerPausedRun(input: {
   runId: string
   projectId: string
   answer: string
+  decision?: {
+    requestId: string
+    linkId: string
+    gateId: string
+    outcome: 'approve' | 'approve_with_notes' | 'request_changes'
+    feedback: string | null
+    summaryShown: string | null
+    decidedBy: string
+  }
 }): Promise<{ ok: true; stage: StageName | null; pauseKind: 'review' | 'clarification' } | { ok: false; reason: 'not_waiting' | 'archived' }> {
   const sql = getDb()
   return await sql.begin(async (tx) => {
@@ -279,8 +292,34 @@ export async function answerPausedRun(input: {
     `
     await tx`
       INSERT INTO pipeline_events (run_id, kind, payload)
-      VALUES (${input.runId}, 'gate_resolved', ${tx.json({ gateId: gate?.gateId, kind: gate?.kind, response: input.answer } as never)})
+      VALUES (${input.runId}, 'gate_resolved', ${tx.json({
+        gateId: gate?.gateId,
+        kind: gate?.kind,
+        response: input.answer,
+        ...(input.decision ? { decision: { outcome: input.decision.outcome, feedback: input.decision.feedback, decidedBy: input.decision.decidedBy, via: 'link' } } : {}),
+      } as never)})
     `
+    if (input.decision && gate?.gateId) {
+      const decision = input.decision
+      await tx`
+        INSERT INTO approval_decisions
+          (decision_id, request_id, gate_id, run_id, link_id, outcome, feedback, summary_shown, decided_by)
+        VALUES
+          (${randomUUID()}, ${decision.requestId}, ${gate.gateId}, ${input.runId}, ${decision.linkId}, ${decision.outcome},
+           ${decision.feedback}, ${decision.summaryShown}, ${decision.decidedBy})
+        ON CONFLICT (gate_id) DO NOTHING
+      `
+      await tx`UPDATE approval_requests SET state = 'decided', updated_at = now() WHERE request_id = ${decision.requestId}`
+      await tx`
+        UPDATE approval_requests SET state = 'invalidated', updated_at = now()
+         WHERE gate_id = ${gate.gateId} AND request_id <> ${decision.requestId} AND state IN ('pending','delivered')
+      `
+      await tx`
+        UPDATE approval_links SET consumed_at = now()
+         WHERE consumed_at IS NULL
+           AND request_id IN (SELECT request_id FROM approval_requests WHERE gate_id = ${gate.gateId})
+      `
+    }
     const payload = { runId: input.runId, ...(run.stage ? { fromStage: run.stage } : {}), answer: { text: input.answer, pauseKind: run.pauseKind } }
     await tx`
       INSERT INTO project_jobs (job_id, project_id, kind, payload_json, priority, status, trigger_source, run_id)
