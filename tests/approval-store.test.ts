@@ -299,3 +299,27 @@ describe('decision integrity', () => {
     await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${run.runId}`
   })
 })
+
+describe('cancellation invalidation (FR-012)', () => {
+  test('cancelling a project invalidates every outstanding approval request and link', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    expect(created).toHaveLength(2)
+
+    const { cancelProjectWork } = await import('../src/lib/project-cancel')
+    const { getProjectBySlug } = await import('../src/lib/project-registry')
+    const project = await getProjectBySlug(projectA.slug)
+    expect(project).toBeDefined()
+    const cancelled = await cancelProjectWork(project!, 'approval cancellation test')
+    expect(cancelled.runIds).toContain(runId)
+
+    for (const item of created) {
+      const [request] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${item.request.requestId}`
+      expect(request?.state).toBe('invalidated')
+      const [link] = await getDb()<Array<{ consumedAt: string | null }>>`SELECT consumed_at AS "consumedAt" FROM approval_links WHERE request_id = ${item.request.requestId}`
+      expect(link?.consumedAt).not.toBeNull()
+    }
+    // The cancelled run's links are consumed (invalidated) and can no longer act.
+    expect((await verifyApprovalLink(created[0]!.token, users.productOwnerA)).verdict).toBe('consumed')
+  })
+})

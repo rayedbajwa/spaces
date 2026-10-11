@@ -46,6 +46,17 @@ describe('approval link page', () => {
     await context.close()
   })
 
+  test('the valid link offers approve, approve with notes and request changes (FR-007)', async () => {
+    const context = await contextWithToken(await fixture.sessionTokenFor(users.productOwnerA, teamA))
+    const page = await context.newPage()
+    await page.goto(`${baseUrl}/approvals/${token}`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: 'Approve', exact: true }).waitFor({ timeout: 30_000 })
+    expect(await page.getByRole('button', { name: 'Approve', exact: true }).count()).toBe(1)
+    expect(await page.getByRole('button', { name: 'Approve with notes' }).count()).toBe(1)
+    expect(await page.getByRole('button', { name: 'Request changes' }).count()).toBe(1)
+    await context.close()
+  })
+
   test('the recipient opens the link and submits a decision, and the used link shows the winner', async () => {
     signedIn = await contextWithToken(await fixture.sessionTokenFor(users.productOwnerA, teamA))
     const page = await signedIn.newPage()

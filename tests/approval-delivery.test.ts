@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:tes
 import { getDb } from '../src/lib/db'
 import { upsertAppIntegration, disconnectAppIntegration } from '../src/lib/app-integrations'
 import { createApprovalRequests, resolveGateRecipients, submitApprovalDecision, type CreatedApprovalRequest } from '../src/lib/approval-store'
-import { notifyApprovalDecision, notifyApprovalRequests } from '../src/lib/approval-notify'
+import { notifyApprovalDecision, notifyApprovalRequests, deliverApprovalRequestsForGate, reResolveRevokedRecipient } from '../src/lib/approval-notify'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -151,5 +151,111 @@ describe('decision confirmation', () => {
     expect(text).toContain('Approval Project')
     expect(text).toContain('review')
     expect(text).toContain('Please add a rollback test.')
+  })
+})
+
+describe('gate-open trigger, timing and recovery (FR-001/003/016/018/021, SC-001/003/006)', () => {
+  async function openGateOnNewRun(stage = 'review', kind: 'review' | 'clarification' = 'review'): Promise<{ runId: string; gateId: string }> {
+    const { createRun, openGate } = await import('../src/lib/run-store')
+    const run = await createRun({
+      projectNamespace: fixture.projectA.slug, projectLabel: 'Gate open', projectPath: '/tmp/approval-gate-open',
+      pipelineName: 'test', options: {} as never, template: { stages: [] } as never, projectId: fixture.projectA.projectId,
+    })
+    const gateId = await openGate({ runId: run.runId, stepIndex: 0, kind, prompt: stage })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = ${kind}, current_stage = ${stage} WHERE run_id = ${run.runId}`
+    return { runId: run.runId, gateId }
+  }
+
+  test('the worker gate-open trigger creates and delivers one request per accountable recipient (FR-001/003/021)', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: '...' } })
+    const { runId } = await openGateOnNewRun()
+
+    await deliverApprovalRequestsForGate(runId, fixture.projectA.projectId, 'review', 'review', 'Approved with 2 minor findings.')
+
+    const requests = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE run_id = ${runId} ORDER BY created_at`
+    expect(requests).toHaveLength(2)
+    expect(requests.every((row) => row.state === 'delivered')).toBe(true)
+    expect(calls.filter((c) => c.url.endsWith('chat.postMessage'))).toHaveLength(2)
+    await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
+  })
+
+  test('a revoked recipient is re-resolved and the current assignee is notified (FR-018)', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: '...' } })
+    const { runId, gateId } = await openGateOnNewRun()
+    const resolved = await resolveGateRecipients(fixture.projectA.projectId, 'review')
+    const poId = resolved.responsibilityId!
+    const created = await createApprovalRequests({
+      runId, gateId, projectId: fixture.projectA.projectId, stage: 'review', kind: 'review',
+      summary: 'Approved with 2 minor findings.', recipients: [resolved.recipients[0]!],
+      responsibilityId: resolved.responsibilityId, responsibilityKey: resolved.responsibilityKey, fallback: resolved.fallback,
+    })
+    const revokedRequest = created[0]!.request
+    const { replaceAssignments } = await import('../src/lib/project-responsibilities')
+    await replaceAssignments(fixture.projectA.projectId, poId, [users.secondProductOwnerA], users.ownerA)
+    try {
+      await reResolveRevokedRecipient(revokedRequest)
+
+      const [stale] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${revokedRequest.requestId}`
+      expect(stale?.state).toBe('invalidated')
+      const [staleLink] = await getDb()<Array<{ consumedAt: string | null }>>`SELECT consumed_at AS "consumedAt" FROM approval_links WHERE request_id = ${revokedRequest.requestId}`
+      expect(staleLink?.consumedAt).not.toBeNull()
+      const [replacement] = await getDb()<Array<{ state: string }>>`
+        SELECT state FROM approval_requests WHERE run_id = ${runId} AND recipient_user_id = ${users.secondProductOwnerA}
+      `
+      expect(replacement?.state).toBe('delivered')
+      expect(calls.some((c) => c.url.endsWith('chat.postMessage'))).toBe(true)
+    } finally {
+      await replaceAssignments(fixture.projectA.projectId, poId, [users.productOwnerA, users.secondProductOwnerA], users.ownerA)
+      await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
+    }
+  })
+
+  test('a total delivery failure leaves the run paused and the queue untouched (FR-016/SC-006)', async () => {
+    delete process.env.RESEND_API_KEY
+    await disconnectAppIntegration(fixture.orgA, 'slack')
+    const created = await createdForSuffix()
+    const runId = created[0]!.request.runId
+    const before = await getDb()<Array<{ status: string; pauseKind: string | null }>>`
+      SELECT status, pause_kind AS "pauseKind" FROM pipeline_runs WHERE run_id = ${runId}
+    `
+    const [jobsBefore] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM project_jobs WHERE run_id = ${runId}`
+
+    await notifyApprovalRequests(created, target)
+
+    const after = await getDb()<Array<{ status: string; pauseKind: string | null }>>`
+      SELECT status, pause_kind AS "pauseKind" FROM pipeline_runs WHERE run_id = ${runId}
+    `
+    const [jobsAfter] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM project_jobs WHERE run_id = ${runId}`
+    expect(after).toEqual(before)
+    expect(after[0]?.status).toBe('paused')
+    expect(jobsAfter?.n).toBe(jobsBefore?.n)
+    for (const item of created) {
+      const [row] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${item.request.requestId}`
+      expect(row?.state).toBe('undeliverable')
+    }
+  })
+
+  test('the accountable owner is notified well within one minute of the gate opening (SC-001)', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: '...' } })
+    const started = Date.now()
+    const created = await createdForSuffix()
+    await notifyApprovalRequests([created[0]!], target)
+    const elapsed = Date.now() - started
+    const [delivered] = await getDb()<Array<{ outcome: string }>>`
+      SELECT outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND outcome = 'delivered' LIMIT 1
+    `
+    expect(delivered?.outcome).toBe('delivered')
+    expect(elapsed).toBeLessThan(60_000)
+  })
+
+  test('a decision is recorded well within two minutes (SC-003)', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: '...' } })
+    const created = await createdForSuffix()
+    await notifyApprovalRequests([created[0]!], target)
+    const started = Date.now()
+    const result = await submitApprovalDecision({ token: created[0]!.token, actorUserId: users.productOwnerA, outcome: 'approve' })
+    const elapsed = Date.now() - started
+    expect(result.ok).toBe(true)
+    expect(elapsed).toBeLessThan(120_000)
   })
 })

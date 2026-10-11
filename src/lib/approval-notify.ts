@@ -18,6 +18,7 @@ import { maskOutputDeep } from './guardrails'
 import { log } from './logger'
 import { emailConfigured, emailSender, sendEmail } from './email'
 import { sendDirectMessage, renderApprovalDm, slackText } from './slack'
+import { STANDARD_RESPONSIBILITIES } from './project-responsibilities'
 import {
   createApprovalRequests,
   invalidateApprovalRequest,
@@ -122,6 +123,42 @@ export async function notifyApprovalRequests(created: CreatedApprovalRequest[], 
       await markRequestUndeliverable(request.request.requestId).catch(() => undefined)
     }
   }
+}
+
+/**
+ * Create (idempotently) and deliver one request per accountable recipient for
+ * an open gate. This is the gate-open trigger the worker calls when a run
+ * pauses; it is best effort and never blocks the run.
+ */
+export async function deliverApprovalRequestsForGate(
+  runId: string,
+  projectId: string,
+  stage: string,
+  kind: 'review' | 'clarification',
+  summary: string | undefined,
+): Promise<void> {
+  const [project] = await getDb()<Array<{ name: string; code: string | null; slug: string }>>`
+    SELECT name, code, slug FROM projects WHERE project_id = ${projectId}
+  `.catch(() => [] as Array<{ name: string; code: string | null; slug: string }>)
+  if (!project) return
+  const recipients = await resolveGateRecipients(projectId, stage)
+  if (recipients.recipients.length === 0) return
+  const [gate] = await getDb()<Array<{ gateId: string }>>`
+    SELECT gate_id AS "gateId" FROM pipeline_gates WHERE run_id = ${runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1
+  `.catch(() => [] as Array<{ gateId: string }>)
+  if (!gate) return
+  const created = await createApprovalRequests({
+    runId, gateId: gate.gateId, projectId, stage, kind, summary: summary ?? null,
+    recipients: recipients.recipients, responsibilityId: recipients.responsibilityId,
+    responsibilityKey: recipients.responsibilityKey, fallback: recipients.fallback,
+  })
+  if (created.length === 0) return
+  const role = STANDARD_RESPONSIBILITIES.find((item) => item.key === recipients.responsibilityKey)?.name ?? recipients.responsibilityKey
+  await notifyApprovalRequests(created, {
+    project: { projectId, name: project.name, code: project.code, slug: project.slug },
+    stage, kind, summary: summary ?? null, responsibility: role,
+    fallback: recipients.fallback, origin: process.env.PUBLIC_URL,
+  })
 }
 
 /**
