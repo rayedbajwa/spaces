@@ -40,7 +40,7 @@ import { importQueueSnapshot, queueKnowledgeImport, recoverInterruptedImports } 
 import { listImportCatalog, validateSourceConfig, type CatalogIntegration } from './lib/knowledge-connectors'
 import { confirmPhraseFor, deleteProjectCompletely, previewProjectDeletion, ProjectBusyError, ProjectNotArchivedError } from './lib/project-delete'
 import { cancelProjectWork } from './lib/project-cancel'
-import { submitApprovalDecision, verifyApprovalLink, type ApprovalOutcome } from './lib/approval-store'
+import { invalidateApprovalRequestsForRunTx, submitApprovalDecision, verifyApprovalLink, type ApprovalOutcome } from './lib/approval-store'
 import { domainVerified, verifyEmailCredential } from './lib/email'
 import { notifyApprovalDecision, reResolveRevokedRecipient } from './lib/approval-notify'
 import { ResponsibilityError, STANDARD_RESPONSIBILITIES, migrateProjectResponsibilities, replaceAssignments } from './lib/project-responsibilities'
@@ -804,7 +804,10 @@ async function route(req: Request): Promise<Response> {
 
   if (auth && isApi && method !== 'GET') {
     const active = auth.activeTeam
-    const readOnlyPath = /^\/api\/(me|auth|invites|projects\/[^/]+\/chat)(\/|$)/.test(url.pathname)
+    // `/api/approvals` is exempt: the personal single-use link is the
+    // authorization, and any active assignee may decide regardless of team role
+    // (FR-013). An approval POST resolves only the bound gate.
+    const readOnlyPath = /^\/api\/(me|auth|invites|projects\/[^/]+\/chat|approvals)(\/|$)/.test(url.pathname)
     if (active && active.role === 'viewer' && !readOnlyPath) {
       return sendJson(403, { error: 'Viewers cannot change anything. Ask a team admin for the member role.' })
     }
@@ -2951,6 +2954,9 @@ async function route(req: Request): Promise<Response> {
     if (outcome !== 'approve' && outcome !== 'approve_with_notes' && outcome !== 'request_changes') {
       return sendJson(400, { error: 'Choose approve, approve with notes or request changes.', code: 'invalid_outcome' })
     }
+    if (body.feedback !== undefined && body.feedback !== null && typeof body.feedback !== 'string') {
+      return sendJson(400, { error: 'Feedback must be text.', code: 'invalid_feedback' })
+    }
     const result = await submitApprovalDecision({ token, actorUserId: auth?.user.userId, outcome: outcome as ApprovalOutcome, feedback: body.feedback ?? null })
     if (!result.ok) {
       const winning = result.decision ? { outcome: result.decision.outcome, feedback: result.decision.feedback, decidedBy: result.decision.decidedByName ?? null, decidedAt: result.decision.decidedAt, summary: result.decision.summaryShown } : undefined
@@ -3045,6 +3051,9 @@ async function route(req: Request): Promise<Response> {
         await tx`UPDATE pipeline_runs SET status = 'cancelled', error_message = 'Cancelled by a user', pause_kind = NULL, owning_worker_id = NULL, updated_at = now() WHERE run_id = ${runId}`
         await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ${runId} AND status = 'open'`
         await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${runId}, 'cancelled', ${tx.json({ by, reason: 'Cancelled by a user' } as never)})`
+        // FR-012: cancelling a run invalidates every outstanding approval link
+        // so a stale personal link can never resolve the gate afterwards.
+        await invalidateApprovalRequestsForRunTx(tx, runId)
       })
       await sql`SELECT pg_notify('run_cancel', ${runId})`
     }

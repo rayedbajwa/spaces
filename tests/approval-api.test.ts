@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { getDb } from '../src/lib/db'
-import { createApprovalRequests, resolveGateRecipients } from '../src/lib/approval-store'
+import { createApprovalRequests, resolveGateRecipients, verifyApprovalLink } from '../src/lib/approval-store'
 import { createRun, openGate } from '../src/lib/run-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
@@ -102,6 +102,78 @@ describe('POST /api/approvals/:token', () => {
     const res = await api<{ code: string }>('POST', `/api/approvals/${fresh[0]!.token}`, recipientCookie, { outcome: 'approve_with_notes' })
     expect(res.status).toBe(400)
     expect(res.body.code).toBe('feedback_required')
+  })
+
+  test('non-string feedback is rejected as a 400, not a 500', async () => {
+    const run = await createRun({
+      projectNamespace: projectA.slug, projectLabel: 'Approval API', projectPath: '/tmp/approval-api',
+      pipelineName: 'test', options: {} as never, template: { stages: [] } as never, projectId: projectA.projectId,
+    })
+    const gateId = await openGate({ runId: run.runId, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${run.runId}`
+    const fresh = await createApprovalRequests({
+      runId: run.runId, gateId, projectId: projectA.projectId, stage: 'review', kind: 'review',
+      summary: 'x', recipients: [{ userId: users.productOwnerA, name: 'Product Owner A', email: 'approval-po@example.test', primary: true }],
+    })
+    const res = await api<{ code: string }>('POST', `/api/approvals/${fresh[0]!.token}`, recipientCookie, { outcome: 'approve', feedback: 123 })
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('invalid_feedback')
+  })
+
+  test('a viewer-role active assignee can decide their own link (FR-013)', async () => {
+    const run = await createRun({
+      projectNamespace: projectA.slug, projectLabel: 'Approval API', projectPath: '/tmp/approval-api',
+      pipelineName: 'test', options: {} as never, template: { stages: [] } as never, projectId: projectA.projectId,
+    })
+    const gateId = await openGate({ runId: run.runId, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${run.runId}`
+    const resolved = await resolveGateRecipients(projectA.projectId, 'review')
+    const poId = resolved.responsibilityId!
+    const { replaceAssignments } = await import('../src/lib/project-responsibilities')
+    // Make the viewer the accountable (active) assignee: the link is only valid
+    // for a current recipient, and FR-013 says the viewer role must not block it.
+    await replaceAssignments(projectA.projectId, poId, [users.viewerA], users.ownerA)
+    try {
+      const fresh = await createApprovalRequests({
+        runId: run.runId, gateId, projectId: projectA.projectId, stage: 'review', kind: 'review',
+        summary: 'viewer summary', recipients: [{ userId: users.viewerA, name: 'Viewer Assignee', email: 'viewer@example.test', primary: true }],
+      })
+      const viewerCookie = await fixture.cookieFor(users.viewerA, teamA)
+      const res = await api<{ state: string; decision: { outcome: string } }>('POST', `/api/approvals/${fresh[0]!.token}`, viewerCookie, { outcome: 'approve' })
+      expect(res.status).toBe(200)
+      expect(res.body.state).toBe('decided')
+      expect(res.body.decision.outcome).toBe('approve')
+    } finally {
+      await replaceAssignments(projectA.projectId, poId, [users.productOwnerA, users.secondProductOwnerA], users.ownerA)
+    }
+  })
+})
+
+describe('run cancellation (FR-012)', () => {
+  test('cancelling a run invalidates its outstanding approval request and link', async () => {
+    const run = await createRun({
+      projectNamespace: projectA.slug, projectLabel: 'Approval API', projectPath: '/tmp/approval-api',
+      pipelineName: 'test', options: {} as never, template: { stages: [] } as never, projectId: projectA.projectId,
+    })
+    const gateId = await openGate({ runId: run.runId, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${run.runId}`
+    const resolved = await resolveGateRecipients(projectA.projectId, 'review')
+    const fresh = await createApprovalRequests({
+      runId: run.runId, gateId, projectId: projectA.projectId, stage: 'review', kind: 'review',
+      summary: 'cancel me', recipients: resolved.recipients, responsibilityId: resolved.responsibilityId,
+      responsibilityKey: resolved.responsibilityKey, fallback: resolved.fallback,
+    })
+
+    const res = await api('POST', `/api/runs/${run.runId}/cancel`, recipientCookie)
+    expect(res.status).toBe(200)
+
+    for (const item of fresh) {
+      const [request] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${item.request.requestId}`
+      expect(request?.state).toBe('invalidated')
+      const [link] = await getDb()<Array<{ consumedAt: string | null }>>`SELECT consumed_at AS "consumedAt" FROM approval_links WHERE request_id = ${item.request.requestId}`
+      expect(link?.consumedAt).not.toBeNull()
+    }
+    expect((await verifyApprovalLink(fresh[0]!.token, users.productOwnerA)).verdict).toBe('consumed')
   })
 })
 

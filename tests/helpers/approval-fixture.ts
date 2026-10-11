@@ -28,6 +28,7 @@ export interface ApprovalFixture {
     productOwnerA: string
     secondProductOwnerA: string
     memberA: string
+    viewerA: string
     outsiderA: string
     otherOrgOwner: string
   }
@@ -89,6 +90,7 @@ export async function createApprovalFixture(options: { port?: number; withServer
   const productOwnerA = await createUser({ email: `approval-po-${suffix}@example.test`, name: 'Product Owner A', password })
   const secondProductOwnerA = await createUser({ email: `approval-po2-${suffix}@example.test`, name: 'Product Owner B', password })
   const memberA = await createUser({ email: `approval-member-${suffix}@example.test`, name: 'Plain Member', password })
+  const viewerA = await createUser({ email: `approval-viewer-${suffix}@example.test`, name: 'Viewer Assignee', password })
   const outsiderA = await createUser({ email: `approval-outsider-${suffix}@example.test`, name: 'Team B Member', password })
   const otherOrgOwner = await createUser({ email: `approval-other-${suffix}@example.test`, name: 'Other Org Owner', password })
 
@@ -104,6 +106,7 @@ export async function createApprovalFixture(options: { port?: number; withServer
     (${teamA}, ${productOwnerA.userId}, 'member'),
     (${teamA}, ${secondProductOwnerA.userId}, 'member'),
     (${teamA}, ${memberA.userId}, 'member'),
+    (${teamA}, ${viewerA.userId}, 'viewer'),
     (${teamA}, ${outsiderA.userId}, 'member'),
     (${teamB}, ${otherOrgOwner.userId}, 'owner')`
 
@@ -140,7 +143,7 @@ export async function createApprovalFixture(options: { port?: number; withServer
   const cookieFor = async (userId: string, activeTeamId?: string): Promise<string> =>
     `${SESSION_COOKIE}=${encodeURIComponent(await sessionTokenFor(userId, activeTeamId))}`
 
-  const userIds = [ownerA.userId, productOwnerA.userId, secondProductOwnerA.userId, memberA.userId, outsiderA.userId, otherOrgOwner.userId]
+  const userIds = [ownerA.userId, productOwnerA.userId, secondProductOwnerA.userId, memberA.userId, viewerA.userId, outsiderA.userId, otherOrgOwner.userId]
   const stop = async () => {
     await server.stop()
     try {
@@ -158,7 +161,7 @@ export async function createApprovalFixture(options: { port?: number; withServer
 
   return {
     baseUrl: server.baseUrl, orgA, orgB, teamA, teamB,
-    users: { ownerA: ownerA.userId, productOwnerA: productOwnerA.userId, secondProductOwnerA: secondProductOwnerA.userId, memberA: memberA.userId, outsiderA: outsiderA.userId, otherOrgOwner: otherOrgOwner.userId },
+    users: { ownerA: ownerA.userId, productOwnerA: productOwnerA.userId, secondProductOwnerA: secondProductOwnerA.userId, memberA: memberA.userId, viewerA: viewerA.userId, outsiderA: outsiderA.userId, otherOrgOwner: otherOrgOwner.userId },
     projectA, projectTeamB, runA: run.runId, gateA: gateId,
     cookieFor, sessionTokenFor, stop,
   }

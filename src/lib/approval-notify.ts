@@ -83,7 +83,6 @@ async function deliverOne(created: CreatedApprovalRequest, target: ApprovalNotif
   else await recordDelivery(request.requestId, 'slack', 'skipped', slack.reason)
 
   if (await emailConfigured(orgId)) {
-    const maskedText = policy ? maskOutputDeep(maskedDm.text, policy) : maskedDm.text
     const summary = target.summary ?? request.summary
     const role = target.responsibility ? `${target.responsibility}${target.fallback ? ' (Owner fallback)' : ''}` : (target.fallback ? 'Owner fallback' : '')
     const body = [
@@ -96,8 +95,9 @@ async function deliverOne(created: CreatedApprovalRequest, target: ApprovalNotif
       ``,
       `The in-app gate stays available if you prefer.`,
     ].filter((line) => line !== undefined).join('\n')
+    const maskedBody = policy ? maskOutputDeep(body, policy) : body
     const { from } = await emailSender(orgId)
-    const sent = await sendEmail({ orgId, to: request.recipientEmail, subject: `Approval needed: ${target.project.name} · ${target.stage}`, text: maskedText.length ? `${maskedText}\n\n${body}` : body, html: `<p>${slackText(body).replace(/\n/g, '<br>')}</p>` })
+    const sent = await sendEmail({ orgId, to: request.recipientEmail, subject: `Approval needed: ${target.project.name} · ${target.stage}`, text: maskedBody, html: `<p>${slackText(maskedBody).replace(/\n/g, '<br>')}</p>` })
     if (sent.ok) {
       await recordDelivery(request.requestId, 'email', 'delivered')
       notifyLog.info('approval delivered by email', { requestId: request.requestId, from, stage: target.stage })

@@ -103,6 +103,11 @@ describe('channel precedence', () => {
     const created = await createdForSuffix()
     await notifyApprovalRequests([created[0]!], target)
     expect(calls.some((c) => c.url.includes('resend.com/emails'))).toBe(true)
+    const emailCall = calls.find((c) => c.url.includes('resend.com/emails'))!.body as { text: string; subject: string }
+    // The email body carries the header once; it must not repeat the DM header.
+    expect((emailCall.text.match(/Approval needed/g) ?? []).length).toBe(1)
+    expect(emailCall.text).toContain('Approval needed for')
+    expect(emailCall.text).toContain('Stage: review')
     const [delivery] = await getDb()<Array<{ channel: string; outcome: string }>>`SELECT channel, outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND outcome = 'delivered'`
     expect(delivery?.channel).toBe('email')
   })
