@@ -12,12 +12,21 @@
  * it leaves the app, exactly as project channel posts are.
  */
 
+import { getDb } from './db'
 import { loadGuardPolicy } from './guardrails-policy'
 import { maskOutputDeep } from './guardrails'
 import { log } from './logger'
 import { emailConfigured, emailSender, sendEmail } from './email'
 import { sendDirectMessage, renderApprovalDm, slackText } from './slack'
-import { markRequestUndeliverable, recordDelivery, type ApprovalRequest, type CreatedApprovalRequest } from './approval-store'
+import {
+  createApprovalRequests,
+  invalidateApprovalRequest,
+  markRequestUndeliverable,
+  recordDelivery,
+  resolveGateRecipients,
+  type ApprovalRequest,
+  type CreatedApprovalRequest,
+} from './approval-store'
 
 const notifyLog = log.child({ mod: 'approval-notify' })
 
@@ -116,6 +125,47 @@ export async function notifyApprovalRequests(created: CreatedApprovalRequest[], 
 }
 
 /**
+ * A recipient's access or assignment was revoked before they acted. Refuse
+ * their link, invalidate their stale request, re-resolve the gate to the
+ * current accountable recipient and notify them (FR-018). Best effort: any
+ * failure is logged and never affects the run.
+ */
+export async function reResolveRevokedRecipient(request: ApprovalRequest): Promise<void> {
+  try {
+    await invalidateApprovalRequest(request.requestId)
+    const resolved = await resolveGateRecipients(request.projectId, request.stage)
+    if (resolved.recipients.length === 0) return
+    const created = await createApprovalRequests({
+      runId: request.runId,
+      gateId: request.gateId,
+      projectId: request.projectId,
+      stage: request.stage,
+      kind: request.kind,
+      summary: request.summary,
+      recipients: resolved.recipients,
+      responsibilityId: resolved.responsibilityId,
+      responsibilityKey: resolved.responsibilityKey,
+      fallback: resolved.fallback,
+    })
+    if (!created.length) return
+    const [project] = await getDb()<Array<{ name: string; code: string | null; slug: string }>>`
+      SELECT name, code, slug FROM projects WHERE project_id = ${request.projectId}
+    `
+    await notifyApprovalRequests(created, {
+      project: { projectId: request.projectId, name: project?.name ?? 'Project', code: project?.code ?? null, slug: project?.slug ?? '' },
+      stage: request.stage,
+      kind: request.kind,
+      summary: request.summary,
+      responsibility: request.responsibilityKey,
+      fallback: request.fallback,
+    })
+    notifyLog.info('revoked approval recipient re-resolved', { gateId: request.gateId, stage: request.stage, recipients: created.length })
+  } catch (error) {
+    notifyLog.warn('re-resolving a revoked approval recipient failed', { gateId: request.gateId, error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/**
  * Confirm a recorded decision to its owner over the same channel when possible.
  * Best effort: a failure here never affects the run, which has already resumed.
  */
@@ -126,7 +176,6 @@ export async function notifyApprovalDecision(input: {
   outcome: 'approve' | 'approve_with_notes' | 'request_changes'
   feedback?: string | null
   decidedByName?: string | null
-  origin?: string
 }): Promise<void> {
   const orgId = input.request.orgId
   const policy = await loadGuardPolicy(orgId).catch(() => undefined)

@@ -104,3 +104,19 @@ describe('POST /api/approvals/:token', () => {
     expect(res.body.code).toBe('feedback_required')
   })
 })
+
+describe('stale links (FR-006/FR-022)', () => {
+  test('the recipient re-opening a decided link sees the recorded outcome', async () => {
+    const res = await api<{ state: string; decision: { outcome: string; feedback: string } }>('GET', `/api/approvals/${token}`, recipientCookie)
+    expect(res.status).toBe(200)
+    expect(res.body.state).toBe('decided')
+    expect(res.body.decision.outcome).toBe('request_changes')
+  })
+
+  test('a non-recipient cannot read a decided link summary', async () => {
+    const res = await api<{ code: string }>('GET', `/api/approvals/${token}`, memberCookie)
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('wrong_recipient')
+    expect(JSON.stringify(res.body)).not.toContain('minor findings')
+  })
+})

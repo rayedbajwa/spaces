@@ -42,7 +42,7 @@ import { confirmPhraseFor, deleteProjectCompletely, previewProjectDeletion, Proj
 import { cancelProjectWork } from './lib/project-cancel'
 import { submitApprovalDecision, verifyApprovalLink, type ApprovalOutcome } from './lib/approval-store'
 import { domainVerified, verifyEmailCredential } from './lib/email'
-import { notifyApprovalDecision } from './lib/approval-notify'
+import { notifyApprovalDecision, reResolveRevokedRecipient } from './lib/approval-notify'
 import { ResponsibilityError, STANDARD_RESPONSIBILITIES, migrateProjectResponsibilities, replaceAssignments } from './lib/project-responsibilities'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
@@ -2920,6 +2920,10 @@ async function route(req: Request): Promise<Response> {
     const verified = await verifyApprovalLink(token, auth?.user.userId)
     if (verified.verdict === 'invalid') return sendJson(404, { error: 'This approval link is no longer valid.', code: 'invalid_link' })
     if (verified.verdict === 'wrong_recipient') return sendJson(403, { error: 'This approval link belongs to someone else.', code: 'wrong_recipient' })
+    if (verified.verdict === 'revoked') {
+      if (verified.request) void reResolveRevokedRecipient(verified.request)
+      return sendJson(403, { error: 'You are no longer the accountable recipient for this approval.', code: 'recipient_revoked' })
+    }
     const request = verified.request!
     const project = await projGet(request.projectId).catch(() => undefined)
     const decision = verified.decision
@@ -2953,7 +2957,11 @@ async function route(req: Request): Promise<Response> {
       switch (result.reason) {
         case 'invalid': return sendJson(404, { error: 'This approval link is no longer valid.', code: 'invalid_link' })
         case 'wrong_recipient': return sendJson(403, { error: 'This approval link belongs to someone else.', code: 'wrong_recipient' })
+        case 'revoked':
+          if (result.request) void reResolveRevokedRecipient(result.request)
+          return sendJson(403, { error: 'You are no longer the accountable recipient for this approval.', code: 'recipient_revoked' })
         case 'feedback_required': return sendJson(400, { error: 'Feedback is required.', code: 'feedback_required' })
+        case 'feedback_too_long': return sendJson(400, { error: 'Feedback must be 4000 characters or fewer.', code: 'feedback_too_long' })
         case 'expired': return sendJson(409, { error: 'This approval link has expired.', code: 'expired', ...(winning ? { decision: winning } : {}) })
         default: return sendJson(409, { error: 'This gate has already been decided.', code: 'already_decided', ...(winning ? { decision: winning } : {}) })
       }
@@ -2969,7 +2977,6 @@ async function route(req: Request): Promise<Response> {
       outcome: decision.outcome,
       feedback: decision.feedback,
       decidedByName: decision.decidedByName ?? null,
-      origin,
     }).catch((error) => serverLog.warn('decision confirmation failed', { error: error instanceof Error ? error.message : String(error) }))
     return sendJson(200, {
       state: 'decided',

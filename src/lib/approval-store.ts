@@ -28,7 +28,7 @@ export type ApprovalKind = 'review' | 'clarification'
 export type ApprovalRequestState = 'pending' | 'delivered' | 'undeliverable' | 'decided' | 'invalidated' | 'expired'
 export type ApprovalOutcome = 'approve' | 'approve_with_notes' | 'request_changes'
 export type ApprovalChannel = 'slack' | 'email'
-export type ApprovalLinkVerdict = 'valid' | 'expired' | 'consumed' | 'wrong_recipient' | 'gate_resolved' | 'invalid'
+export type ApprovalLinkVerdict = 'valid' | 'expired' | 'consumed' | 'wrong_recipient' | 'revoked' | 'gate_resolved' | 'invalid'
 
 export interface ApprovalRequest {
   requestId: string
@@ -208,29 +208,33 @@ export async function createApprovalRequests(input: {
   const orgId = await orgIdForProject(input.projectId)
   const ttlMs = approvalLinkTtlHours() * 3_600_000
   const sql = getDb()
-  const created: CreatedApprovalRequest[] = []
-
-  for (const recipient of input.recipients) {
-    const requestId = randomUUID()
-    const [row] = await sql<ApprovalRequest[]>`
-      INSERT INTO approval_requests
-        (request_id, gate_id, run_id, project_id, org_id, responsibility_id, responsibility_key, stage, kind,
-         recipient_user_id, recipient_email, primary_recipient, summary, state, fallback)
-      VALUES
-        (${requestId}, ${input.gateId}, ${input.runId}, ${input.projectId}, ${orgId}, ${input.responsibilityId ?? null},
-         ${input.responsibilityKey ?? null}, ${input.stage}, ${input.kind}, ${recipient.userId}, ${recipient.email},
-         ${recipient.primary}, ${input.summary}, 'pending', ${input.fallback ?? false})
-      ON CONFLICT (gate_id, recipient_user_id) DO NOTHING
-      RETURNING ${sql.unsafe(REQUEST_COLS)}
-    `
-    if (!row) continue
-    const token = randomBytes(32).toString('base64url')
-    await sql`
-      INSERT INTO approval_links (link_id, request_id, token_hash, bound_user_id, expires_at)
-      VALUES (${randomUUID()}, ${requestId}, ${hashApprovalToken(token)}, ${recipient.userId}, ${new Date(Date.now() + ttlMs)})
-    `
-    created.push({ request: row, token })
-  }
+  // The request and its link are written together so a crash can never leave a
+  // request without a link (which the idempotency guard would then hide).
+  const created = await sql.begin(async (tx) => {
+    const out: CreatedApprovalRequest[] = []
+    for (const recipient of input.recipients) {
+      const requestId = randomUUID()
+      const [row] = await tx<ApprovalRequest[]>`
+        INSERT INTO approval_requests
+          (request_id, gate_id, run_id, project_id, org_id, responsibility_id, responsibility_key, stage, kind,
+           recipient_user_id, recipient_email, primary_recipient, summary, state, fallback)
+        VALUES
+          (${requestId}, ${input.gateId}, ${input.runId}, ${input.projectId}, ${orgId}, ${input.responsibilityId ?? null},
+           ${input.responsibilityKey ?? null}, ${input.stage}, ${input.kind}, ${recipient.userId}, ${recipient.email},
+           ${recipient.primary}, ${input.summary}, 'pending', ${input.fallback ?? false})
+        ON CONFLICT (gate_id, recipient_user_id) DO NOTHING
+        RETURNING ${tx.unsafe(REQUEST_COLS)}
+      `
+      if (!row) continue
+      const token = randomBytes(32).toString('base64url')
+      await tx`
+        INSERT INTO approval_links (link_id, request_id, token_hash, bound_user_id, expires_at)
+        VALUES (${randomUUID()}, ${requestId}, ${hashApprovalToken(token)}, ${recipient.userId}, ${new Date(Date.now() + ttlMs)})
+      `
+      out.push({ request: row, token })
+    }
+    return out
+  })
   if (created.length) approvalLog.info('approval requests created', { gateId: input.gateId, stage: input.stage, kind: input.kind, recipients: created.length })
   return created
 }
@@ -324,17 +328,26 @@ export async function verifyApprovalLink(token: string, actorUserId?: string): P
   }
 
   let verdict: ApprovalLinkVerdict
-  if (link.consumedAt) verdict = 'consumed'
+  // Recipient matching comes first so a forwarded link can never read the
+  // summary once the real recipient's link has been used or has expired (FR-006).
+  if (actorUserId && actorUserId !== link.boundUserId) verdict = 'wrong_recipient'
+  else if (link.consumedAt) verdict = 'consumed'
   else if (new Date(link.expiresAt).getTime() <= Date.now()) verdict = 'expired'
-  else if (actorUserId && actorUserId !== link.boundUserId) verdict = 'wrong_recipient'
   else if (request.state === 'decided') verdict = 'consumed'
   else if (request.state === 'invalidated') verdict = 'gate_resolved'
   else if (request.state === 'expired') verdict = 'expired'
   else if (!['pending', 'delivered'].includes(request.state)) verdict = 'gate_resolved'
   else {
-    const [gate] = await sql<Array<{ status: string }>>`SELECT status FROM pipeline_gates WHERE gate_id = ${request.gateId}`
-    const [run] = await sql<Array<{ status: string }>>`SELECT status FROM pipeline_runs WHERE run_id = ${request.runId}`
-    verdict = gate?.status === 'open' && run?.status === 'paused' ? 'valid' : 'gate_resolved'
+    // A live link still needs its subject to be an active, assigned recipient:
+    // revocation before they act refuses the link and re-resolves the request (FR-018).
+    const subjectUserId = actorUserId ?? link.boundUserId
+    const resolved = await resolveGateRecipients(request.projectId, request.stage)
+    if (!resolved.recipients.some((recipient) => recipient.userId === subjectUserId)) verdict = 'revoked'
+    else {
+      const [gate] = await sql<Array<{ status: string }>>`SELECT status FROM pipeline_gates WHERE gate_id = ${request.gateId}`
+      const [run] = await sql<Array<{ status: string }>>`SELECT status FROM pipeline_runs WHERE run_id = ${request.runId}`
+      verdict = gate?.status === 'open' && run?.status === 'paused' ? 'valid' : 'gate_resolved'
+    }
   }
 
   await recordLinkAttempt(link.linkId, request.requestId, actorUserId, verdict)
@@ -349,6 +362,15 @@ export function answerForOutcome(kind: ApprovalKind, outcome: ApprovalOutcome, f
     : (outcome === 'approve' || outcome === 'approve_with_notes' ? 'continue' : '')
   if (outcome === 'approve') return base
   return base ? `${base}\n${feedback ?? ''}`.trimEnd() : (feedback ?? '')
+}
+
+/** Invalidate one recipient's outstanding request and link (a revoked recipient). */
+export async function invalidateApprovalRequest(requestId: string): Promise<void> {
+  const sql = getDb()
+  await sql.begin(async (tx) => {
+    await tx`UPDATE approval_requests SET state = 'invalidated', updated_at = now() WHERE request_id = ${requestId} AND state IN ('pending','delivered')`
+    await tx`UPDATE approval_links SET consumed_at = now() WHERE request_id = ${requestId} AND consumed_at IS NULL`
+  })
 }
 
 /** Invalidate every outstanding request and link for a gate, inside a caller's transaction. */
@@ -379,7 +401,7 @@ export async function invalidateApprovalRequestsForRunTx(tx: any, runId: string)
 
 export type SubmitDecisionResult =
   | { ok: true; decision: ApprovalDecision; request: ApprovalRequest }
-  | { ok: false; reason: 'invalid' | 'expired' | 'consumed' | 'wrong_recipient' | 'gate_resolved' | 'feedback_required' | 'not_waiting'; decision?: ApprovalDecision }
+  | { ok: false; reason: 'invalid' | 'expired' | 'consumed' | 'wrong_recipient' | 'revoked' | 'gate_resolved' | 'feedback_required' | 'feedback_too_long' | 'not_waiting'; decision?: ApprovalDecision; request?: ApprovalRequest }
 
 /**
  * Verify a link and submit its decision in one transaction through the run
@@ -395,11 +417,11 @@ export async function submitApprovalDecision(input: {
   const verified = await verifyApprovalLink(input.token, input.actorUserId)
   if (verified.verdict !== 'valid' || !verified.request || !verified.link) {
     const verdict = verified.verdict === 'valid' ? 'invalid' : verified.verdict
-    return { ok: false, reason: verdict, decision: verified.decision }
+    return { ok: false, reason: verdict, decision: verified.decision, ...(verdict === 'revoked' ? { request: verified.request } : {}) }
   }
   const feedback = input.feedback?.trim() ?? ''
   if (input.outcome !== 'approve' && !feedback) return { ok: false, reason: 'feedback_required', decision: verified.decision }
-  if (feedback.length > 4000) return { ok: false, reason: 'feedback_required', decision: verified.decision }
+  if (feedback.length > 4000) return { ok: false, reason: 'feedback_too_long', decision: verified.decision }
 
   const request = verified.request
   const answer = answerForOutcome(request.kind, input.outcome, feedback || null)

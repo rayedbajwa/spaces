@@ -319,6 +319,15 @@ export async function answerPausedRun(input: {
          WHERE consumed_at IS NULL
            AND request_id IN (SELECT request_id FROM approval_requests WHERE gate_id = ${gate.gateId})
       `
+    } else if (gate?.gateId) {
+      // Any other resolution path (in-app answer, cancellation) invalidates
+      // outstanding links as well, so none can still act (FR-012).
+      await tx`UPDATE approval_requests SET state = 'invalidated', updated_at = now() WHERE gate_id = ${gate.gateId} AND state IN ('pending','delivered')`
+      await tx`
+        UPDATE approval_links SET consumed_at = now()
+         WHERE consumed_at IS NULL
+           AND request_id IN (SELECT request_id FROM approval_requests WHERE gate_id = ${gate.gateId})
+      `
     }
     const payload = { runId: input.runId, ...(run.stage ? { fromStage: run.stage } : {}), answer: { text: input.answer, pauseKind: run.pauseKind } }
     await tx`

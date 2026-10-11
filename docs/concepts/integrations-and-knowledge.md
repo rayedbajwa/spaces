@@ -10,6 +10,7 @@ with AES-256-GCM using `ENCRYPTION_KEY` and stored in Postgres.
 | Confluence | `atlassian` | Page search (CQL or text) and page content |
 | Linear | `linear` | Issue search and full issues with comments |
 | Slack | `slack` | A channel per project with run updates, stage summaries and approval requests |
+| Email (Resend) | `email` (organization connection, not OAuth) | Direct delivery of owner approval links and decision confirmations |
 | Railway | `railway` | Deployment targets and live deployment state (read-only to agents); releases after approval |
 
 Setup is self-serve under **Organization → Integrations**: press **Set up
@@ -98,6 +99,40 @@ The bot needs `channels:manage`, `channels:read`, `channels:join`,
 manifest includes them. A Slack app created before these were added needs
 the scopes added under *OAuth & Permissions*, then Slack reconnected under
 Organization → Integrations.
+
+## Owner approval links and email
+
+When a run pauses at a review or clarification gate, Spaces resolves the
+accountable person from the project's standard responsibilities (the mapped
+responsibility's active assignees first, Owner fallback when it is unassigned)
+and sends them a direct, personal request — a shared-channel post never stands
+in for it:
+
+1. a Slack DM when Slack is connected and the recipient matches an account, else
+2. email through the organization's **Email & Notifications** (`email`)
+   connection to Resend, else
+3. the platform fallback `RESEND_API_KEY` / `APPROVAL_EMAIL_FROM`.
+
+Each request carries one single-use, hashed link (`/approvals/<token>`) that
+expires after `APPROVAL_LINK_TTL_HOURS` (default 24). The link shows the same
+stage summary and three decisions — approve, approve with notes, request
+changes — and records the decision once through the same run path the in-app
+gate uses; a second attempt shows the winning outcome. If the recipient's
+access or assignment is revoked before they act, the link is refused and the
+request is re-resolved to the current accountable recipient. A delivery
+failure never blocks the run: it falls through to the other channel, and when
+neither works the request is left **undeliverable** with the in-app gate still
+actionable.
+
+The link grants no membership, role or project access, the raw token is never
+stored (only its SHA-256 hash) or logged, and every open or decision is
+audited.
+
+Connect the organization's email sender under **Organization → Integrations →
+Email & Notifications** with a Resend API key and a `from` address on a
+verified domain; the key is sealed like every other integration and never
+returned by the API. `RESEND_API_URL` overrides the Resend base URL for
+self-hosted or mock installs (defaults to `https://api.resend.com`).
 ## Agent tools
 
 Connected sources are exposed to every agent session as two tools:

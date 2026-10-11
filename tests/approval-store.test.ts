@@ -204,4 +204,98 @@ describe('decision integrity', () => {
       await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
     }
   })
+
+  test('a revoked assignee link is refused and records the attempt (FR-018)', async () => {
+    const { runId, gateId } = await newGate()
+    const resolved = await resolveGateRecipients(projectA.projectId, 'review')
+    const poId = resolved.responsibilityId!
+    const created = await createApprovalRequests({
+      runId, gateId, projectId: projectA.projectId, stage: 'review', kind: 'review',
+      summary: 'Approved with 2 minor findings.', recipients: resolved.recipients,
+      responsibilityId: resolved.responsibilityId, responsibilityKey: resolved.responsibilityKey, fallback: resolved.fallback,
+    })
+    const revoked = created.find((item) => item.request.recipientUserId === users.productOwnerA)!
+    try {
+      const { replaceAssignments } = await import('../src/lib/project-responsibilities')
+      await replaceAssignments(projectA.projectId, poId, [users.secondProductOwnerA], users.ownerA)
+      const verdict = await verifyApprovalLink(revoked.token, users.productOwnerA)
+      expect(verdict.verdict).toBe('revoked')
+      const result = await submitApprovalDecision({ token: revoked.token, actorUserId: users.productOwnerA, outcome: 'approve' })
+      expect(result.ok).toBe(false)
+      if (!result.ok) expect(result.reason).toBe('revoked')
+      const [attempt] = await getDb()<Array<{ outcome: string }>>`SELECT outcome FROM approval_link_attempts WHERE request_id = ${revoked.request.requestId} ORDER BY created_at DESC LIMIT 1`
+      expect(attempt?.outcome).toBe('revoked')
+    } finally {
+      const { replaceAssignments } = await import('../src/lib/project-responsibilities')
+      await replaceAssignments(projectA.projectId, poId, [users.productOwnerA, users.secondProductOwnerA], users.ownerA)
+      await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
+    }
+  })
+
+  test('a forwarded link does not expose the summary once it has been used (FR-006)', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    await submitApprovalDecision({ token: created[0]!.token, actorUserId: users.productOwnerA, outcome: 'approve' })
+    const forwarded = await verifyApprovalLink(created[0]!.token, users.memberA)
+    expect(forwarded.verdict).toBe('wrong_recipient')
+  })
+
+  test('a forwarded link does not expose the summary once it has expired (FR-006)', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    await getDb()`UPDATE approval_links SET expires_at = now() - interval '1 hour' WHERE request_id = ${created[0]!.request.requestId}`
+    const forwarded = await verifyApprovalLink(created[0]!.token, users.memberA)
+    expect(forwarded.verdict).toBe('wrong_recipient')
+  })
+
+  test('over-long feedback is reported as feedback_too_long', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    const tooLong = await submitApprovalDecision({ token: created[0]!.token, actorUserId: users.productOwnerA, outcome: 'request_changes', feedback: 'x'.repeat(4001) })
+    expect(tooLong.ok).toBe(false)
+    if (!tooLong.ok) expect(tooLong.reason).toBe('feedback_too_long')
+  })
+
+  test('an in-app gate answer invalidates outstanding approval requests (FR-012)', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    const { answerPausedRun } = await import('../src/lib/run-store')
+    const answered = await answerPausedRun({ runId, projectId: projectA.projectId, answer: 'approve' })
+    expect(answered.ok).toBe(true)
+    for (const item of created) {
+      const [row] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${item.request.requestId}`
+      expect(row?.state).toBe('invalidated')
+    }
+  })
+
+  test('two simultaneous submissions produce exactly one decision (FR-011/SC-004)', async () => {
+    const { runId, gateId } = await newGate()
+    const created = await requestsFor(gateId, runId, 'review', 'review')
+    const [first, second] = await Promise.all([
+      submitApprovalDecision({ token: created[0]!.token, actorUserId: users.productOwnerA, outcome: 'approve' }),
+      submitApprovalDecision({ token: created[1]!.token, actorUserId: users.secondProductOwnerA, outcome: 'request_changes', feedback: 'please redo' }),
+    ])
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1)
+    const [decisions] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM approval_decisions WHERE gate_id = ${gateId}`
+    expect(decisions?.n).toBe(1)
+  })
+
+  test('a token from another organization is refused and exposes no cross-org data (FR-017)', async () => {
+    const run = await createRun({
+      projectNamespace: projectTeamB.slug, projectLabel: 'Org B', projectPath: '/tmp/approval-org-b',
+      pipelineName: 'test', options: {} as never, template: { stages: [] } as never, projectId: projectTeamB.projectId,
+    })
+    const gateId = await openGate({ runId: run.runId, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${run.runId}`
+    const resolvedB = await resolveGateRecipients(projectTeamB.projectId, 'review')
+    const createdB = await createApprovalRequests({
+      runId: run.runId, gateId, projectId: projectTeamB.projectId, stage: 'review', kind: 'review',
+      summary: 'org B secret summary', recipients: resolvedB.recipients,
+      responsibilityId: resolvedB.responsibilityId, responsibilityKey: resolvedB.responsibilityKey, fallback: resolvedB.fallback,
+    })
+    const verdict = await verifyApprovalLink(createdB[0]!.token, users.memberA)
+    expect(verdict.verdict).toBe('wrong_recipient')
+    expect(verdict.request?.orgId).toBe(fixture.orgB)
+    await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${run.runId}`
+  })
 })

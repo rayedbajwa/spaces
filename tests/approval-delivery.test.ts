@@ -16,8 +16,10 @@ const { projectA, users } = fixture
 const realFetch = globalThis.fetch
 const calls: Array<{ url: string; body: unknown }> = []
 let slackLookup: 'ok' | 'not_found' = 'ok'
+let slackFailMethod: string | null = null
 
 function slackResponse(method: string): unknown {
+  if (method === slackFailMethod) return { ok: false, error: 'channel_not_found' }
   if (method === 'users.lookupByEmail') {
     if (slackLookup === 'not_found') return { ok: false, error: 'users_not_found' }
     return { ok: true, user: { id: 'U123' } }
@@ -29,6 +31,7 @@ function slackResponse(method: string): unknown {
 beforeEach(() => {
   calls.length = 0
   slackLookup = 'ok'
+  slackFailMethod = null
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -104,6 +107,20 @@ describe('channel precedence', () => {
     expect(delivery?.channel).toBe('email')
   })
 
+  test('a Slack send failure falls back to email (FR-016)', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: 'xoxb-test-token' } })
+    process.env.RESEND_API_KEY = 're-test-key'
+    slackFailMethod = 'chat.postMessage'
+    const created = await createdForSuffix()
+    await notifyApprovalRequests([created[0]!], target)
+    expect(calls.filter((c) => c.url.includes('slack.com')).length).toBeGreaterThan(0)
+    expect(calls.some((c) => c.url.includes('resend.com/emails'))).toBe(true)
+    const [delivery] = await getDb()<Array<{ channel: string; outcome: string }>>`SELECT channel, outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND outcome = 'delivered'`
+    expect(delivery?.channel).toBe('email')
+    const [failed] = await getDb()<Array<{ outcome: string }>>`SELECT outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND channel = 'slack' ORDER BY attempted_at DESC LIMIT 1`
+    expect(failed?.outcome).toBe('failed')
+  })
+
   test('with no channel available the request is undeliverable and the gate stays actionable', async () => {
     delete process.env.RESEND_API_KEY
     await disconnectAppIntegration(fixture.orgA, 'slack')
@@ -125,7 +142,7 @@ describe('decision confirmation', () => {
     const submitted = await submitApprovalDecision({ token: created[0]!.token, actorUserId: users.productOwnerA, outcome: 'request_changes', feedback: 'Please add a rollback test.' })
     expect(submitted.ok).toBe(true)
     if (!submitted.ok) return
-    await notifyApprovalDecision({ request: submitted.request, project: target.project, stage: target.stage, outcome: 'request_changes', feedback: 'Please add a rollback test.', decidedByName: 'Product Owner A', origin: target.origin })
+    await notifyApprovalDecision({ request: submitted.request, project: target.project, stage: target.stage, outcome: 'request_changes', feedback: 'Please add a rollback test.', decidedByName: 'Product Owner A' })
 
     const slackCalls = calls.filter((c) => c.url.includes('slack.com'))
     expect(slackCalls.some((c) => c.url.endsWith('chat.postMessage'))).toBe(true)
