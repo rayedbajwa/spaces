@@ -5,6 +5,8 @@ import { saveSlackSigningSecret } from '../src/lib/oauth-apps'
 import { authenticateSlackRequest, fileSlackIntake, handleSlackCommand, handleSlackEvent, handleSlackInteraction, verifySlackSignature } from '../src/lib/slack-interactions'
 import { linkSlackIdentity } from '../src/lib/slack-identity'
 import { renderGateActions, renderQuestionThread } from '../src/lib/slack'
+import { saveSlackGatePrompt, markSlackGatePromptsDecided } from '../src/lib/slack-gate-prompts'
+import { openGate } from '../src/lib/run-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -136,6 +138,76 @@ describe('gate decisions are exactly once', () => {
       expect(count?.n).toBe(1)
     } finally {
       await getDb()`DELETE FROM slack_identity_links WHERE link_id IN (${outsiderLink}, ${poLink})`
+    }
+  })
+})
+
+describe('feedback decisions and clarification answers from Slack', () => {
+  test('a modal submission delivers feedback verbatim as a request-changes decision', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.productOwnerA, team, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${runA}`
+    try {
+      const result = await handleSlackInteraction(orgA, {
+        type: 'view_submission',
+        team_id: team,
+        user: { id: slackUser },
+        view: {
+          private_metadata: JSON.stringify({ gateId, outcome: 'request_changes' }),
+          state: { values: { feedback: { value: { value: 'Use the v2 endpoint instead' } } } },
+        },
+      })
+      expect(result.status).toBe(200)
+      expect(result.body.response_action).toBe('clear')
+      const [decision] = await getDb()<Array<{ outcome: string; feedback: string | null }>>`
+        SELECT outcome, feedback FROM approval_decisions WHERE gate_id = ${gateId}
+      `
+      expect(decision?.outcome).toBe('request_changes')
+      expect(decision?.feedback).toBe('Use the v2 endpoint instead')
+    } finally {
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+
+  test('marking a decided gate closes its prompt rows so a stale prompt cannot be reused', async () => {
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: 'U-prompt', channelId: 'D-PROMPT', messageTs: '1700.200', promptKind: 'review' })
+    try {
+      await markSlackGatePromptsDecided(gateId, 'Decision recorded: approve.')
+      const [row] = await getDb()<Array<{ decidedAt: string | null }>>`
+        SELECT decided_at AS "decidedAt" FROM slack_gate_prompts WHERE gate_id = ${gateId}
+      `
+      expect(row?.decidedAt).not.toBeNull()
+    } finally {
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+    }
+  })
+
+  test('a reply in a clarification prompt thread is delivered verbatim', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.ownerA, team, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'clarification', prompt: 'clarify' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'clarification', current_stage = 'clarify' WHERE run_id = ${runA}`
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: slackUser, channelId: 'D-CLARIFY', messageTs: '1700.100', promptKind: 'clarification' })
+    try {
+      const result = await handleSlackEvent(orgA, {
+        team_id: team,
+        event: { type: 'message', user: slackUser, channel: 'D-CLARIFY', thread_ts: '1700.100', text: 'Use Postgres, not SQLite' },
+      })
+      expect(result.body.ok).toBe(true)
+      const [gate] = await getDb()<Array<{ response: string | null }>>`SELECT response FROM pipeline_gates WHERE gate_id = ${gateId}`
+      expect(gate?.response).toBe('Use Postgres, not SQLite')
+    } finally {
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
     }
   })
 })

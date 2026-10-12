@@ -376,7 +376,9 @@ export async function convertIntakeItem(input: {
   const feature = (input.title?.trim() || item.title).slice(0, 200)
   const scope = input.workKind === 'bugfix' ? 'bugfix' : 'feature'
   const description = input.summary?.trim() || item.summary || ''
-  const featureText = description ? `${feature}\n\n${description}` : feature
+  // Cite the source item so the specify stage can trace the work back (US2 #1).
+  const sourceRef = `${item.source}:${item.externalRef}${item.externalUrl ? ` (${item.externalUrl})` : ''}`
+  const featureText = [feature, description, `Source: ${sourceRef}`].filter(Boolean).join('\n\n')
 
   const started = await startSpecifyRun({
     projectId: project.projectId,
@@ -427,17 +429,21 @@ export async function linkIntentToWork(runId: string, intentId: string): Promise
 
 /**
  * When a newly synced intent directory belongs to a converted intake item,
- * attach it to that item's pending work link. Called by `syncProjectIntents`
- * after the intent is committed; the newest pending link is the conversion the
- * run was started for.
+ * attach it to that item's pending work link. Scoped to a link whose run is
+ * still in flight, and only when exactly one such link exists, so two
+ * conversions can never bind an intent to the wrong item. Scoped to a
+ * project; a conversion from a run that has already ended keeps its link
+ * unattached rather than risk the wrong one.
  */
 export async function attachIntentToPendingWorkLink(projectId: string, intentId: string): Promise<void> {
-  const [row] = await getDb()<Array<{ runId: string | null }>>`
-    SELECT run_id AS "runId" FROM intake_work_links
-     WHERE project_id = ${projectId} AND intent_id IS NULL AND run_id IS NOT NULL
-     ORDER BY created_at DESC LIMIT 1
+  const rows = await getDb()<Array<{ runId: string | null }>>`
+    SELECT wl.run_id AS "runId" FROM intake_work_links wl
+      JOIN pipeline_runs r ON r.run_id = wl.run_id
+     WHERE wl.project_id = ${projectId} AND wl.intent_id IS NULL AND wl.run_id IS NOT NULL
+       AND r.status IN ('queued','running','paused')
+     ORDER BY wl.created_at DESC LIMIT 2
   `
-  if (row?.runId) await linkIntentToWork(row.runId, intentId)
+  if (rows.length === 1 && rows[0]?.runId) await linkIntentToWork(rows[0].runId, intentId)
 }
 
 // ---------------------------------------------------------------------------

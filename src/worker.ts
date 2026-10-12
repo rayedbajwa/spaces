@@ -694,11 +694,14 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
 }
 
 /** Fire-and-forget outbound emission from a run path (never blocks or changes the run). */
-function emitRunOutbound(run: { projectId?: string | null; projectLabel?: string; runId?: string }, eventKind: OutboundEventKind, eventKey: string, payload: Record<string, unknown>): void {
+function emitRunOutbound(run: { projectId?: string | null; projectLabel?: string; projectNamespace?: string; runId?: string }, eventKind: OutboundEventKind, eventKey: string, payload: Record<string, unknown>): void {
   const projectId = run.projectId
   if (!projectId) return
+  const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
+  const link = base && run.projectNamespace ? `${base}/spaces/${encodeURIComponent(run.projectNamespace)}` : undefined
+  const enriched = { projectName: run.projectLabel, ...payload, ...(link ? { link } : {}) }
   void orgIdForProject(projectId)
-    .then((orgId) => emitOutboundEventQuietly({ orgId, projectId, eventKind, eventKey, payload }))
+    .then((orgId) => emitOutboundEventQuietly({ orgId, projectId, eventKind, eventKey, payload: enriched }))
     .catch(() => undefined)
 }
 
@@ -708,7 +711,9 @@ function emitGateOutbound(runId: string, gateId: string, stage: string | undefin
     .then(async (run) => {
       if (!run?.projectId) return
       const orgId = await orgIdForProject(run.projectId)
-      emitOutboundEventQuietly({ orgId, projectId: run.projectId, eventKind: 'gate_opened', eventKey: `gate:${gateId}:opened`, payload: { projectName: run.projectLabel, stage, kind, gateId, runId } })
+      const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
+      const link = base ? `${base}/spaces/${encodeURIComponent(run.projectNamespace)}` : undefined
+      emitOutboundEventQuietly({ orgId, projectId: run.projectId, eventKind: 'gate_opened', eventKey: `gate:${gateId}:opened`, payload: { projectName: run.projectLabel, stage, kind, gateId, runId, ...(link ? { link } : {}) } })
     })
     .catch(() => undefined)
 }

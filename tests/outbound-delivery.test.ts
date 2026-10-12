@@ -21,7 +21,7 @@ function stubFetch(handler: (url: string, init?: RequestInit) => Response): void
 afterEach(() => { globalThis.fetch = realFetch })
 
 async function deliveryState(deliveryId: string) {
-  const [row] = await getDb()<Array<{ state: string; attempts: number; nextAttemptAt: string; lastError: string | null }>>`
+  const [row] = await getDb()<Array<{ state: string; attempts: number; nextAttemptAt: string | null; lastError: string | null }>>`
     SELECT state, attempts, next_attempt_at AS "nextAttemptAt", last_error AS "lastError" FROM outbound_deliveries WHERE delivery_id = ${deliveryId}
   `
   return row
@@ -75,6 +75,31 @@ describe('slack delivery', () => {
       expect(state?.lastError).toContain('slack down')
       expect(Date.parse(state!.nextAttemptAt)).toBeGreaterThan(Date.now())
     } finally {
+      await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
+    }
+  })
+
+  test('a permanently failing delivery stops after the retry cap', async () => {
+    process.env.OUTBOUND_MAX_ATTEMPTS = '2'
+    await connectSlack()
+    const subscription = await upsertSubscription({ orgId: orgA, eventKind: 'run_failed', targetKind: 'slack', action: 'post_message', targetConfig: { channel: '#spaces-alerts' } })
+    const eventKey = `run:${randomUUID()}:failed`
+    await emitOutboundEvent({ orgId: orgA, eventKind: 'run_failed', eventKey, payload: { summary: 'permanently failing' } })
+    const deliveryId = (await ourDelivery(subscription.subscriptionId, eventKey))!
+    try {
+      stubFetch(() => { throw new Error('permanent outage') })
+      await drainOutbound(50)
+      await getDb()`UPDATE outbound_deliveries SET next_attempt_at = now() - interval '1 second' WHERE delivery_id = ${deliveryId}`
+      await drainOutbound(50)
+      const exhausted = await deliveryState(deliveryId)
+      expect(exhausted?.state).toBe('failed')
+      expect(exhausted?.attempts).toBe(2)
+      expect(exhausted?.nextAttemptAt).toBeNull()
+      // Once exhausted the drain never selects it again.
+      await drainOutbound(50)
+      expect((await deliveryState(deliveryId))?.attempts).toBe(2)
+    } finally {
+      delete process.env.OUTBOUND_MAX_ATTEMPTS
       await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
     }
   })

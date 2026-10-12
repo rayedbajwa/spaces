@@ -48,7 +48,7 @@ interface OAuthApp {
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
 
-const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma', railway: 'Railway', email: 'Email' }
+const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma', railway: 'Railway', datadog: 'Datadog', email: 'Email' }
 const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   github: 'Repository catalog, cloning, pull requests, issue search and GitHub sign-in.',
   atlassian: 'Jira issues and Confluence pages for agents and the knowledge base. One app covers both.',
@@ -71,6 +71,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
   const [showFigmaPatModal, setShowFigmaPatModal] = useState(false)
   const [showRailwayTokenModal, setShowRailwayTokenModal] = useState(false)
   const [showEmailModal, setShowEmailModal] = useState(false)
+  const [showDatadogModal, setShowDatadogModal] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -183,6 +184,37 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                             <div className="integration-foot">
                               <span className="text-subtle">Connected for the whole organization.</span>
                               <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} onClick={() => void disconnect('email')}>Disconnect</button>
+                            </div>
+                          )}
+                        </section>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                {category.id === 'monitoring' && !readOnly && (
+                  <div className="integration-list">
+                    {(() => {
+                      const row = connections.find((c) => c.kind === 'datadog')
+                      const connected = row?.status === 'connected' && row.credentialsOk !== false
+                      return (
+                        <section className={`card integration ${connected ? 'configured connected' : ''}`}>
+                          <div className="integration-head">
+                            <div className="integration-logo datadog" aria-hidden="true">D</div>
+                            <div className="integration-title">
+                              <h3>Datadog</h3>
+                              <p className="panel-subtitle" style={{ margin: 0 }}>Datadog monitors and alerts land in the organization-scoped Intake queue, ordered by severity and triaged into project work.</p>
+                            </div>
+                            <div className="integration-state">
+                              <span className={`mini-badge ${connected ? 'completed' : row?.credentialsOk === false ? 'error' : 'idle'}`}>{connected ? '✓ connected' : row?.credentialsOk === false ? '⚠ reconnect needed' : 'not connected'}</span>
+                              {canManage && <button type="button" className="primary-button" onClick={() => setShowDatadogModal(true)}>{connected ? 'Update' : 'Connect'}</button>}
+                            </div>
+                          </div>
+                          {row?.displayName && <p className="text-subtle" style={{ margin: '0 0 8px' }}>{row.displayName}</p>}
+                          {connected && canManage && (
+                            <div className="integration-foot">
+                              <span className="text-subtle">Connected for the whole organization.</span>
+                              <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} onClick={() => void disconnect('datadog')}>Disconnect</button>
                             </div>
                           )}
                         </section>
@@ -347,6 +379,16 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       {showEmailModal && (
         <EmailTokenModal
           onClose={() => setShowEmailModal(false)}
+          onSaved={async (m) => {
+            await load()
+            flash(m)
+          }}
+          onError={setError}
+        />
+      )}
+      {showDatadogModal && (
+        <DatadogTokenModal
+          onClose={() => setShowDatadogModal(false)}
           onSaved={async (m) => {
             await load()
             flash(m)
@@ -797,6 +839,101 @@ function EmailTokenModal({
             <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
             <button type="submit" className="primary-button" disabled={busy || !apiKey.trim() || !fromAddress.trim()}>
               {busy ? 'Connecting…' : 'Connect email'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function DatadogTokenModal({
+  onClose,
+  onSaved,
+  onError,
+}: {
+  onClose: () => void
+  onSaved: (message: string) => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [apiKey, setApiKey] = useState('')
+  const [appKey, setAppKey] = useState('')
+  const [site, setSite] = useState('datadoghq.com')
+  const [displayName, setDisplayName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<string | null>(null)
+
+  const handleVerify = async () => {
+    if (!apiKey.trim() || !appKey.trim()) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await json<{ ok: boolean; account?: string; error?: string }>('/api/integrations/datadog/verify', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: apiKey.trim(), appKey: appKey.trim(), site: site.trim() }),
+      })
+      setTestResult(res.ok ? `✓ Valid Datadog credentials (${res.account ?? site})` : `✗ ${res.error || 'Verification failed'}`)
+    } catch (err) {
+      setTestResult(`✗ ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!apiKey.trim() || !appKey.trim()) return
+    setBusy(true)
+    try {
+      await json('/api/integrations/datadog/token', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: apiKey.trim(), appKey: appKey.trim(), site: site.trim(), displayName: displayName.trim() || undefined }),
+      })
+      await onSaved('Datadog connected successfully.')
+      onClose()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-shell" style={{ maxWidth: 540, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            <h2>Connect Datadog</h2>
+            <p className="panel-subtitle">Create an API key and an application key in Datadog under Organization Settings → API keys / Application keys. Both are stored encrypted and never returned.</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="modal-body" style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+          <label>
+            <span>API key</span>
+            <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setTestResult(null) }} placeholder="Datadog API key" required autoFocus />
+          </label>
+          <label>
+            <span>Application key</span>
+            <input type="password" value={appKey} onChange={(e) => { setAppKey(e.target.value); setTestResult(null) }} placeholder="Datadog application key" required />
+          </label>
+          <label>
+            <span>Site</span>
+            <input type="text" value={site} onChange={(e) => { setSite(e.target.value); setTestResult(null) }} placeholder="datadoghq.com" />
+          </label>
+          <label>
+            <span>Display name (optional)</span>
+            <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Acme monitoring" />
+          </label>
+          {testResult && <div style={{ fontSize: 13, color: testResult.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{testResult}</div>}
+          <div className="button-row" style={{ marginTop: 8, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" className="ghost-button" disabled={busy || testing || !apiKey.trim() || !appKey.trim()} onClick={handleVerify}>
+              {testing ? 'Verifying…' : 'Test credentials'}
+            </button>
+            <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary-button" disabled={busy || !apiKey.trim() || !appKey.trim()}>
+              {busy ? 'Connecting…' : 'Connect Datadog'}
             </button>
           </div>
         </form>

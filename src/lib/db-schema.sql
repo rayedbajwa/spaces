@@ -1374,13 +1374,31 @@ CREATE TABLE IF NOT EXISTS slack_identity_links (
   user_id       UUID REFERENCES users(user_id) ON DELETE CASCADE,
   state         TEXT NOT NULL CHECK (state IN ('pending','verified','revoked')),
   token_hash    TEXT UNIQUE,
+  expires_at    TIMESTAMPTZ,
   verified_at   TIMESTAMPTZ,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (org_id, slack_team_id, slack_user_id)
 );
+ALTER TABLE slack_identity_links ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS slack_identity_links_user_idx ON slack_identity_links (user_id);
 CREATE INDEX IF NOT EXISTS slack_identity_links_team_idx ON slack_identity_links (slack_team_id, slack_user_id);
+
+-- Interactive Slack gate prompts (buttons for a review, a thread prompt for a
+-- clarification). The channel/ts let a later decision mark the prompt decided.
+CREATE TABLE IF NOT EXISTS slack_gate_prompts (
+  prompt_id      UUID PRIMARY KEY,
+  org_id         UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  gate_id        UUID NOT NULL REFERENCES pipeline_gates(gate_id) ON DELETE CASCADE,
+  slack_user_id  TEXT,
+  channel_id     TEXT NOT NULL,
+  message_ts     TEXT NOT NULL,
+  prompt_kind    TEXT NOT NULL CHECK (prompt_kind IN ('review','clarification')),
+  decided_at     TIMESTAMPTZ,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS slack_gate_prompts_gate_idx ON slack_gate_prompts (gate_id);
+CREATE INDEX IF NOT EXISTS slack_gate_prompts_lookup_idx ON slack_gate_prompts (org_id, channel_id, message_ts);
 
 CREATE TABLE IF NOT EXISTS outbound_subscriptions (
   subscription_id UUID PRIMARY KEY,
@@ -1408,12 +1426,13 @@ CREATE TABLE IF NOT EXISTS outbound_deliveries (
   payload_json    JSONB NOT NULL DEFAULT '{}'::jsonb,
   state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','delivered','failed','skipped')),
   attempts        INT NOT NULL DEFAULT 0,
-  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  next_attempt_at TIMESTAMPTZ DEFAULT now(),
   last_error      TEXT,
   external_ref    TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (subscription_id, event_key)
 );
+ALTER TABLE outbound_deliveries ALTER COLUMN next_attempt_at DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS outbound_deliveries_due_idx ON outbound_deliveries (state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS outbound_deliveries_org_idx ON outbound_deliveries (org_id, created_at DESC);

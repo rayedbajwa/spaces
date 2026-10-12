@@ -153,7 +153,7 @@ import { pushIntakeSourceUpdate } from './lib/intake-connectors'
 import { listRoutingRules, replaceRoutingRules } from './lib/intake-routing'
 import { deleteSubscription, listDeliveries, listSubscriptions, upsertSubscription, OUTBOUND_ACTIONS, OUTBOUND_EVENT_KINDS, OUTBOUND_TARGET_KINDS, type OutboundAction, type OutboundEventKind, type OutboundTargetKind } from './lib/outbound-store'
 import { verifyDatadog } from './lib/datadog'
-import { authenticateSlackRequest, handleSlackCommand, handleSlackEvent, handleSlackInteraction, orgsForSlackTeam } from './lib/slack-interactions'
+import { authenticateSlackRequest, handleSlackCommand, handleSlackEvent, handleSlackInteraction } from './lib/slack-interactions'
 import { confirmSlackIdentity, verifySlackIdentityToken } from './lib/slack-identity'
 import { getSlackSigningSecret, saveSlackSigningSecret } from './lib/oauth-apps'
 import { INTAKE_PRIORITIES, INTAKE_SOURCES, INTAKE_STATES, type IntakePriority, type IntakeState, type IntakeSource, type WorkKind } from './lib/intake-types'
@@ -2485,6 +2485,7 @@ async function route(req: Request): Promise<Response> {
     const verified = await verifySlackIdentityToken(token)
     if (verified.verdict === 'invalid') return sendJson(404, { error: 'This verification link is invalid.' })
     if (verified.verdict === 'revoked') return sendJson(409, { error: 'This verification link was revoked.' })
+    if (verified.verdict === 'expired') return sendJson(409, { error: 'This verification link has expired. Ask for a new one in Slack.' })
     return sendJson(200, { state: verified.verdict === 'consumed' ? 'verified' : 'pending', member: verified.link ? { userId: verified.link.userId, email: verified.link.email } : null })
   }
 

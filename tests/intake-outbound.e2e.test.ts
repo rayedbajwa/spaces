@@ -87,6 +87,20 @@ describe('outbound configuration', () => {
   })
 })
 
+describe('datadog connection panel', () => {
+  test('the monitoring category exposes a Datadog connect dialog', async () => {
+    const page = await context.newPage()
+    await page.goto(`${baseUrl}/organization?section=integrations`, { waitUntil: 'domcontentloaded' })
+    const card = page.locator('.integration', { hasText: 'Datadog' }).first()
+    await card.waitFor({ timeout: 60_000 })
+    await card.getByRole('button', { name: 'Connect' }).click()
+    await page.getByRole('heading', { name: 'Connect Datadog' }).waitFor({ timeout: 60_000 })
+    expect(await page.getByPlaceholder('Datadog API key').count()).toBe(1)
+    expect(await page.getByPlaceholder('Datadog application key').count()).toBe(1)
+    await page.close()
+  })
+})
+
 describe('slack identity confirmation', () => {
   test('a signed-in member confirms a pending link once', async () => {
     const page = await context.newPage()

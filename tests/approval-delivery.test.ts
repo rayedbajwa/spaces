@@ -99,6 +99,14 @@ describe('channel precedence', () => {
     expect(JSON.stringify(post.blocks)).toContain('https://spaces.example.com/approvals/')
     const links = JSON.stringify(post.blocks).match(/https:\/\/spaces\.example\.com\/approvals\//g) ?? []
     expect(links).toHaveLength(1)
+    // The prompt carries the same three decisions the in-app gate accepts.
+    expect(JSON.stringify(post.blocks)).toContain('"action_id":"approve"')
+    expect(JSON.stringify(post.blocks)).toContain('"action_id":"request_changes"')
+    const [prompt] = await getDb()<Array<{ channelId: string; messageTs: string }>>`
+      SELECT channel_id AS "channelId", message_ts AS "messageTs" FROM slack_gate_prompts
+       WHERE gate_id = ${created[0]!.request.gateId} ORDER BY created_at DESC LIMIT 1
+    `
+    expect(prompt).toEqual({ channelId: 'D123', messageTs: '1.2' })
 
     const [request] = await getDb()<Array<{ state: string }>>`SELECT state FROM approval_requests WHERE request_id = ${created[0]!.request.requestId}`
     expect(request?.state).toBe('delivered')

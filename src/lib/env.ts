@@ -68,13 +68,6 @@ export function intakeSyncIntervalMs(): number {
   return positiveMs(process.env.INTAKE_SYNC_INTERVAL_MS, 120_000, 5_000)
 }
 
-/** Max intake sources synced per worker tick. */
-export function intakeSyncBatchSize(): number {
-  const raw = Number(process.env.INTAKE_SYNC_BATCH_SIZE)
-  if (!Number.isFinite(raw) || raw <= 0) return 20
-  return Math.min(200, Math.floor(raw))
-}
-
 /** How often the worker drains due outbound deliveries. Defaults to 15 seconds. */
 export function outboundDrainIntervalMs(): number {
   return positiveMs(process.env.OUTBOUND_DRAIN_INTERVAL_MS, 15_000, 1_000)

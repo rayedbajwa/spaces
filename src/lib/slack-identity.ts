@@ -29,6 +29,9 @@ export function hashIdentityToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
 }
 
+/** A one-time identity link is valid for 24 hours (contract §2). */
+export const IDENTITY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000
+
 function identityVerifyUrl(token: string): string {
   const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
   return base ? `${base}/slack-link/${token}` : `/slack-link/${token}`
@@ -62,14 +65,15 @@ export async function linkSlackIdentity(input: {
   const state: SlackIdentityLink['state'] = unique ? 'verified' : 'pending'
   const token = unique ? undefined : randomBytes(24).toString('base64url')
   const [row] = await sql<SlackIdentityLink[]>`
-    INSERT INTO slack_identity_links (link_id, org_id, slack_team_id, slack_user_id, email, user_id, state, token_hash, verified_at)
+    INSERT INTO slack_identity_links (link_id, org_id, slack_team_id, slack_user_id, email, user_id, state, token_hash, expires_at, verified_at)
     VALUES (${randomUUID()}, ${input.orgId}, ${input.slackTeamId}, ${input.slackUserId}, ${email}, ${unique?.userId ?? null}, ${state},
-            ${token ? hashIdentityToken(token) : null}, ${unique ? new Date() : null})
+            ${token ? hashIdentityToken(token) : null}, ${token ? new Date(Date.now() + IDENTITY_TOKEN_TTL_MS) : null}, ${unique ? new Date() : null})
     ON CONFLICT (org_id, slack_team_id, slack_user_id) DO UPDATE SET
       email = EXCLUDED.email,
       user_id = COALESCE(EXCLUDED.user_id, slack_identity_links.user_id),
-      state = CASE WHEN slack_identity_links.state = 'revoked' THEN 'revoked' ELSE EXCLUDED.state END,
+      state = CASE WHEN slack_identity_links.state IN ('revoked','verified') THEN slack_identity_links.state ELSE EXCLUDED.state END,
       token_hash = COALESCE(EXCLUDED.token_hash, slack_identity_links.token_hash),
+      expires_at = CASE WHEN EXCLUDED.token_hash IS NOT NULL THEN EXCLUDED.expires_at ELSE slack_identity_links.expires_at END,
       verified_at = COALESCE(EXCLUDED.verified_at, slack_identity_links.verified_at),
       updated_at = now()
     RETURNING link_id AS "linkId", org_id AS "orgId", slack_team_id AS "slackTeamId", slack_user_id AS "slackUserId",
@@ -82,11 +86,11 @@ export async function linkSlackIdentity(input: {
 /** Send the one-time verification prompt to a pending Slack user. Never throws. */
 export async function sendIdentityVerification(input: { orgId: string; slackUserId: string; token: string }): Promise<boolean> {
   try {
-    const { sendDirectMessage } = await import('./slack')
+    const { postDirectMessage } = await import('./slack')
     const url = identityVerifyUrl(input.token)
-    const result = await sendDirectMessage({
+    const result = await postDirectMessage({
       orgId: input.orgId,
-      email: input.slackUserId,
+      slackUserId: input.slackUserId,
       text: `Confirm your Slack identity with Spaces: ${url}`,
       blocks: [{ type: 'section', text: { type: 'mrkdwn', text: `Confirm your Slack identity with Spaces so you can file and decide from Slack: <${url}|Open Spaces>` } }],
     })
@@ -106,20 +110,21 @@ export async function verifiedSlackUserId(orgId: string, slackTeamId: string, sl
 }
 
 export interface IdentityTokenVerdict {
-  verdict: 'valid' | 'invalid' | 'consumed' | 'wrong_recipient' | 'revoked'
+  verdict: 'valid' | 'invalid' | 'consumed' | 'wrong_recipient' | 'revoked' | 'expired'
   link?: SlackIdentityLink
 }
 
 export async function verifySlackIdentityToken(token: string): Promise<IdentityTokenVerdict> {
   if (!token) return { verdict: 'invalid' }
-  const [row] = await getDb()<SlackIdentityLink[]>`
+  const [row] = await getDb()<Array<SlackIdentityLink & { expiresAt: string | null }>>`
     SELECT link_id AS "linkId", org_id AS "orgId", slack_team_id AS "slackTeamId", slack_user_id AS "slackUserId",
-           email, user_id AS "userId", state, verified_at AS "verifiedAt"
+           email, user_id AS "userId", state, verified_at AS "verifiedAt", expires_at AS "expiresAt"
       FROM slack_identity_links WHERE token_hash = ${hashIdentityToken(token)}
   `
   if (!row) return { verdict: 'invalid' }
   if (row.state === 'revoked') return { verdict: 'revoked', link: row }
   if (row.state === 'verified') return { verdict: 'consumed', link: row }
+  if (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now()) return { verdict: 'expired', link: row }
   return { verdict: 'valid', link: row }
 }
 

@@ -151,8 +151,9 @@ export async function drainOutbound(limit = 20): Promise<{ delivered: number; fa
     const next = new Date(Date.now() + Math.min(base * 2 ** (attempt - 1), max))
     await recordDeliveryAttempt({
       deliveryId: delivery.deliveryId,
-      state: exhausted ? 'failed' : 'failed',
+      state: 'failed',
       error: result.error ?? 'delivery failed',
+      // Exhaustion clears the due time so the row is terminal, not retried forever.
       nextAttemptAt: exhausted ? null : next,
     })
     failed += 1

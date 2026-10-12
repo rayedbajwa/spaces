@@ -21,6 +21,7 @@ import { log } from './logger'
 import { orgIdForProject } from './orgs'
 import { listResponsibilities, responsibilityKeyForStage, type ResolutionStatus } from './project-responsibilities'
 import { answerPausedRun } from './run-store'
+import { markSlackGatePromptsDecided } from './slack-gate-prompts'
 
 const approvalLog = log.child({ mod: 'approval-store' })
 
@@ -300,6 +301,7 @@ export interface GateContext {
   gateId: string
   runId: string
   projectId: string
+  orgId: string
   stage: string
   kind: ApprovalKind
   status: string
@@ -308,15 +310,17 @@ export interface GateContext {
 
 /** The run/project/stage a gate belongs to, for a Slack decision or prompt. */
 export async function getGateContext(gateId: string): Promise<GateContext | undefined> {
-  const [row] = await getDb()<Array<{ gateId: string; runId: string; projectId: string | null; stage: string | null; kind: ApprovalKind; status: string; prompt: string | null }>>`
-    SELECT g.gate_id AS "gateId", g.run_id AS "runId", r.project_id AS "projectId", r.current_stage AS stage,
+  const [row] = await getDb()<Array<{ gateId: string; runId: string; projectId: string | null; orgId: string | null; stage: string | null; kind: ApprovalKind; status: string; prompt: string | null }>>`
+    SELECT g.gate_id AS "gateId", g.run_id AS "runId", r.project_id AS "projectId", t.org_id AS "orgId", r.current_stage AS stage,
            g.kind, g.status, g.prompt
       FROM pipeline_gates g JOIN pipeline_runs r ON r.run_id = g.run_id
+      LEFT JOIN projects p ON p.project_id = r.project_id
+      LEFT JOIN teams t ON t.team_id = p.team_id
      WHERE g.gate_id = ${gateId}
   `
-  if (!row || !row.projectId) return undefined
+  if (!row || !row.projectId || !row.orgId) return undefined
   const stage = row.stage ?? row.prompt ?? 'review'
-  return { gateId: row.gateId, runId: row.runId, projectId: row.projectId, stage, kind: row.kind, status: row.status, summary: await summaryForGate(row.runId, stage).catch(() => undefined) ?? null }
+  return { gateId: row.gateId, runId: row.runId, projectId: row.projectId, orgId: row.orgId, stage, kind: row.kind, status: row.status, summary: await summaryForGate(row.runId, stage).catch(() => undefined) ?? null }
 }
 
 export type SlackDecisionResult =
@@ -333,9 +337,13 @@ export async function submitSlackDecision(input: {
   actorUserId: string
   outcome: ApprovalOutcome
   feedback?: string | null
+  /** The org resolved from the Slack signature; the gate must belong to it. */
+  orgId?: string | null
 }): Promise<SlackDecisionResult> {
   const context = await getGateContext(input.gateId)
   if (!context) return { ok: false, reason: 'invalid' }
+  // A person verified in one org must never decide a gate in another.
+  if (input.orgId && context.orgId !== input.orgId) return { ok: false, reason: 'invalid' }
   const existing = await getDecisionForGate(input.gateId)
   if (existing) return { ok: false, reason: 'consumed', decision: existing }
 
@@ -371,7 +379,61 @@ export async function submitSlackDecision(input: {
   }
   const decision = await getDecisionForGate(input.gateId)
   if (!decision) return { ok: false, reason: 'gate_resolved' }
+  await markSlackGatePromptsDecided(input.gateId, `Decision recorded: ${input.outcome.replace(/_/g, ' ')}.`)
   approvalLog.info('slack decision recorded', { gateId: input.gateId, outcome: input.outcome, by: input.actorUserId })
+  return { ok: true, decision }
+}
+
+/**
+ * Answer an agent clarification from Slack with the reply verbatim. It shares
+ * the same recipient, open-gate and exactly-once checks as a decision, but the
+ * answer text is delivered as-is (US3 #4) rather than mapped through an outcome.
+ */
+export async function submitSlackClarification(input: {
+  gateId: string
+  actorUserId: string
+  answer: string
+  orgId?: string | null
+}): Promise<SlackDecisionResult> {
+  const context = await getGateContext(input.gateId)
+  if (!context) return { ok: false, reason: 'invalid' }
+  if (input.orgId && context.orgId !== input.orgId) return { ok: false, reason: 'invalid' }
+  const existing = await getDecisionForGate(input.gateId)
+  if (existing) return { ok: false, reason: 'consumed', decision: existing }
+  if (context.status !== 'open') return { ok: false, reason: 'gate_resolved', decision: existing }
+
+  const answer = input.answer?.trim() ?? ''
+  if (!answer) return { ok: false, reason: 'feedback_required' }
+  if (answer.length > 4000) return { ok: false, reason: 'feedback_too_long' }
+
+  const resolved = await resolveGateRecipients(context.projectId, context.stage)
+  if (!resolved.recipients.some((recipient) => recipient.userId === input.actorUserId)) return { ok: false, reason: 'revoked' }
+
+  const result = await answerPausedRun({
+    runId: context.runId,
+    projectId: context.projectId,
+    answer,
+    decision: {
+      requestId: null,
+      linkId: null,
+      gateId: input.gateId,
+      // The gate is resolved with the verbatim text; keeping a decision row
+      // preserves the actor/surface audit trail exactly once per gate.
+      outcome: 'approve_with_notes',
+      feedback: answer,
+      summaryShown: context.summary,
+      decidedBy: input.actorUserId,
+      via: 'slack',
+    },
+  })
+  if (!result.ok) {
+    const winning = await getDecisionForGate(input.gateId)
+    return { ok: false, reason: result.reason === 'archived' ? 'not_waiting' : 'gate_resolved', decision: winning }
+  }
+  const decision = await getDecisionForGate(input.gateId)
+  if (!decision) return { ok: false, reason: 'gate_resolved' }
+  await markSlackGatePromptsDecided(input.gateId, 'Clarification answered in Slack.')
+  approvalLog.info('slack clarification recorded', { gateId: input.gateId, by: input.actorUserId })
   return { ok: true, decision }
 }
 
@@ -547,6 +609,7 @@ export async function submitApprovalDecision(input: {
   }
   const decision = await getDecisionForGate(request.gateId)
   if (!decision) return { ok: false, reason: 'gate_resolved' }
+  await markSlackGatePromptsDecided(request.gateId, `Decision recorded: ${input.outcome.replace(/_/g, ' ')}.`)
   approvalLog.info('approval decision recorded', { gateId: request.gateId, outcome: input.outcome, by: input.actorUserId ?? verified.link.boundUserId })
   return { ok: true, decision, request }
 }

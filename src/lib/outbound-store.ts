@@ -172,11 +172,11 @@ export function emitOutboundEventQuietly(input: {
   void emitOutboundEvent(input).catch((error) => outboundLog.warn('outbound emit failed', { eventKind: input.eventKind, error: error instanceof Error ? error.message : String(error) }))
 }
 
-/** Due deliveries for the worker drain, oldest first. */
+/** Due deliveries for the worker drain, oldest first. Exhausted rows have no due time. */
 export async function dueOutboundDeliveries(limit = 20): Promise<OutboundDelivery[]> {
   return await getDb()<OutboundDelivery[]>`
     SELECT ${getDb().unsafe(DELIVERY_COLS)} FROM outbound_deliveries
-     WHERE state IN ('pending','failed') AND next_attempt_at <= now()
+     WHERE state IN ('pending','failed') AND next_attempt_at IS NOT NULL AND next_attempt_at <= now()
      ORDER BY next_attempt_at ASC
      LIMIT ${limit}
   `
@@ -192,16 +192,21 @@ export async function recordDeliveryAttempt(input: {
   state: 'delivered' | 'failed' | 'skipped'
   externalRef?: string | null
   error?: string | null
+  /**
+   * The next due time. `undefined` keeps the existing one; `null` makes the row
+   * terminal (exhausted) so the drain never selects it again.
+   */
   nextAttemptAt?: Date | null
 }): Promise<void> {
   const sql = getDb()
+  const next = input.nextAttemptAt === undefined ? sql`next_attempt_at` : input.nextAttemptAt
   await sql`
     UPDATE outbound_deliveries SET
       state = ${input.state},
       attempts = attempts + 1,
       external_ref = COALESCE(${input.externalRef ?? null}, external_ref),
       last_error = ${input.error ?? null},
-      next_attempt_at = COALESCE(${input.nextAttemptAt ?? null}, next_attempt_at),
+      next_attempt_at = ${next},
       updated_at = now()
      WHERE delivery_id = ${input.deliveryId}
   `

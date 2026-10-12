@@ -353,7 +353,23 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
   if (dirs.length > 0) await projectActiveIntent(projectId, projectRoot)
   if (outboundEmits.length > 0) {
     const orgId = await orgIdForProject(projectId).catch(() => undefined)
-    if (orgId) for (const emit of outboundEmits) emitOutboundEventQuietly({ orgId, projectId, eventKind: emit.eventKind, eventKey: emit.eventKey, payload: emit.payload })
+    if (orgId) {
+      const [project] = await getDb()<Array<{ name: string; slug: string; code: string | null }>>`
+        SELECT name, slug, code FROM projects WHERE project_id = ${projectId}
+      `.catch(() => [] as Array<{ name: string; slug: string; code: string | null }>)
+      const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
+      const link = base && project ? `${base}/spaces/${encodeURIComponent(project.code || project.slug)}` : undefined
+      for (const emit of outboundEmits) {
+        emitOutboundEventQuietly({
+          orgId,
+          projectId,
+          eventKind: emit.eventKind,
+          eventKey: emit.eventKey,
+          // FR-019: every payload carries the project and a navigable link.
+          payload: { projectName: project?.name, ...emit.payload, ...(link ? { link } : {}) },
+        })
+      }
+    }
   }
   // A converted intake item's work link points at the intent once it exists,
   // so the item can be navigated to the run's spec directory.

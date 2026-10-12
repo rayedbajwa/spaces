@@ -66,6 +66,8 @@ describe('conversion to project work', () => {
       expect(run?.pipelineName).toBe('adhoc-specify')
       expect(run?.status).toBe('queued')
       expect(run?.feature).toContain('Convert me')
+      // The converted describe stage cites the source item (US2 #1).
+      expect(run?.feature).toMatch(/Source: (jira|linear|datadog|slack):/)
       const [link] = await getDb()<Array<{ state: string; sourceUpdateState: string; projectId: string }>>`
         SELECT i.state, w.source_update_state AS "sourceUpdateState", w.project_id AS "projectId"
           FROM intake_items i JOIN intake_work_links w ON w.intake_id = i.intake_id WHERE i.intake_id = ${item.intakeId}
