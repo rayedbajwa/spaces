@@ -2911,7 +2911,7 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
   background: var(--bg, #0f1115);
 }
 .approval-card {
-  width: min(680px, 100%);
+  width: min(860px, 100%);
   display: grid;
   gap: 14px;
   padding: 28px 30px;
@@ -2924,11 +2924,20 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
   border-left: 3px solid var(--accent, #6ea8fe);
   background: rgba(110, 168, 254, 0.08);
   border-radius: 6px;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 45vh;
   overflow: auto;
 }
+blockquote.approval-summary { white-space: pre-wrap; }
+.approval-context { display: grid; gap: 10px; }
+.approval-feature { margin: 0; }
+.approval-statuses { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.approval-status { display: flex; align-items: center; gap: 6px; }
+.approval-status-label { color: var(--text-subtle, #9aa4b2); font-size: 0.85rem; }
+.approval-status-detail { color: var(--text-subtle, #9aa4b2); font-size: 0.85rem; }
+.approval-effect { margin: 0; color: var(--text-subtle, #9aa4b2); }
+.approval-report summary { cursor: pointer; }
+.approval-report .markdown { margin-top: 8px; max-height: 60vh; overflow: auto; overflow-wrap: anywhere; }
 .approval-feedback { display: grid; gap: 6px; }
 .approval-feedback textarea { width: 100%; resize: vertical; }
 .approval-actions { display: flex; gap: 10px; flex-wrap: wrap; }
