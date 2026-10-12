@@ -458,12 +458,23 @@ export async function listIntentSummaries(projectId: string, projectRoot: string
   await ensureIntentsSynced(projectId, projectRoot).catch(() => undefined)
   const intents = await listIntents(projectId)
   const docs = await listDocumentIndex(intents.map((i) => i.intentId))
+  // Work converted from an Intake item carries the item id (012, US2), so the
+  // board can link the finished spec back to the request it came from.
+  const intakeByIntent = new Map(
+    (await getDb()<Array<{ intentId: string; intakeId: string }>>`
+      SELECT intent_id AS "intentId", intake_id AS "intakeId" FROM intake_work_links
+       WHERE project_id = ${projectId} AND intent_id IS NOT NULL
+    `.catch(() => []))
+      .map((row) => [row.intentId, row.intakeId]),
+  )
   // No active flag yet (e.g. every intent imported before one was chosen): the newest is current.
   const current = intents.find((i) => i.active)?.intentId ?? intents[0]?.intentId
   return intents.map((i) => {
     const present = new Set((docs.get(i.intentId) ?? []).map((d) => d.path))
+    const intakeId = intakeByIntent.get(i.intentId)
     return {
       id: i.dirId,
+      ...(intakeId ? { intakeId } : {}),
       relativePath: `specs/${i.dirId}`,
       title: i.title,
       ...(i.scope ? { scope: i.scope } : {}),

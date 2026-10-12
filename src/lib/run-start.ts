@@ -108,6 +108,7 @@ export async function startSpecifyRun(input: {
     projectLabel: project.name,
     projectPath: cwd,
     pipelineName: template.name,
+    feature: input.feature,
     options: options as never,
     template,
     projectId: project.projectId,

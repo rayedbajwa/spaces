@@ -12,11 +12,11 @@ Repository-local tasks for initiative **012-inbound-outbound-slack** (Feature Sp
 - [x] T009 [P] [US1] Intake queue and source REST tests (org scoping, ordering, `403` for outsiders) in `tests/intake-api.test.ts`
 - [x] T010 [P] [US1] Implement `upsertIntakeItem`, `listIntake`, `setIntakePriority` and source health in `src/lib/intake-store.ts`
 - [x] T014 [US1] Add `GET`/`PATCH /api/intake` and `GET`/`PUT /api/intake/sources` routes in `src/server.ts`
-- [ ] T020 [P] [US2] Conversion, work-link, dismiss/restore/merge and non-blocking source-update tests in `tests/intake-conversion.test.ts`
+- [x] T020 [P] [US2] Conversion, work-link, dismiss/restore/merge and non-blocking source-update tests in `tests/intake-conversion.test.ts`
 - [x] T021 [US2] Extract `startSpecifyRun` from the execute-step route into `src/lib/run-start.ts`
 - [x] T022 [US2] Add `convertIntakeItem`, `dismissIntakeItem`, `restoreIntakeItem`, `mergeIntakeItems` and `linkIntentToWork` to `src/lib/intake-store.ts`
 - [x] T024 [US2] Add the convert, dismiss, restore and merge routes in `src/server.ts`
-- [ ] T025 [US2] Call `linkIntentToWork` from `syncProjectIntents` in `src/lib/intent-store.ts`
+- [x] T025 [US2] Call `linkIntentToWork` from `syncProjectIntents` in `src/lib/intent-store.ts`
 
 **Scoped files**
 Allowed to modify only: `.env.example`, `src/lib/app-integrations.ts`, `src/lib/integration-categories.ts`, `src/lib/db-schema.sql`, `src/lib/run-start.ts`, `src/lib/intake-store.ts`, `src/lib/intent-store.ts` (the `linkIntentToWork` call only), the intake/convert route block and `execute-step` extraction in `src/server.ts`, and `tests/intake-store.test.ts`, `tests/intake-conversion.test.ts`, `tests/intake-api.test.ts`, `tests/intake-migration.test.ts`. This workstream is the unique writer of `db-schema.sql` and `intake-store.ts` for its merge window.
@@ -37,7 +37,7 @@ Idempotent additive DDL only (no existing column/table altered); `(org_id, sourc
 - [x] T012 [P] [US1] Implement `verifyDatadog` and `listDatadogEvents` in `src/lib/datadog.ts`
 - [x] T013 [US1] Add the Datadog verify, token-store and disconnect routes in `src/server.ts`
 - [x] T015 [US1] Add the intake-sync worker timer in `src/worker.ts`
-- [ ] T023 [US2] Add the best-effort source-ticket update for converted items in `src/lib/intake-connectors.ts`
+- [x] T023 [US2] Add the best-effort source-ticket update for converted items in `src/lib/intake-connectors.ts`
 
 **Scoped files**
 Allowed to modify only: `src/lib/intake-connectors.ts`, `src/lib/datadog.ts`, the Datadog route block in `src/server.ts`, the intake-sync timer block in `src/worker.ts`, and `tests/intake-connectors.test.ts`, `tests/datadog-integration.test.ts`. `src/server.ts` and `src/worker.ts` are shared — edit only the named blocks, rebase immediately before merge.
@@ -79,7 +79,7 @@ Routing only ever pre-suggests — it never auto-assigns a project/team/priority
 - [x] T034 [US3] Add `commands` to the Slack scope list in `src/lib/slack-scopes.ts`
 - [x] T035 [US3] Implement verified Slack identity links, email matching and one-time verification in `src/lib/slack-identity.ts`
 - [x] T036 [US3] Implement signature-verified Slack events, interactions and commands with workspace-to-org resolution in `src/lib/slack-interactions.ts`
-- [ ] T037 [US3] Add interactive approval buttons, question-thread prompt and stale-prompt update in `src/lib/slack.ts`
+- [x] T037 [US3] Add interactive approval buttons, question-thread prompt and stale-prompt update in `src/lib/slack.ts`
 - [x] T038 [US3] Add the `/api/slack/{events,interactions,commands}` endpoints and identity routes in `src/server.ts`
 
 **Scoped files**
@@ -122,7 +122,7 @@ Emission inserts one delivery per matching **enabled** subscription and is idemp
 - [x] T018 [US1] Add the Intake navigation entry in `src/web/shell.tsx`
 - [x] T019 [P] [US1] Add queue and monitoring-category styles in `src/web/styles.css`
 - [x] T026 [US2] Add triage, convert, dismiss/restore and merge actions to `src/web/intake.tsx`
-- [ ] T027 [US2] Add the converted-work link back to Intake in `src/web/main.tsx`
+- [x] T027 [US2] Add the converted-work link back to Intake in `src/web/main.tsx`
 - [x] T039 [US3] Implement the Slack identity verification page in `src/web/slack-link.tsx`
 - [x] T040 [US3] Add the `/slack-link/:token` client route in `src/web/main.tsx`
 - [x] T049 [P] [US4] Implement the outbound subscriptions view in `src/web/outbound.tsx`
@@ -143,8 +143,8 @@ WS1–WS5 APIs stable. Runs last among implementation workstreams; nothing else 
 **QA focus**
 Every view is org-scoped and re-uses existing auth/session handling; the raw Slack token never lands in the DOM bundle, document title or logs; conversion shows a navigable link back to the source item and the converted work; source-health, dismissed/merged and expired/used Slack states show a clear path; no new dependency; `src/web` has a single writer during its merge window.
 ## Documentation and CI Wiring
-- [ ] T059 [P] Document Intake, outbound triggers and the two-way Slack surface in `docs/concepts/`
-- [ ] T060 Wire the new intake, Slack and outbound test files into the CI test steps in `.github/workflows/ci.yml` (CI enumerates test files explicitly, so new suites do not run without this)
+- [x] T059 [P] Document Intake, outbound triggers and the two-way Slack surface in `docs/concepts/`
+- [x] T060 Wire the new intake, Slack and outbound test files into the CI test steps in `.github/workflows/ci.yml` (CI enumerates test files explicitly, so new suites do not run without this)
 
 **Scoped files**
 Allowed to modify only: `docs/concepts/` and `.github/workflows/ci.yml` in `spaces`. No runtime source and no test files (those belong to WS1–WS5).
@@ -159,8 +159,8 @@ T059 needs the implemented surfaces from WS1–WS5. T060 needs the new test file
 **QA focus**
 Docs match the shipped routes, event catalog and Slack manifest; CI wiring lists the exact new files (no glob guesswork) and does not duplicate, reorder or weaken existing steps; no secret or key appears in docs or CI.
 ## Verification and Release (Sequential End Gate)
-- [ ] T061 Run `bun run typecheck`, `bun run db:migrate`, `bun run build:web` and `bun test`, and fix every failure
-- [ ] T062 Run the end-to-end acceptance checks in `specs/012-inbound-outbound-slack/quickstart.md` against `PORT=3369`
+- [x] T061 Run `bun run typecheck`, `bun run db:migrate`, `bun run build:web` and `bun test`, and fix every failure
+- [x] T062 Run the end-to-end acceptance checks in `specs/012-inbound-outbound-slack/quickstart.md` against `PORT=3369`
 - [ ] T063 Open the pull request for the `spaces` changes (feature documents synced in) against `main`
 - [ ] T064 Get CI green and review approval on the `spaces` pull request
 - [ ] T065 Merge the `spaces` pull request to `main`

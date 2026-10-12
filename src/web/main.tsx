@@ -127,6 +127,8 @@ type FeatureSummary = {
   verification?: 'pass' | 'partial' | 'fail'
   delivery?: 'merged' | 'partial' | 'blocked'
   documents: Array<{ label: string; path: string }>
+  /** Set when this intent was converted from an Intake item (012, US2). */
+  intakeId?: string
 }
 
 type ProjectJob = { jobId: string; kind: string; status: string; displayStatus: string; runStage?: string; runPauseKind?: string; runError?: string; runPipeline?: string; triggerSource: string; runId?: string; createdAt: string; lastActivityAt?: string; workerHeartbeatAt?: string }
@@ -2657,6 +2659,7 @@ function App() {
                           <div className="feature-row-main">
                             <code>{feature.id}</code>
                             <button type="button" className="link-button feature-title-link" title="Review everything this intent produced, and its history" onClick={() => setViewingIntent(feature.id)}><strong>{feature.title}</strong></button>
+                            {feature.intakeId && <button type="button" className="link-button feature-intake-link" title="This work was converted from an Intake item" onClick={() => navigate('/intake')}>Intake</button>}
                             {feature.scope && <span className={`scope-badge scope-${feature.scope}`} title="Scope">{scopeLabel(feature.scope)}</span>}
                             <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
                             {feature.current && <span className="mini-badge running">current</span>}

@@ -4,6 +4,7 @@ import { getDb } from '../src/lib/db'
 import { saveSlackSigningSecret } from '../src/lib/oauth-apps'
 import { authenticateSlackRequest, fileSlackIntake, handleSlackCommand, handleSlackEvent, handleSlackInteraction, verifySlackSignature } from '../src/lib/slack-interactions'
 import { linkSlackIdentity } from '../src/lib/slack-identity'
+import { renderGateActions, renderQuestionThread } from '../src/lib/slack'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -50,6 +51,23 @@ describe('signature verification', () => {
     const found = await authenticateSlackRequest({ timestamp, signature, body })
     expect(found.ok).toBe(true)
     expect(found.orgId).toBe(orgA)
+  })
+})
+
+describe('gate renderers', () => {
+  test('interactive buttons carry only the gate id and the three decisions', () => {
+    const { text, blocks } = renderGateActions({ gateId: 'gate-1', project: { name: 'Acme', code: 'ACM', slug: 'acme' }, stage: 'review', kind: 'review', summary: 'Looks good' })
+    expect(text).toContain('Acme')
+    const actions = blocks.find((block) => (block as { type?: string }).type === 'actions') as { elements: Array<{ action_id: string; value: string }> }
+    expect(actions.elements.map((element) => element.action_id)).toEqual(['approve', 'approve_with_notes', 'request_changes'])
+    expect(actions.elements.every((element) => element.value === 'gate-1')).toBe(true)
+  })
+
+  test('a clarification thread prompt carries the question and an in-app link', () => {
+    const { blocks } = renderQuestionThread({ project: { name: 'Acme', code: null, slug: 'acme' }, stage: 'clarify', question: 'Which database?', link: 'https://spaces.dev/approvals/x' })
+    const body = JSON.stringify(blocks)
+    expect(body).toContain('Which database?')
+    expect(body).toContain('https://spaces.dev/approvals/x')
   })
 })
 

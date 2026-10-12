@@ -36,9 +36,11 @@ function row(page: Page, name: string) {
 
 async function gotoProject(page: Page): Promise<void> {
   await page.goto(projectUrl, { waitUntil: 'domcontentloaded' })
-  await page.locator('h3', { hasText: 'Responsibilities' }).waitFor({ timeout: 30_000 })
+  // Remote test databases can cold-start: 30s was too tight and made the first
+  // render fail on latency alone.
+  await page.locator('h3', { hasText: 'Responsibilities' }).waitFor({ timeout: 60_000 })
   // The panel renders before its data arrives; wait for the first role row.
-  await panel(page).locator('.repo-row').first().waitFor({ timeout: 30_000 })
+  await panel(page).locator('.repo-row').first().waitFor({ timeout: 60_000 })
 }
 
 afterAll(async () => {

@@ -16,6 +16,7 @@ import {
   restoreIntakeItem,
   upsertIntakeItem,
 } from '../src/lib/intake-store'
+import { attachIntentToPendingWorkLink } from '../src/lib/intake-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -96,6 +97,22 @@ describe('conversion to project work', () => {
       const again = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'bugfix', actorUserId: users.ownerA })
       expect('error' in again).toBe(true)
     } finally {
+      await cleanup([item.intakeId], [result.link.runId!])
+    }
+  })
+
+  test('a newly synced intent attaches to the converted work link', async () => {
+    const item = await upsertIntakeItem(input())
+    const result = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: users.ownerA })
+    if ('error' in result) return
+    const intentId = randomUUID()
+    await getDb()`INSERT INTO intents (intent_id, project_id, dir_id, title, status) VALUES (${intentId}, ${projectA.projectId}, ${`099-${item.intakeId.slice(0, 8)}`}, 'Converted work', 'specified')`
+    try {
+      await attachIntentToPendingWorkLink(projectA.projectId, intentId)
+      const [link] = await getDb()<Array<{ intentId: string | null }>>`SELECT intent_id AS "intentId" FROM intake_work_links WHERE run_id = ${result.link.runId}`
+      expect(link?.intentId).toBe(intentId)
+    } finally {
+      await getDb()`DELETE FROM intents WHERE intent_id = ${intentId}`
       await cleanup([item.intakeId], [result.link.runId!])
     }
   })

@@ -9,7 +9,7 @@ import { createApprovalFixture } from './helpers/approval-fixture'
  * priority ordering, triager authorization and source routes against a running
  * server and the guarded test database.
  */
-const fixture = await createApprovalFixture({ withServer: true, port: 3369 })
+const fixture = await createApprovalFixture({ withServer: true, port: 3370 })
 const { baseUrl, orgA, orgB, teamA, teamB, users } = fixture
 afterAll(async () => { await fixture.stop() })
 
