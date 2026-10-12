@@ -258,6 +258,12 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
           FROM run_thread_entries WHERE run_id = ${runId} ORDER BY entry_id ASC
       `).slice(-6).map((h) => ({ stepId: h.stepId, stage: h.stage, model: h.model ?? undefined, text: h.summary ?? h.tail, compacted: Boolean(h.summary) }))
     : []
+  // Every pass of every step so far, so a loop's iteration cap survives the restart.
+  const priorVisits = startStage
+    ? Object.fromEntries((await getDb()<Array<{ stepId: string; visits: number }>>`
+        SELECT step_id AS "stepId", count(*)::int AS visits FROM run_thread_entries WHERE run_id = ${runId} GROUP BY step_id
+      `).map((row) => [row.stepId, row.visits]))
+    : {}
   if (startStage) {
     await queueEvent(runId, 'context_restored', { sessionFile: resumeSessionFile ?? null, priorHandoffStages: priorHandoffs.map((h) => h.stage) })
   }
@@ -287,6 +293,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       return false
     },
     ...(priorHandoffs.length ? { priorHandoffs } : {}),
+    ...(Object.keys(priorVisits).length ? { priorVisits } : {}),
     // The run's guardrail tokens outlive this process (a gate answer or a redeploy resumes elsewhere).
     guardVault: runGuardVault(runId),
     ...(resumeSessionFile
