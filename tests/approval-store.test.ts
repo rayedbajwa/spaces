@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { closeDb, getDb } from '../src/lib/db'
 import { createProject } from '../src/lib/project-registry'
 import { createRun, openGate } from '../src/lib/run-store'
-import { answerForOutcome, createApprovalRequests, resolveGateRecipients, submitApprovalDecision, verifyApprovalLink, type ApprovalKind } from '../src/lib/approval-store'
+import { answerForOutcome, createApprovalRequests, invalidateApprovalRequest, resolveGateRecipients, submitApprovalDecision, verifyApprovalLink, type ApprovalKind } from '../src/lib/approval-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -124,6 +124,40 @@ describe('link lifecycle', () => {
     const second = await requestsFor(gateId, runId, 'review', 'review')
     expect(first).toHaveLength(2)
     expect(second).toHaveLength(0)
+  })
+
+  test('an invalidated recipient is revived with a fresh link while a live one is skipped (FR-018)', async () => {
+    const { runId, gateId } = await newGate()
+    const first = await requestsFor(gateId, runId, 'review', 'review')
+    const revoked = first.find((item) => item.request.recipientUserId === users.productOwnerA)!
+    const sibling = first.find((item) => item.request.recipientUserId === users.secondProductOwnerA)!
+    // Revocation invalidates the recipient's request and consumes their link.
+    await invalidateApprovalRequest(revoked.request.requestId)
+    // Re-resolution (the recipient is restored) runs the gate-open create again.
+    const second = await requestsFor(gateId, runId, 'review', 'review')
+    const restored = second.find((item) => item.request.recipientUserId === users.productOwnerA)
+    expect(restored).toBeDefined()
+    expect(restored!.request.requestId).toBe(revoked.request.requestId)
+    expect(restored!.request.state).toBe('pending')
+    expect((await verifyApprovalLink(restored!.token, users.productOwnerA)).verdict).toBe('valid')
+    // The sibling kept a live link, so it was not re-created and its link still works.
+    expect(second.some((item) => item.request.recipientUserId === users.secondProductOwnerA)).toBe(false)
+    expect((await verifyApprovalLink(sibling.token, users.secondProductOwnerA)).verdict).toBe('valid')
+    await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
+  })
+
+  test('an expired link is re-minted on a repeated gate event (FR-018)', async () => {
+    const { runId, gateId } = await newGate()
+    const first = await requestsFor(gateId, runId, 'review', 'review')
+    const expired = first[0]!
+    await getDb()`UPDATE approval_links SET expires_at = now() - interval '1 hour' WHERE request_id = ${expired.request.requestId}`
+    const second = await requestsFor(gateId, runId, 'review', 'review')
+    const renewed = second.find((item) => item.request.recipientUserId === expired.request.recipientUserId)
+    expect(renewed).toBeDefined()
+    expect(renewed!.request.requestId).toBe(expired.request.requestId)
+    expect((await verifyApprovalLink(expired.token, expired.request.recipientUserId)).verdict).toBe('expired')
+    expect((await verifyApprovalLink(renewed!.token, expired.request.recipientUserId)).verdict).toBe('valid')
+    await getDb()`DELETE FROM pipeline_runs WHERE run_id = ${runId}`
   })
 })
 

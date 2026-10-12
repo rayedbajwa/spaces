@@ -189,8 +189,11 @@ export async function resolveGateRecipients(projectId: string, stage: string): P
 
 /**
  * Persist one request per recipient, idempotently: a repeated gate event for the
- * same person returns nothing new. Each new request gets one raw token, kept
- * only as a SHA-256 hash at rest.
+ * same person returns nothing new while that person still holds a live link.
+ * When the existing request has no live link (it was invalidated on revocation,
+ * or its link expired) the request is revived in place and a fresh link is
+ * minted, so a recipient restored to the gate can still act (FR-018). Each new
+ * link's raw token is kept only as a SHA-256 hash at rest.
  */
 export async function createApprovalRequests(input: {
   runId: string
@@ -222,14 +225,33 @@ export async function createApprovalRequests(input: {
           (${requestId}, ${input.gateId}, ${input.runId}, ${input.projectId}, ${orgId}, ${input.responsibilityId ?? null},
            ${input.responsibilityKey ?? null}, ${input.stage}, ${input.kind}, ${recipient.userId}, ${recipient.email},
            ${recipient.primary}, ${input.summary}, 'pending', ${input.fallback ?? false})
-        ON CONFLICT (gate_id, recipient_user_id) DO NOTHING
+        ON CONFLICT (gate_id, recipient_user_id) DO UPDATE
+          SET state              = 'pending',
+              summary            = EXCLUDED.summary,
+              stage              = EXCLUDED.stage,
+              kind               = EXCLUDED.kind,
+              responsibility_id  = EXCLUDED.responsibility_id,
+              responsibility_key = EXCLUDED.responsibility_key,
+              recipient_email    = EXCLUDED.recipient_email,
+              primary_recipient  = EXCLUDED.primary_recipient,
+              fallback           = EXCLUDED.fallback,
+              updated_at         = now()
+          WHERE approval_requests.state <> 'decided'
+            AND NOT EXISTS (
+              SELECT 1 FROM approval_links l
+               WHERE l.request_id = approval_requests.request_id
+                 AND l.consumed_at IS NULL
+                 AND l.expires_at > now()
+            )
         RETURNING ${tx.unsafe(REQUEST_COLS)}
       `
+      // No row means the recipient already held a live link (idempotent repeat)
+      // or the request was already decided; leave it untouched.
       if (!row) continue
       const token = randomBytes(32).toString('base64url')
       await tx`
         INSERT INTO approval_links (link_id, request_id, token_hash, bound_user_id, expires_at)
-        VALUES (${randomUUID()}, ${requestId}, ${hashApprovalToken(token)}, ${recipient.userId}, ${new Date(Date.now() + ttlMs)})
+        VALUES (${randomUUID()}, ${row.requestId}, ${hashApprovalToken(token)}, ${recipient.userId}, ${new Date(Date.now() + ttlMs)})
       `
       out.push({ request: row, token })
     }
