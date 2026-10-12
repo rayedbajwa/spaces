@@ -79,6 +79,7 @@ export async function fileSlackIntake(input: {
   slackUserId: string
   text: string
   externalRef?: string
+  eventTs?: string
   email?: string | null
 }): Promise<SlackFileResult> {
   const text = input.text?.trim()
@@ -96,7 +97,9 @@ export async function fileSlackIntake(input: {
   const item = await upsertIntakeItem({
     orgId: input.orgId,
     source: 'slack',
-    externalRef: input.externalRef ?? `slack:${input.slackTeamId}:${input.slackUserId}:${Date.now()}`,
+    externalRef: input.externalRef ?? (input.eventTs
+      ? `slack:${input.slackTeamId}:${input.eventTs}`
+      : `slack:${input.slackTeamId}:${input.slackUserId}:${Date.now()}`),
     title: text.slice(0, 200),
     summary: text,
     requesterName: null,
@@ -145,9 +148,9 @@ export async function handleSlackEvent(orgId: string, payload: SlackPayload): Pr
   if (isMessage && event?.bot_id) return { status: 200, body: { ok: true } }
   if (isMessage && slackUserId) {
     // A reply in a clarification thread is an answer, not a new intake item.
-    const answered = await maybeAnswerClarification(orgId, slackUserId, event?.text ?? payload.text ?? '', event?.thread_ts ?? payload.message?.thread_ts, event?.channel)
+    const answered = await maybeAnswerClarification(orgId, teamId, slackUserId, event?.text ?? payload.text ?? '', event?.thread_ts ?? payload.message?.thread_ts, event?.channel)
     if (answered) return answered
-    const result = await fileSlackIntake({ orgId, slackTeamId: teamId, slackUserId, text: event?.text ?? payload.text ?? '', email: null })
+    const result = await fileSlackIntake({ orgId, slackTeamId: teamId, slackUserId, text: event?.text ?? payload.text ?? '', email: null, eventTs: event?.ts })
     inboundLog.info('slack event filed', { orgId, ok: result.ok, code: result.code })
     return { status: 200, body: { ok: result.ok, reply: result.reply, intakeId: result.intakeId } }
   }
@@ -161,6 +164,7 @@ export async function handleSlackEvent(orgId: string, payload: SlackPayload): Pr
  */
 async function maybeAnswerClarification(
   orgId: string,
+  teamId: string,
   slackUserId: string,
   text: string,
   threadTs: string | undefined,
@@ -170,7 +174,11 @@ async function maybeAnswerClarification(
   const prompt = await findSlackGatePromptByMessage(orgId, channelId, threadTs).catch(() => undefined)
   if (!prompt || prompt.promptKind !== 'clarification') return undefined
   if (prompt.slackUserId && prompt.slackUserId !== slackUserId) return undefined
-  const userId = await verifiedSlackUserIdAnyTeam(orgId, slackUserId)
+  // Scope the identity to the event's workspace: a verified link in one team
+  // must never answer a gate resolved through another (FR-027/SC-009).
+  const userId = teamId
+    ? await verifiedSlackUserId(orgId, teamId, slackUserId)
+    : await verifiedSlackUserIdAnyTeam(orgId, slackUserId)
   if (!userId) return { status: 200, body: { ok: false, reply: 'Your Slack identity is not verified with Spaces, so I did not record an answer.' } }
   const answer = text.trim()
   if (!answer) return { status: 200, body: { ok: false, reply: 'The answer was empty, so nothing was recorded.' } }

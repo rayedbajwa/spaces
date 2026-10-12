@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import { getDb } from '../src/lib/db'
 import { saveSlackSigningSecret } from '../src/lib/oauth-apps'
 import { authenticateSlackRequest, fileSlackIntake, handleSlackCommand, handleSlackEvent, handleSlackInteraction, verifySlackSignature } from '../src/lib/slack-interactions'
+import { submitSlackClarification } from '../src/lib/approval-store'
 import { linkSlackIdentity } from '../src/lib/slack-identity'
 import { renderGateActions, renderQuestionThread } from '../src/lib/slack'
 import { saveSlackGatePrompt, markSlackGatePromptsDecided } from '../src/lib/slack-gate-prompts'
@@ -14,7 +15,7 @@ import { createApprovalFixture } from './helpers/approval-fixture'
  * FR-011/012/013/014/016). DB-backed; Slack HTTP is not called.
  */
 const fixture = await createApprovalFixture({ withServer: false })
-const { orgA, users, gateA, runA } = fixture
+const { orgA, orgB, users, gateA, runA } = fixture
 afterAll(async () => { await fixture.stop() })
 
 async function emailFor(userId: string): Promise<string> {
@@ -24,6 +25,11 @@ async function emailFor(userId: string): Promise<string> {
 
 async function linkVerified(userId: string, team: string, slackUser: string): Promise<string> {
   const linked = await linkSlackIdentity({ orgId: orgA, slackTeamId: team, slackUserId: slackUser, email: await emailFor(userId) })
+  return linked.link.linkId
+}
+
+async function linkVerifiedIn(orgId: string, userId: string, team: string, slackUser: string): Promise<string> {
+  const linked = await linkSlackIdentity({ orgId, slackTeamId: team, slackUserId: slackUser, email: await emailFor(userId) })
   return linked.link.linkId
 }
 
@@ -203,6 +209,75 @@ describe('feedback decisions and clarification answers from Slack', () => {
       expect(result.body.ok).toBe(true)
       const [gate] = await getDb()<Array<{ response: string | null }>>`SELECT response FROM pipeline_gates WHERE gate_id = ${gateId}`
       expect(gate?.response).toBe('Use Postgres, not SQLite')
+    } finally {
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+})
+
+describe('a shared workspace fails closed across organizations', () => {
+  test('an org-B actor cannot decide or answer an org-A gate', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerifiedIn(orgB, users.otherOrgOwner, team, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    try {
+      const result = await handleSlackInteraction(orgB, { team_id: team, user: { id: slackUser }, actions: [{ action_id: 'approve', value: gateId }] })
+      expect(result.body.ok).toBe(false)
+      const [count] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM approval_decisions WHERE gate_id = ${gateId}`
+      expect(count?.n).toBe(0)
+
+      const answer = await submitSlackClarification({ gateId, actorUserId: users.ownerA, answer: 'Use Postgres', orgId: orgB })
+      expect(answer.ok).toBe(false)
+    } finally {
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+    }
+  })
+})
+
+describe('a retried Slack event does not duplicate intake', () => {
+  test('the same event ts files exactly one Intake item', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.memberA, team, slackUser)
+    const ts = `${Date.now()}.000100`
+    const externalRef = `slack:${team}:${ts}`
+    const payload = { team_id: team, event: { type: 'message', user: slackUser, channel: 'C-RETRY', ts, text: 'Retried event' } }
+    try {
+      await handleSlackEvent(orgA, payload)
+      await handleSlackEvent(orgA, payload)
+      const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intake_items WHERE org_id = ${orgA} AND source = 'slack' AND external_ref = ${externalRef}`
+      expect(row?.n).toBe(1)
+    } finally {
+      await getDb()`DELETE FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+})
+
+describe('a competing second decision leaves the stale prompt closed', () => {
+  test('the second action reads the winner and the first prompt is marked decided', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.productOwnerA, team, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${runA}`
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: slackUser, channelId: 'D-COMPETE', messageTs: '1700.300', promptKind: 'review' })
+    try {
+      const first = await handleSlackInteraction(orgA, { team_id: team, user: { id: slackUser }, actions: [{ action_id: 'approve', value: gateId }] })
+      expect(first.body.replace_original).toBe(true)
+      const second = await handleSlackInteraction(orgA, { team_id: team, user: { id: slackUser }, actions: [{ action_id: 'request_changes', value: gateId }] })
+      expect(String(second.body.text)).toContain('Already decided')
+      const [prompt] = await getDb()<Array<{ decidedAt: string | null }>>`SELECT decided_at AS "decidedAt" FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      expect(prompt?.decidedAt).not.toBeNull()
+      const [decisions] = await getDb()<Array<{ n: number; outcome: string }>>`SELECT count(*)::int AS n, min(outcome) AS outcome FROM approval_decisions WHERE gate_id = ${gateId}`
+      expect(decisions?.n).toBe(1)
+      expect(decisions?.outcome).toBe('approve')
     } finally {
       await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
       await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`

@@ -57,7 +57,7 @@ import { notifyProject } from './lib/slack'
 import { stageSummary, summaryForGate } from './lib/approval-store'
 import { deliverApprovalRequestsForGate } from './lib/approval-notify'
 import { drainBudget } from './lib/drain'
-import { emitOutboundEventQuietly, type OutboundEventKind } from './lib/outbound-store'
+import { emitGateOutbound, emitRunOutbound } from './lib/outbound-emit'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -694,30 +694,6 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
 }
 
 /** Fire-and-forget outbound emission from a run path (never blocks or changes the run). */
-function emitRunOutbound(run: { projectId?: string | null; projectLabel?: string; projectNamespace?: string; runId?: string }, eventKind: OutboundEventKind, eventKey: string, payload: Record<string, unknown>): void {
-  const projectId = run.projectId
-  if (!projectId) return
-  const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
-  const link = base && run.projectNamespace ? `${base}/spaces/${encodeURIComponent(run.projectNamespace)}` : undefined
-  const enriched = { projectName: run.projectLabel, ...payload, ...(link ? { link } : {}) }
-  void orgIdForProject(projectId)
-    .then((orgId) => emitOutboundEventQuietly({ orgId, projectId, eventKind, eventKey, payload: enriched }))
-    .catch(() => undefined)
-}
-
-/** Fire-and-forget gate-opened emission, resolved through the run's project org. */
-function emitGateOutbound(runId: string, gateId: string, stage: string | undefined, kind: string): void {
-  void getRun(runId)
-    .then(async (run) => {
-      if (!run?.projectId) return
-      const orgId = await orgIdForProject(run.projectId)
-      const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
-      const link = base ? `${base}/spaces/${encodeURIComponent(run.projectNamespace)}` : undefined
-      emitOutboundEventQuietly({ orgId, projectId: run.projectId, eventKind: 'gate_opened', eventKey: `gate:${gateId}:opened`, payload: { projectName: run.projectLabel, stage, kind, gateId, runId, ...(link ? { link } : {}) } })
-    })
-    .catch(() => undefined)
-}
-
 function getTemplateFromEngine(engine: PipelineEngine): ReturnType<typeof engine.getCurrentStage> extends undefined ? never : never {
   // helper is unused; kept for future template metadata plumbing
   return undefined as never

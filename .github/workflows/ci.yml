@@ -167,7 +167,7 @@ jobs:
         env:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
-        run: bun test tests/intake-store.test.ts tests/intake-conversion.test.ts tests/intake-connectors.test.ts tests/intake-routing.test.ts tests/intake-migration.test.ts tests/datadog-integration.test.ts tests/outbound-store.test.ts tests/outbound-delivery.test.ts tests/slack-identity.test.ts tests/slack-interactions.test.ts tests/intake-api.test.ts tests/intake-outbound.e2e.test.ts
+        run: bun test tests/intake-store.test.ts tests/intake-conversion.test.ts tests/intake-connectors.test.ts tests/intake-routing.test.ts tests/intake-migration.test.ts tests/datadog-integration.test.ts tests/outbound-store.test.ts tests/outbound-delivery.test.ts tests/outbound-payload-context.test.ts tests/slack-identity.test.ts tests/slack-interactions.test.ts tests/intake-api.test.ts tests/intake-outbound.e2e.test.ts
 
       - name: Stop responsibility server
         if: always()
