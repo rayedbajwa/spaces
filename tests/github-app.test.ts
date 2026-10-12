@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { buildGitHubAppManifest, consumeManifestState, githubAppInstallUrl, githubAppManifestPage, slackManifestUrl } from '../src/lib/github-app'
 import { explainPushFailure } from '../src/lib/pull-requests'
+import { PROVIDER_TEMPLATES } from '../src/lib/oauth'
 
 describe('GitHub App manifest', () => {
   test('points every URL at the deployment origin and asks for what runs need', () => {
@@ -38,6 +39,8 @@ describe('GitHub App manifest', () => {
     const manifest = JSON.parse(url.searchParams.get('manifest_json')!)
     expect(manifest.oauth_config.redirect_urls).toEqual(['http://localhost:3000/api/oauth/slack/callback'])
     expect(manifest.oauth_config.scopes.bot).toContain('chat:write')
+    expect(manifest.oauth_config.scopes.bot).toContain('im:write')
+    expect(PROVIDER_TEMPLATES.slack.scopes).toContain('im:write')
   })
 })
 

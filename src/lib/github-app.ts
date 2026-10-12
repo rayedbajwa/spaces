@@ -10,6 +10,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { SLACK_BOT_SCOPES } from './slack-scopes'
 
 export interface GitHubAppManifestResult {
   id: number
@@ -116,7 +117,7 @@ export function slackManifestUrl(origin: string): string {
     features: { bot_user: { display_name: 'Spaces', always_online: false } },
     oauth_config: {
       redirect_urls: [`${origin}/api/oauth/slack/callback`],
-      scopes: { bot: ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email'] },
+      scopes: { bot: SLACK_BOT_SCOPES },
     },
     settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
   }

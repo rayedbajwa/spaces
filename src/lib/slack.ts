@@ -3,6 +3,7 @@ import { getDb } from './db'
 import { getIntegrationAccessToken } from './integration-token'
 import { log } from './logger'
 import { orgIdForProject } from './orgs'
+import { SLACK_BOT_SCOPES } from './slack-scopes'
 
 /**
  * Slack: a channel per project, and the run's news posted there.
@@ -23,7 +24,7 @@ import { orgIdForProject } from './orgs'
 
 const slackLog = log.child({ mod: 'slack' })
 
-export const SLACK_BOT_SCOPES = ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email', 'im:write']
+export { SLACK_BOT_SCOPES }
 
 export class SlackApiError extends Error {
   constructor(readonly method: string, readonly code: string, readonly needed?: string) {
