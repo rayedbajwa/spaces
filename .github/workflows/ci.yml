@@ -150,6 +150,15 @@ jobs:
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
         run: bun test tests/railway.test.ts tests/deployment.test.ts tests/deployment-status.test.ts tests/deployment-approval.test.ts tests/deployment-report.test.ts tests/integration-categories.test.ts tests/deployment-api.test.ts tests/deployment.e2e.test.ts
 
+      # Owner approval-link suites. The HTTP and browser suites start their own
+      # servers (:3124-:3127, plus a mock Resend endpoint), so they need the
+      # browser install above but no shared server.
+      - name: Run approval link tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test tests/approval-store.test.ts tests/approval-migration.test.ts tests/approval-answer.test.ts tests/approval-delivery.test.ts tests/approval-security.test.ts tests/approval-api.test.ts tests/approval-email-integration.test.ts tests/approval.e2e.test.ts
+
       - name: Stop responsibility server
         if: always()
         run: |
