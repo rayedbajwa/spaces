@@ -2867,9 +2867,9 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 .deployment-section {
   margin: 18px 0;
   padding: 14px 16px;
-  border: 1px solid var(--border, #e2e6ee);
-  border-radius: 10px;
-  background: var(--surface-subtle, #fafbfd);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--bg-elevated);
 }
 .deployment-section h3 { margin: 0 0 6px; }
 .deployment-status { display: grid; gap: 6px; }
@@ -2883,15 +2883,10 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 }
 .deployment-history li { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .deployment-picker { display: grid; gap: 10px; margin-top: 8px; }
-.deployment-picker label { display: grid; gap: 4px; font-size: 13px; }
-.deployment-picker select {
-  padding: 7px 9px;
-  border: 1px solid var(--border, #d5dae5);
-  border-radius: 7px;
-  background: #fff;
-}
+.deployment-picker label { display: grid; gap: 4px; font-size: 13px; color: var(--text-muted); }
+.deployment-picker select { margin-top: 0; }
 .deployment-section .mini-badge.success,
-.deployment-section .mini-badge.completed { background: #e6f6ec; color: #166534; }
+.deployment-section .mini-badge.completed { background: var(--green-soft); color: var(--green); }
 
 /* ---- Owner approval link page (011-owner-approval-link) ------------------ */
 .approval-screen {
