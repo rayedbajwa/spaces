@@ -10,6 +10,9 @@ import { featureStatus, featureTitle, type FeatureStatus } from './features'
 import { parseScope } from './intent-scope'
 import { log } from './logger'
 import { markProjectStateStale } from './project-state'
+import { orgIdForProject } from './orgs'
+import { emitOutboundEventQuietly } from './outbound-store'
+import { attachIntentToPendingWorkLink } from './intake-store'
 import { implementationTaskProgress, parseTaskProgress } from './run-resume'
 import { summarizeVerification, type VerificationSummary } from './verification-summary'
 
@@ -291,6 +294,8 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
   const active = activeFeatureId(projectRoot)
   let documentsChanged = 0
   let statusChanges = 0
+  const outboundEmits: Array<{ eventKind: 'verification_completed' | 'feature_delivered'; eventKey: string; payload: Record<string, unknown> }> = []
+  const newIntents: string[] = []
   for (const dirId of dirs) {
     await sql.begin(async (tx) => {
       // Files are read under the project lock, so a person action that is
@@ -310,12 +315,24 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
       if (!row || row.deletedAt) return
       const intentId = row.intentId as string
       const existing = row.fresh ? undefined : row
+      const previousStatus = existing ? (existing.status as string | undefined) : undefined
+      // A brand-new directory may be the intent a converted intake item started.
+      if (!existing) newIntents.push(intentId)
       // The active intent is the database's to say (a person's choice). A sync
       // only sets it when nothing is active yet, or when this directory is a
       // new intent the agent just started — starting one makes it current.
       const makeActive = dirId === active && (!existing || !(await hasActiveIntent(tx, projectId)))
       if (makeActive) await tx`UPDATE intents SET active = false WHERE project_id = ${projectId} AND active AND intent_id <> ${intentId}`
       statusChanges += await writeSummary(tx, intentId, existing, summary, existing ? by : 'import', makeActive || undefined)
+      // A verification pass or a delivered feature is a notable event: emit it
+      // for any matching outbound subscription (fire-and-forget, never run state).
+      if ((summary.status === 'verified' || summary.status === 'delivered') && summary.status !== previousStatus) {
+        outboundEmits.push({
+          eventKind: summary.status === 'verified' ? 'verification_completed' : 'feature_delivered',
+          eventKey: `intent:${intentId}:${summary.status === 'verified' ? 'verification' : 'delivered'}`,
+          payload: { intentId, dirId, title: summary.title, status: summary.status },
+        })
+      }
       const stored = new Map((await tx<Array<{ path: string; sha256: string }>>`SELECT path, sha256 FROM intent_documents WHERE intent_id = ${intentId}`).map((d) => [d.path, d.sha256]))
       for (const [rel, content] of docs) {
         const hash = sha256(content)
@@ -334,6 +351,13 @@ export async function syncProjectIntents(projectId: string, projectRoot: string,
   // The folders on disk may have changed (a new intent, a branch switch that
   // brought back a deleted one), so the pointer is re-derived from the database.
   if (dirs.length > 0) await projectActiveIntent(projectId, projectRoot)
+  if (outboundEmits.length > 0) {
+    const orgId = await orgIdForProject(projectId).catch(() => undefined)
+    if (orgId) for (const emit of outboundEmits) emitOutboundEventQuietly({ orgId, projectId, eventKind: emit.eventKind, eventKey: emit.eventKey, payload: emit.payload })
+  }
+  // A converted intake item's work link points at the intent once it exists,
+  // so the item can be navigated to the run's spec directory.
+  for (const intentId of newIntents) await attachIntentToPendingWorkLink(projectId, intentId).catch(() => undefined)
   if (statusChanges || documentsChanged) {
     // The board caches each project's state; the record just changed under it.
     await markProjectStateStale(projectId).catch(() => undefined)

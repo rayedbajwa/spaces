@@ -63,6 +63,46 @@ export function approvalLinkTtlHours(): number {
   return Math.min(24 * 30, raw)
 }
 
+/** How often the worker polls configured intake sources. Defaults to 2 minutes. */
+export function intakeSyncIntervalMs(): number {
+  return positiveMs(process.env.INTAKE_SYNC_INTERVAL_MS, 120_000, 5_000)
+}
+
+/** Max intake sources synced per worker tick. */
+export function intakeSyncBatchSize(): number {
+  const raw = Number(process.env.INTAKE_SYNC_BATCH_SIZE)
+  if (!Number.isFinite(raw) || raw <= 0) return 20
+  return Math.min(200, Math.floor(raw))
+}
+
+/** How often the worker drains due outbound deliveries. Defaults to 15 seconds. */
+export function outboundDrainIntervalMs(): number {
+  return positiveMs(process.env.OUTBOUND_DRAIN_INTERVAL_MS, 15_000, 1_000)
+}
+
+/** Retries before an outbound delivery is marked failed. Defaults to 6. */
+export function outboundMaxAttempts(): number {
+  const raw = Number(process.env.OUTBOUND_MAX_ATTEMPTS)
+  if (!Number.isFinite(raw) || raw <= 0) return 6
+  return Math.min(50, Math.floor(raw))
+}
+
+/** Base delay for outbound exponential backoff. Defaults to 30 seconds. */
+export function outboundBackoffBaseMs(): number {
+  return positiveMs(process.env.OUTBOUND_BACKOFF_BASE_MS, 30_000, 1_000)
+}
+
+/** Cap on the outbound retry delay. Defaults to 30 minutes. */
+export function outboundBackoffMaxMs(): number {
+  return positiveMs(process.env.OUTBOUND_BACKOFF_MAX_MS, 1_800_000, 1_000)
+}
+
+function positiveMs(value: string | undefined, fallback: number, min: number): number {
+  const raw = Number(value)
+  if (!Number.isFinite(raw) || raw <= 0) return fallback
+  return Math.max(min, Math.floor(raw))
+}
+
 /** Deployment-level Resend key used only when the organization has no email connection. */
 export function platformResendApiKey(): string | undefined {
   const key = process.env.RESEND_API_KEY?.trim()

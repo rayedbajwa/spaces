@@ -296,6 +296,85 @@ async function getDecisionForGate(gateId: string): Promise<ApprovalDecision | un
   return row
 }
 
+export interface GateContext {
+  gateId: string
+  runId: string
+  projectId: string
+  stage: string
+  kind: ApprovalKind
+  status: string
+  summary: string | null
+}
+
+/** The run/project/stage a gate belongs to, for a Slack decision or prompt. */
+export async function getGateContext(gateId: string): Promise<GateContext | undefined> {
+  const [row] = await getDb()<Array<{ gateId: string; runId: string; projectId: string | null; stage: string | null; kind: ApprovalKind; status: string; prompt: string | null }>>`
+    SELECT g.gate_id AS "gateId", g.run_id AS "runId", r.project_id AS "projectId", r.current_stage AS stage,
+           g.kind, g.status, g.prompt
+      FROM pipeline_gates g JOIN pipeline_runs r ON r.run_id = g.run_id
+     WHERE g.gate_id = ${gateId}
+  `
+  if (!row || !row.projectId) return undefined
+  const stage = row.stage ?? row.prompt ?? 'review'
+  return { gateId: row.gateId, runId: row.runId, projectId: row.projectId, stage, kind: row.kind, status: row.status, summary: await summaryForGate(row.runId, stage).catch(() => undefined) ?? null }
+}
+
+export type SlackDecisionResult =
+  | { ok: true; decision: ApprovalDecision }
+  | { ok: false; reason: 'invalid' | 'expired' | 'consumed' | 'wrong_recipient' | 'revoked' | 'gate_resolved' | 'feedback_required' | 'feedback_too_long' | 'not_waiting'; decision?: ApprovalDecision }
+
+/**
+ * Submit a Slack gate decision through the same exactly-once core as a link:
+ * re-check the actor is a current resolved recipient, refuse a stale/resolved
+ * gate, then record `approval_decisions` with no request/link (FR-014/015/016).
+ */
+export async function submitSlackDecision(input: {
+  gateId: string
+  actorUserId: string
+  outcome: ApprovalOutcome
+  feedback?: string | null
+}): Promise<SlackDecisionResult> {
+  const context = await getGateContext(input.gateId)
+  if (!context) return { ok: false, reason: 'invalid' }
+  const existing = await getDecisionForGate(input.gateId)
+  if (existing) return { ok: false, reason: 'consumed', decision: existing }
+
+  // The link grants no role: the actor must still be an accountable recipient.
+  const resolved = await resolveGateRecipients(context.projectId, context.stage)
+  if (!resolved.recipients.some((recipient) => recipient.userId === input.actorUserId)) return { ok: false, reason: 'revoked' }
+  if (context.status !== 'open') return { ok: false, reason: 'gate_resolved', decision: existing }
+
+  const feedback = input.feedback?.trim() ?? ''
+  if (input.outcome !== 'approve' && !feedback) return { ok: false, reason: 'feedback_required' }
+  if (feedback.length > 4000) return { ok: false, reason: 'feedback_too_long' }
+
+  const answer = answerForOutcome(context.kind, input.outcome, feedback || null)
+  const result = await answerPausedRun({
+    runId: context.runId,
+    projectId: context.projectId,
+    answer,
+    decision: {
+      requestId: null,
+      linkId: null,
+      gateId: input.gateId,
+      outcome: input.outcome,
+      feedback: feedback || null,
+      summaryShown: context.summary,
+      decidedBy: input.actorUserId,
+      via: 'slack',
+    },
+  })
+  if (!result.ok) {
+    const winning = await getDecisionForGate(input.gateId)
+    approvalLog.warn('slack decision rejected; the gate is no longer waiting', { gateId: input.gateId, reason: result.reason })
+    return { ok: false, reason: result.reason === 'archived' ? 'not_waiting' : 'gate_resolved', decision: winning }
+  }
+  const decision = await getDecisionForGate(input.gateId)
+  if (!decision) return { ok: false, reason: 'gate_resolved' }
+  approvalLog.info('slack decision recorded', { gateId: input.gateId, outcome: input.outcome, by: input.actorUserId })
+  return { ok: true, decision }
+}
+
 export interface ApprovalDecisionView extends ApprovalDecision {
   projectName?: string
 }

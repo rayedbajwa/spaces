@@ -259,13 +259,15 @@ export async function answerPausedRun(input: {
   projectId: string
   answer: string
   decision?: {
-    requestId: string
-    linkId: string
+    requestId: string | null
+    linkId: string | null
     gateId: string
     outcome: 'approve' | 'approve_with_notes' | 'request_changes'
     feedback: string | null
     summaryShown: string | null
     decidedBy: string
+    /** Which surface recorded the decision; the event payload records it. */
+    via?: 'link' | 'slack'
   }
 }): Promise<{ ok: true; stage: StageName | null; pauseKind: 'review' | 'clarification' } | { ok: false; reason: 'not_waiting' | 'archived' }> {
   const sql = getDb()
@@ -296,7 +298,7 @@ export async function answerPausedRun(input: {
         gateId: gate?.gateId,
         kind: gate?.kind,
         response: input.answer,
-        ...(input.decision ? { decision: { outcome: input.decision.outcome, feedback: input.decision.feedback, decidedBy: input.decision.decidedBy, via: 'link' } } : {}),
+        ...(input.decision ? { decision: { outcome: input.decision.outcome, feedback: input.decision.feedback, decidedBy: input.decision.decidedBy, via: input.decision.via ?? (input.decision.linkId ? 'link' : 'slack') } } : {}),
       } as never)})
     `
     if (input.decision && gate?.gateId) {
@@ -312,7 +314,8 @@ export async function answerPausedRun(input: {
       await tx`UPDATE approval_requests SET state = 'decided', updated_at = now() WHERE request_id = ${decision.requestId}`
       await tx`
         UPDATE approval_requests SET state = 'invalidated', updated_at = now()
-         WHERE gate_id = ${gate.gateId} AND request_id <> ${decision.requestId} AND state IN ('pending','delivered')
+         WHERE gate_id = ${gate.gateId} AND state IN ('pending','delivered')
+           AND (${decision.requestId}::uuid IS NULL OR request_id <> ${decision.requestId})
       `
       await tx`
         UPDATE approval_links SET consumed_at = now()

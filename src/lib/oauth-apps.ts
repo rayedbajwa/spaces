@@ -27,6 +27,8 @@ export interface OAuthAppConfig {
   /** Sealed private key (GitHub App) — kept for future server-to-server use. */
   pemEnc?: string
   webhookSecretEnc?: string
+  /** Sealed Slack app signing secret (Basic Information → App Credentials); verifies inbound events/interactions/commands. */
+  signingSecretEnc?: string
   /** GitHub App installation ids seen through the setup redirect. */
   installationIds?: number[]
   installedAt?: string
@@ -219,6 +221,42 @@ export async function recordGitHubInstallation(orgId: string, installationId: nu
 export async function deleteOAuthApp(orgId: string, provider: OAuthProviderId): Promise<boolean> {
   const rows = await getDb()`DELETE FROM oauth_apps WHERE org_id = ${orgId} AND provider = ${provider} RETURNING provider`
   return rows.length > 0
+}
+
+/** Seal and persist the Slack app signing secret (owner/admin capture in the setup panel). */
+export async function saveSlackSigningSecret(orgId: string, secret: string, updatedBy?: string | null): Promise<void> {
+  const trimmed = secret.trim()
+  if (!trimmed) throw new Error('A signing secret is required.')
+  const patch: OAuthAppConfig = { signingSecretEnc: encryptSecret(trimmed) }
+  await getDb()`UPDATE oauth_apps SET config_json = config_json || ${getDb().json(patch as never)}, updated_by = ${updatedBy ?? null}, updated_at = now() WHERE org_id = ${orgId} AND provider = 'slack'`
+}
+
+/** The decrypted Slack signing secret, or undefined when none was captured (fail closed). */
+export async function getSlackSigningSecret(orgId: string): Promise<string | undefined> {
+  const config = await getOAuthAppConfig(orgId, 'slack')
+  if (!config.signingSecretEnc) return undefined
+  try {
+    return decryptSecret(config.signingSecretEnc)
+  } catch {
+    return undefined
+  }
+}
+
+/** Every org with a captured Slack signing secret, for signature-first inbound verification. */
+export async function listSlackSigningSecretOrgs(): Promise<Array<{ orgId: string; secret: string }>> {
+  const rows = await getDb()<Array<{ orgId: string; config: OAuthAppConfig | null }>>`
+    SELECT org_id AS "orgId", config_json AS config FROM oauth_apps WHERE provider = 'slack'
+  `.catch(() => [])
+  const out: Array<{ orgId: string; secret: string }> = []
+  for (const row of rows) {
+    if (!row.config?.signingSecretEnc) continue
+    try {
+      out.push({ orgId: row.orgId, secret: decryptSecret(row.config.signingSecretEnc) })
+    } catch {
+      // Undecryptable secret: that org cannot receive Slack inbound.
+    }
+  }
+  return out
 }
 
 function mask(value: string): string {

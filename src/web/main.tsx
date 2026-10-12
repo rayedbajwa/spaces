@@ -8,6 +8,9 @@ import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
 import { ApprovalPage } from './approval'
+import { IntakePage } from './intake'
+import { OutboundPage } from './outbound'
+import { SlackLinkPage } from './slack-link'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import { featureDescriptionProblem } from '../lib/feature-description'
 import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/intent-scope'
@@ -2202,6 +2205,10 @@ function App() {
 
   // An approval link renders its own focused page instead of the board shell.
   if (window.location.pathname.startsWith('/approvals/')) return <ApprovalPage />
+  // Intake is a full page, not a board overlay.
+  if (window.location.pathname.startsWith('/intake')) return <IntakePage />
+  if (window.location.pathname.startsWith('/outbound')) return <OutboundPage />
+  if (window.location.pathname.startsWith('/slack-link/')) return <SlackLinkPage />
 
   return (
     <main className="app-shell">

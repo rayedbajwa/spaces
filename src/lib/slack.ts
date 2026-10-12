@@ -114,6 +114,17 @@ async function currentWorkspace(token: string): Promise<string> {
   return data.team_id
 }
 
+/** The Slack workspace connected to an org, or undefined when Slack is not connected. */
+export async function slackWorkspaceTeamId(orgId: string): Promise<string | undefined> {
+  const token = await slackToken(orgId)
+  if (!token) return undefined
+  try {
+    return await currentWorkspace(token)
+  } catch {
+    return undefined
+  }
+}
+
 /** Find a public channel by name (the project's channel may already exist from an earlier connection). */
 async function findChannel(token: string, name: string): Promise<{ id: string; isMember: boolean } | undefined> {
   let cursor: string | undefined
@@ -377,6 +388,79 @@ export function renderApprovalDm(input: {
   blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Review and decide' }, url: input.link, style: 'primary' }] })
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'This link is personal and can be used once. The in-app gate stays available.' }] })
   return { text, blocks }
+}
+
+/**
+ * Interactive approval prompt for a gate: the summary plus the three decisions
+ * the in-app gate accepts. Button values carry only the gate id; the handler
+ * resolves the org from the signature/team mapping and re-checks authority.
+ */
+export function renderGateActions(input: {
+  gateId: string
+  project: { name: string; code: string | null; slug: string }
+  stage: string
+  kind: 'review' | 'clarification'
+  summary?: string | null
+}): { text: string; blocks: unknown[] } {
+  const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
+  const safeLabel = slackText(label, 300)
+  const stage = slackText(input.stage, 200)
+  const text = `${input.kind === 'review' ? 'Review' : 'Question'} waiting: ${safeLabel} · ${stage}`
+  const blocks: unknown[] = [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
+    { type: 'section', text: { type: 'mrkdwn', text: `🟡 *${input.kind === 'review' ? 'Review needed' : 'Clarification needed'}* on *${stage}*.` } },
+  ]
+  const summary = input.summary?.trim()
+  if (summary) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(summary, 2600).replace(/\n/g, '\n>')}` } })
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', action_id: 'approve', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', value: input.gateId },
+      { type: 'button', action_id: 'approve_with_notes', text: { type: 'plain_text', text: 'Approve with notes' }, value: input.gateId },
+      { type: 'button', action_id: 'request_changes', text: { type: 'plain_text', text: 'Request changes' }, style: 'danger', value: input.gateId },
+    ],
+  })
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Your Slack identity must be verified and you must be an accountable recipient of this gate.' }] })
+  return { text, blocks }
+}
+
+/**
+ * Clarification question prompt for a Slack thread: the agent's question, no
+ * decision buttons (a clarification is answered in the app or by reply), and a
+ * link to the in-app gate. Kept as a thread reply so it does not ping the room.
+ */
+export function renderQuestionThread(input: {
+  project: { name: string; code: string | null; slug: string }
+  stage: string
+  question?: string | null
+  link?: string | null
+}): { text: string; blocks: unknown[] } {
+  const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
+  const safeLabel = slackText(label, 300)
+  const stage = slackText(input.stage, 200)
+  const text = `Question on ${safeLabel} · ${stage}`
+  const blocks: unknown[] = [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
+    { type: 'section', text: { type: 'mrkdwn', text: `❓ *Clarification needed* on *${stage}*.` } },
+  ]
+  const question = input.question?.trim()
+  if (question) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(question, 2600).replace(/\n/g, '\n>')}` } })
+  if (input.link) blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Answer in Spaces' }, url: input.link }] })
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Answer in Spaces to keep the run exactly-once; this thread is a copy.' }] })
+  return { text, blocks }
+}
+
+/** Mark an already-posted Slack prompt as decided by a later/wider action. */
+export async function updateSlackMessage(input: { orgId: string; channel: string; ts: string; text: string; blocks?: unknown[] }): Promise<boolean> {
+  const token = await slackToken(input.orgId)
+  if (!token) return false
+  try {
+    await slackApi(token, 'chat.update', { channel: input.channel, ts: input.ts, text: input.text, ...(input.blocks ? { blocks: input.blocks } : {}) })
+    return true
+  } catch (error) {
+    reportSlackError(input.orgId, 'update a Slack prompt', error)
+    return false
+  }
 }
 
 /**

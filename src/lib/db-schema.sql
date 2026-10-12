@@ -294,7 +294,7 @@ ALTER TABLE project_repos ADD COLUMN IF NOT EXISTS clone_error  TEXT;
 -- enum can grow (constraint name is Postgres' default for an inline CHECK).
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email','datadog'));
 
 -- Per-project knowledge scope: which connected integrations agents may query for
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
@@ -1071,7 +1071,7 @@ CREATE TABLE IF NOT EXISTS run_guard_vaults (
 -- ============================================================================
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email','datadog'));
 
 ALTER TABLE oauth_apps DROP CONSTRAINT IF EXISTS oauth_apps_provider_check;
 ALTER TABLE oauth_apps ADD CONSTRAINT oauth_apps_provider_check
@@ -1258,3 +1258,162 @@ CREATE TABLE IF NOT EXISTS approval_link_attempts (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS approval_link_attempts_request_idx ON approval_link_attempts (request_id, created_at DESC);
+
+-- ============================================================================
+-- Inbound Work Intake, Outbound Triggers, and a Two-Way Slack Surface
+-- (012-inbound-outbound-slack)
+-- All additive and idempotent. Eight tables: organization-scoped intake items
+-- and their audit/links/sources/routing rules, verified Slack identity links,
+-- and outbound subscriptions/deliveries. No existing table or column changes.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS intake_items (
+  intake_id            UUID PRIMARY KEY,
+  org_id               UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  source               TEXT NOT NULL CHECK (source IN ('jira','linear','slack','datadog')),
+  external_ref         TEXT NOT NULL,
+  external_url         TEXT,
+  source_scope         TEXT,
+  title                TEXT NOT NULL,
+  summary              TEXT,
+  requester_name       TEXT,
+  requester_email      TEXT,
+  priority             TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('urgent','high','normal','low')),
+  state                TEXT NOT NULL DEFAULT 'new' CHECK (state IN ('new','converted','dismissed','merged')),
+  suggested_project_id UUID REFERENCES projects(project_id) ON DELETE SET NULL,
+  suggested_team_id    UUID REFERENCES teams(team_id) ON DELETE SET NULL,
+  suggested_priority   TEXT CHECK (suggested_priority IS NULL OR suggested_priority IN ('urgent','high','normal','low')),
+  matched_rule_id      UUID,
+  rule_overridden      BOOLEAN NOT NULL DEFAULT false,
+  repeat_count         INT NOT NULL DEFAULT 1,
+  source_available     BOOLEAN NOT NULL DEFAULT true,
+  first_seen_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at         TIMESTAMPTZ,
+  merged_into_id       UUID REFERENCES intake_items(intake_id) ON DELETE SET NULL,
+  raw_json             JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, source, external_ref)
+);
+CREATE INDEX IF NOT EXISTS intake_items_org_state_priority_idx ON intake_items (org_id, state, priority, first_seen_at);
+CREATE INDEX IF NOT EXISTS intake_items_matched_rule_idx ON intake_items (matched_rule_id);
+
+CREATE TABLE IF NOT EXISTS intake_transitions (
+  transition_id   UUID PRIMARY KEY,
+  intake_id       UUID NOT NULL REFERENCES intake_items(intake_id) ON DELETE CASCADE,
+  actor_user_id   UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  actor_surface   TEXT NOT NULL CHECK (actor_surface IN ('app','slack','system')),
+  action          TEXT NOT NULL CHECK (action IN ('arrived','refreshed','priority_changed','converted','dismissed','restored','merged','merged_into','routed','rule_override')),
+  from_state      TEXT,
+  to_state        TEXT,
+  reason          TEXT,
+  metadata_json   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS intake_transitions_intake_idx ON intake_transitions (intake_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS intake_work_links (
+  link_id                  UUID PRIMARY KEY,
+  intake_id                UUID NOT NULL REFERENCES intake_items(intake_id) ON DELETE CASCADE,
+  project_id               UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  work_kind                TEXT NOT NULL CHECK (work_kind IN ('feature','bugfix')),
+  run_id                   UUID REFERENCES pipeline_runs(run_id) ON DELETE SET NULL,
+  intent_id                UUID REFERENCES intents(intent_id) ON DELETE SET NULL,
+  source_update_state      TEXT NOT NULL DEFAULT 'pending' CHECK (source_update_state IN ('pending','updated','failed','unsupported')),
+  source_update_error      TEXT,
+  source_update_attempted_at TIMESTAMPTZ,
+  created_by               UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (intake_id)
+);
+CREATE INDEX IF NOT EXISTS intake_work_links_project_idx ON intake_work_links (project_id);
+CREATE INDEX IF NOT EXISTS intake_work_links_run_idx ON intake_work_links (run_id);
+
+CREATE TABLE IF NOT EXISTS intake_routing_rules (
+  rule_id            UUID PRIMARY KEY,
+  org_id             UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  label              TEXT NOT NULL,
+  enabled            BOOLEAN NOT NULL DEFAULT true,
+  priority_order     INT NOT NULL DEFAULT 0,
+  match_json         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  target_project_id  UUID REFERENCES projects(project_id) ON DELETE SET NULL,
+  target_team_id     UUID REFERENCES teams(team_id) ON DELETE SET NULL,
+  target_priority    TEXT CHECK (target_priority IS NULL OR target_priority IN ('urgent','high','normal','low')),
+  created_by         UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS intake_routing_rules_org_idx ON intake_routing_rules (org_id, enabled, priority_order DESC);
+
+CREATE TABLE IF NOT EXISTS intake_sources (
+  source_id             UUID PRIMARY KEY,
+  org_id                UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  kind                  TEXT NOT NULL CHECK (kind IN ('jira','linear','datadog','slack')),
+  label                 TEXT NOT NULL,
+  scope_key             TEXT NOT NULL,
+  config_json           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled               BOOLEAN NOT NULL DEFAULT true,
+  cursor_json           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  sync_interval_minutes INT NOT NULL DEFAULT 2,
+  last_sync_started_at  TIMESTAMPTZ,
+  last_sync_finished_at TIMESTAMPTZ,
+  last_sync_status      TEXT CHECK (last_sync_status IS NULL OR last_sync_status IN ('running','ok','error')),
+  last_sync_error       TEXT,
+  last_sync_stats       JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, kind, scope_key)
+);
+CREATE INDEX IF NOT EXISTS intake_sources_org_enabled_idx ON intake_sources (org_id, enabled);
+
+CREATE TABLE IF NOT EXISTS slack_identity_links (
+  link_id       UUID PRIMARY KEY,
+  org_id        UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  slack_team_id TEXT NOT NULL,
+  slack_user_id TEXT NOT NULL,
+  email         TEXT,
+  user_id       UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  state         TEXT NOT NULL CHECK (state IN ('pending','verified','revoked')),
+  token_hash    TEXT UNIQUE,
+  verified_at   TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, slack_team_id, slack_user_id)
+);
+CREATE INDEX IF NOT EXISTS slack_identity_links_user_idx ON slack_identity_links (user_id);
+CREATE INDEX IF NOT EXISTS slack_identity_links_team_idx ON slack_identity_links (slack_team_id, slack_user_id);
+
+CREATE TABLE IF NOT EXISTS outbound_subscriptions (
+  subscription_id UUID PRIMARY KEY,
+  org_id          UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  project_id      UUID REFERENCES projects(project_id) ON DELETE CASCADE,
+  event_kind      TEXT NOT NULL CHECK (event_kind IN ('run_failed','gate_opened','stage_completed','verification_completed','feature_delivered')),
+  target_kind     TEXT NOT NULL CHECK (target_kind IN ('jira','linear','github','slack')),
+  action          TEXT NOT NULL CHECK (action IN ('comment','update_issue','create_issue','post_message')),
+  target_config   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  enabled         BOOLEAN NOT NULL DEFAULT true,
+  created_by      UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS outbound_subscriptions_org_event_idx ON outbound_subscriptions (org_id, event_kind, enabled);
+CREATE INDEX IF NOT EXISTS outbound_subscriptions_project_idx ON outbound_subscriptions (project_id);
+
+CREATE TABLE IF NOT EXISTS outbound_deliveries (
+  delivery_id     UUID PRIMARY KEY,
+  subscription_id UUID NOT NULL REFERENCES outbound_subscriptions(subscription_id) ON DELETE CASCADE,
+  org_id          UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  project_id      UUID REFERENCES projects(project_id) ON DELETE SET NULL,
+  event_kind      TEXT NOT NULL,
+  event_key       TEXT NOT NULL,
+  payload_json    JSONB NOT NULL DEFAULT '{}'::jsonb,
+  state           TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','delivered','failed','skipped')),
+  attempts        INT NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error      TEXT,
+  external_ref    TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (subscription_id, event_key)
+);
+CREATE INDEX IF NOT EXISTS outbound_deliveries_due_idx ON outbound_deliveries (state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS outbound_deliveries_org_idx ON outbound_deliveries (org_id, created_at DESC);
