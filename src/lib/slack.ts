@@ -370,36 +370,6 @@ export async function notifyWaitlistSignup(entry: { name: string | null; company
 // ---------------------------------------------------------------------------
 
 /**
- * The Block Kit message for a direct approval request. Exported and pure so its
- * content can be asserted without Slack. It contains exactly the one link given
- * and never a shared-channel substitute.
- */
-export function renderApprovalDm(input: {
-  project: { name: string; code: string | null; slug: string }
-  stage: string
-  summary?: string | null
-  link: string
-  responsibility?: string | null
-  fallback?: boolean
-}): { text: string; blocks: unknown[] } {
-  const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
-  const safeLabel = slackText(label, 300)
-  const stage = slackText(input.stage, 200)
-  const role = input.responsibility ? slackText(input.responsibility, 120) : ''
-  const who = role ? `${role}${input.fallback ? ' (Owner fallback)' : ''}` : (input.fallback ? 'Owner fallback' : '')
-  const text = `Approval needed: ${safeLabel} · ${stage}`
-  const blocks: unknown[] = [
-    { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
-    { type: 'section', text: { type: 'mrkdwn', text: `🟡 *Approval needed* on *${stage}*${who ? ` — ${who}` : ''}.` } },
-  ]
-  const summary = input.summary?.trim()
-  if (summary) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(summary, 2600).replace(/\n/g, '\n>')}` } })
-  blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Review and decide' }, url: input.link, style: 'primary' }] })
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'This link is personal and can be used once. The in-app gate stays available.' }] })
-  return { text, blocks }
-}
-
-/**
  * Interactive approval prompt for a gate: the summary plus the three decisions
  * the in-app gate accepts. Button values carry only the gate id; the handler
  * resolves the org from the signature/team mapping and re-checks authority.
@@ -508,21 +478,6 @@ export async function postDirectMessage(input: {
     reportSlackError(input.orgId, 'send a direct message', error)
     return { ok: false, reason: 'slack_error', message: error instanceof Error ? error.message : String(error) }
   }
-}
-
-/**
- * Send an interactive approval prompt (decision buttons) or a clarification
- * question as a DM. On success returns the message coordinates so the prompt
- * can later be marked decided. Never throws.
- */
-export async function sendInteractiveDirectMessage(input: {
-  orgId: string
-  email?: string | null
-  slackUserId?: string | null
-  text: string
-  blocks: unknown[]
-}): Promise<{ ok: true; slackUserId: string; channelId: string; ts: string } | { ok: false; reason: 'no_slack' | 'users_not_found' | 'slack_error'; message?: string }> {
-  return await postDirectMessage(input)
 }
 
 /**

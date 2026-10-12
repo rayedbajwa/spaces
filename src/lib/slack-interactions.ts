@@ -18,7 +18,7 @@ import { listSlackSigningSecretOrgs } from './oauth-apps'
 import { submitSlackClarification, submitSlackDecision, type ApprovalOutcome } from './approval-store'
 import { linkSlackIdentity, sendIdentityVerification, verifiedSlackUserId } from './slack-identity'
 import { slackBotToken } from './slack'
-import { findSlackGatePromptByMessage } from './slack-gate-prompts'
+import { findSlackGatePromptByMessage, listOpenSlackGatePromptsForUser } from './slack-gate-prompts'
 import { upsertIntakeItem } from './intake-store'
 
 const inboundLog = log.child({ mod: 'slack-interactions' })
@@ -170,8 +170,16 @@ async function maybeAnswerClarification(
   threadTs: string | undefined,
   channelId: string | undefined,
 ): Promise<SlackHandleResult | undefined> {
-  if (!threadTs || !channelId) return undefined
-  const prompt = await findSlackGatePromptByMessage(orgId, channelId, threadTs).catch(() => undefined)
+  if (!channelId) return undefined
+  let prompt
+  if (threadTs) {
+    prompt = await findSlackGatePromptByMessage(orgId, channelId, threadTs).catch(() => undefined)
+  } else {
+    // A plain DM reply carries no thread ts, so match the newest open
+    // clarification prompt posted to this person's DM channel (US3 #4).
+    const open = await listOpenSlackGatePromptsForUser(orgId, slackUserId).catch(() => [])
+    prompt = open.find((candidate) => candidate.promptKind === 'clarification' && candidate.channelId === channelId)
+  }
   if (!prompt || prompt.promptKind !== 'clarification') return undefined
   if (prompt.slackUserId && prompt.slackUserId !== slackUserId) return undefined
   // Scope the identity to the event's workspace: a verified link in one team

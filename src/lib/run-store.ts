@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
+import { markSlackGatePromptsDecided } from './slack-gate-prompts'
 import type { FlowOptions, PauseKind, StageName } from './aidlc'
 import type { PipelineTemplate } from './pipeline-template'
 
@@ -271,7 +272,8 @@ export async function answerPausedRun(input: {
   }
 }): Promise<{ ok: true; stage: StageName | null; pauseKind: 'review' | 'clarification' } | { ok: false; reason: 'not_waiting' | 'archived' }> {
   const sql = getDb()
-  return await sql.begin(async (tx) => {
+  let resolvedGateId: string | undefined
+  const result = await sql.begin(async (tx) => {
     const [project] = await tx<Array<{ archivedAt: string | null }>>`SELECT archived_at AS "archivedAt" FROM projects WHERE project_id = ${input.projectId}`
     if (project?.archivedAt) return { ok: false as const, reason: 'archived' as const }
     // Locked, so two answers arriving together cannot both pass this check.
@@ -292,6 +294,7 @@ export async function answerPausedRun(input: {
        WHERE gate_id = (SELECT gate_id FROM pipeline_gates WHERE run_id = ${input.runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1)
        RETURNING gate_id AS "gateId", kind
     `
+    if (gate?.gateId) resolvedGateId = gate.gateId
     await tx`
       INSERT INTO pipeline_events (run_id, kind, payload)
       VALUES (${input.runId}, 'gate_resolved', ${tx.json({
@@ -339,6 +342,15 @@ export async function answerPausedRun(input: {
     `
     return { ok: true as const, stage: run.stage, pauseKind: run.pauseKind }
   })
+  // Any surface that resolves a gate closes the Slack prompt it posted, so the
+  // buttons never outlive the gate. Decision paths already rewrite the message
+  // with their outcome; this covers the in-app answer route and programmatic
+  // answers (FR-016, test-plan §5.6). Best effort and idempotent.
+  if (result.ok && !input.decision && resolvedGateId) {
+    const text = result.pauseKind === 'clarification' ? 'Clarification answered in Spaces.' : 'Decision recorded in Spaces.'
+    await markSlackGatePromptsDecided(resolvedGateId, text)
+  }
+  return result
 }
 
 /** Forget which worker owns a run (its engine is gone), so answers fall back to re-queueing. */

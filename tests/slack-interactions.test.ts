@@ -7,7 +7,7 @@ import { submitSlackClarification } from '../src/lib/approval-store'
 import { linkSlackIdentity } from '../src/lib/slack-identity'
 import { renderGateActions, renderQuestionThread } from '../src/lib/slack'
 import { saveSlackGatePrompt, markSlackGatePromptsDecided } from '../src/lib/slack-gate-prompts'
-import { openGate } from '../src/lib/run-store'
+import { answerPausedRun, openGate } from '../src/lib/run-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
 /**
@@ -15,7 +15,7 @@ import { createApprovalFixture } from './helpers/approval-fixture'
  * FR-011/012/013/014/016). DB-backed; Slack HTTP is not called.
  */
 const fixture = await createApprovalFixture({ withServer: false })
-const { orgA, orgB, users, gateA, runA } = fixture
+const { orgA, orgB, users, gateA, runA, projectA } = fixture
 afterAll(async () => { await fixture.stop() })
 
 async function emailFor(userId: string): Promise<string> {
@@ -194,6 +194,24 @@ describe('feedback decisions and clarification answers from Slack', () => {
     }
   })
 
+  test('an in-app answer closes the Slack prompt posted for the gate', async () => {
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'review', current_stage = 'review' WHERE run_id = ${runA}`
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: 'U-inapp', channelId: 'D-INAPP', messageTs: '1800.100', promptKind: 'review' })
+    try {
+      const answered = await answerPausedRun({ runId: runA, projectId: projectA.projectId, answer: 'approve' })
+      expect(answered.ok).toBe(true)
+      const [prompt] = await getDb()<Array<{ decidedAt: string | null }>>`SELECT decided_at AS "decidedAt" FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      expect(prompt?.decidedAt).not.toBeNull()
+    } finally {
+      const gateText = `"${gateId}"`
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM project_jobs WHERE run_id = ${runA}`
+      await getDb()`DELETE FROM pipeline_events WHERE run_id = ${runA} AND kind = 'gate_resolved' AND (payload->'gateId')::text = ${gateText}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+    }
+  })
+
   test('a reply in a clarification prompt thread is delivered verbatim', async () => {
     const team = `T-${crypto.randomUUID().slice(0, 6)}`
     const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
@@ -209,6 +227,54 @@ describe('feedback decisions and clarification answers from Slack', () => {
       expect(result.body.ok).toBe(true)
       const [gate] = await getDb()<Array<{ response: string | null }>>`SELECT response FROM pipeline_gates WHERE gate_id = ${gateId}`
       expect(gate?.response).toBe('Use Postgres, not SQLite')
+    } finally {
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+
+  test('a plain DM reply with no thread ts answers the open clarification', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.ownerA, team, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'clarification', prompt: 'clarify' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'clarification', current_stage = 'clarify' WHERE run_id = ${runA}`
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: slackUser, channelId: 'D-DM-PLAIN', messageTs: '1700.500', promptKind: 'clarification' })
+    try {
+      const result = await handleSlackEvent(orgA, {
+        team_id: team,
+        event: { type: 'message', user: slackUser, channel: 'D-DM-PLAIN', text: 'Use Postgres, not SQLite' },
+      })
+      expect(result.body.ok).toBe(true)
+      const [gate] = await getDb()<Array<{ response: string | null }>>`SELECT response FROM pipeline_gates WHERE gate_id = ${gateId}`
+      expect(gate?.response).toBe('Use Postgres, not SQLite')
+    } finally {
+      await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+
+  test('a clarification reply from a different team of the same org cannot answer', async () => {
+    const teamA = `T-${crypto.randomUUID().slice(0, 6)}`
+    const teamB = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.ownerA, teamA, slackUser)
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'clarification', prompt: 'clarify' })
+    await getDb()`UPDATE pipeline_runs SET status = 'paused', pause_kind = 'clarification', current_stage = 'clarify' WHERE run_id = ${runA}`
+    await saveSlackGatePrompt({ orgId: orgA, gateId, slackUserId: slackUser, channelId: 'D-TEAM-SCOPE', messageTs: '1700.600', promptKind: 'clarification' })
+    try {
+      const result = await handleSlackEvent(orgA, {
+        team_id: teamB,
+        event: { type: 'message', user: slackUser, channel: 'D-TEAM-SCOPE', thread_ts: '1700.600', text: 'Use Postgres' },
+      })
+      // The team-B event must not fall back to the person's team-A link.
+      expect(result.body.ok).toBe(false)
+      const [gate] = await getDb()<Array<{ response: string | null }>>`SELECT response FROM pipeline_gates WHERE gate_id = ${gateId}`
+      expect(gate?.response).toBeNull()
     } finally {
       await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
       await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
