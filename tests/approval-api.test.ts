@@ -3,6 +3,10 @@ import { getDb } from '../src/lib/db'
 import { createApprovalRequests, resolveGateRecipients, verifyApprovalLink } from '../src/lib/approval-store'
 import { createRun, openGate } from '../src/lib/run-store'
 import { createApprovalFixture } from './helpers/approval-fixture'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { addRepo } from '../src/lib/project-registry'
 
 /**
  * Approval API contract (FR-017/020/022): recipient matching, tenant isolation,
@@ -23,6 +27,13 @@ const created = await createApprovalRequests({
 })
 const token = created.find((item) => item.request.recipientUserId === users.productOwnerA)!.token
 
+// A workspace with a reviewed feature, so the link can show where it stands.
+const workspace = await mkdtemp(path.join(tmpdir(), 'spaces-approval-ctx-'))
+await mkdir(path.join(workspace, 'specs', '001-checkout'), { recursive: true })
+await writeFile(path.join(workspace, 'specs', '001-checkout', 'spec.md'), '# Feature Specification: Faster checkout\n')
+await writeFile(path.join(workspace, 'specs', '001-checkout', 'code-review.md'), 'Code Review Status: APPROVED\n\n## Findings\n- Two minor findings.\n')
+await addRepo({ projectId: projectA.projectId, label: 'app', kind: 'local', localPath: workspace, isPrimary: true })
+
 async function api<T = any>(method: string, path: string, cookie?: string, body?: unknown): Promise<{ status: number; body: T }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
@@ -35,7 +46,7 @@ async function api<T = any>(method: string, path: string, cookie?: string, body?
   return { status: res.status, body: parsed as T }
 }
 
-afterAll(async () => { await fixture.stop() })
+afterAll(async () => { await fixture.stop(); await rm(workspace, { recursive: true, force: true }) })
 
 describe('GET /api/approvals/:token', () => {
   test('the bound recipient sees the summary and state', async () => {
@@ -45,6 +56,16 @@ describe('GET /api/approvals/:token', () => {
     expect(res.body.stage).toBe('review')
     expect(res.body.summary).toContain('2 minor findings')
     expect(res.body.state).toBe('pending')
+  })
+
+  test('the link carries the feature, its statuses and the stage report', async () => {
+    const res = await api<{ context: { feature: { title: string }; codeReview: string; report: { file: string; text: string }; onApprove: string } }>('GET', `/api/approvals/${token}`, recipientCookie)
+    expect(res.status).toBe(200)
+    expect(res.body.context.feature.title).toBe('Faster checkout')
+    expect(res.body.context.codeReview).toBe('approved')
+    expect(res.body.context.report.file).toBe('code-review.md')
+    expect(res.body.context.report.text).toContain('Two minor findings')
+    expect(res.body.context.onApprove).toContain('QA')
   })
 
   test('an unauthenticated visitor is asked to sign in', async () => {

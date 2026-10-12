@@ -2953,7 +2953,9 @@ async function route(req: Request): Promise<Response> {
       return sendJson(409, { error: 'This gate is no longer waiting for a decision.', code: 'gate_resolved' })
     }
     const state = decision ? 'decided' : verified.verdict === 'expired' ? 'expired' : verified.verdict === 'consumed' ? 'invalidated' : request.state
+    const context = project ? await approvalContext(project.projectId, project.slug, request.stage).catch(() => undefined) : undefined
     return sendJson(200, {
+      ...(context ? { context } : {}),
       project: { name: project?.name ?? 'Project', code: project?.code ?? null },
       stage: request.stage,
       kind: request.kind,
@@ -5118,6 +5120,46 @@ interface PersistedArtifactState {
   files: Record<string, ArtifactSnapshotEntry>
   diffs: ArtifactDiffEntry[]
   updatedAt: string
+}
+
+/** The report each stage leaves; the approval page shows it in full. */
+const STAGE_REPORTS: Partial<Record<string, string>> = {
+  specify: 'spec.md', clarify: 'spec.md', plan: 'plan.md', tasks: 'tasks.md', testplan: 'test-plan.md',
+  parallelize: 'parallel-workstreams.md', review: 'code-review.md', verify: 'verification-report.md',
+  implement: 'verification-report.md', deliver: 'delivery-report.md',
+}
+
+const APPROVE_EFFECT: Partial<Record<string, string>> = {
+  deliver: 'Approving re-checks the pull requests and the deployment. For a project linked to a deployment target it releases there. Delivery finishes once it reports MERGED.',
+  verify: 'Approving accepts this QA result and moves the feature on to delivery.',
+  review: 'Approving accepts the code review and moves on to QA.',
+  implement: 'Approving accepts the implementation and moves on.',
+}
+
+/**
+ * What an owner needs to decide from an approval link: the feature, where its
+ * review, QA, tasks and delivery stand, and the report the stage produced.
+ */
+async function approvalContext(projectId: string, slug: string, stage: string) {
+  const meta = await readProjectMeta(slug)
+  if (!meta) return undefined
+  const artifacts = await collectProjectArtifacts(slug, meta.path)
+  const deployment = await getProjectDeployment(projectId).catch(() => undefined)
+  const latest = await getLatestFeatureDir(meta.path)
+  const reportFile = STAGE_REPORTS[stage]
+  const reportText = latest && reportFile ? (await readTextIfExists(join(meta.path, latest.relativePath, reportFile))).trim() : ''
+  return {
+    feature: artifacts.currentFeature ?? null,
+    codeReview: artifacts.codeReviewStatus ?? null,
+    verification: artifacts.verificationStatus,
+    verificationSummary: artifacts.verificationSummary ? describeSummary(artifacts.verificationSummary) : null,
+    accepted: artifacts.accepted ? { by: artifacts.accepted.acceptedBy, at: artifacts.accepted.acceptedAt } : null,
+    tasks: artifacts.implementationTasks ?? null,
+    delivery: artifacts.deliveryStatus ?? null,
+    deployment: deployment?.target ? { target: `${deployment.target.serviceName} @ ${deployment.target.environmentName}`, state: deployment.status?.state ?? 'unknown' } : null,
+    report: reportText ? { file: reportFile!, text: reportText.length > 20000 ? `${reportText.slice(0, 20000)}\n\n…` : reportText } : null,
+    onApprove: APPROVE_EFFECT[stage] ?? 'Approving lets the run continue to its next step.',
+  }
 }
 
 interface ProjectArtifacts {

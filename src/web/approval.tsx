@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { SignInScreen, useAuth } from './auth'
 import { LoadingBlock } from './loading'
+import { renderMarkdown } from './markdown'
 
 /**
  * The owner approval link page (011-owner-approval-link).
@@ -20,7 +21,22 @@ interface ApprovalDecisionView {
   summary: string | null
 }
 
+/** Where the feature stands, so the owner can decide from the link alone. */
+interface ApprovalContext {
+  feature: { id: string; title: string; scope?: string } | null
+  codeReview: 'approved' | 'changes_requested' | null
+  verification: 'pass' | 'partial' | 'fail' | 'missing'
+  verificationSummary: string | null
+  accepted: { by: string; at: string } | null
+  tasks: { done: number; total: number } | null
+  delivery: 'merged' | 'partial' | 'blocked' | null
+  deployment: { target: string; state: string } | null
+  report: { file: string; text: string } | null
+  onApprove: string
+}
+
 interface ApprovalView {
+  context?: ApprovalContext
   project: { name: string; code: string | null }
   stage: string
   kind: 'review' | 'clarification'
@@ -35,6 +51,45 @@ const OUTCOME_LABEL: Record<ApprovalDecisionView['outcome'], string> = {
   approve: 'Approved',
   approve_with_notes: 'Approved with notes',
   request_changes: 'Changes requested',
+}
+
+const GOOD = new Set(['approved', 'pass', 'merged', 'success'])
+const BAD = new Set(['changes_requested', 'fail', 'blocked', 'failed'])
+
+function StatusChip({ label, value, detail }: { label: string; value: string | null | undefined; detail?: string | null }) {
+  const v = value ?? 'not run'
+  const tone = GOOD.has(v) ? 'completed' : BAD.has(v) ? 'error' : 'pending'
+  return (
+    <div className="approval-status">
+      <span className="approval-status-label">{label}</span>
+      <span className={`mini-badge ${tone}`}>{v.replace(/_/g, ' ')}</span>
+      {detail && <span className="approval-status-detail">{detail}</span>}
+    </div>
+  )
+}
+
+function ContextPanel({ context }: { context: ApprovalContext }) {
+  return (
+    <div className="approval-context">
+      {context.feature && (
+        <p className="approval-feature"><strong>{context.feature.title}</strong> <code>{context.feature.id}</code>{context.feature.scope ? ` · ${context.feature.scope}` : ''}</p>
+      )}
+      <div className="approval-statuses">
+        <StatusChip label="Code review" value={context.codeReview} />
+        <StatusChip label="QA" value={context.verification === 'missing' ? null : context.verification} detail={context.accepted ? `accepted by ${context.accepted.by}` : context.verificationSummary} />
+        {context.tasks && <StatusChip label="Tasks" value={context.tasks.done >= context.tasks.total ? 'pass' : 'partial'} detail={`${context.tasks.done}/${context.tasks.total} done`} />}
+        <StatusChip label="Delivery" value={context.delivery} />
+        {context.deployment && <StatusChip label="Deployment" value={context.deployment.state} detail={context.deployment.target} />}
+      </div>
+      <p className="approval-effect">{context.onApprove}</p>
+      {context.report && (
+        <details className="approval-report">
+          <summary>Full report <code>{context.report.file}</code></summary>
+          <div className="markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(context.report.text) }} />
+        </details>
+      )}
+    </div>
+  )
 }
 
 function tokenFromPath(): string {
@@ -139,7 +194,8 @@ export function ApprovalPage() {
           <p className="approval-notice">This gate is no longer waiting for a decision. Open the project to see the result.</p>
         ) : view ? (
           <>
-            {view.summary && <blockquote className="approval-summary">{view.summary}</blockquote>}
+            {view.summary && <div className="approval-summary markdown" dangerouslySetInnerHTML={{ __html: renderMarkdown(view.summary) }} />}
+            {view.context && <ContextPanel context={view.context} />}
             <label className="approval-feedback">
               Notes or feedback
               <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Optional for approve; required for the other two." rows={4} />
