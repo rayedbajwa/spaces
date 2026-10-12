@@ -111,7 +111,9 @@ in for it:
 1. a Slack DM when Slack is connected and the recipient matches an account, else
 2. email through the organization's **Email & Notifications** (`email`)
    connection to Resend, else
-3. the platform fallback `RESEND_API_KEY` / `APPROVAL_EMAIL_FROM`.
+3. the platform fallback `RESEND_API_KEY` with an optional `APPROVAL_EMAIL_FROM`
+   sender (defaults to Resend's shared onboarding sender, so a custom, verified
+   domain is not required).
 
 Each request carries one single-use, hashed link (`/approvals/<token>`) that
 expires after `APPROVAL_LINK_TTL_HOURS` (default 24). The link shows the same
