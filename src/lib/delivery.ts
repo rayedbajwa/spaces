@@ -240,6 +240,31 @@ function orderByStack(prs: TrackedPullRequest[]): TrackedPullRequest[] {
 }
 
 /**
+ * The feature's delivery status from its pull requests. A PR closed without
+ * merging is superseded, and ignored, when the same repository has a merged PR
+ * for the feature: agents often close a duplicate and merge its replacement,
+ * and counting the duplicate kept such features BLOCKED after everything shipped.
+ */
+export function deliveryStatusFor(prs: TrackedPullRequest[]): { status: DeliveryStatus; supersededBy: Map<TrackedPullRequest, TrackedPullRequest> } {
+  const supersededBy = new Map<TrackedPullRequest, TrackedPullRequest>()
+  for (const p of prs) {
+    if (p.state !== 'closed' || p.merged) continue
+    const replacement = prs.filter((q) => q.merged && q.githubRepo === p.githubRepo).sort((a, b) => (b.mergedAt ?? '').localeCompare(a.mergedAt ?? ''))[0]
+    if (replacement) supersededBy.set(p, replacement)
+  }
+  const open = prs.filter((p) => p.state === 'open')
+  const closedUnmerged = prs.filter((p) => p.state === 'closed' && !p.merged && !supersededBy.has(p))
+  const status: DeliveryStatus = prs.length === 0
+    ? 'NONE'
+    : open.length === 0 && closedUnmerged.length === 0
+      ? 'MERGED'
+      : open.some((p) => p.checks === 'failure' || p.review === 'changes_requested' || p.mergeable === false) || closedUnmerged.length > 0
+        ? 'BLOCKED'
+        : 'PARTIAL'
+  return { status, supersededBy }
+}
+
+/**
  * Gather every PR for the feature, inspect it on GitHub, order by stack, write
  * `<feature>/delivery-status.md`, and return the snapshot.
  */
@@ -261,17 +286,13 @@ export async function refreshDeliveryStatus(orgId: string, featureDirAbs: string
   }
   const prs = orderByStack(inspected)
   const open = prs.filter((p) => p.state === 'open')
-  const closedUnmerged = prs.filter((p) => p.state === 'closed' && !p.merged)
-  const status: DeliveryStatus = prs.length === 0
-    ? 'NONE'
-    : open.length === 0 && closedUnmerged.length === 0
-      ? 'MERGED'
-      : open.some((p) => p.checks === 'failure' || p.review === 'changes_requested' || p.mergeable === false) || closedUnmerged.length > 0
-        ? 'BLOCKED'
-        : 'PARTIAL'
+  const { status, supersededBy } = deliveryStatusFor(prs)
+  const closedUnmerged = prs.filter((p) => p.state === 'closed' && !p.merged && !supersededBy.has(p))
   const generatedAt = new Date().toISOString()
   const nextAction = (p: TrackedPullRequest): string => {
     if (p.merged) return p.deployments.length ? `deployed: ${p.deployments.map((d) => `${d.environment} ${d.state}`).join(', ')}` : 'merged — no deployment recorded yet'
+    const replacement = supersededBy.get(p)
+    if (replacement) return `superseded by #${replacement.number} — ignored`
     if (p.state === 'closed') return 'closed without merge — reopen or supersede'
     const parent = p.stackedOn ? prs.find((q) => q.githubRepo === p.githubRepo && q.head === p.stackedOn) : undefined
     if (parent && !parent.merged) return `wait: stacked on #${parent.number} (${parent.head}) which is not merged`
