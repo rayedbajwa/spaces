@@ -40,7 +40,10 @@ import { importQueueSnapshot, queueKnowledgeImport, recoverInterruptedImports } 
 import { listImportCatalog, validateSourceConfig, type CatalogIntegration } from './lib/knowledge-connectors'
 import { confirmPhraseFor, deleteProjectCompletely, previewProjectDeletion, ProjectBusyError, ProjectNotArchivedError } from './lib/project-delete'
 import { cancelProjectWork } from './lib/project-cancel'
-import { ResponsibilityError, migrateProjectResponsibilities, replaceAssignments } from './lib/project-responsibilities'
+import { invalidateApprovalRequestsForRunTx, submitApprovalDecision, verifyApprovalLink, type ApprovalOutcome } from './lib/approval-store'
+import { domainVerified, verifyEmailCredential } from './lib/email'
+import { notifyApprovalDecision, reResolveRevokedRecipient } from './lib/approval-notify'
+import { ResponsibilityError, STANDARD_RESPONSIBILITIES, migrateProjectResponsibilities, replaceAssignments } from './lib/project-responsibilities'
 import { ensureGovernanceWorkspace, exportProjectState, governanceEnabled, listRepoCatalog, syncGitHubRepoCatalog } from './lib/governance'
 import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import {
@@ -312,8 +315,8 @@ async function route(req: Request): Promise<Response> {
     return Response.redirect(`${origin}/spaces/${url.pathname.slice('/p/'.length)}${url.search}`, 301)
   }
 
-  // Client-side routes (sign-in page, invite acceptance, project pages) load the SPA shell.
-  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname === '/organization')) {
+  // Client-side routes (sign-in page, invite acceptance, project pages, approval links) load the SPA shell.
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname.startsWith('/approvals/') || url.pathname === '/organization')) {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
     return sendHtml(200, html)
   }
@@ -441,7 +444,8 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { email: invite.email, role: invite.role, teamName: invite.teamName, teamSlug: invite.teamSlug, expiresAt: invite.expiresAt })
   }
 
-  if (isApi && !authDisabled() && !auth && !isPublicOAuth) {
+  const isApprovalApi = /^\/api\/approvals\/[^/]+$/.test(url.pathname)
+  if (isApi && !authDisabled() && !auth && !isPublicOAuth && !isApprovalApi) {
     return sendJson(401, { error: 'Sign in required.', code: 'unauthenticated' })
   }
 
@@ -800,7 +804,10 @@ async function route(req: Request): Promise<Response> {
 
   if (auth && isApi && method !== 'GET') {
     const active = auth.activeTeam
-    const readOnlyPath = /^\/api\/(me|auth|invites|projects\/[^/]+\/chat)(\/|$)/.test(url.pathname)
+    // `/api/approvals` is exempt: the personal single-use link is the
+    // authorization, and any active assignee may decide regardless of team role
+    // (FR-013). An approval POST resolves only the bound gate.
+    const readOnlyPath = /^\/api\/(me|auth|invites|projects\/[^/]+\/chat|approvals)(\/|$)/.test(url.pathname)
     if (active && active.role === 'viewer' && !readOnlyPath) {
       return sendJson(403, { error: 'Viewers cannot change anything. Ask a team admin for the member role.' })
     }
@@ -2171,6 +2178,48 @@ async function route(req: Request): Promise<Response> {
     })
   }
 
+  // Email (Resend) is an org-scoped token integration like Figma/Railway: the API
+  // key is verified against Resend, sealed with ENCRYPTION_KEY and never returned.
+  if (method === 'POST' && url.pathname === '/api/integrations/email/verify') {
+    const denied = requireOrgAdmin('Only team owners or admins can verify email credentials.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { apiKey?: string }
+    let apiKey = body.apiKey?.trim()
+    if (!apiKey) {
+      const creds = await getAppIntegrationCredentials(await orgIdOf(), 'email')
+      if (typeof creds?.api_key === 'string') apiKey = creds.api_key
+    }
+    if (!apiKey) return sendJson(400, { ok: false, error: 'An API key is required.' })
+    const result = await verifyEmailCredential(apiKey)
+    return sendJson(result.ok ? 200 : 400, result)
+  }
+
+  if (method === 'POST' && url.pathname === '/api/integrations/email/token') {
+    const denied = requireOrgAdmin('Only team owners or admins can connect email.'); if (denied) return denied
+    const body = (await req.json().catch(() => ({}))) as { apiKey?: string; fromAddress?: string; fromName?: string; displayName?: string }
+    const apiKey = body.apiKey?.trim()
+    const fromAddress = body.fromAddress?.trim()
+    if (!apiKey) return sendJson(400, { ok: false, error: 'An API key is required.' })
+    if (!fromAddress || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(fromAddress)) return sendJson(400, { ok: false, error: 'A valid from address is required.' })
+    const verification = await verifyEmailCredential(apiKey)
+    if (!verification.ok) return sendJson(400, { ok: false, error: verification.message })
+    if (!domainVerified(fromAddress, verification.domains)) {
+      return sendJson(400, { ok: false, error: `The domain in ${fromAddress} is not verified in this Resend account. Verify it there first.` })
+    }
+    const orgId = await orgIdOf()
+    const row = await upsertAppIntegration({
+      orgId,
+      kind: 'email',
+      status: 'connected',
+      displayName: body.displayName?.trim() || 'Resend',
+      config: { fromAddress, fromName: body.fromName?.trim() || undefined },
+      credentials: { api_key: apiKey },
+    })
+    return sendJson(200, {
+      ok: true,
+      integration: { kind: 'email', status: 'connected', displayName: row.displayName, credentialsOk: true, lastSyncedAt: new Date().toISOString() },
+    })
+  }
+
   // ---- OAuth authorize + callback (app-level, no projectId) ----
 
   if (method === 'GET' && /^\/api\/oauth\/[^/]+\/authorize$/.test(url.pathname)) {
@@ -2863,6 +2912,84 @@ async function route(req: Request): Promise<Response> {
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
   }
 
+  // ---- Owner approval links (011-owner-approval-link) -----------------------
+  // The link token plus a matching session is the only authorization, and it
+  // grants no project membership, role or access. These routes read and resolve
+  // exactly one gate; no project-access middleware is applied.
+
+  if (method === 'GET' && /^\/api\/approvals\/[^/]+$/.test(url.pathname)) {
+    if (!authDisabled() && !auth) return sendJson(401, { error: 'Sign in to view this approval.', code: 'sign_in_required' })
+    const token = decodeURIComponent(url.pathname.split('/')[3]!)
+    const verified = await verifyApprovalLink(token, auth?.user.userId)
+    if (verified.verdict === 'invalid') return sendJson(404, { error: 'This approval link is no longer valid.', code: 'invalid_link' })
+    if (verified.verdict === 'wrong_recipient') return sendJson(403, { error: 'This approval link belongs to someone else.', code: 'wrong_recipient' })
+    if (verified.verdict === 'revoked') {
+      if (verified.request) void reResolveRevokedRecipient(verified.request)
+      return sendJson(403, { error: 'You are no longer the accountable recipient for this approval.', code: 'recipient_revoked' })
+    }
+    const request = verified.request!
+    const project = await projGet(request.projectId).catch(() => undefined)
+    const decision = verified.decision
+    if (verified.verdict === 'gate_resolved' && !decision) {
+      return sendJson(409, { error: 'This gate is no longer waiting for a decision.', code: 'gate_resolved' })
+    }
+    const state = decision ? 'decided' : verified.verdict === 'expired' ? 'expired' : verified.verdict === 'consumed' ? 'invalidated' : request.state
+    return sendJson(200, {
+      project: { name: project?.name ?? 'Project', code: project?.code ?? null },
+      stage: request.stage,
+      kind: request.kind,
+      summary: request.summary,
+      state,
+      fallback: request.fallback,
+      expiresAt: verified.link?.expiresAt,
+      ...(decision ? { decision: { outcome: decision.outcome, feedback: decision.feedback, decidedBy: decision.decidedByName ?? null, decidedAt: decision.decidedAt, summary: decision.summaryShown } } : {}),
+    })
+  }
+
+  if (method === 'POST' && /^\/api\/approvals\/[^/]+$/.test(url.pathname)) {
+    if (!authDisabled() && !auth) return sendJson(401, { error: 'Sign in to view this approval.', code: 'sign_in_required' })
+    const token = decodeURIComponent(url.pathname.split('/')[3]!)
+    const body = await readJson<{ outcome?: string; feedback?: string }>(req)
+    const outcome = body.outcome
+    if (outcome !== 'approve' && outcome !== 'approve_with_notes' && outcome !== 'request_changes') {
+      return sendJson(400, { error: 'Choose approve, approve with notes or request changes.', code: 'invalid_outcome' })
+    }
+    if (body.feedback !== undefined && body.feedback !== null && typeof body.feedback !== 'string') {
+      return sendJson(400, { error: 'Feedback must be text.', code: 'invalid_feedback' })
+    }
+    const result = await submitApprovalDecision({ token, actorUserId: auth?.user.userId, outcome: outcome as ApprovalOutcome, feedback: body.feedback ?? null })
+    if (!result.ok) {
+      const winning = result.decision ? { outcome: result.decision.outcome, feedback: result.decision.feedback, decidedBy: result.decision.decidedByName ?? null, decidedAt: result.decision.decidedAt, summary: result.decision.summaryShown } : undefined
+      switch (result.reason) {
+        case 'invalid': return sendJson(404, { error: 'This approval link is no longer valid.', code: 'invalid_link' })
+        case 'wrong_recipient': return sendJson(403, { error: 'This approval link belongs to someone else.', code: 'wrong_recipient' })
+        case 'revoked':
+          if (result.request) void reResolveRevokedRecipient(result.request)
+          return sendJson(403, { error: 'You are no longer the accountable recipient for this approval.', code: 'recipient_revoked' })
+        case 'feedback_required': return sendJson(400, { error: 'Feedback is required.', code: 'feedback_required' })
+        case 'feedback_too_long': return sendJson(400, { error: 'Feedback must be 4000 characters or fewer.', code: 'feedback_too_long' })
+        case 'expired': return sendJson(409, { error: 'This approval link has expired.', code: 'expired', ...(winning ? { decision: winning } : {}) })
+        default: return sendJson(409, { error: 'This gate has already been decided.', code: 'already_decided', ...(winning ? { decision: winning } : {}) })
+      }
+    }
+    const decision = result.decision
+    const request = result.request
+    const project = await projGet(request.projectId).catch(() => undefined)
+    // Confirmation to the owner over the same channel: best effort, never blocks.
+    void notifyApprovalDecision({
+      request,
+      project: { name: project?.name ?? 'Project', code: project?.code ?? null, slug: project?.slug ?? '' },
+      stage: request.stage,
+      outcome: decision.outcome,
+      feedback: decision.feedback,
+      decidedByName: decision.decidedByName ?? null,
+    }).catch((error) => serverLog.warn('decision confirmation failed', { error: error instanceof Error ? error.message : String(error) }))
+    return sendJson(200, {
+      state: 'decided',
+      decision: { outcome: decision.outcome, feedback: decision.feedback, decidedBy: decision.decidedByName ?? null, decidedAt: decision.decidedAt, summary: decision.summaryShown },
+    })
+  }
+
   // Run controls from the agent output dock: pause at the next stage boundary
   // (or before start), resume a user pause, or cancel outright.
   // Interrupt a running run with feedback: stored as the run's 'feedback'
@@ -2924,6 +3051,9 @@ async function route(req: Request): Promise<Response> {
         await tx`UPDATE pipeline_runs SET status = 'cancelled', error_message = 'Cancelled by a user', pause_kind = NULL, owning_worker_id = NULL, updated_at = now() WHERE run_id = ${runId}`
         await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ${runId} AND status = 'open'`
         await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${runId}, 'cancelled', ${tx.json({ by, reason: 'Cancelled by a user' } as never)})`
+        // FR-012: cancelling a run invalidates every outstanding approval link
+        // so a stale personal link can never resolve the gate afterwards.
+        await invalidateApprovalRequestsForRunTx(tx, runId)
       })
       await sql`SELECT pg_notify('run_cancel', ${runId})`
     }

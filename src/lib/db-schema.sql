@@ -294,7 +294,7 @@ ALTER TABLE project_repos ADD COLUMN IF NOT EXISTS clone_error  TEXT;
 -- enum can grow (constraint name is Postgres' default for an inline CHECK).
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email'));
 
 -- Per-project knowledge scope: which connected integrations agents may query for
 -- this project and how queries are narrowed (Jira project keys, Linear teams,
@@ -1071,7 +1071,7 @@ CREATE TABLE IF NOT EXISTS run_guard_vaults (
 -- ============================================================================
 ALTER TABLE app_integrations DROP CONSTRAINT IF EXISTS app_integrations_kind_check;
 ALTER TABLE app_integrations ADD CONSTRAINT app_integrations_kind_check
-  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway'));
+  CHECK (kind IN ('github','jira','confluence','slack','linear','figma','railway','email'));
 
 ALTER TABLE oauth_apps DROP CONSTRAINT IF EXISTS oauth_apps_provider_check;
 ALTER TABLE oauth_apps ADD CONSTRAINT oauth_apps_provider_check
@@ -1180,3 +1180,79 @@ CREATE TABLE IF NOT EXISTS waitlist (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS waitlist_created_idx ON waitlist (created_at DESC);
+
+-- ============================================================================
+-- Owner approval links (011-owner-approval-link)
+-- When a run pauses at a human gate, one request per accountable recipient is
+-- created (mapped responsibility, first active assignee primary, Owner fallback
+-- when unassigned), delivered directly over Slack or email with a single-use
+-- link, and resolved exactly once. All additive and idempotent.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS approval_requests (
+  request_id         UUID PRIMARY KEY,
+  gate_id            UUID NOT NULL REFERENCES pipeline_gates(gate_id) ON DELETE CASCADE,
+  run_id             UUID NOT NULL REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+  project_id         UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  org_id             UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+  responsibility_id  UUID REFERENCES project_responsibilities(responsibility_id) ON DELETE SET NULL,
+  responsibility_key TEXT,
+  stage              TEXT NOT NULL,
+  kind               TEXT NOT NULL CHECK (kind IN ('review','clarification')),
+  recipient_user_id  UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  recipient_email    TEXT NOT NULL,
+  primary_recipient  BOOLEAN NOT NULL DEFAULT false,
+  summary            TEXT,
+  state              TEXT NOT NULL CHECK (state IN ('pending','delivered','undeliverable','decided','invalidated','expired')),
+  fallback           BOOLEAN NOT NULL DEFAULT false,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (gate_id, recipient_user_id)
+);
+CREATE INDEX IF NOT EXISTS approval_requests_gate_idx ON approval_requests (gate_id);
+CREATE INDEX IF NOT EXISTS approval_requests_recipient_state_idx ON approval_requests (recipient_user_id, state);
+CREATE INDEX IF NOT EXISTS approval_requests_org_created_idx ON approval_requests (org_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approval_links (
+  link_id       UUID PRIMARY KEY,
+  request_id    UUID NOT NULL REFERENCES approval_requests(request_id) ON DELETE CASCADE,
+  token_hash    TEXT NOT NULL UNIQUE,
+  bound_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  expires_at    TIMESTAMPTZ NOT NULL,
+  consumed_at   TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS approval_links_bound_user_idx ON approval_links (bound_user_id);
+
+CREATE TABLE IF NOT EXISTS approval_deliveries (
+  delivery_id  UUID PRIMARY KEY,
+  request_id   UUID NOT NULL REFERENCES approval_requests(request_id) ON DELETE CASCADE,
+  channel      TEXT NOT NULL CHECK (channel IN ('slack','email')),
+  outcome      TEXT NOT NULL CHECK (outcome IN ('delivered','failed','skipped')),
+  failure      TEXT,
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS approval_deliveries_request_idx ON approval_deliveries (request_id, attempted_at DESC);
+
+CREATE TABLE IF NOT EXISTS approval_decisions (
+  decision_id   UUID PRIMARY KEY,
+  request_id    UUID REFERENCES approval_requests(request_id) ON DELETE SET NULL,
+  gate_id       UUID NOT NULL REFERENCES pipeline_gates(gate_id) ON DELETE CASCADE,
+  run_id        UUID NOT NULL REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+  link_id       UUID REFERENCES approval_links(link_id) ON DELETE SET NULL,
+  outcome       TEXT NOT NULL CHECK (outcome IN ('approve','approve_with_notes','request_changes')),
+  feedback      TEXT,
+  summary_shown TEXT,
+  decided_by    UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  decided_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (gate_id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_link_attempts (
+  attempt_id    UUID PRIMARY KEY,
+  link_id       UUID REFERENCES approval_links(link_id) ON DELETE CASCADE,
+  request_id    UUID REFERENCES approval_requests(request_id) ON DELETE CASCADE,
+  actor_user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  outcome       TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS approval_link_attempts_request_idx ON approval_link_attempts (request_id, created_at DESC);

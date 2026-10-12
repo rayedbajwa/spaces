@@ -54,6 +54,8 @@ import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usa
 import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
 import { notifyProject } from './lib/slack'
+import { stageSummary, summaryForGate } from './lib/approval-store'
+import { deliverApprovalRequestsForGate } from './lib/approval-notify'
 import { drainBudget } from './lib/drain'
 
 const workerLog = log.child({ mod: 'worker' })
@@ -484,28 +486,26 @@ async function finishCancelledRun(runId: string): Promise<void> {
 }
 
 /** What a stage produced, for a Slack post: the compacted handoff when there is one, else the end of its output. */
-function stageSummary(summary: string | null | undefined, tail: string | null | undefined): string | undefined {
-  const text = (summary?.trim() || tail?.trim() || '')
-  if (!text) return undefined
-  return text.length > 1500 ? `…${text.slice(-1500)}` : text
-}
 
 /**
  * Slack notice for a run that stopped for a person: an approval carries the
  * summary of the stage to decide on (as recorded when the stage finished); a
- * question carries the agent's last words, which is where it asked.
+ * question carries the agent's last words, which is where it asked. The same
+ * gate also gets direct owner approval requests, best effort and never blocking.
  */
 async function notifyGate(runId: string, progress: FlowProgress): Promise<void> {
   const run = await getRun(runId).catch(() => undefined)
   if (!run?.projectId || !progress.stage) return
-  if (progress.pauseKind === 'review') {
-    const [entry] = await getDb()<Array<{ summary: string | null; tail: string }>>`
-      SELECT summary, tail FROM run_thread_entries WHERE run_id = ${runId} AND stage = ${progress.stage} ORDER BY entry_id DESC LIMIT 1
-    `.catch(() => [] as Array<{ summary: string | null; tail: string }>)
-    await notifyProject(run.projectId, { kind: 'approval_needed', stage: progress.stage, summary: stageSummary(entry?.summary, entry?.tail ?? progress.log?.slice(-4000)) })
-  } else {
-    await notifyProject(run.projectId, { kind: 'question', stage: progress.stage, question: stageSummary(undefined, progress.log?.slice(-1500)) })
-  }
+  const stage = progress.stage
+  const kind: 'review' | 'clarification' = progress.pauseKind === 'review' ? 'review' : 'clarification'
+  const summary = kind === 'review'
+    ? await summaryForGate(runId, stage, progress.log?.slice(-4000))
+    : stageSummary(undefined, progress.log?.slice(-1500))
+  await notifyProject(run.projectId, kind === 'review'
+    ? { kind: 'approval_needed', stage, summary }
+    : { kind: 'question', stage, question: summary })
+  void deliverApprovalRequestsForGate(runId, run.projectId, stage, kind, summary)
+    .catch((error) => workerLog.warn('direct approval delivery failed', { runId, stage, error: error instanceof Error ? error.message : String(error) }))
 }
 
 async function applyProgress(runId: string, progress: FlowProgress): Promise<void> {

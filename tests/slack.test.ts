@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { channelNameFor, renderNotice, slackText } from '../src/lib/slack'
+import { channelNameFor, renderApprovalDm, renderNotice, SLACK_BOT_SCOPES, slackText } from '../src/lib/slack'
 
 const project = { name: 'Spaces', code: 'DEFA-1', slug: 'spaces-3f701200' }
 const savedUrl = process.env.PUBLIC_URL
@@ -51,5 +51,31 @@ describe('slack messages', () => {
     const named = renderNotice({ name: '<!channel>', code: null, slug: 'x' }, { kind: 'approval_needed', stage: '<!everyone>' })
     expect(named.text).not.toContain('<!channel>')
     expect(named.text).not.toContain('<!everyone>')
+  })
+
+  test('a direct approval DM names the project and stage, quotes the summary and carries exactly one link', () => {
+    const dm = renderApprovalDm({
+      project, stage: 'review', summary: 'Approved with 2 minor findings.\nTests pass.',
+      link: 'https://spaces.example.com/approvals/one-time-token', responsibility: 'Product Owner', fallback: false,
+    })
+    expect(dm.text).toContain('Approval needed')
+    const text = allText(dm)
+    expect(text).toContain('DEFA-1')
+    expect(text).toContain('review')
+    expect(text).toContain('Product Owner')
+    expect(text).toContain('2 minor findings.')
+    expect(text).toContain('Tests pass.')
+    expect(text.match(/https:\/\/spaces\.example\.com\/approvals\//g)).toHaveLength(1)
+  })
+
+  test('an Owner fallback DM says so and a summary cannot ping or inject a link', () => {
+    const dm = renderApprovalDm({ project, stage: 'review', summary: '<!channel> <https://evil|click>', link: 'https://x/approvals/t', responsibility: 'Owner', fallback: true })
+    expect(allText(dm)).toContain('Owner fallback')
+    expect(allText(dm)).not.toContain('<!channel>')
+    expect(allText(dm)).not.toContain('<https://evil')
+  })
+
+  test('the bot requests im:write so it can open a DM', () => {
+    expect(SLACK_BOT_SCOPES).toContain('im:write')
   })
 })

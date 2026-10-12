@@ -2892,3 +2892,41 @@ button .spinner { margin-right: 6px; width: 12px; height: 12px; }
 }
 .deployment-section .mini-badge.success,
 .deployment-section .mini-badge.completed { background: #e6f6ec; color: #166534; }
+
+/* ---- Owner approval link page (011-owner-approval-link) ------------------ */
+.approval-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 48px;
+  background: var(--bg, #0f1115);
+}
+.approval-card {
+  width: min(680px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 28px 30px;
+}
+.approval-card h1 { margin: 0; font-size: 1.6rem; }
+.approval-meta { margin: 0; color: var(--text-subtle, #9aa4b2); }
+.approval-summary {
+  margin: 0;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent, #6ea8fe);
+  background: rgba(110, 168, 254, 0.08);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 45vh;
+  overflow: auto;
+}
+.approval-feedback { display: grid; gap: 6px; }
+.approval-feedback textarea { width: 100%; resize: vertical; }
+.approval-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.approval-actions .danger { border-color: var(--red, #e5534b); color: var(--red, #e5534b); }
+.approval-outcome { font-weight: 600; margin: 0; }
+.approval-notice { margin: 0; color: var(--text-subtle, #9aa4b2); }
+.approval-back { margin: 4px 0 0; }
+.approval-decided { display: grid; gap: 8px; }
+.integration-logo.email { background: linear-gradient(135deg, #2b6cb0, #63b3ed); }

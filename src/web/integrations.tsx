@@ -48,7 +48,7 @@ interface OAuthApp {
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
 
-const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma', railway: 'Railway' }
+const KIND_LABEL: Record<string, string> = { github: 'GitHub', jira: 'Jira', confluence: 'Confluence', slack: 'Slack', linear: 'Linear', figma: 'Figma', railway: 'Railway', email: 'Email' }
 const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   github: 'Repository catalog, cloning, pull requests, issue search and GitHub sign-in.',
   atlassian: 'Jira issues and Confluence pages for agents and the knowledge base. One app covers both.',
@@ -70,6 +70,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
   const [editing, setEditing] = useState<OAuthApp['provider'] | null>(null)
   const [showFigmaPatModal, setShowFigmaPatModal] = useState(false)
   const [showRailwayTokenModal, setShowRailwayTokenModal] = useState(false)
+  const [showEmailModal, setShowEmailModal] = useState(false)
 
   const load = useCallback(async () => {
     try {
@@ -156,6 +157,37 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
                         ))}
                       </div>
                     )}
+                  </div>
+                )}
+
+                {category.id === 'notifications' && !readOnly && (
+                  <div className="integration-list">
+                    {(() => {
+                      const row = connections.find((c) => c.kind === 'email')
+                      const connected = row?.status === 'connected' && row.credentialsOk !== false
+                      return (
+                        <section className={`card integration ${connected ? 'configured connected' : ''}`}>
+                          <div className="integration-head">
+                            <div className="integration-logo email" aria-hidden="true">E</div>
+                            <div className="integration-title">
+                              <h3>Resend email</h3>
+                              <p className="panel-subtitle" style={{ margin: 0 }}>Direct approval requests and confirmations sent straight to the accountable owner by email.</p>
+                            </div>
+                            <div className="integration-state">
+                              <span className={`mini-badge ${connected ? 'completed' : 'idle'}`}>{connected ? '✓ connected' : 'not connected'}</span>
+                              {canManage && <button type="button" className="primary-button" onClick={() => setShowEmailModal(true)}>{connected ? 'Update' : 'Connect'}</button>}
+                            </div>
+                          </div>
+                          {row?.displayName && <p className="text-subtle" style={{ margin: '0 0 8px' }}>{row.displayName}</p>}
+                          {connected && canManage && (
+                            <div className="integration-foot">
+                              <span className="text-subtle">Connected for the whole organization.</span>
+                              <button type="button" className="ghost-button" style={{ marginLeft: 'auto' }} onClick={() => void disconnect('email')}>Disconnect</button>
+                            </div>
+                          )}
+                        </section>
+                      )
+                    })()}
                   </div>
                 )}
 
@@ -305,6 +337,16 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       {showRailwayTokenModal && (
         <RailwayTokenModal
           onClose={() => setShowRailwayTokenModal(false)}
+          onSaved={async (m) => {
+            await load()
+            flash(m)
+          }}
+          onError={setError}
+        />
+      )}
+      {showEmailModal && (
+        <EmailTokenModal
+          onClose={() => setShowEmailModal(false)}
           onSaved={async (m) => {
             await load()
             flash(m)
@@ -659,6 +701,102 @@ function RailwayTokenModal({
             <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
             <button type="submit" className="primary-button" disabled={busy || !token.trim()}>
               {busy ? 'Connecting…' : 'Connect Railway'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function EmailTokenModal({
+  onClose,
+  onSaved,
+  onError,
+}: {
+  onClose: () => void
+  onSaved: (message: string) => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [apiKey, setApiKey] = useState('')
+  const [fromAddress, setFromAddress] = useState('')
+  const [fromName, setFromName] = useState('')
+  const [displayName, setDisplayName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<string | null>(null)
+
+  const handleVerify = async () => {
+    if (!apiKey.trim()) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await json<{ ok: boolean; domains?: string[]; error?: string }>(
+        '/api/integrations/email/verify',
+        { method: 'POST', body: JSON.stringify({ apiKey: apiKey.trim() }) }
+      )
+      const domains = res.domains?.length ? ` (${res.domains.join(', ')})` : ''
+      setTestResult(res.ok ? `✓ Valid Resend key${domains}` : `✗ ${res.error || 'Verification failed'}`)
+    } catch (err) {
+      setTestResult(`✗ ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!apiKey.trim() || !fromAddress.trim()) return
+    setBusy(true)
+    try {
+      await json('/api/integrations/email/token', {
+        method: 'POST',
+        body: JSON.stringify({ apiKey: apiKey.trim(), fromAddress: fromAddress.trim(), fromName: fromName.trim() || undefined, displayName: displayName.trim() || undefined }),
+      })
+      await onSaved('Email connected successfully.')
+      onClose()
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-shell" style={{ maxWidth: 560, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            <h2>Connect email (Resend)</h2>
+            <p className="panel-subtitle">Create an API key under Resend → API Keys, and send from an address on a domain verified in that account. The key is stored encrypted and never shown again.</p>
+          </div>
+          <button type="button" className="ghost-button" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} className="modal-body" style={{ padding: '16px 20px', display: 'grid', gap: 14 }}>
+          <label>
+            <span>Resend API key</span>
+            <input type="password" value={apiKey} onChange={(e) => { setApiKey(e.target.value); setTestResult(null) }} placeholder="re_..." required autoFocus />
+          </label>
+          <label>
+            <span>From address</span>
+            <input type="email" value={fromAddress} onChange={(e) => setFromAddress(e.target.value)} placeholder="approvals@yourdomain.com" required />
+          </label>
+          <label>
+            <span>From name (optional)</span>
+            <input type="text" value={fromName} onChange={(e) => setFromName(e.target.value)} placeholder="Acme Approvals" />
+          </label>
+          <label>
+            <span>Display name (optional)</span>
+            <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Acme Email" />
+          </label>
+          {testResult && <div style={{ fontSize: 13, color: testResult.startsWith('✓') ? 'var(--green)' : 'var(--red)' }}>{testResult}</div>}
+          <div className="button-row" style={{ marginTop: 8, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button type="button" className="ghost-button" disabled={busy || testing || !apiKey.trim()} onClick={handleVerify}>
+              {testing ? 'Verifying…' : 'Test key'}
+            </button>
+            <button type="button" className="ghost-button" onClick={onClose}>Cancel</button>
+            <button type="submit" className="primary-button" disabled={busy || !apiKey.trim() || !fromAddress.trim()}>
+              {busy ? 'Connecting…' : 'Connect email'}
             </button>
           </div>
         </form>

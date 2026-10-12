@@ -10,6 +10,7 @@
  */
 
 import { getDb } from './db'
+import { invalidateApprovalRequestsForRunTx } from './approval-store'
 import { log } from './logger'
 import type { ProjectRow } from './project-registry'
 
@@ -38,6 +39,7 @@ export async function cancelProjectWork(project: ProjectRow, reason: string): Pr
       await tx`UPDATE pipeline_gates SET status = 'resolved', response = 'cancelled', resolved_at = now() WHERE run_id = ANY(${runIds}::uuid[]) AND status = 'open'`
       for (const runId of runIds) {
         await tx`INSERT INTO pipeline_events (run_id, kind, payload) VALUES (${runId}, 'cancelled', ${tx.json({ reason } as never)})`
+        await invalidateApprovalRequestsForRunTx(tx, runId)
       }
     }
     await tx`UPDATE project_agents SET status = 'idle', current_job_id = NULL WHERE project_id = ${project.projectId} AND status IN ('busy', 'warming')`

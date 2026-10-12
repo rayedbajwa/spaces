@@ -14,8 +14,8 @@ import { refreshAccessToken, resolveProvider, type OAuthProviderId } from './oau
 
 const tokenLog = log.child({ mod: 'integration-token' })
 
-/** OAuth provider behind each integration kind (Jira and Confluence share Atlassian). */
-export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId> = {
+/** OAuth provider behind each integration kind (Jira and Confluence share Atlassian). Email is a token integration, not OAuth. */
+export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId | undefined> = {
   github: 'github',
   jira: 'atlassian',
   confluence: 'atlassian',
@@ -23,6 +23,7 @@ export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId> = {
   linear: 'linear',
   figma: 'figma',
   railway: 'railway',
+  email: undefined,
 }
 
 const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {
@@ -87,6 +88,7 @@ export async function getIntegrationAccessToken(orgId: string, kind: AppIntegrat
  */
 export async function refreshIntegrationTokens(orgId: string, kind: AppIntegrationKind, current?: Record<string, unknown>): Promise<Record<string, unknown>> {
   const provider = KIND_PROVIDER[kind]
+  if (!provider) throw new Error(`${kind} is not an OAuth integration and has no refreshable token.`)
   const key = `${orgId}:${provider}`
   const existing = inflight.get(key)
   if (existing) return existing

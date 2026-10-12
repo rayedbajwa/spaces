@@ -7,6 +7,7 @@ import { ProjectUsagePanel, UsageChip, formatUsd, type UsageSummary } from './us
 import { TeamPage } from './team-page'
 import { OrgPage } from './org-page'
 import { IntegrationsPanel } from './integrations'
+import { ApprovalPage } from './approval'
 import { stepForColumn, isEligibleDrop } from '../lib/board-drop'
 import { featureDescriptionProblem } from '../lib/feature-description'
 import { AUTO_SCOPE, INTENT_SCOPES, normalizeScope, scopeLabel } from '../lib/intent-scope'
@@ -2198,6 +2199,9 @@ function App() {
     if (!modelsReady) { setStatusMessage('Add a model provider key under Models before creating a project.'); navigate('/organization?section=models'); return }
     setWizard(defaultWizard); setImportedItems([]); setGithubRepos(null); void loadKnowledgeSources(); setIsWizardOpen(true)
   }
+
+  // An approval link renders its own focused page instead of the board shell.
+  if (window.location.pathname.startsWith('/approvals/')) return <ApprovalPage />
 
   return (
     <main className="app-shell">

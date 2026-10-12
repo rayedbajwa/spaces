@@ -53,6 +53,27 @@ function collectWarnings(): string[] {
   return w
 }
 
+/**
+ * How long an approval link stays valid. Optional; defaults to 24 hours and is
+ * clamped to a sane range so a typo cannot mint a link that never expires.
+ */
+export function approvalLinkTtlHours(): number {
+  const raw = Number(process.env.APPROVAL_LINK_TTL_HOURS)
+  if (!Number.isFinite(raw) || raw <= 0) return 24
+  return Math.min(24 * 30, raw)
+}
+
+/** Deployment-level Resend key used only when the organization has no email connection. */
+export function platformResendApiKey(): string | undefined {
+  const key = process.env.RESEND_API_KEY?.trim()
+  return key || undefined
+}
+
+/** Deployment-level sender identity used only when the organization has no email connection. */
+export function platformEmailFrom(): string {
+  return process.env.APPROVAL_EMAIL_FROM?.trim() || 'Spaces <noreply@spacesos.dev>'
+}
+
 export function validateEnv(): EnvReport {
   const errors: string[] = []
 

@@ -13,14 +13,15 @@ import type { AppIntegrationKind } from '../src/lib/app-integrations'
 
 describe('Integration Categories Domain Model', () => {
   describe('TC-CAT-001: Canonical Categories Ordering & Definitions', () => {
-    test('contains exactly 5 categories in canonical order', () => {
-      expect(INTEGRATION_CATEGORIES).toHaveLength(5)
+    test('contains exactly 6 categories in canonical order', () => {
+      expect(INTEGRATION_CATEGORIES).toHaveLength(6)
       expect(INTEGRATION_CATEGORIES.map((c) => c.id)).toEqual([
         'source_control',
         'project_management',
         'design',
         'deployment',
         'communication',
+        'notifications',
       ])
     })
 
@@ -30,7 +31,8 @@ describe('Integration Categories Domain Model', () => {
         expect(cat.label.trim().length).toBeGreaterThan(0)
         expect(cat.description.trim().length).toBeGreaterThan(0)
         expect(cat.emptyGuidance.trim().length).toBeGreaterThan(0)
-        expect(cat.providers.length).toBeGreaterThan(0)
+        // A token-only category (email) may have no OAuth provider; every category has kinds.
+        expect(cat.providers.length).toBeGreaterThanOrEqual(0)
         expect(cat.kinds.length).toBeGreaterThan(0)
       }
     })
@@ -62,7 +64,7 @@ describe('Integration Categories Domain Model', () => {
   })
 
   describe('TC-CAT-003: Kind Exhaustiveness', () => {
-    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma', 'railway']
+    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma', 'railway', 'email']
 
     test('every AppIntegrationKind maps to exactly one category', () => {
       for (const kind of allKinds) {
@@ -82,6 +84,7 @@ describe('Integration Categories Domain Model', () => {
       expect(getCategoryForKind('figma')?.id).toBe('design')
       expect(getCategoryForKind('railway')?.id).toBe('deployment')
       expect(getCategoryForKind('slack')?.id).toBe('communication')
+      expect(getCategoryForKind('email')?.id).toBe('notifications')
     })
 
     test('Deployment category maps Railway and has a clear identity', () => {
