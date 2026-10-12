@@ -90,6 +90,12 @@ const OPENROUTER_CHAT_API = 'https://openrouter.ai/api/v1/chat/completions'
 /** Cheap models used for the summary on each provider. */
 const OPENAI_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENAI || 'gpt-5-mini'
 const OPENROUTER_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENROUTER || 'openrouter/auto'
+/**
+ * Completion budget for the OpenAI-compatible endpoints. Reasoning models
+ * (gpt-5-mini, or whatever openrouter/auto picks) spend this budget on
+ * reasoning before any text, so 800 often ended with empty content.
+ */
+const COMPACT_COMPLETION_TOKENS = 4000
 
 /**
  * One-shot summarization call with whatever key the organization has:
@@ -121,21 +127,22 @@ async function summarizeOnce(rawPrompt: string, orgId?: string): Promise<string>
   }
 
   const openAiCompatible = keys.openrouter
-    ? { url: OPENROUTER_CHAT_API, key: keys.openrouter, model: OPENROUTER_COMPACT_MODEL, label: 'OpenRouter' }
+    // OpenRouter ignores `reasoning` for models without it; OpenAI's endpoint rejects it, so it is OpenRouter-only.
+    ? { url: OPENROUTER_CHAT_API, key: keys.openrouter, model: OPENROUTER_COMPACT_MODEL, label: 'OpenRouter', extra: { reasoning: { effort: 'low' } } }
     : keys.openai
-      ? { url: OPENAI_CHAT_API, key: keys.openai, model: OPENAI_COMPACT_MODEL, label: 'OpenAI' }
+      ? { url: OPENAI_CHAT_API, key: keys.openai, model: OPENAI_COMPACT_MODEL, label: 'OpenAI', extra: {} }
       : undefined
   if (!openAiCompatible) throw new NoCompactionKeyError()
 
   const res = await fetch(openAiCompatible.url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${openAiCompatible.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: openAiCompatible.model, max_completion_tokens: 800, messages: [{ role: 'user', content: prompt }] }),
+    body: JSON.stringify({ model: openAiCompatible.model, max_completion_tokens: COMPACT_COMPLETION_TOKENS, messages: [{ role: 'user', content: prompt }], ...openAiCompatible.extra }),
   })
   if (!res.ok) throw new Error(`${openAiCompatible.label} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
-  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> }
+  const data = (await res.json()) as { model?: string; choices?: Array<{ finish_reason?: string; message?: { content?: string } }> }
   const text = (data.choices?.[0]?.message?.content ?? '').trim()
-  if (!text) throw new Error(`${openAiCompatible.label} returned empty text content`)
+  if (!text) throw new Error(`${openAiCompatible.label} returned empty text content (model ${data.model ?? openAiCompatible.model}, finish_reason ${data.choices?.[0]?.finish_reason ?? 'none'})`)
   return text
 }
 
