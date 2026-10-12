@@ -4,6 +4,11 @@ import { upsertAppIntegration } from '../src/lib/app-integrations'
 import { getDatabaseUrl, getDb } from '../src/lib/db'
 import { ensureChannelsForOrg, ensureProjectChannel, notifyProject } from '../src/lib/slack'
 
+/** Slack read methods are sent form-encoded, the rest as JSON. */
+function parseBody(raw: string): Record<string, unknown> {
+  return raw.startsWith('{') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))
+}
+
 async function isDbReachable(): Promise<boolean> {
   try { await getDb()`SELECT 1 FROM project_slack_channels LIMIT 0`; return true } catch { return false }
 }
@@ -20,7 +25,7 @@ function fakeSlack(options: { taken?: string[]; team?: string; lookupError?: str
     const url = String(input)
     if (!url.startsWith('https://slack.com/api/')) return realFetch(input, init)
     const method = url.slice('https://slack.com/api/'.length)
-    const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+    const body = parseBody(String(init?.body ?? '{}'))
     calls.push({ method, body })
     const reply = (data: Record<string, unknown>) => new Response(JSON.stringify(data), { status: 200 })
     switch (method) {

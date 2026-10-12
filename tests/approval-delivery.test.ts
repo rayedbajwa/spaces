@@ -5,6 +5,11 @@ import { createApprovalRequests, resolveGateRecipients, submitApprovalDecision, 
 import { notifyApprovalDecision, notifyApprovalRequests, deliverApprovalRequestsForGate, reResolveRevokedRecipient } from '../src/lib/approval-notify'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
+/** Slack read methods are sent form-encoded, the rest as JSON. */
+function parseBody(raw: string): Record<string, unknown> {
+  return raw.startsWith('{') ? JSON.parse(raw) : Object.fromEntries(new URLSearchParams(raw))
+}
+
 /**
  * Direct delivery (FR-003/004/016/019): channel precedence, one channel per
  * request, fallback, undeliverable and confirmation. Slack and Resend are
@@ -35,7 +40,7 @@ beforeEach(() => {
   delete process.env.APPROVAL_EMAIL_FROM
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined
+    const body = init?.body ? parseBody(String(init.body)) : undefined
     calls.push({ url, body })
     if (url.startsWith('https://slack.com/api/')) {
       const method = url.split('/').pop()!
