@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process'
+import path from 'node:path'
+import { promisify } from 'node:util'
 import {
   AIDLCFlow,
   runAIDLCParallelSubAgents,
@@ -22,6 +25,9 @@ import { compactHandoff } from './context-compactor'
 import { prepareResearchInputs } from './research-stage'
 import { responsibilityContextForStage } from './project-responsibilities'
 import { log } from './logger'
+import { sameRepository } from './repo-change'
+
+const execFileAsync = promisify(execFile)
 
 export interface PipelineEngineOptions extends FlowOptions {
   /**
@@ -39,6 +45,12 @@ export interface PipelineEngineOptions extends FlowOptions {
    * previous stages decided instead of starting from a blank thread.
    */
   priorHandoffs?: Array<{ stepId: string; stage: string; model?: string; text: string; compacted?: boolean }>
+  /**
+   * How many times each step already ran in earlier attempts of this run. Seeded
+   * on a resume so a loop's iteration cap counts every pass, not only the ones
+   * since the worker last restarted.
+   */
+  priorVisits?: Record<string, number>
 }
 
 export interface PipelineEngineSinks {
@@ -73,6 +85,10 @@ export class PipelineEngine {
   private readonly stepsByStage: Map<StageName, PipelineStep>
   private readonly stepsById: Map<string, PipelineStep>
   private readonly visitCount: Map<string, number> = new Map()
+  // The step a loop branch just sent the run back to, and the code repositories'
+  // state when that re-run began: a re-run that leaves them untouched ends the loop.
+  private loopedBackTo?: string
+  private codeBeforeRerun?: { stepId: string; snapshot: string }
   // Cross-model memory: compacted output of each completed stage. Injected as
   // preamble into subsequent stages so the next model can see prior decisions
   // even when the Pi session was replaced due to a model swap.
@@ -91,6 +107,7 @@ export class PipelineEngine {
       this.stageHandoffs.push({ stepId: h.stepId, stage: h.stage, model: h.model, text: h.text, compacted: h.compacted ?? false })
     }
     while (this.stageHandoffs.length > 6) this.stageHandoffs.shift()
+    for (const [stepId, visits] of Object.entries(options.priorVisits ?? {})) this.visitCount.set(stepId, visits)
 
     const stages = template.steps.map((step) => step.stage)
     this.reviewStages = new Set(template.steps.filter((s) => s.review).map((s) => s.stage))
@@ -221,6 +238,8 @@ export class PipelineEngine {
       const previousVisits = this.visitCount.get(step.id) ?? 0
       const isRerun = previousVisits > 0
 
+      await this.noteStepStart(step)
+
       const parts: string[] = []
 
       // Cross-stage memory FIRST — it's context the model needs to reason with —
@@ -281,6 +300,7 @@ export class PipelineEngine {
           `- Do not rewrite passing code, do not re-plan, do not re-architect.\n` +
           `- Add production code only when a failing test needs it.\n` +
           `- Prefer minimal, surgical diffs.\n` +
+          `- Do not edit \`verification-report.md\` or \`code-review.md\`: they are the review's and QA's record, not yours.\n` +
           `- After your changes, list which tests should now pass so the next verify pass can check.\n`,
         )
       }
@@ -407,6 +427,18 @@ export class PipelineEngine {
         this.visitCount.set(step.id, (this.visitCount.get(step.id) ?? 0) + 1)
       }
 
+      // A pass the loop sent back here that changed no code will not change the
+      // review or the verification either: another round would repeat this one.
+      // What is left (criteria no code can meet, follow-ups for people) is theirs.
+      if (step && this.codeBeforeRerun?.stepId === step.id) {
+        const before = this.codeBeforeRerun.snapshot
+        this.codeBeforeRerun = undefined
+        if ((await this.codeSnapshot()) === before) {
+          this.sinks.onBranch?.(step.id, 'end', 'the re-run changed no code; terminating')
+          return { nextIndex: ctx.stages.length }
+        }
+      }
+
       // Linear advance. A step a loop jumped back to sits past the template's
       // own stages, where "the next index" is the end; it continues with its
       // successor in the template instead (implement → review after a review
@@ -454,6 +486,7 @@ export class PipelineEngine {
         }
 
         this.sinks.onBranch?.(step.id, targetStep.id, rule.when)
+        this.loopedBackTo = targetStep.id
         // Append the target stage to the stages array so the flow can revisit it.
         return {
           nextIndex: ctx.stages.length,
@@ -464,6 +497,36 @@ export class PipelineEngine {
       // No rule matched: linear advance (fall-through).
       return linear()
     }
+  }
+
+  /** A loop sent the run back to this step: remember the code as it is now, so the navigator can tell whether the pass changed anything. */
+  private async noteStepStart(step: PipelineStep): Promise<void> {
+    this.codeBeforeRerun = undefined
+    if (this.loopedBackTo !== step.id) return
+    this.loopedBackTo = undefined
+    const snapshot = await this.codeSnapshot()
+    if (snapshot !== undefined) this.codeBeforeRerun = { stepId: step.id, snapshot }
+  }
+
+  /**
+   * HEAD and uncommitted changes of each code repository the run targets (the
+   * governance workspace, where every stage records its notes, left out).
+   * Undefined when there is none to look at or one cannot be read.
+   */
+  private async codeSnapshot(): Promise<string | undefined> {
+    const governance = path.resolve(this.options.cwd)
+    const dirs = [...new Set((this.options.repoTargets ?? []).map((t) => t.localPath).filter(Boolean).map((p) => path.resolve(p)))]
+      .filter((dir) => !sameRepository(dir, governance))
+    if (dirs.length === 0) return undefined
+    const states = await Promise.all(dirs.map(async (dir) => {
+      const git = async (args: string[]) => (await execFileAsync('git', ['-C', dir, ...args], { maxBuffer: 16 * 1024 * 1024 })).stdout.trim()
+      try {
+        return `${dir}\n${await git(['rev-parse', 'HEAD'])}\n${await git(['status', '--porcelain'])}`
+      } catch {
+        return undefined
+      }
+    }))
+    return states.every((state) => state !== undefined) ? states.join('\n\n') : undefined
   }
 
   private async buildBranchVariables(currentStepId: string): Promise<Record<string, string | undefined>> {
