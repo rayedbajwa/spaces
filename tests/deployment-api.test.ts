@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { getDb } from '../src/lib/db'
-import { createProject } from '../src/lib/project-registry'
+import { addRepo, createProject } from '../src/lib/project-registry'
 import { getAppIntegration, upsertAppIntegration } from '../src/lib/app-integrations'
 import { saveOAuthApp } from '../src/lib/oauth-apps'
 import { listResponsibilities, replaceAssignments } from '../src/lib/project-responsibilities'
@@ -87,6 +87,7 @@ describe('Railway deployment HTTP authorization', () => {
       await sql`DELETE FROM deployment_records WHERE project_id = ${projectId}`.catch(() => undefined)
       await sql`DELETE FROM deployment_approvals WHERE project_id = ${projectId}`.catch(() => undefined)
       await sql`DELETE FROM project_deployment_targets WHERE project_id = ${projectId}`.catch(() => undefined)
+      await sql`DELETE FROM project_repos WHERE project_id = ${projectId}`.catch(() => undefined)
       await sql`DELETE FROM projects WHERE project_id = ${projectId}`.catch(() => undefined)
     }
     await sql`DELETE FROM app_integrations WHERE org_id = ${fixture.orgId}`.catch(() => undefined)
@@ -222,6 +223,39 @@ describe('Railway deployment HTTP authorization', () => {
     expect(mock.state.triggerCount).toBe(1)
     const [approval] = await sql<Array<{ decision: string }>>`SELECT decision FROM deployment_approvals WHERE run_id = ${approveRun}`
     expect(approval?.decision).toBe('approved')
+  })
+
+  test('TC-API-007: the target deploying the project repository is suggested to managers; merge-only stops it until a target is linked', async () => {
+    await connectToken(fixture.orgId)
+    await addRepo({ projectId, label: 'web-app', kind: 'github', githubRepo: 'acme/web-app', isPrimary: true })
+    const path = `/api/projects/${projectSlug}/deployment/suggestion`
+
+    // A plain member is never offered a target (and Railway is not queried for them).
+    const member = await api<{ canManage: boolean; suggestion?: unknown }>('GET', path, memberCookie)
+    expect(member.status).toBe(200)
+    expect(member.body.canManage).toBe(false)
+    expect(member.body.suggestion).toBeUndefined()
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/merge-only`, memberCookie, { mergeOnly: true })).status).toBe(403)
+
+    const owner = await api<{ canManage: boolean; linked: boolean; mergeOnly: boolean; candidates: number; suggestion?: Record<string, string> }>('GET', path, ownerCookie)
+    expect(owner.status).toBe(200)
+    expect(owner.body).toMatchObject({ canManage: true, linked: false, mergeOnly: false, candidates: 1 })
+    expect(owner.body.suggestion).toMatchObject({ workspaceId: 'ws-1', railwayProjectId: 'proj-1', serviceId: 'svc-1', serviceName: 'web', environmentId: 'env-1', environmentName: 'production', repo: 'acme/web-app' })
+
+    // "Merge only" is remembered: no suggestion afterwards.
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/merge-only`, ownerCookie, { mergeOnly: 'yes' })).status).toBe(400)
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/merge-only`, ownerCookie, { mergeOnly: true })).status).toBe(200)
+    const after = await api<{ mergeOnly: boolean; suggestion?: unknown }>('GET', path, ownerCookie)
+    expect(after.body.mergeOnly).toBe(true)
+    expect(after.body.suggestion).toBeUndefined()
+
+    // Linking the suggested target clears the merge-only choice; merge-only then needs an unlink first.
+    const s = owner.body.suggestion!
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/target`, ownerCookie, { workspaceId: s.workspaceId, railwayProjectId: s.railwayProjectId, serviceId: s.serviceId, environmentId: s.environmentId })).status).toBe(200)
+    const linked = await api<{ linked: boolean; mergeOnly: boolean; suggestion?: unknown }>('GET', path, ownerCookie)
+    expect(linked.body).toMatchObject({ linked: true, mergeOnly: false })
+    expect(linked.body.suggestion).toBeUndefined()
+    expect((await api('POST', `/api/projects/${projectSlug}/deployment/merge-only`, ownerCookie, { mergeOnly: true })).status).toBe(409)
   })
 
   test('TC-API-005: OAuth authorize redirects with viewer scopes; callback stores oauth or a reconnect-needed error (FR-003)', async () => {

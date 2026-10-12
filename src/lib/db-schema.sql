@@ -1107,6 +1107,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS project_deployment_targets_one_per_project
   ON project_deployment_targets (project_id);
 CREATE INDEX IF NOT EXISTS project_deployment_targets_org_idx
   ON project_deployment_targets (org_id);
+-- A project that chose to deliver by merge only is not offered a target again.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS deploy_merge_only_at TIMESTAMPTZ;
 
 -- The human decision audit for a release (one row per decision).
 CREATE TABLE IF NOT EXISTS deployment_approvals (

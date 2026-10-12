@@ -106,6 +106,8 @@ describe('Railway client', () => {
       expect(targets).toHaveLength(1)
       expect(targets[0]!.name).toBe('Acme Workspace')
       expect(targets[0]!.projects[0]!.services.map((s) => s.name)).toEqual(['web', 'api'])
+      // The repository each service deploys from, for suggesting a project's target.
+      expect(targets[0]!.projects[0]!.services.map((s) => s.repo)).toEqual(['acme/web-app', null])
       expect(targets[0]!.projects[0]!.environments.map((e) => e.name)).toEqual(['production', 'staging'])
     })
 

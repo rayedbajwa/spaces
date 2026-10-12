@@ -2676,6 +2676,7 @@ function App() {
                     })}
                   </div>
                 </section>
+                <DeploymentSuggestionCard namespace={selectedProjectNamespace} context="setup" />
                 <section className="card panel slim-panel overview-section overview-repos">
                   <h3>Repositories</h3>
                   {projectDetail?.suggestionsJson?.newRepository && !projectDetail.repos.some((r) => r.kind === 'github' && r.githubRepo?.split('/')[1]?.toLowerCase() === projectDetail.suggestionsJson!.newRepository!.name.toLowerCase()) && (
@@ -4535,6 +4536,7 @@ function AiAgentOutputBar({
               Approve to continue as it stands, approve with notes to have them applied first, or describe what to change and it goes back for another pass.
             </p>
           )}
+          {currentRun.stage === 'deliver' && <DeploymentSuggestionCard namespace={currentRun.projectNamespace} context="deliver" />}
           <textarea
             autoFocus
             value={answerDraft}
@@ -4943,7 +4945,83 @@ interface DeploymentView {
   canManage?: boolean
 }
 interface DeploymentTargets {
-  workspaces: Array<{ id: string; name: string; projects: Array<{ id: string; name: string; services: Array<{ id: string; name: string }>; environments: Array<{ id: string; name: string }> }> }>
+  workspaces: Array<{ id: string; name: string; projects: Array<{ id: string; name: string; services: Array<{ id: string; name: string; repo?: string | null }>; environments: Array<{ id: string; name: string }> }> }>
+}
+
+interface DeploymentSuggestion {
+  linked: boolean
+  mergeOnly: boolean
+  connected: boolean
+  candidates: number
+  canManage: boolean
+  suggestion?: { workspaceId: string; workspaceName: string; railwayProjectId: string; railwayProjectName: string; serviceId: string; serviceName: string; environmentId: string; environmentName: string; repo: string }
+}
+
+/**
+ * Offers the Railway service that deploys the project's repository as its
+ * deployment target: on the project overview, in Releasing, and while the
+ * Deliver step waits, so a release is not merge-only by accident. Shown only
+ * to people who may link a target, and never once one is linked or the
+ * project chose merge-only delivery.
+ */
+function DeploymentSuggestionCard({ namespace, context, onChanged, onChooseAnother }: {
+  namespace?: string
+  context: 'setup' | 'release' | 'deliver'
+  onChanged?: () => void
+  onChooseAnother?: () => void
+}) {
+  const [data, setData] = useState<DeploymentSuggestion | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const dismissKey = `spaces.deploymentSuggestion.notNow.${namespace ?? ''}`
+  const [notNow, setNotNow] = useState(false)
+  useEffect(() => {
+    setData(null); setError('')
+    setNotNow(Boolean(namespace && sessionStorage.getItem(dismissKey)))
+    if (!namespace) return
+    getJson<DeploymentSuggestion>(`/api/projects/${namespace}/deployment/suggestion`).then(setData).catch(() => setData(null))
+  }, [namespace])
+
+  const target = data?.suggestion
+  // "Not now" quiets the setup prompt for this session; delivery still asks.
+  if (!namespace || !data?.canManage || data.linked || data.mergeOnly || !target || (notNow && context === 'setup')) return null
+
+  const link = async () => {
+    setBusy(true); setError('')
+    try {
+      await postJson(`/api/projects/${namespace}/deployment/target`, { workspaceId: target.workspaceId, railwayProjectId: target.railwayProjectId, serviceId: target.serviceId, environmentId: target.environmentId })
+      setData({ ...data, linked: true }); onChanged?.()
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+  const mergeOnly = async () => {
+    setBusy(true); setError('')
+    try {
+      await postJson(`/api/projects/${namespace}/deployment/merge-only`, { mergeOnly: true })
+      setData({ ...data, mergeOnly: true }); onChanged?.()
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className={`deployment-suggestion${context === 'setup' ? ' deployment-suggestion-setup' : ''}`}>
+      <strong>{context === 'deliver' ? 'Link a deployment target before releasing?' : 'Link a deployment target for releases?'}</strong>
+      <p>
+        Railway service <strong>{target.serviceName}</strong> @ <em>{target.environmentName}</em> in {target.railwayProjectName} deploys <code>{target.repo}</code>.{' '}
+        {context === 'deliver'
+          ? 'Link it and approving this delivery releases there; otherwise the delivery is merge only.'
+          : 'Link it and each approved delivery releases there.'}
+      </p>
+      {data.candidates > 1 && <p className="text-subtle">{data.candidates} Railway services deploy this project's repositories. Check this is the right one.</p>}
+      {error && <p className="error-text">{error}</p>}
+      <div className="button-row">
+        <button className="primary-button" type="button" disabled={busy} onClick={() => void link()}>Link {target.serviceName} @ {target.environmentName}</button>
+        {onChooseAnother && <button className="secondary-button" type="button" disabled={busy} onClick={onChooseAnother}>Choose another…</button>}
+        <button className="ghost-button" type="button" disabled={busy} onClick={() => void mergeOnly()} title="Deliver this project by merging only. You won't be asked again; link a target any time in Releasing.">Merge only</button>
+        {context === 'setup' && <button className="ghost-button" type="button" disabled={busy} onClick={() => { sessionStorage.setItem(dismissKey, '1'); setNotNow(true) }}>Not now</button>}
+      </div>
+    </div>
+  )
 }
 
 const DEPLOYMENT_BADGE: Record<string, string> = { success: 'completed', failed: 'error', unconfirmed: 'error', building: 'paused', deploying: 'paused', queued: 'paused', in_progress: 'paused', sleeping: 'idle', unknown: 'idle' }
@@ -4959,11 +5037,14 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
   const [projectId, setProjectId] = useState('')
   const [serviceId, setServiceId] = useState('')
   const [environmentId, setEnvironmentId] = useState('')
+  const [suggested, setSuggested] = useState<DeploymentSuggestion | null>(null)
+  const [cardKey, setCardKey] = useState(0)
 
   const load = async () => {
     if (!namespace) return
     try {
       setView(await getJson<DeploymentView>(`/api/projects/${namespace}/deployment`))
+      setSuggested(await getJson<DeploymentSuggestion>(`/api/projects/${namespace}/deployment/suggestion`).catch(() => null))
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
   useEffect(() => { void load() }, [namespace])
@@ -4973,11 +5054,14 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
     getJson<DeploymentTargets>(`/api/projects/${namespace}/deployment/targets`)
       .then((data) => {
         setTargets(data.workspaces)
-        const ws = data.workspaces[0]
+        // Open on the suggested target (the service deploying this project's repository) when there is one.
+        const pick = suggested?.suggestion
+        const ws = (pick && data.workspaces.find((w) => w.id === pick.workspaceId)) || data.workspaces[0]
+        const proj = (pick && ws?.projects.find((p) => p.id === pick.railwayProjectId)) || ws?.projects[0]
         setWorkspaceId(ws?.id ?? '')
-        setProjectId(ws?.projects[0]?.id ?? '')
-        setServiceId(ws?.projects[0]?.services[0]?.id ?? '')
-        setEnvironmentId(ws?.projects[0]?.environments[0]?.id ?? '')
+        setProjectId(proj?.id ?? '')
+        setServiceId((pick && proj?.services.find((x) => x.id === pick.serviceId)?.id) || proj?.services[0]?.id || '')
+        setEnvironmentId((pick && proj?.environments.find((x) => x.id === pick.environmentId)?.id) || proj?.environments[0]?.id || '')
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
   }, [showPicker, namespace])
@@ -5028,7 +5112,12 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
       )}
       {view?.connection.reconnectNeeded && <p className="error-text">Railway needs reconnecting under Organization → Integrations.</p>}
       {view?.connection.status === 'connected' && !view.target && !showPicker && (
-        <p className="empty-state">No deployment target linked. This project delivers by merge only.</p>
+        <p className="empty-state">{suggested?.mergeOnly
+          ? 'This project delivers by merge only, as chosen. Link a target to release on each approved delivery.'
+          : 'No deployment target linked. This project delivers by merge only.'}</p>
+      )}
+      {view?.connection.status === 'connected' && !view.target && !showPicker && canManageTarget && (
+        <DeploymentSuggestionCard key={cardKey} namespace={namespace} context="release" onChanged={() => { setCardKey((k) => k + 1); void load() }} onChooseAnother={() => setShowPicker(true)} />
       )}
       {view?.target && (
         <div className="deployment-status">
@@ -5075,8 +5164,9 @@ function ProjectDeploymentSection({ namespace, canManage }: { namespace: string 
           </label>
           <label>Service
             <select value={serviceId} onChange={(e) => setServiceId(e.target.value)}>
-              {(project?.services ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              {(project?.services ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}{s.repo ? ` — ${s.repo}` : ''}</option>)}
             </select>
+            {suggested?.suggestion?.serviceId === serviceId && <span className="text-subtle">Suggested: deploys {suggested.suggestion.repo}</span>}
           </label>
           <label>Environment
             <select value={environmentId} onChange={(e) => setEnvironmentId(e.target.value)}>

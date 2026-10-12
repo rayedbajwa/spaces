@@ -16,6 +16,7 @@ import { authDisabled, getMembership, roleAtLeast, type TeamRole } from './auth'
 import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { resolveResponsibility } from './project-responsibilities'
 import { listAppIntegrations } from './app-integrations'
+import { listRepos } from './project-registry'
 import {
   getLatestDeployment,
   listRailwayTargets,
@@ -223,6 +224,8 @@ export async function linkDeploymentTarget(input: {
       updated_at = now()
     RETURNING ${sql.unsafe(TARGET_COLS)}
   `
+  // Linking a target replaces an earlier "deliver by merge only" choice.
+  await sql`UPDATE projects SET deploy_merge_only_at = NULL WHERE project_id = ${input.projectId}`
   return row!
 }
 
@@ -230,6 +233,101 @@ export async function linkDeploymentTarget(input: {
 export async function unlinkDeploymentTarget(projectId: string): Promise<boolean> {
   const rows = await getDb()`DELETE FROM project_deployment_targets WHERE project_id = ${projectId} RETURNING target_id`
   return rows.length > 0
+}
+
+// ---- suggested target ----
+
+export interface SuggestedTarget {
+  workspaceId: string
+  workspaceName: string
+  railwayProjectId: string
+  railwayProjectName: string
+  serviceId: string
+  serviceName: string
+  environmentId: string
+  environmentName: string
+  /** The project repository this service deploys from. */
+  repo: string
+}
+
+function normalizeRepo(repo: string): string {
+  return repo.trim().toLowerCase().replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '').replace(/\/+$/, '')
+}
+
+/**
+ * Railway services that deploy one of the project's repositories, best first:
+ * the primary repository before others. Each is paired with the project's
+ * production environment when it has one (else a prod-like one, else the first).
+ */
+export function suggestTargets(workspaces: RailwayWorkspaceTargets[], repos: Array<{ githubRepo?: string | null; isPrimary?: boolean }>): SuggestedTarget[] {
+  const wanted = new Map<string, boolean>()
+  for (const repo of repos) if (repo.githubRepo) wanted.set(normalizeRepo(repo.githubRepo), Boolean(repo.isPrimary))
+  const found: Array<SuggestedTarget & { primary: boolean }> = []
+  for (const workspace of workspaces) {
+    for (const project of workspace.projects) {
+      const environment = project.environments.find((e) => e.name.toLowerCase() === 'production')
+        ?? project.environments.find((e) => /^prod/i.test(e.name))
+        ?? project.environments[0]
+      if (!environment) continue
+      for (const service of project.services) {
+        const repo = service.repo ? normalizeRepo(service.repo) : ''
+        if (!repo || !wanted.has(repo)) continue
+        found.push({
+          workspaceId: workspace.id, workspaceName: workspace.name,
+          railwayProjectId: project.id, railwayProjectName: project.name,
+          serviceId: service.id, serviceName: service.name,
+          environmentId: environment.id, environmentName: environment.name,
+          repo: service.repo!, primary: wanted.get(repo)!,
+        })
+      }
+    }
+  }
+  return found.sort((a, b) => Number(b.primary) - Number(a.primary)).map(({ primary: _primary, ...target }) => target)
+}
+
+export interface DeploymentSuggestionView {
+  /** The project already has a target; nothing to suggest. */
+  linked: boolean
+  /** Someone chose to deliver this project by merge only. */
+  mergeOnly: boolean
+  /** Railway is connected for the organization. */
+  connected: boolean
+  suggestion?: SuggestedTarget
+  /** How many services deploy the project's repositories (more than one: check the choice). */
+  candidates: number
+}
+
+/** Listing every Railway project is slow; the suggestion reuses it briefly per organization. */
+const SUGGESTION_TARGETS_TTL_MS = 60_000
+const suggestionTargets = new Map<string, { at: number; value: Promise<RailwayWorkspaceTargets[]> }>()
+
+function cachedTargets(orgId: string): Promise<RailwayWorkspaceTargets[]> {
+  const hit = suggestionTargets.get(orgId)
+  if (hit && Date.now() - hit.at < SUGGESTION_TARGETS_TTL_MS) return hit.value
+  const value = listRailwayTargets(orgId)
+  value.catch(() => suggestionTargets.delete(orgId))
+  suggestionTargets.set(orgId, { at: Date.now(), value })
+  return value
+}
+
+/** Whether the project chose merge-only delivery, and the Railway target Spaces suggests otherwise. */
+export async function getDeploymentSuggestion(projectId: string): Promise<DeploymentSuggestionView> {
+  const sql = getDb()
+  const [project] = await sql<Array<{ mergeOnlyAt: string | null }>>`SELECT deploy_merge_only_at AS "mergeOnlyAt" FROM projects WHERE project_id = ${projectId}`
+  const mergeOnly = Boolean(project?.mergeOnlyAt)
+  if (await getDeploymentTarget(projectId)) return { linked: true, mergeOnly, connected: true, candidates: 0 }
+  const orgId = await orgIdForProject(projectId)
+  const integration = (await listAppIntegrations(orgId).catch(() => [])).find((row) => row.kind === 'railway')
+  const connected = integration?.status === 'connected' && integration.credentialsOk !== false
+  if (!connected || mergeOnly) return { linked: false, mergeOnly, connected, candidates: 0 }
+  const [workspaces, repos] = await Promise.all([cachedTargets(orgId).catch(() => [] as RailwayWorkspaceTargets[]), listRepos(projectId)])
+  const candidates = suggestTargets(workspaces, repos)
+  return { linked: false, mergeOnly, connected, candidates: candidates.length, ...(candidates[0] ? { suggestion: candidates[0] } : {}) }
+}
+
+/** Record (or clear) the choice to deliver this project by merge only, without a deployment target. */
+export async function setMergeOnlyDelivery(projectId: string, mergeOnly: boolean): Promise<void> {
+  await getDb()`UPDATE projects SET deploy_merge_only_at = ${mergeOnly ? new Date() : null} WHERE project_id = ${projectId}`
 }
 
 // ---- authorization ----
