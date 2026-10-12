@@ -491,11 +491,16 @@ export async function getProjectMemory(projectId: string): Promise<ProjectMemory
   return row ?? { manualText: '', autoSummary: '', updatedAt: new Date().toISOString() }
 }
 
-export async function upsertProjectMemory(projectId: string, patch: { manualText?: string; autoSummary?: string }): Promise<ProjectMemoryRow> {
+/**
+ * Undefined when the project no longer exists: a background refresh (learning
+ * a repository takes minutes) can finish after the project was deleted.
+ */
+export async function upsertProjectMemory(projectId: string, patch: { manualText?: string; autoSummary?: string }): Promise<ProjectMemoryRow | undefined> {
   const sql = getDb()
   const [row] = await sql<ProjectMemoryRow[]>`
     INSERT INTO project_memory (project_id, manual_text, auto_summary)
-    VALUES (${projectId}, ${patch.manualText ?? ''}, ${patch.autoSummary ?? ''})
+    SELECT ${projectId}, ${patch.manualText ?? ''}, ${patch.autoSummary ?? ''}
+     WHERE EXISTS (SELECT 1 FROM projects WHERE project_id = ${projectId})
     ON CONFLICT (project_id) DO UPDATE SET
       manual_text  = COALESCE(${patch.manualText ?? null}, project_memory.manual_text),
       auto_summary = COALESCE(${patch.autoSummary ?? null}, project_memory.auto_summary),
