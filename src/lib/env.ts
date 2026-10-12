@@ -69,9 +69,16 @@ export function platformResendApiKey(): string | undefined {
   return key || undefined
 }
 
+/**
+ * Resend's shared onboarding sender. It needs no verified custom domain and is
+ * the default when `APPROVAL_EMAIL_FROM` is unset, so the sender domain stays
+ * optional (Resend only delivers it to the account owner's own address).
+ */
+export const RESEND_ONBOARDING_FROM = 'Spaces <onboarding@resend.dev>'
+
 /** Deployment-level sender identity used only when the organization has no email connection. */
 export function platformEmailFrom(): string {
-  return process.env.APPROVAL_EMAIL_FROM?.trim() || 'Spaces <noreply@spacesos.dev>'
+  return process.env.APPROVAL_EMAIL_FROM?.trim() || RESEND_ONBOARDING_FROM
 }
 
 export function validateEnv(): EnvReport {

@@ -32,6 +32,7 @@ beforeEach(() => {
   calls.length = 0
   slackLookup = 'ok'
   slackFailMethod = null
+  delete process.env.APPROVAL_EMAIL_FROM
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
@@ -41,6 +42,10 @@ beforeEach(() => {
       return new Response(JSON.stringify(slackResponse(method)), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     if (url.startsWith('https://api.resend.com/')) {
+      const from = (body as { from?: string } | undefined)?.from ?? ''
+      if (from.includes('spacesos.dev')) {
+        return new Response(JSON.stringify({ message: 'The spacesos.dev domain is not verified. Please, add and verify your domain on https://resend.com/domains', name: 'validation_error', statusCode: 403 }), { status: 403, headers: { 'content-type': 'application/json' } })
+      }
       return new Response(JSON.stringify({ id: 'email-1' }), { status: 200, headers: { 'content-type': 'application/json' } })
     }
     return realFetch(input as never, init)
@@ -108,6 +113,20 @@ describe('channel precedence', () => {
     expect((emailCall.text.match(/Approval needed/g) ?? []).length).toBe(1)
     expect(emailCall.text).toContain('Approval needed for')
     expect(emailCall.text).toContain('Stage: review')
+    const [delivery] = await getDb()<Array<{ channel: string; outcome: string }>>`SELECT channel, outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND outcome = 'delivered'`
+    expect(delivery?.channel).toBe('email')
+  })
+
+  test('an unverified sender domain falls back to the shared onboarding sender', async () => {
+    await upsertAppIntegration({ orgId: fixture.orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: 'xoxb-test' } })
+    process.env.RESEND_API_KEY = 're_test_key'
+    process.env.APPROVAL_EMAIL_FROM = 'Spaces <noreply@spacesos.dev>'
+    slackLookup = 'not_found'
+    const created = await createdForSuffix()
+    await notifyApprovalRequests([created[0]!], target)
+    const emailCalls = calls.filter((c) => c.url.includes('resend.com/emails'))
+    expect(emailCalls.length).toBe(2) // the unverified sender is rejected, then retried from onboarding
+    expect((emailCalls[1]!.body as { from: string }).from).toContain('onboarding@resend.dev')
     const [delivery] = await getDb()<Array<{ channel: string; outcome: string }>>`SELECT channel, outcome FROM approval_deliveries WHERE request_id = ${created[0]!.request.requestId} AND outcome = 'delivered'`
     expect(delivery?.channel).toBe('email')
   })

@@ -9,7 +9,7 @@
  */
 
 import { getAppIntegration, getAppIntegrationCredentials } from './app-integrations'
-import { platformEmailFrom, platformResendApiKey } from './env'
+import { platformEmailFrom, platformResendApiKey, RESEND_ONBOARDING_FROM } from './env'
 import { log } from './logger'
 
 const emailLog = log.child({ mod: 'email' })
@@ -70,7 +70,41 @@ export function domainVerified(address: string, domains: string[]): boolean {
   return domains.some((d) => d.toLowerCase().trim() === domain)
 }
 
-/** Send one email through Resend. Never throws and never logs the key. */
+/** Send one message through Resend; returns the parsed id or the failure detail. */
+async function postEmail(
+  apiKey: string,
+  from: string,
+  input: { to: string; subject: string; text: string; html?: string },
+): Promise<{ ok: true; id?: string } | { ok: false; status?: number; detail: string }> {
+  try {
+    const response = await fetch(`${apiBase()}/emails`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text, ...(input.html ? { html: input.html } : {}) }),
+    })
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '')
+      return { ok: false, status: response.status, detail }
+    }
+    const data = (await response.json().catch(() => ({}))) as { id?: string }
+    return { ok: true, id: data.id }
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** True when Resend rejected the message because the `from` domain is not verified. */
+function isUnverifiedDomainError(status: number | undefined, detail: string): boolean {
+  return status === 403 && /not verified|validation_error/i.test(detail)
+}
+
+/**
+ * Send one email through Resend. Never throws and never logs the key.
+ *
+ * The sender domain is optional: when the configured `from` domain is not
+ * verified in the Resend account, the send retries from Resend's shared
+ * onboarding sender instead of failing the request outright.
+ */
 export async function sendEmail(input: {
   orgId: string
   to: string
@@ -81,21 +115,15 @@ export async function sendEmail(input: {
   const apiKey = (await orgResendKey(input.orgId)) ?? platformResendApiKey()
   if (!apiKey) return { ok: false, reason: 'not_configured' }
   const { from } = await emailSender(input.orgId)
-  try {
-    const response = await fetch(`${apiBase()}/emails`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from, to: [input.to], subject: input.subject, text: input.text, ...(input.html ? { html: input.html } : {}) }),
-    })
-    if (!response.ok) {
-      const detail = await response.text().catch(() => '')
-      emailLog.warn('Resend rejected an approval email', { status: response.status, detail: detail.slice(0, 200) })
-      return { ok: false, reason: 'send_failed', message: `Resend returned ${response.status}` }
-    }
-    const data = (await response.json().catch(() => ({}))) as { id?: string }
-    return { ok: true, id: data.id }
-  } catch (error) {
-    emailLog.warn('Resend request failed', { error: error instanceof Error ? error.message : String(error) })
-    return { ok: false, reason: 'send_failed', message: error instanceof Error ? error.message : String(error) }
+  const attempt = await postEmail(apiKey, from, input)
+  if (attempt.ok) return { ok: true, id: attempt.id }
+  if (isUnverifiedDomainError(attempt.status, attempt.detail) && !from.includes('onboarding@resend.dev')) {
+    emailLog.warn('Resend rejected the sender domain; retrying from the shared onboarding sender', { status: attempt.status })
+    const retry = await postEmail(apiKey, RESEND_ONBOARDING_FROM, input)
+    if (retry.ok) return { ok: true, id: retry.id }
+    return { ok: false, reason: 'send_failed', message: retry.status ? `Resend returned ${retry.status}` : retry.detail }
   }
+  if (attempt.status) emailLog.warn('Resend rejected an approval email', { status: attempt.status, detail: attempt.detail.slice(0, 200) })
+  else emailLog.warn('Resend request failed', { error: attempt.detail })
+  return { ok: false, reason: 'send_failed', message: attempt.status ? `Resend returned ${attempt.status}` : attempt.detail }
 }
