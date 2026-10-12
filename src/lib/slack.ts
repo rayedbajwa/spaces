@@ -33,11 +33,21 @@ export class SlackApiError extends Error {
 
 type SlackResponse = { ok: boolean; error?: string; needed?: string } & Record<string, unknown>
 
+/**
+ * Read methods ignore a JSON body: users.lookupByEmail answers invalid_arguments
+ * and conversations.list drops its filters. They take form-encoded arguments.
+ */
+const FORM_METHODS = new Set(['users.lookupByEmail', 'conversations.list'])
+
 async function slackApi<T extends SlackResponse>(token: string, method: string, body: Record<string, unknown>): Promise<T> {
+  const form = FORM_METHODS.has(method)
   const response = await fetch(`https://slack.com/api/${method}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(body),
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8',
+    },
+    body: form ? new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(body),
   })
   const data = (await response.json().catch(() => ({ ok: false, error: `http_${response.status}` }))) as T
   if (!data.ok) throw new SlackApiError(method, data.error ?? 'unknown_error', data.needed)
