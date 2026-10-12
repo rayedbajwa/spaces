@@ -1,118 +1,186 @@
 # Feature Specification: Workflows
 
 **Feature Branch**: `013-workflows` · **Created**: 2026-10-12 · **Status**: Draft
-**Input**: "A Workflows section where a user decides what happens when things happen in Spaces, picking actions from Jira, Slack, Linear and the other enabled integrations. Add Datadog as an integration."
+**Input**: "A Workflows section where a user decides what happens, picking actions from Jira, Slack, Linear and the other enabled integrations; add Datadog. It should be inbound, so Spaces can take tasks and prioritize them from other tools. Slack could be used for creating new tickets, approving/rejecting, and providing input on projects."
+
+Workflows connect Spaces to the team's tools in both directions:
+
+- **Inbound** — work arrives from other tools (a Jira or Linear issue, a Slack request, a Datadog alert), lands in a prioritized **Intake** queue, and becomes features or bugfixes in Spaces.
+- **Outbound** — things that happen in Spaces (a run fails, a feature is delivered) trigger actions in other tools.
+- **Slack as a two-way surface** — people file tickets, approve or reject gates, and answer the agent from Slack without opening Spaces.
+
+A workflow is one trigger (from Spaces or from a connected tool), an optional filter and scope, and an ordered list of actions (in a connected tool or in Spaces).
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Build a workflow from a trigger and actions (Priority: P1)
+### User Story 1 - Take work in from Jira and Linear (Priority: P1)
 
-In a new **Workflows** section, a user creates a workflow: they pick a trigger (something that happens in Spaces, such as "a feature is delivered"), optionally narrow it to projects or pipelines, and add one or more actions picked from the integrations the organization has connected (for example "post to Slack channel #releases" then "create a Linear issue"). Action fields can use values from the event — feature name, stage, summary, links. The workflow is saved disabled; the user tests it, then enables it. **Why P1**: this is the feature. **Independent test**: with Slack connected, create "when a run fails → post to a channel", fail a run, and see the message.
-
-**Acceptance Scenarios**:
-
-1. **Given** Slack and Jira are connected and Linear is not, **When** a user adds an action, **Then** Slack and Jira actions are offered and Linear is shown as "connect to use" without being selectable.
-2. **Given** a new workflow, **When** the user tests it, **Then** it runs once against a sample event, shows each action's result, and is not enabled by the test.
-3. **Given** an enabled workflow, **When** its trigger occurs in a project it covers, **Then** its actions run in order with the event's values filled in.
-4. **Given** an enabled workflow, **When** the trigger occurs in a project it does not cover, **Then** nothing runs.
-
-### User Story 2 - Keep Jira and Linear in step with a feature (Priority: P1)
-
-A workflow can create a Jira or Linear issue for a feature, and later workflows can comment on or move that same issue (for example: "feature specified → create Jira story", "feature delivered → transition the story to Done and comment with the PR links"). Spaces remembers which external issue belongs to which feature. **Why P1**: the most asked-for use — teams track work in Jira or Linear, not in Spaces. **Independent test**: create the two workflows above, run a feature through to delivery, and check one issue was created and then moved to Done with the comment.
+An admin creates an inbound workflow: "when a Jira issue in project PAY gets the label `spaces` → add it to Intake for project Payments". Matching issues — new or changed to match — appear in that project's Intake with their title, description, reporter, source priority and a link back. Spaces keeps one Intake item per external issue and updates it when the issue changes. **Why P1**: teams already plan in Jira or Linear; Spaces must take its work from there. **Independent test**: label a Jira issue `spaces` and see it appear in Intake within a minute, then edit its title in Jira and see the item update.
 
 **Acceptance Scenarios**:
 
-1. **Given** a "create issue" action ran for a feature, **When** a later "comment" or "change status" action runs for the same feature, **Then** it targets the issue that was created, and the feature page links to it.
-2. **Given** a "change status" action and no linked issue for the feature, **When** it runs, **Then** it is skipped with the reason "no linked issue" and the rest of the workflow continues.
-3. **Given** a "create issue" action that already created an issue for this feature, **When** it runs again for the same feature, **Then** it does not create a duplicate.
+1. **Given** an enabled inbound workflow for Jira label `spaces`, **When** an issue gets that label, **Then** one Intake item is created for the mapped project with the issue's details, priority and link.
+2. **Given** an Intake item from a Linear issue, **When** the Linear issue is edited or closed, **Then** the item reflects the change (a closed issue is marked withdrawn, not deleted).
+3. **Given** the same issue is reported twice (a repeated webhook, or the label removed and re-added), **When** it arrives, **Then** there is still only one Intake item.
+4. **Given** an issue that does not match any workflow's filter, **When** it changes, **Then** nothing is created.
 
-### User Story 3 - Connect Datadog and mark releases in it (Priority: P2)
+### User Story 2 - Prioritize and accept work in Intake (Priority: P1)
 
-An organization admin connects Datadog (site plus API key, application key optional) under Integrations, in a new Observability category. Workflows can then send a Datadog event — for example a deployment marker tagged with the project, feature and environment when a deployment succeeds — so releases line up with the team's dashboards. **Why P2**: gives teams release markers today and lays the ground for post-launch operations (spec 012). **Independent test**: connect Datadog, enable "deployment succeeded → send Datadog event", deploy, and find the event in Datadog with its tags.
-
-**Acceptance Scenarios**:
-
-1. **Given** an admin enters a Datadog site and API key, **When** they save, **Then** the key is validated, stored encrypted, and Datadog shows as connected; an invalid key shows an error and is not saved.
-2. **Given** Datadog is connected, **When** a "send Datadog event" action runs, **Then** an event with the chosen title, text and tags appears in that Datadog site.
-
-### User Story 4 - See what workflows did (Priority: P2)
-
-Each workflow shows its recent runs: when, which event, each action's outcome, and the error for any failure. A failed action can be retried. **Why P2**: actions reach outside Spaces; people need to trust and debug them. **Independent test**: break an action (e.g. a deleted Slack channel), trigger it, see the failure and reason, fix it, and retry successfully.
+Each project has an **Intake** queue ordered by priority, then age. Spaces maps the source priority (Jira Highest…Lowest, Linear Urgent…Low, Datadog alert severity) to a Spaces priority (P1–P4) and suggests a scope — feature or bugfix — with a one-line reason. A person reviews the queue: accept (becomes a feature or bugfix in the backlog, keeping its link to the source), change priority or scope, merge duplicates, or decline with a reason. A workflow can also accept matching items automatically (for example, P1 Datadog alerts start a bugfix run at once). **Why P1**: "take tasks and prioritize" — without a queue, inbound work is just noise. **Independent test**: send three issues with different priorities, see them ordered P1 first with suggested scopes, accept one and decline one.
 
 **Acceptance Scenarios**:
 
-1. **Given** an action fails, **When** the user opens the workflow, **Then** the run shows which action failed, why, and the actions after it as not run.
-2. **Given** a failed run, **When** the user retries it, **Then** only the failed and not-run actions run again.
+1. **Given** Intake items of mixed priority, **When** the queue is viewed, **Then** they are ordered by priority then age, each with its source, suggested scope and reason.
+2. **Given** an Intake item, **When** a person accepts it as a bugfix, **Then** a bugfix intent is created in the project's backlog with the item's details as its input and a link to the source issue.
+3. **Given** an inbound workflow with "accept and start run" for P1 items, **When** a P1 item arrives, **Then** a run starts without a person accepting it, and the item records that a workflow accepted it.
+4. **Given** a declined item, **When** it was created from Jira or Linear, **Then** a comment with the reason is posted on the source issue.
+
+### User Story 3 - File tickets from Slack (Priority: P1)
+
+In Slack, a person uses a `/spaces` command or the "Send to Spaces" message action. A short form asks for project, title, details and priority (prefilled from the message). The ticket lands in that project's Intake, and the person gets a reply in Slack with a link. **Why P1**: Slack is where requests actually happen. **Independent test**: run "Send to Spaces" on a Slack message, submit the form, and see the item in Intake with the message as its details and a link back to the message.
+
+**Acceptance Scenarios**:
+
+1. **Given** a Slack user matched to a Spaces member, **When** they submit the form, **Then** an Intake item is created for the chosen project, attributed to them, linking to the Slack message.
+2. **Given** a Slack user who is not a member of any project in the organization, **When** they use the command, **Then** they are told to ask an admin for access, and nothing is created.
+3. **Given** the form, **When** the person picks a project, **Then** only projects they belong to are offered.
+
+### User Story 4 - Approve, reject and answer from Slack (Priority: P1)
+
+When a run waits for approval, the Slack message to the accountable person carries **Approve** and **Request changes** buttons; request changes opens a box for feedback. When the agent asks a question, the person can reply in the message's thread and that reply is the answer. Status updates and new questions for the same run stay in one thread. **Why P1**: approvals and answers are what stall runs; deciding where the conversation already is unblocks them. **Independent test**: start a run with a review gate, approve it from Slack, and see the run continue; then answer an agent question by replying in the thread.
+
+**Acceptance Scenarios**:
+
+1. **Given** a gate waiting on its accountable person, **When** that person clicks Approve in Slack, **Then** the gate is decided once through the same path as an approval link, the run resumes, and the Slack message updates to show who decided and when.
+2. **Given** someone who is not the gate's recipient clicks Approve, **When** the click arrives, **Then** it is refused privately ("only <person> can decide this") and the gate is unchanged.
+3. **Given** the gate was already decided elsewhere, **When** someone clicks in Slack, **Then** they see the existing outcome and nothing changes.
+4. **Given** an agent question posted to a run's thread, **When** a project member replies in that thread, **Then** the reply is recorded as the answer and the run resumes; replies from non-members are ignored with a private notice.
+
+### User Story 5 - Act in other tools when things happen in Spaces (Priority: P2)
+
+A user creates an outbound workflow: a Spaces trigger (run started, stage finished, waiting for approval, run failed, feature delivered, deployment succeeded or failed), an optional project/pipeline scope, and actions from connected integrations — post to a Slack channel, create/comment/change status of the feature's Jira or Linear issue, send a Datadog event, send an email. Action fields use placeholders from the event. An issue a workflow creates, or the source issue of an accepted Intake item, is the feature's linked issue, so "feature delivered → move the issue to Done" keeps Jira and Linear in step. **Why P2**: keeps other tools current once work is in Spaces. **Independent test**: accept a Jira-sourced item, run it to delivery, and see the source issue moved to Done with the PR links as a comment.
+
+**Acceptance Scenarios**:
+
+1. **Given** Slack and Jira are connected and Linear is not, **When** a user adds an action, **Then** Slack and Jira actions are offered and Linear is shown as "connect to use".
+2. **Given** a feature accepted from a Jira issue, **When** a "change status" action runs for it, **Then** it moves that source issue.
+3. **Given** a "create issue" action already ran for a feature, **When** it runs again, **Then** no duplicate issue is created.
+
+### User Story 6 - Connect Datadog: alerts in, release markers out (Priority: P2)
+
+An admin connects Datadog (site, API key, optional application key) in a new Observability category. Inbound: a Datadog monitor alert, sent to Spaces' webhook, can add a bugfix to Intake with the alert's severity mapped to priority, linked to the alert. Outbound: a workflow can send a Datadog event, such as a deployment marker tagged with project, feature and environment. **Why P2**: production problems become work automatically, and releases line up with dashboards; the inbound path is what post-launch operations (spec 012) builds on. **Independent test**: trigger a test monitor alert and see a bugfix item in Intake; deploy and see the event in Datadog.
+
+**Acceptance Scenarios**:
+
+1. **Given** an admin enters a Datadog site and API key, **When** they save, **Then** the key is validated and stored encrypted; an invalid key is not saved.
+2. **Given** an inbound workflow for Datadog alerts, **When** a monitor alerts and then alerts again before recovering, **Then** one Intake item exists, showing both occurrences.
+3. **Given** the monitor recovers, **When** recovery arrives, **Then** the item is marked recovered, but is not removed.
+
+### User Story 7 - See what workflows did (Priority: P2)
+
+Each workflow shows recent runs: the event (from Spaces or from a tool), each action's outcome and error. A failed run can be retried from the failed action. Inbound events that were received but matched nothing are visible to admins for a few days, to debug filters. **Why P2**: actions reach outside Spaces, and inbound work must never vanish silently. **Independent test**: break an action, trigger it, see the failure, fix it and retry.
+
+**Acceptance Scenarios**:
+
+1. **Given** an action fails, **When** the workflow is opened, **Then** the run shows which action failed, why, and the later actions as not run.
+2. **Given** an inbound event that matched no workflow, **When** an admin opens the inbound log, **Then** the event and why it matched nothing are listed.
 
 ### Edge Cases
 
-- An integration is disconnected or its credentials expire → its actions fail with "reconnect <integration>"; the workflow stays enabled and its owner is told once.
-- A workflow fails on several runs in a row (e.g. 5) → it is paused and its owner is told; it does not keep failing silently.
-- The same event fires twice (a retried run) → each action runs at most once per event.
-- A run moves faster than workflows execute → actions for one feature run in the order its events happened.
-- A placeholder has no value for this event (e.g. no PR yet) → it renders empty and the run records a warning.
-- Content sent outside Spaces passes the organization's AI data guardrails, like other outbound text.
-- A workflow covers a project the user later loses access to → it keeps running under the organization; only people who may edit workflows can change it.
+- An inbound event is not signed correctly by its tool → rejected and logged; nothing is created.
+- A tool sends a burst of events (bulk-edit of 200 Jira issues) → each is processed once; Intake is not flooded with duplicates; outbound actions are rate-limited per integration.
+- An integration is disconnected or its credentials expire → its inbound events stop and its actions fail with "reconnect <integration>"; admins are told once.
+- A workflow fails several runs in a row (e.g. 5) → it is paused and its owner is told.
+- A Slack user's email matches no Spaces member → they can't file, approve or answer; told privately.
+- A Slack approval and an approval link are used at the same moment → exactly one decision wins; the other sees the outcome.
+- An inbound workflow could create a loop (Spaces comments on a Jira issue, which triggers the inbound workflow again) → changes made by Spaces itself never trigger inbound workflows.
+- Content leaving Spaces passes the organization's AI data guardrails; content coming in is treated as untrusted input to agents.
 
 ## Requirements *(mandatory)*
 
 ### Functional Requirements
 
-- **FR-001**: System MUST provide a Workflows section listing the organization's workflows with their trigger, actions, scope, enabled state and last run result.
-- **FR-002**: Users MUST be able to create, edit, test, enable, disable and delete a workflow made of one trigger, an optional scope (projects, pipelines) and an ordered list of actions. [NEEDS CLARIFICATION: who may create and edit workflows — organization admins only, or also project owners for workflows scoped to their projects?]
-- **FR-003**: System MUST offer these triggers in v1: run started, stage finished, waiting for approval, run failed, feature delivered, deployment succeeded, deployment failed.
-- **FR-004**: System MUST offer actions only from integrations that are connected for the organization, and show the others as available to connect.
-- **FR-005**: System MUST offer these actions in v1:
-  - Slack: post a message to a channel; message the accountable person.
-  - Jira: create an issue; comment on the feature's issue; change the feature's issue status.
-  - Linear: create an issue; comment on the feature's issue; change the feature's issue status.
-  - Datadog: send an event.
-  - Email: send an email to project members or a fixed address.
-- **FR-006**: Action fields MUST accept placeholders for the event's values (project, feature, stage, summary, status, run link, PR links, deployment link) and show a preview when testing.
-- **FR-007**: System MUST link an issue created by a workflow to its feature, target that issue in later actions for the same feature, and not create a second one for the same feature and action.
-- **FR-008**: System MUST run each enabled workflow when its trigger occurs within its scope, run its actions in order, and run each action at most once per event.
-- **FR-009**: Workflow failures MUST never block, fail or delay a pipeline run.
-- **FR-010**: System MUST record each workflow run (event, time, each action's result and error) and let a user retry a failed run from the failed action.
-- **FR-011**: System MUST pause a workflow after repeated consecutive failures and notify its owner.
-- **FR-012**: Admins MUST be able to connect Datadog with a site and API key (application key optional), validated before saving and stored encrypted, in a new Observability integration category.
-- **FR-013**: Workflows, their runs and the issues they link MUST stay within the organization; outbound content MUST pass the organization's AI data guardrails.
-- **FR-014**: System MUST keep the existing Slack run notices and approval-link delivery working unchanged alongside workflows. [NEEDS CLARIFICATION: should the built-in Slack run notices become editable default workflows in v1, or stay as they are until a later version?]
-- **FR-015**: Workflows in v1 are started by events in Spaces only. [NEEDS CLARIFICATION: must v1 also start work in Spaces from outside events — a Jira/Linear issue created or moved, a Datadog alert — or can that wait for v2?]
+**Workflows**
+
+- **FR-001**: System MUST provide a Workflows section listing the organization's workflows with trigger, filter, scope, actions, enabled state and last run result.
+- **FR-002**: Users MUST be able to create, edit, test, enable, disable and delete a workflow made of one trigger, an optional filter and project scope, and an ordered list of actions. [NEEDS CLARIFICATION: who may create and edit workflows — organization admins only, or also project owners for workflows scoped to their projects?]
+- **FR-003**: System MUST offer only triggers and actions from connected integrations, showing the others as available to connect.
+- **FR-004**: Inbound triggers in v1: Jira issue created or updated (filter by project, label, issue type, status); Linear issue created or updated (filter by team, project, label, status); Slack ticket submitted; Datadog monitor alert (filter by monitor, tag, severity).
+- **FR-005**: Spaces triggers in v1: run started, stage finished, waiting for approval, run failed, feature delivered, deployment succeeded, deployment failed.
+- **FR-006**: Spaces actions in v1: add to Intake; accept as feature or bugfix; accept and start a run.
+- **FR-007**: Tool actions in v1: Slack — post to a channel, message the accountable person; Jira and Linear — create an issue, comment on the feature's linked issue, change its status; Datadog — send an event; Email — send to project members or a fixed address.
+- **FR-008**: Action fields MUST accept placeholders for the event's values and show a preview when testing.
+- **FR-009**: Each enabled workflow MUST run when its trigger matches, run actions in order, and run each action at most once per event.
+- **FR-010**: Changes made by Spaces itself MUST NOT trigger inbound workflows.
+- **FR-011**: Workflow failures MUST never block, fail or delay a pipeline run.
+- **FR-012**: System MUST record each workflow run with per-action results, allow retry from the failed action, pause a workflow after repeated consecutive failures, and keep unmatched inbound events visible to admins for at least 7 days.
+
+**Intake and prioritization**
+
+- **FR-013**: Each project MUST have an Intake queue ordered by priority, then age.
+- **FR-014**: System MUST keep exactly one Intake item per external source item and update it when the source changes; a closed or deleted source marks the item withdrawn.
+- **FR-015**: System MUST map source priority (Jira, Linear, Datadog severity, Slack form) to P1–P4 and suggest a scope (feature or bugfix) with a one-line reason; people can override both.
+- **FR-016**: People MUST be able to accept (as feature or bugfix), reprioritize, merge duplicates, or decline with a reason; a declined Jira/Linear item gets the reason as a comment on its source.
+- **FR-017**: An accepted item MUST keep its link to the source, and that source becomes the feature's linked issue for outbound actions.
+
+**Slack two-way**
+
+- **FR-018**: People MUST be able to file a ticket into Intake from Slack with a command or a message action, choosing only projects they belong to.
+- **FR-019**: Approval requests in Slack MUST carry Approve and Request changes (with feedback) controls that decide the gate through the same single-decision path as approval links (spec 011), only for the gate's recipient.
+- **FR-020**: Agent questions MUST be answerable by replying in the run's Slack thread, by project members only; a run's notices and questions stay in one thread.
+- **FR-021**: Slack users MUST be matched to Spaces members by verified email; unmatched users cannot file, decide or answer.
+
+**Datadog**
+
+- **FR-022**: Admins MUST be able to connect Datadog with a site and API key (application key optional), validated before saving and stored encrypted, in a new Observability category.
+- **FR-023**: System MUST receive Datadog monitor alerts through a signed webhook, keep one Intake item per monitor alert until it recovers, and record recovery.
+
+**Security**
+
+- **FR-024**: Every inbound request MUST be verified as coming from the connected tool for that organization; unverified requests are rejected and logged.
+- **FR-025**: Workflows, Intake items and links MUST stay within the organization; outbound content passes the AI data guardrails; inbound content is treated as untrusted input.
+- **FR-026**: Existing Slack run notices and approval-link delivery MUST keep working; the new Slack controls are added to them. [NEEDS CLARIFICATION: should the built-in Slack run notices become editable default workflows in v1, or stay fixed until later?]
 
 ### Key Entities *(if the feature involves data)*
 
-- **Workflow**: organization, name, owner, trigger, scope (projects, pipelines), ordered actions, enabled/paused state.
-- **Action**: integration, action type, field values with placeholders.
-- **Workflow run**: workflow, triggering event, time, status, and per-action result and error.
-- **External link**: a feature linked to an issue created in Jira or Linear (integration, key or id, URL, created by which workflow).
+- **Workflow**: organization, name, owner, trigger (Spaces or tool), filter, project scope, ordered actions, enabled/paused.
+- **Action**: target (a tool or Spaces), action type, field values with placeholders.
+- **Workflow run**: workflow, event, time, status, per-action result and error.
+- **Inbound event**: tool, organization, verified flag, payload summary, matched workflows (or why none), received at.
+- **Intake item**: project, source (tool, id, URL), title, details, reporter, source priority, Spaces priority, suggested scope and reason, status (new, accepted, declined, merged, withdrawn), resulting feature.
+- **External link**: a feature linked to its source or created issue (tool, key, URL).
+- **Slack identity**: Slack user matched to a Spaces member by email.
 - **Datadog connection**: organization, site, encrypted API key and optional application key, status.
 
 ## Success Criteria *(mandatory)*
 
-- **SC-001**: A user can create, test and enable a two-action workflow in under 3 minutes without leaving the Workflows section.
-- **SC-002**: An enabled workflow's actions start within one minute of its trigger occurring.
-- **SC-003**: No pipeline run fails or is delayed because a workflow action failed.
-- **SC-004**: No duplicate external issues are created for the same feature and action, including when events repeat.
-- **SC-005**: Every workflow run is visible with its per-action result, and a failed run can be retried.
+- **SC-001**: A matching Jira, Linear, Slack or Datadog item appears in Intake within one minute.
+- **SC-002**: Zero duplicate Intake items for one external source item, including repeated or bulk events.
+- **SC-003**: A gate can be decided from Slack in two clicks without opening Spaces, and is never decided twice.
+- **SC-004**: An agent question answered in a Slack thread resumes the run within one minute.
+- **SC-005**: A user can create, test and enable a two-action workflow in under 3 minutes.
+- **SC-006**: No pipeline run fails or is delayed because a workflow action failed.
+- **SC-007**: Zero inbound requests that fail verification create or change anything.
 
 ## Post-release outcomes
 
-- **PRO-001**: Share of active organizations with at least one enabled workflow after one quarter — measured from workflow records.
-- **PRO-002**: Fewer manual status updates in Jira/Linear for features run in Spaces — measured by asking teams after one quarter.
+- **PRO-001**: Share of new features and bugfixes that enter Spaces through Intake rather than being typed in — measured from Intake records after one quarter.
+- **PRO-002**: Median time a gate waits for a decision, before and after Slack approvals — measured from gate records after one quarter.
+- **PRO-003**: Fewer manual status updates in Jira/Linear for work run in Spaces — measured by asking teams after one quarter.
 
 ## Out of scope (later versions)
 
-- **Inbound triggers**: start a feature or bugfix in Spaces from a Jira/Linear issue, a Slack message, or a Datadog monitor alert (the alert path ties into post-launch operations, spec 012).
-- **More actions**: Confluence (publish the spec or delivery report as a page), GitHub (issues, labels), Figma, Datadog monitors and incidents.
-- **Logic**: conditions on event values, branching, delays, and schedules (time-based triggers).
-- **AI steps**: an action that has an agent draft text (e.g. release notes) before it is sent.
-- **Templates**: a gallery of ready-made workflows.
+- Logic: conditions on event values beyond trigger filters, branching, delays, schedules.
+- More tools: Confluence (publish spec/report), GitHub issues as an inbound source, Figma, Datadog incidents and monitors, Microsoft Teams.
+- AI steps: an agent drafting text (release notes, triage notes) inside a workflow.
+- Template gallery of ready-made workflows.
+- Two-way field sync beyond status and comments (assignee, estimates, sprints).
 
 ## Assumptions
 
-- Workflows belong to an organization and may be scoped to some of its projects; with no scope they cover all projects.
-- Actions use the organization's existing integration connections; workflows do not hold their own credentials.
-- Jira and Linear connections, used today for knowledge only, need write permission for create, comment and transition; organizations may have to reconnect to grant it.
+- Inbound events arrive by webhook; Spaces registers the webhook with each tool when an inbound workflow is enabled, where the tool allows it, or shows the admin the URL and secret to add.
+- Jira and Linear connections, used for knowledge today, need write and webhook permission; organizations may need to reconnect.
+- Slack needs interactivity and slash commands enabled on the Spaces Slack app; existing workspaces reinstall once to grant them.
 - Saving and enabling a workflow is the consent for its actions; individual runs do not ask for approval.
-- Datadog events go to the site the admin configures (US1, US3, US5, EU1, AP1, Gov).
-- Workflows execute in the existing background worker; there is no separate automation engine.
+- Priority suggestions and scope suggestions are recommendations a person can change; only workflows set to accept automatically act without a person.
+- Workflows execute in the existing background worker, using the existing webhook job kind.
