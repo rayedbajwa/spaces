@@ -2880,7 +2880,7 @@ async function loadStagePrompt(options: {
   }
 
   if (options.stage === 'tasks') {
-    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- End with a "## Delivery" task group, per repository in dependency order (see plan.md "## Repositories"): open the pull request, get CI green and review approval, merge (after any PR it is stacked on), deploy or confirm the deployment pipeline ran, and run UAT/final acceptance checks from test-plan.md against the deployed environment. Mark tasks that must wait on another repository's merge with the repository name so orchestration respects the order.`
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- End with a "## Delivery" task group, per repository in dependency order (see plan.md "## Repositories"): open the pull request, get CI green and review approval, merge (after any PR it is stacked on), deploy or confirm the deployment pipeline ran, and run UAT/final acceptance checks from test-plan.md against the deployed environment. Mark tasks that must wait on another repository's merge with the repository name so orchestration respects the order.\n- ${GOVERNING_WORKSPACE_DELIVERY_RULE}`
   }
 
   if (options.stage === 'plan') {
@@ -2896,6 +2896,12 @@ async function loadStagePrompt(options: {
 
 /** Business-outcome success criteria are measured in production after release, not by QA. */
 const POST_RELEASE_OUTCOMES_RULE = `Success criteria that are business outcomes (adoption, behaviour change, satisfaction or comprehension surveys, trends over weeks or months against a baseline) are not QA scope: never count them as covered, missing or unverified. List them under "## Post-release outcomes" (id, the metric, where it would be measured) so they are tracked operationally after release and feed the next iteration of the feature.`
+
+/**
+ * The governing workspace is local by design (lib/governance.ts): its documents
+ * travel with the code repositories' pull requests, so it has nothing to deliver.
+ */
+const GOVERNING_WORKSPACE_DELIVERY_RULE = `The project's governing workspace (specs, memory and reports only — no application code) is a local repository with no git remote, by design: the feature's documents are synced into the code repositories' pull requests. Give it no pull request, push, merge or deploy tasks, never add a remote to it, and do not report its lack of a remote or pull request as blocked or as a finding.`
 
 function buildTestPlanPrompt(): string {
   return `Create a comprehensive test plan for the active feature in the current repository.
@@ -3093,7 +3099,7 @@ Inputs (read them first):
 - tasks.md "## Delivery" tasks, test-plan.md (UAT / acceptance scenarios), verification-report.md, plan.md "## Repositories", ${DEV_SETUP_FILE} (commands, environments, deploy pipeline notes) and project memory.
 
 Act, don't advise. You have git, bash and the GitHub token available through git:
-1. For each PR in stack order that is not merged: fix what blocks it yourself — rebase onto its base and push when there is a conflict, fix failing CI (run the project's lint/test commands locally first), mark drafts ready, respond to review comments with code changes. Open any PR that is still missing (tasks or workstreams delivered without one): commit, push the branch and create the PR with a Conventional Commits title (\`type(scope): subject\`) and a body linking the spec/plan/tasks.
+1. For each PR in stack order that is not merged: fix what blocks it yourself — rebase onto its base and push when there is a conflict, fix failing CI (run the project's lint/test commands locally first), mark drafts ready, respond to review comments with code changes. Open any PR that is still missing (tasks or workstreams delivered without one): commit, push the branch and create the PR with a Conventional Commits title (\`type(scope): subject\`) and a body linking the spec/plan/tasks. ${GOVERNING_WORKSPACE_DELIVERY_RULE}
 2. Ask for approval, then stop and wait, ONLY before irreversible or costly actions: merging a PR, triggering a deployment, deleting or migrating data, or anything outside the repositories in scope. Ask with a heading of the exact form "## Question 1: <what you want to do>" followed by the concrete command/action and its effect, then end your message. When the run resumes with "approve"/"continue", perform the action.
 3. After merges: confirm the deployment reached its environment. For a linked project, do NOT trigger Railway yourself — the human approval at this step's gate triggers exactly one deployment, and deployment-status.md is refreshed from Railway. Do NOT write \`Delivery Status: MERGED\` for a linked project until deployment-status.md shows a confirmed success; if it is failed/unconfirmed, write PARTIAL or BLOCKED with the actionable reason. For an unlinked project, confirm the deployment via GitHub Deployments/Actions or the pipeline documented in the README/dev-setup notes, and write an explicit "No deployment performed" line in the report.
 4. UAT / final testing: run the acceptance scenarios from test-plan.md against the deployed environment when a URL/environment is known (use its health/smoke endpoints, CLI, or the test suite pointed at that environment); otherwise run the full local suite on the merged base and state clearly that UAT still needs an environment.
