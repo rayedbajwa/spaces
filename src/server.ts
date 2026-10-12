@@ -2642,6 +2642,7 @@ async function route(req: Request): Promise<Response> {
     const manualText = body.manualText ?? body.text
     if (typeof manualText !== 'string') return sendJson(400, { error: 'text is required.' })
     const memory = await import('./lib/context-builder').then((m) => m.upsertProjectMemory(project.projectId, { manualText }))
+    if (!memory) return sendJson(404, { error: 'Project not found.' })
     return sendJson(200, { projectId: project.projectId, slug, ...memory })
   }
 

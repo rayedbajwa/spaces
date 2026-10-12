@@ -616,7 +616,8 @@ export async function composeProjectMemory(projectId: string): Promise<string> {
     }))
   }
   const autoSummary = sections.filter((line) => line !== undefined).join('\n')
-  await upsertProjectMemory(projectId, { autoSummary })
+  // The project was deleted while this was being composed: nothing to warm.
+  if (!(await upsertProjectMemory(projectId, { autoSummary }))) return autoSummary
   if (primary?.localPath) {
     await buildContextBundle({ projectId, projectSlug: project.slug, projectPath: primary.localPath }).catch(() => undefined)
   }
@@ -659,6 +660,8 @@ export function refreshRepositoryKnowledge(projectId: string, repoId: string, op
       error = err instanceof Error ? err.message : String(err)
       brief = `_Codebase brief unavailable: ${error}_`
     }
+    // The brief takes minutes; the project may have been deleted meanwhile.
+    if (!(await getProject(projectId))) return
     await saveRepoBrief(projectId, repo, inventory.markdown, brief, error)
     await composeProjectMemory(projectId)
     // A newly available repository is also made ready for development, so
