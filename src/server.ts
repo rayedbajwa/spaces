@@ -25,7 +25,7 @@ import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, i
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, getAppIntegration, getAppIntegrationCredentials, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { verifyRailwayCredential, type RailwayTokenType } from './lib/railway'
-import { decideRelease, DeploymentTargetError, getDeploymentTarget, getProjectDeployment, getProjectDeployments, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, unlinkDeploymentTarget, type DecideReleaseResult, type ProjectDeploymentView } from './lib/deployment'
+import { decideRelease, DeploymentTargetError, getDeploymentSuggestion, getDeploymentTarget, getProjectDeployment, getProjectDeployments, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, setMergeOnlyDelivery, unlinkDeploymentTarget, type DecideReleaseResult, type ProjectDeploymentView } from './lib/deployment'
 import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
@@ -2373,7 +2373,7 @@ async function route(req: Request): Promise<Response> {
   }
 
   // ---- Project deployment (Railway) ----
-  const deploymentRoute = /^\/api\/projects\/([^/]+)\/deployment(?:\/(targets|target|refresh))?$/.exec(url.pathname)
+  const deploymentRoute = /^\/api\/projects\/([^/]+)\/deployment(?:\/(targets|target|refresh|suggestion|merge-only))?$/.exec(url.pathname)
   if (deploymentRoute) {
     const slug = deploymentRoute[1]!
     const action = deploymentRoute[2]
@@ -2428,6 +2428,24 @@ async function route(req: Request): Promise<Response> {
       if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can unlink a deployment target.' })
       await unlinkDeploymentTarget(project.projectId)
       return sendJson(200, { ok: true })
+    }
+
+    // The Railway target Spaces suggests (a service deploying the project's
+    // repository), offered during setup and at delivery to people who may link one.
+    if (method === 'GET' && action === 'suggestion') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can view the project deployment.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(200, { linked: Boolean(await getDeploymentTarget(project.projectId)), mergeOnly: false, connected: false, candidates: 0, canManage: false })
+      return sendJson(200, { ...(await getDeploymentSuggestion(project.projectId)), canManage: true })
+    }
+
+    if (method === 'POST' && action === 'merge-only') {
+      const denied = requireProjectRole(project, 'viewer', 'Only team members can change how the project delivers.'); if (denied) return denied
+      if (!(await canManageDeployment())) return sendJson(403, { error: 'Only a team admin or the project\'s Release Manager/Owner can change how the project delivers.' })
+      const body = (await req.json().catch(() => ({}))) as { mergeOnly?: unknown }
+      if (typeof body.mergeOnly !== 'boolean') return sendJson(400, { error: 'mergeOnly must be true or false.' })
+      if (body.mergeOnly && await getDeploymentTarget(project.projectId)) return sendJson(409, { error: 'Unlink the deployment target first.' })
+      await setMergeOnlyDelivery(project.projectId, body.mergeOnly)
+      return sendJson(200, { ok: true, mergeOnly: body.mergeOnly })
     }
 
     if (method === 'POST' && action === 'refresh') {

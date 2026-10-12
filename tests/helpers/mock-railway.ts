@@ -6,7 +6,7 @@
  * Credentials and error conditions are configurable per test.
  */
 
-export interface MockRailwayService { id: string; name: string }
+export interface MockRailwayService { id: string; name: string; /** GitHub repo the service deploys from. */ repo?: string }
 export interface MockRailwayEnvironment { id: string; name: string }
 export interface MockRailwayProject {
   id: string
@@ -64,7 +64,7 @@ export function defaultMockRailway(overrides: Partial<MockRailwayState> = {}): M
           {
             id: 'proj-1',
             name: 'Acme App',
-            services: [{ id: 'svc-1', name: 'web' }, { id: 'svc-2', name: 'api' }],
+            services: [{ id: 'svc-1', name: 'web', repo: 'acme/web-app' }, { id: 'svc-2', name: 'api' }],
             environments: [{ id: 'env-1', name: 'production' }, { id: 'env-2', name: 'staging' }],
           },
         ],
@@ -123,7 +123,15 @@ function graphql(body: unknown): Record<string, unknown> {
               project: {
                 id: project.id,
                 name: project.name,
-                services: { edges: project.services.map((s) => ({ node: { id: s.id, name: s.name } })) },
+                services: {
+                  edges: project.services.map((s) => ({
+                    node: {
+                      id: s.id,
+                      name: s.name,
+                      serviceInstances: { edges: project.environments.map((e) => ({ node: { environmentId: e.id, source: s.repo ? { repo: s.repo, image: null } : null } })) },
+                    },
+                  })),
+                },
                 environments: { edges: project.environments.map((e) => ({ node: { id: e.id, name: e.name } })) },
               },
             },

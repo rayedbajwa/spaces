@@ -99,6 +99,8 @@ export interface RailwayTargetRef {
 export interface RailwayServiceTarget {
   id: string
   name: string
+  /** GitHub repository the service deploys from (`owner/name`), when it is repo-backed. */
+  repo?: string | null
 }
 
 export interface RailwayEnvironmentTarget {
@@ -301,9 +303,22 @@ interface ProjectDetailResult {
   project: {
     id: string
     name: string
-    services: { edges: Array<{ node: { id: string; name: string } }> }
+    services: { edges: Array<{ node: RailwayServiceNode }> }
     environments: { edges: Array<{ node: { id: string; name: string } }> }
   } | null
+}
+interface RailwayServiceNode {
+  id: string
+  name: string
+  serviceInstances?: { edges: Array<{ node: { environmentId: string; source?: { repo?: string | null } | null } }> }
+}
+
+/** Services and environments of one project, with the repository each service deploys from. */
+const PROJECT_DETAIL_QUERY = `query project($id: String!) { project(id: $id) { id name services { edges { node { id name serviceInstances { edges { node { environmentId source { repo } } } } } } } environments { edges { node { id name } } } } }`
+
+function toServiceTarget(node: RailwayServiceNode): RailwayServiceTarget {
+  const repo = nodes(node.serviceInstances).map((instance) => instance.source?.repo).find((r): r is string => Boolean(r))
+  return { id: node.id, name: node.name, repo: repo ?? null }
 }
 
 function nodes<T>(connection: { edges?: Array<{ node: T }> } | T[] | undefined): T[] {
@@ -323,12 +338,12 @@ export async function listRailwayTargetsWithToken(token: string, tokenType: Rail
     const projectToken = await railwayGraphQLRequest<ProjectTokenResult>(token, 'project', `query { projectToken { projectId environmentId } }`, {}, fetchImpl)
     const projectId = projectToken.projectToken?.projectId
     if (!projectId) throw new RailwayError('railway_target_missing', 'Railway did not return a project for this project token.')
-    const detail = await railwayGraphQLRequest<ProjectDetailResult>(token, 'project', `query project($id: String!) { project(id: $id) { id name services { edges { node { id name } } } environments { edges { node { id name } } } } }`, { id: projectId }, fetchImpl)
+    const detail = await railwayGraphQLRequest<ProjectDetailResult>(token, 'project', PROJECT_DETAIL_QUERY, { id: projectId }, fetchImpl)
     if (!detail.project) throw new RailwayError('railway_target_missing', 'Railway did not return the project for this project token.')
     return [{
       id: `project-token:${detail.project.id}`,
       name: detail.project.name,
-      projects: [{ id: detail.project.id, name: detail.project.name, services: nodes(detail.project.services), environments: nodes(detail.project.environments) }],
+      projects: [{ id: detail.project.id, name: detail.project.name, services: nodes(detail.project.services).map(toServiceTarget), environments: nodes(detail.project.environments) }],
     }]
   }
 
@@ -339,9 +354,9 @@ export async function listRailwayTargetsWithToken(token: string, tokenType: Rail
     const projects = await railwayGraphQLRequest<ProjectsResult>(token, tokenType, `query workspaceProjects($workspaceId: String!) { projects(workspaceId: $workspaceId) { edges { node { id name } } } }`, { workspaceId: workspace.id }, fetchImpl)
     const grouped: RailwayProjectTarget[] = []
     for (const project of nodes(projects.projects)) {
-      const detail = await railwayGraphQLRequest<ProjectDetailResult>(token, tokenType, `query project($id: String!) { project(id: $id) { id name services { edges { node { id name } } } environments { edges { node { id name } } } } }`, { id: project.id }, fetchImpl)
+      const detail = await railwayGraphQLRequest<ProjectDetailResult>(token, tokenType, PROJECT_DETAIL_QUERY, { id: project.id }, fetchImpl)
       if (!detail.project) continue
-      grouped.push({ id: detail.project.id, name: detail.project.name, services: nodes(detail.project.services), environments: nodes(detail.project.environments) })
+      grouped.push({ id: detail.project.id, name: detail.project.name, services: nodes(detail.project.services).map(toServiceTarget), environments: nodes(detail.project.environments) })
     }
     out.push({ id: workspace.id, name: workspace.name, projects: grouped })
   }
