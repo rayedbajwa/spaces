@@ -141,7 +141,7 @@ Each workflow shows recent runs: the event (from Spaces or from a tool), each ac
 
 - **FR-024**: Every inbound request MUST be verified as coming from the connected tool for that organization; unverified requests are rejected and logged.
 - **FR-025**: Workflows, Intake items and links MUST stay within the organization; outbound content passes the AI data guardrails; inbound content is treated as untrusted input.
-- **FR-026**: Existing Slack run notices and approval-link delivery MUST keep working; the new Slack controls are added to them. [NEEDS CLARIFICATION: should the built-in Slack run notices become editable default workflows in v1, or stay fixed until later?]
+- **FR-026**: Existing Slack run notices and approval-link delivery MUST keep working as they are, and are not workflows in v1 (they cannot be edited or turned off from Workflows); the new Slack controls (approve, request changes, answer in thread) are added to them.
 
 ### Key Entities *(if the feature involves data)*
 
@@ -176,6 +176,7 @@ Each workflow shows recent runs: the event (from Spaces or from a tool), each ac
 - More tools: Confluence (publish spec/report), GitHub issues as an inbound source, Figma, Datadog incidents and monitors, Microsoft Teams.
 - AI steps: an agent drafting text (release notes, triage notes) inside a workflow.
 - Template gallery of ready-made workflows.
+- Turning the built-in Slack run notices into editable default workflows.
 - Two-way field sync beyond status and comments (assignee, estimates, sprints).
 
 ## Assumptions
