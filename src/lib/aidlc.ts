@@ -2894,6 +2894,9 @@ async function loadStagePrompt(options: {
   return basePrompt
 }
 
+/** Business-outcome success criteria are measured in production after release, not by QA. */
+const POST_RELEASE_OUTCOMES_RULE = `Success criteria that are business outcomes (adoption, behaviour change, satisfaction or comprehension surveys, trends over weeks or months against a baseline) are not QA scope: never count them as covered, missing or unverified. List them under "## Post-release outcomes" (id, the metric, where it would be measured) so they are tracked operationally after release and feed the next iteration of the feature.`
+
 function buildTestPlanPrompt(): string {
   return `Create a comprehensive test plan for the active feature in the current repository.
 
@@ -2910,6 +2913,7 @@ Requirements:
   6. Suggested automation priorities
 - Keep it human-readable and execution-ready.
 - Include a compact traceability table mapping acceptance areas to planned tests.
+- ${POST_RELEASE_OUTCOMES_RULE}
 - End with a short summary of what was written and any uncovered risks.`
 }
 
@@ -3075,7 +3079,7 @@ Output:
    ## Summary — 2–4 sentences on what the change does and overall quality
    ## Findings — one bullet per finding: \`- [BLOCKER|MAJOR|MINOR|NIT] path:line — what is wrong — what to do\` (sorted by severity; BLOCKER or MAJOR ⇒ CHANGES_REQUESTED)
    ## Tests & checks — commands run and results; CI state from delivery-status.md
-   ## Spec coverage — requirements/scenarios implemented vs missing
+   ## Spec coverage — requirements/scenarios implemented vs missing. ${POST_RELEASE_OUTCOMES_RULE}
 2. The pipeline posts this file as a review comment on the PR. When status is CHANGES_REQUESTED the implement stage re-runs and must address every BLOCKER/MAJOR finding before QA.
 Be specific and cite file:line; do not rewrite the code yourself here — the implement stage does that.`
 }
@@ -3132,6 +3136,7 @@ Requirements:
   4. Missing tests — tests the spec calls for but that are not present in the codebase
   5. Remaining defects, risks, and unknowns
   6. Release readiness recommendation
+- ${POST_RELEASE_OUTCOMES_RULE} They do not count toward Acceptance Criteria Met or the status line.
 - If implementation is incomplete, clearly report that and focus on readiness gaps.
 - Keep the report actionable and suitable for human review AND for a follow-up developer loop to consume.`
 }
