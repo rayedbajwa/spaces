@@ -95,7 +95,7 @@ replaced at the next post. Slack errors never fail a run; a missing permission
 is logged once per organization.
 
 The bot needs `channels:manage`, `channels:read`, `channels:join`,
-`chat:write`, `users:read` and `users:read.email`. The **Create Slack app**
+`chat:write`, `users:read`, `users:read.email` and `im:write` (approval DMs). The **Create Slack app**
 manifest includes them. A Slack app created before these were added needs
 the scopes added under *OAuth & Permissions*, then Slack reconnected under
 Organization → Integrations.

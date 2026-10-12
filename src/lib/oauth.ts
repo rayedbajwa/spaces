@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { SLACK_BOT_SCOPES } from './slack-scopes'
 
 /**
  * Generic OAuth 2.0 authorization-code flow helper. Each provider registers a
@@ -155,8 +156,8 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     kinds: ['slack'],
     authorizeUrl: 'https://slack.com/oauth/v2/authorize',
     tokenUrl: 'https://slack.com/api/oauth.v2.access',
-    // A channel per project with run updates and approvals (lib/slack.ts SLACK_BOT_SCOPES).
-    scopes: ['channels:manage', 'channels:read', 'channels:join', 'chat:write', 'users:read', 'users:read.email'],
+    // A channel per project with run updates, and approval DMs.
+    scopes: SLACK_BOT_SCOPES,
     consoleUrl: 'https://api.slack.com/apps',
   },
   linear: {

@@ -110,7 +110,7 @@ classic OAuth App is pasted in; a GitHub App carries its permissions itself.
 | GitHub | `repo`, `read:org`, `read:user` |
 | Atlassian (Jira + Confluence) | `read:jira-user`, `read:jira-work`, `write:jira-work`, `read:confluence-content.all`, `read:confluence-content.summary`, `read:confluence-space.summary`, `search:confluence`, `write:confluence-content`, `offline_access` — enable the same scopes on the app's Permissions page, and reconnect after adding any |
 | Linear | `read`, `write` |
-| Slack | `channels:read`, `chat:write`, `users:read` |
+| Slack | `channels:manage`, `channels:read`, `channels:join`, `chat:write`, `users:read`, `users:read.email`, `im:write` |
 
 ## Per-project settings (UI)
 
