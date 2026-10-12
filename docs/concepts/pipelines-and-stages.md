@@ -95,9 +95,11 @@ while the review requests changes; then QA, and goes back to implement until
 verification passes or comes close enough to accept (more than 95% of
 criteria met, nothing critical open). There are no approval gates inside the
 loop. A re-run works only on what the review or the verification report
-flagged, and implement runs at most four times; after that the loop stops and
-the board recommends the next step (review, verify, accept or implement
-again).
+flagged, and implement runs at most four times, counting passes from before a
+worker restart. A re-run that changes no code in the project's repositories
+also ends the loop: what is left is something code cannot settle, such as a
+survey or an adoption metric. Either way the loop stops and the board
+recommends the next step (review, verify, accept or implement again).
 
 Outside the loop, the next step follows the same order: implement until the
 implementation tasks are done (the `## Delivery` tasks in `tasks.md` belong to
