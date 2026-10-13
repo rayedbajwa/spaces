@@ -764,6 +764,12 @@ let dispatcherRunning = false
  */
 const WORKER_PROJECT_ID = process.env.WORKER_PROJECT_ID?.trim() || undefined
 const WORKER_IDLE_EXIT_SECONDS = Math.max(0, Number(process.env.WORKER_IDLE_EXIT_SECONDS ?? '0') || 0)
+/**
+ * A project's own worker (specs/014-project-workers) also goes idle while runs
+ * wait on a person: shutdown keeps them paused, and the answer restarts the
+ * stage on the next worker, so a run waiting hours at a gate costs nothing.
+ */
+const IDLE_RELEASES_PAUSED = process.env.WORKER_IDLE_RELEASES_PAUSED === '1'
 let idleSince: number | undefined
 
 async function drainDispatcher(workerId: string): Promise<void> {
@@ -828,7 +834,7 @@ async function main(): Promise<void> {
     // Idle exit (per-project workers): nothing running and no live engines for
     // long enough → shut down cleanly; the supervisor respawns when work appears.
     if (WORKER_IDLE_EXIT_SECONDS > 0) {
-      const idle = inFlightJobs.size === 0 && engines.size === 0
+      const idle = inFlightJobs.size === 0 && (engines.size === 0 || (IDLE_RELEASES_PAUSED && [...engines.values()].every((engine) => engine.isWaitingForInput())))
       if (!idle) {
         idleSince = undefined
       } else if (idleSince === undefined) {

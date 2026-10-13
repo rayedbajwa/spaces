@@ -53,7 +53,13 @@ export function workerSpec(projectId: string, project: { code: string | null; sl
     projectId,
     name: workerServiceName(project),
     port,
-    env: { SPACES_ROLE: 'project', WORKER_PROJECT_ID: projectId, PORT: String(port) },
+    env: {
+      SPACES_ROLE: 'project',
+      WORKER_PROJECT_ID: projectId,
+      PORT: String(port),
+      // How long a worker waits with nothing to do before it lets the platform sleep it.
+      ...(process.env.PROJECT_WORKER_IDLE_SECONDS?.trim() ? { PROJECT_WORKER_IDLE_SECONDS: process.env.PROJECT_WORKER_IDLE_SECONDS.trim() } : {}),
+    },
   }
 }
 
