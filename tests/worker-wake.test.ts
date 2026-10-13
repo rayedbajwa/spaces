@@ -32,6 +32,7 @@ function deps(overrides: Partial<WakeDeps> = {}) {
     wake: async (projectId) => { calls.push(`wake ${projectId}`); return true },
     hasPlatform: () => true,
     provisionMissing: () => true,
+    hasLocalFiles: async () => false,
     capHit: async (projectId, awake, cap) => { calls.push(`cap ${projectId} ${awake}/${cap}`) },
     cap: () => 2,
     ...overrides,
@@ -63,6 +64,12 @@ describe('waking a project worker', () => {
     expect(await wakeProjectWorker('p1', d)).toBe('provisioning')
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(calls).toEqual(['provision p1', 'wake p1'])
+  })
+
+  test("a project whose files are still on the shared disk is not given an empty worker", async () => {
+    const { d, calls } = deps({ getWorker: async () => undefined, hasLocalFiles: async () => true })
+    expect(await wakeProjectWorker('p5', d)).toBe('unavailable')
+    expect(calls).toEqual([])
   })
 
   test('without a platform there is nothing to wake', async () => {

@@ -17,6 +17,7 @@ import { getDb } from './db'
 import { log } from './logger'
 import { INTERNAL_TOKEN_HEADER, internalToken, isWebRole } from './role'
 import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
+import { hasLocalProjectFiles } from './project-migration'
 
 const forwardLog = log.child({ mod: 'project-forward' })
 
@@ -124,7 +125,13 @@ export async function forwardToProject(req: Request, projectId: string, body: Ar
   const token = internalToken()
   if (!token) return unavailable('worker_unavailable', 'Project workers are not configured (SPACES_INTERNAL_TOKEN).')
   if (!base) {
-    // First use of a project that has no worker yet: create it, and say so.
+    // First use of a project that has no worker yet: create it, and say so —
+    // unless its files are still on this service's disk (not moved yet): an
+    // empty worker would hide them, and a project with an active worker can
+    // no longer be moved.
+    if (workerPlatform() && await hasLocalProjectFiles(projectId)) {
+      return unavailable('worker_unavailable', "This project's files are still on the shared service. Move it first: account menu → Project workers → Existing projects → Move.")
+    }
     if (workerPlatform()) {
       const worker = await getProjectWorker(projectId)
       if (worker?.state === 'failed' && worker.lastError) return unavailable('worker_unavailable', `This project's worker could not be created: ${worker.lastError}`)

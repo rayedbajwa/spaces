@@ -61,6 +61,11 @@ export async function projectPaths(projectId: string): Promise<string[]> {
   return existing.sort().filter((p, i, all) => !all.slice(0, i).some((outer) => p.startsWith(`${outer}${path.sep}`)))
 }
 
+/** Whether this service's disk still holds the project's files (it has not been moved). */
+export async function hasLocalProjectFiles(projectId: string): Promise<boolean> {
+  return (await projectPaths(projectId).catch(() => [] as string[])).length > 0
+}
+
 export interface PathSummary { path: string; files: number; bytes: number }
 export interface Manifest { paths: PathSummary[]; files: number; bytes: number }
 
