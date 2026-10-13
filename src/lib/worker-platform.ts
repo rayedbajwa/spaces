@@ -42,6 +42,8 @@ export interface WorkerPlatform {
    * ref as soon as it exists, and start the worker. Returns its private address.
    */
   create(spec: WorkerSpec, existing: WorkerRefs, record: (refs: Partial<WorkerRefs>) => Promise<void>): Promise<{ internalUrl: string }>
+  /** Whether `version` can be deployed yet (a prebuilt image pushed); true when built on demand. */
+  versionAvailable?(version: string): Promise<boolean>
   /** Move the worker to `spec.version`, keeping its volume. Called only while it is idle. */
   update(spec: WorkerSpec, refs: WorkerRefs): Promise<void>
   /** Remove the worker and its volume (its workspace files go with it). */

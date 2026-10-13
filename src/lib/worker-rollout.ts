@@ -65,6 +65,11 @@ export async function rolloutOnce(deps: RolloutDeps = defaultDeps): Promise<Roll
        AND w.version IS DISTINCT FROM ${desired}
      ORDER BY w.updated_at
   `
+  // A prebuilt image for this version may not be pushed yet: wait for it.
+  if (platform.versionAvailable && !(await platform.versionAvailable(desired))) {
+    rolloutLog.info('waiting for the worker image of this version', { version: desired })
+    return result
+  }
   const busy = new Set(await deps.busy())
   for (const worker of candidates) {
     if (result.updated.length >= PER_CYCLE) break

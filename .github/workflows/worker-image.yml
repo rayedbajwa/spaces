@@ -1,0 +1,55 @@
+# Build the project-worker image once per commit on main and publish it, so each
+# project's worker pulls it instead of building from source (specs/014-project-workers).
+# Layers are cached between runs, so a typical commit rebuilds only the app layers.
+#
+# Workers use it when the web service has PROJECT_WORKER_IMAGE=ghcr.io/rayedbajwa/spaces-worker.
+# The package must be public (GitHub → Packages → spaces-worker → Package settings
+# → Change visibility) so Railway can pull it without credentials.
+name: Worker image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: worker-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/spaces-worker:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/spaces-worker:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=worker-image
+          cache-to: type=gha,scope=worker-image,mode=max
