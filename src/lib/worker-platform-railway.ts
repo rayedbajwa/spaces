@@ -6,7 +6,7 @@
  */
 
 import { log } from './logger'
-import { railwayGraphQLRequest, type RailwayTokenType } from './railway'
+import { RailwayError, railwayGraphQLRequest, type RailwayTokenType } from './railway'
 import { workerSize, type WorkerPlatform, type WorkerSize, type WorkerSpec } from './worker-platform'
 
 const railwayLog = log.child({ mod: 'worker-platform-railway' })
@@ -62,8 +62,30 @@ export function railwayWorkerVariables(config: RailwayWorkerConfig, spec: Worker
 
 export type GraphQL = <T>(query: string, variables?: Record<string, unknown>) => Promise<T>
 
+/**
+ * Railway's errors name the organization's Railway connection; here the
+ * credential is the deployment's provisioning token, so say which call it
+ * refused and what to change.
+ */
+export function provisionerError(error: unknown, operation: string, tokenType: RailwayTokenType): Error {
+  if (error instanceof RailwayError && (error.code === 'railway_auth' || error.code === 'railway_forbidden')) {
+    const hint = tokenType === 'project'
+      ? ' A project token can create services and volumes but not delete them: use a workspace token (RAILWAY_PROVISIONER_TOKEN_TYPE=workspace).'
+      : ''
+    return new Error(`Railway refused the provisioning token (RAILWAY_PROVISIONER_TOKEN) for ${operation}.${hint}`)
+  }
+  return error instanceof Error ? error : new Error(String(error))
+}
+
 export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): WorkerPlatform {
-  const call: GraphQL = gql ?? (<T>(query: string, variables: Record<string, unknown> = {}) => railwayGraphQLRequest<T>(config.token, config.tokenType, query, variables))
+  const raw: GraphQL = gql ?? (<T>(query: string, variables: Record<string, unknown> = {}) => railwayGraphQLRequest<T>(config.token, config.tokenType, query, variables))
+  const call: GraphQL = async <T>(query: string, variables: Record<string, unknown> = {}) => {
+    try {
+      return await raw<T>(query, variables)
+    } catch (error) {
+      throw provisionerError(error, /(?:mutation|query)\s+(\w+)/.exec(query)?.[1] ?? 'a request', config.tokenType)
+    }
+  }
   const env = { serviceId: '', environmentId: config.environmentId }
 
   /** Deploy an exact commit (the web service's), or the branch head when the version is unknown. */
@@ -132,22 +154,28 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
         return { canRead: false, error: error instanceof Error ? error.message : String(error) }
       }
       if (!probe) return { canRead: true, detail }
+      const name = `spaces-provisioner-probe-${Date.now().toString(36)}`
       let serviceId: string | undefined
       let volumeId: string | undefined
+      let createError: string | undefined
       try {
         serviceId = (await call<{ serviceCreate: { id: string } }>(
           `mutation serviceCreate($input: ServiceCreateInput!) { serviceCreate(input: $input) { id } }`,
-          { input: { projectId: config.railwayProjectId, name: `spaces-provisioner-probe-${Date.now().toString(36)}` } },
+          { input: { projectId: config.railwayProjectId, name } },
         )).serviceCreate.id
         volumeId = await createVolume(serviceId)
-        return { canRead: true, detail, canCreate: true }
       } catch (error) {
-        return { canRead: true, detail, canCreate: false, error: error instanceof Error ? error.message : String(error) }
-      } finally {
-        // Always clean up whatever the probe made.
-        if (volumeId) await deleteVolume(volumeId).catch(() => undefined)
-        if (serviceId) await deleteService(serviceId).catch(() => undefined)
+        createError = error instanceof Error ? error.message : String(error)
       }
+      // Deleting is part of the check: a token that cannot delete leaves
+      // workers behind when projects are deleted, and the probe would too.
+      const leftovers: string[] = []
+      let deleteError: string | undefined
+      if (volumeId) await deleteVolume(volumeId).catch((error) => { leftovers.push(`volume ${volumeId}`); deleteError ??= error instanceof Error ? error.message : String(error) })
+      if (serviceId) await deleteService(serviceId).catch((error) => { leftovers.push(`service ${name}`); deleteError ??= error instanceof Error ? error.message : String(error) })
+      const canDelete = Boolean(serviceId) && leftovers.length === 0
+      const problems = [createError, deleteError && `${deleteError} Left behind: ${leftovers.join(', ')} (delete it in the Railway dashboard).`].filter(Boolean)
+      return { canRead: true, detail, canCreate: !createError, canDelete: serviceId ? canDelete : undefined, ...(problems.length ? { error: problems.join(' ') } : {}) }
     },
   }
 }

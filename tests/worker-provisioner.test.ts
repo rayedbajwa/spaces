@@ -4,6 +4,7 @@ import {
   checkProvisioner, getProjectWorker, provisionProjectWorker, recordWorkerBootstrap,
   removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem, workerServiceName,
 } from '../src/lib/worker-provisioner'
+import { RailwayError } from '../src/lib/railway'
 import { railwayPlatform, railwayWorkerConfig, type GraphQL, type RailwayWorkerConfig } from '../src/lib/worker-platform-railway'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
@@ -24,7 +25,11 @@ function fakeRailway(fail: Partial<Record<string, string>> = {}) {
   const gql: GraphQL = async <T,>(query: string, variables: Record<string, unknown> = {}) => {
     const op = /(?:mutation|query)\s+(\w+)/.exec(query)![1]!
     calls.push({ op, variables: variables as Record<string, any> })
-    if (fail[op]) { const message = fail[op]!; delete fail[op]; throw new Error(message) }
+    if (fail[op]) {
+      const message = fail[op]!; delete fail[op]
+      // Railway's own client turns 'Not Authorized' into a credential error.
+      throw message === 'Not Authorized' ? new RailwayError('railway_auth', 'Railway rejected the credential.') : new Error(message)
+    }
     n += 1
     const data: Record<string, unknown> = {
       serviceCreate: { serviceCreate: { id: `svc-${n}` } },
@@ -113,8 +118,23 @@ describe('provisioner settings and check', () => {
     expect(ok.ops()).toEqual(['project', 'serviceCreate', 'volumeCreate', 'volumeDelete', 'serviceDelete'])
     const refused = fakeRailway({ volumeCreate: 'Not Authorized' })
     const result = await checkProvisioner({ probe: true, platform: railwayPlatform(config, refused.gql) })
-    expect(result).toMatchObject({ canCreate: false, error: 'Not Authorized' })
+    expect(result.canCreate).toBe(false)
+    expect(result.error).toContain('provisioning token')
     expect(refused.ops()).toEqual(['project', 'serviceCreate', 'volumeCreate', 'serviceDelete'])
+  })
+
+  test('a token that can create but not delete is reported, with what was left behind', async () => {
+    const railway = fakeRailway({ serviceDelete: 'Not Authorized' })
+    const result = await checkProvisioner({ probe: true, platform: railwayPlatform(config, railway.gql) })
+    expect(result).toMatchObject({ canCreate: true, canDelete: false })
+    expect(result.error).toContain('provisioning token')
+    expect(result.error).toContain('workspace token')
+    expect(result.error).toContain('Left behind: service spaces-provisioner-probe-')
+  })
+
+  test('refusals name the provisioning token, not the organization connection', async () => {
+    const railway = fakeRailway({ serviceDelete: 'Not Authorized' })
+    await expect(railwayPlatform(config, railway.gql).remove({ name: 'w' }, { serviceRef: 's', volumeRef: null })).rejects.toThrow('Railway refused the provisioning token (RAILWAY_PROVISIONER_TOKEN) for serviceDelete')
   })
 
   test('a recorded bootstrap is taken once', async () => {

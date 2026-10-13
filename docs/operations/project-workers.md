@@ -93,7 +93,7 @@ kubectl -n spaces rollout restart deploy/spaces-web
 
 ## Railway (production)
 
-1. In the Railway project, go to **Settings → Tokens** and create a project token for the production environment.
+1. Create a **workspace** token: Account Settings → **Tokens** → **Create token**, for the workspace that holds the Spaces project. A project token isn't enough: it can create services and volumes but not delete them, so removing a worker fails. Set `RAILWAY_PROVISIONER_TOKEN_TYPE=workspace`.
 2. Add it to the web service as `RAILWAY_PROVISIONER_TOKEN`, and seal it.
 3. Set `SPACES_INTERNAL_TOKEN` on the web service.
 
