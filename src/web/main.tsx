@@ -924,6 +924,12 @@ function App() {
   }
 
   const selectedProjectNamespace = selectedCard?.projectNamespace
+  // The open project, readable from callbacks that finish later (a slow
+  // latest-run answer, a live log still streaming): what they bring for another
+  // project is dropped instead of replacing this project's run with one the
+  // agent bar then hides ("no run" until the next poll).
+  const openNamespaceRef = useRef<string | undefined>(selectedProjectNamespace)
+  openNamespaceRef.current = selectedProjectNamespace
   useEffect(() => {
     setProjectPullRequests(null)
     if (!selectedProjectNamespace) return
@@ -1132,6 +1138,7 @@ function App() {
     // run; if it doesn't, the stream stays closed. Without this, the previous
     // project's live log keeps overwriting currentRun during the switch.
     disconnectRunEvents()
+    openNamespaceRef.current = card.projectNamespace
     setSelectedCard(card)
     setEstimateInput(card.estimate.replace(/ \((user|ai)\)$/,'').replace(/ \(ai-est\)$/,''))
     setIsProjectModalOpen(true)
@@ -1442,6 +1449,7 @@ function App() {
     return track('latest-run', async () => {
       try {
         const snap = await getJson<RunSnapshot | null>(`/api/projects/${namespace}/latest-run`)
+        if (openNamespaceRef.current !== namespace) return
         setCurrentRun(snap)
         // Wire up SSE only for active runs. If there's no active run, we MUST
         // still tear down any pre-existing SSE (from a previous project) —
@@ -1453,6 +1461,7 @@ function App() {
           disconnectRunEvents()
         }
       } catch {
+        if (openNamespaceRef.current !== namespace) return
         setCurrentRun(null)
         disconnectRunEvents()
       }
@@ -1647,6 +1656,12 @@ function App() {
     eventSource.onmessage = (event) => {
       runReconnectRef.current.attempt = 0
       const next = JSON.parse(event.data) as RunSnapshot
+      if (next.projectNamespace && openNamespaceRef.current && next.projectNamespace !== openNamespaceRef.current) {
+        // Another project's run: this stream outlived a project switch.
+        if (runEventSourceRef.current === eventSource) disconnectRunEvents()
+        else eventSource.close()
+        return
+      }
       setCurrentRun(next)
       if (next.status === 'completed') {
         setStatusMessage('AI completed the configured AIDLC flow.')
