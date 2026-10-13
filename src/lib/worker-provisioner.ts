@@ -11,7 +11,7 @@
 
 import { getDb } from './db'
 import { log } from './logger'
-import type { WorkerPlatform, WorkerPlatformKind, WorkerRefs, WorkerSpec } from './worker-platform'
+import { runningVersion, type WorkerPlatform, type WorkerPlatformKind, type WorkerRefs, type WorkerSpec } from './worker-platform'
 import { dockerPlatform, dockerWorkerConfig } from './worker-platform-docker'
 import { kubernetesPlatform, kubernetesWorkerConfig } from './worker-platform-kubernetes'
 import { railwayPlatform, railwayWorkerConfig } from './worker-platform-railway'
@@ -53,6 +53,7 @@ export function workerSpec(projectId: string, project: { code: string | null; sl
     projectId,
     name: workerServiceName(project),
     port,
+    version: runningVersion(),
     env: {
       SPACES_ROLE: 'project',
       WORKER_PROJECT_ID: projectId,

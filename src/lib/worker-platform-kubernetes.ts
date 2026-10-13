@@ -61,7 +61,7 @@ function kubeClient(config: KubernetesWorkerConfig): KubeCall {
   return async (method, path, body) => {
     const res = await fetch(`${config.apiUrl}${path}`, {
       method,
-      headers: { authorization: `Bearer ${config.token}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      headers: { authorization: `Bearer ${config.token}`, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': method === 'PATCH' ? 'application/strategic-merge-patch+json' : 'application/json' }) },
       body: body === undefined ? undefined : JSON.stringify(body),
       tls: { ...(config.ca ? { ca: config.ca } : {}), rejectUnauthorized: !config.insecure },
     } as RequestInit)
@@ -97,7 +97,9 @@ export function kubernetesManifests(config: KubernetesWorkerConfig, spec: Worker
         strategy: { type: 'Recreate' },
         selector: { matchLabels: { app: spec.name } },
         template: {
-          metadata: { labels },
+          // The version annotation changes on every Spaces release, so patching it
+          // replaces the pod even when the image tag (spaces:local) stays the same.
+          metadata: { labels, annotations: { 'spaces.dev/version': spec.version } },
           spec: {
             terminationGracePeriodSeconds: 900,
             containers: [{
@@ -161,6 +163,13 @@ export function kubernetesPlatform(config: KubernetesWorkerConfig, call: KubeCal
       if (!existing.serviceRef) await record({ serviceRef: spec.name })
       return { internalUrl: `http://${spec.name}.${config.namespace}.svc.cluster.local:${spec.port}` }
     },
+    async update(spec, refs) {
+      const name = refs.serviceRef ?? spec.name
+      const res = await call('PATCH', `${paths.deployment}/${encodeURIComponent(name)}`, {
+        spec: { template: { metadata: { annotations: { 'spaces.dev/version': spec.version } }, spec: { containers: [{ name: 'worker', image: config.image }] } } },
+      })
+      if (res.status >= 300) throw kubeError('update deployment', res)
+    },
     async remove(spec, refs) {
       await remove('service', refs.serviceRef ?? spec.name)
       await remove('deployment', refs.serviceRef ?? spec.name)
@@ -174,7 +183,7 @@ export function kubernetesPlatform(config: KubernetesWorkerConfig, call: KubeCal
       // Server-side dry run: the API checks permissions and admission for all
       // three objects without creating anything.
       try {
-        const manifests = kubernetesManifests(config, { projectId: 'probe', name: `spaces-provisioner-probe-${Date.now().toString(36)}`, env: {}, port: 8080 })
+        const manifests = kubernetesManifests(config, { projectId: 'probe', name: `spaces-provisioner-probe-${Date.now().toString(36)}`, env: {}, port: 8080, version: 'probe' })
         await ensure('pvc', manifests.pvc, true)
         await ensure('deployment', manifests.deployment, true)
         await ensure('service', manifests.service, true)

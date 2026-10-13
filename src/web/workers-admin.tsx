@@ -33,7 +33,7 @@ interface CheckResult {
 const STATE_TONE: Record<string, string> = { ready: 'completed', provisioning: 'running', updating: 'running', failed: 'error', sleeping: 'idle', pending: 'idle', removing: 'running' }
 
 export function WorkersSection() {
-  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[]; awake: string[]; maxAwake: number; waiting: Array<{ projectId: string; name: string; since: string }> } | null>(null)
+  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[]; version: string; awake: string[]; maxAwake: number; waiting: Array<{ projectId: string; name: string; since: string }> } | null>(null)
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -64,7 +64,7 @@ export function WorkersSection() {
     <section className="card panel team-section">
       <div className="team-section-head">
         <h3>Project workers</h3>
-        <span className="panel-subtitle">role <code>{data.role}</code> · platform {data.platform ? <code>{data.platform}</code> : 'not set up'} · {data.awake.length}/{data.maxAwake} awake</span>
+        <span className="panel-subtitle">role <code>{data.role}</code> · version <code>{data.version.slice(0, 7)}</code> · platform {data.platform ? <code>{data.platform}</code> : 'not set up'} · {data.awake.length}/{data.maxAwake} awake</span>
       </div>
       <p className="panel-subtitle">
         Each project runs on its own worker with its own disk, on Railway, Kubernetes or the local Docker engine.
@@ -94,7 +94,7 @@ export function WorkersSection() {
       {data.workers.length > 0 && (
         <div className="table-wrap">
           <table className="project-table">
-            <thead><tr><th>Project</th><th>State</th><th>Address</th><th /></tr></thead>
+            <thead><tr><th>Project</th><th>State</th><th>Version</th><th>Address</th><th /></tr></thead>
             <tbody>
               {data.workers.map((worker) => (
                 <tr key={worker.projectId}>
@@ -103,6 +103,10 @@ export function WorkersSection() {
                     <span className={`mini-badge ${STATE_TONE[worker.state] ?? 'idle'}`}>{worker.state}</span>
                     {worker.state === 'ready' && <span className={`mini-badge ${data.awake.includes(worker.projectId) ? 'running' : 'idle'}`}>{data.awake.includes(worker.projectId) ? 'working' : 'idle'}</span>}
                     {worker.lastError && <div className="error-text">{worker.lastError}</div>}
+                  </td>
+                  <td>
+                    {worker.version ? <code>{worker.version.slice(0, 7)}</code> : <span className="text-subtle">—</span>}
+                    {worker.version && data.version !== 'unknown' && worker.version !== data.version && worker.state === 'ready' && <div className="text-subtle">update waits until idle</div>}
                   </td>
                   <td>{worker.internalUrl ? <code>{worker.internalUrl}</code> : <span className="text-subtle">—</span>}</td>
                   <td>
