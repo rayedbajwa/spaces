@@ -47,7 +47,7 @@ const SECTION_BLURB: Record<Section, string> = {
   models: 'Bring your own Anthropic, OpenAI or OpenRouter key. Routing picks a model per task by cost and speed.',
   guardrails: 'Keep secrets and personal data from AI models: masked before they are sent, restored only where agents need them.',
   waitlist: 'Who asked for access on the landing page. Invite someone to send them a link that sets up their own organization.',
-  workers: "Each project's worker service on Railway, and the provisioning token check.",
+  workers: "Each project's worker on Railway, Kubernetes or Docker, and the platform check.",
 }
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [

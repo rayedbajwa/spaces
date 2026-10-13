@@ -137,7 +137,7 @@ import {
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forwardTarget, forwardToProject, resolveForwardProject } from './lib/project-forward'
-import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionerConfig, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap } from './lib/worker-provisioner'
+import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
 import { publicOrigin } from './lib/public-url'
 import {
   convertIntakeItem,
@@ -568,7 +568,7 @@ async function route(req: Request): Promise<Response> {
   if (url.pathname === '/api/admin/workers' || url.pathname.startsWith('/api/admin/workers/')) {
     if (!(await isSiteAdmin())) return sendJson(403, { error: "Only the deployment's super admin manages project workers." })
     if (method === 'GET' && url.pathname === '/api/admin/workers') {
-      return sendJson(200, { role: spacesRole(), provisioning: Boolean(provisionerConfig()), workers: await listProjectWorkers() })
+      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers() })
     }
     if (method === 'POST' && url.pathname === '/api/admin/workers/check') {
       const body = await readJson<{ probe?: boolean }>(req).catch(() => ({} as { probe?: boolean }))
@@ -578,7 +578,7 @@ async function route(req: Request): Promise<Response> {
     }
     const provisionPath = /^\/api\/admin\/workers\/([0-9a-f-]{36})\/provision$/.exec(url.pathname)
     if (method === 'POST' && provisionPath) {
-      if (!provisionerConfig()) return sendJson(409, { error: 'RAILWAY_PROVISIONER_TOKEN is not set on this service.' })
+      if (!workerPlatform()) return sendJson(409, { error: workerPlatformProblem() ?? 'Project workers are not set up.' })
       try {
         return sendJson(200, await provisionProjectWorker(provisionPath[1]!))
       } catch (error) {
@@ -1032,7 +1032,7 @@ async function route(req: Request): Promise<Response> {
     const onboardingInput = { model: body.model?.trim() || await defaultModel(await orgIdOf()), feature: body.feature?.trim() || undefined }
     // The web role has no disk: the project's worker makes the governing
     // workspace and runs onboarding next to it.
-    if (isWebRole() && provisionerConfig()) {
+    if (isWebRole() && workerPlatform()) {
       // The worker does not exist yet: it runs this bootstrap once it is up.
       await recordWorkerBootstrap(project.projectId, onboardingInput)
       void provisionProjectWorker(project.projectId).catch(() => undefined)

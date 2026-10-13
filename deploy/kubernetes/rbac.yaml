@@ -1,0 +1,33 @@
+# The web service creates and removes each project's worker: a Deployment, a
+# Service and a PersistentVolumeClaim, in this namespace only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spaces-provisioner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spaces-provisioner
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spaces-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: spaces-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spaces-provisioner

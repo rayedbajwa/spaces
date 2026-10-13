@@ -16,7 +16,7 @@
 import { getDb } from './db'
 import { log } from './logger'
 import { INTERNAL_TOKEN_HEADER, internalToken } from './role'
-import { getProjectWorker, provisionerConfig, provisionProjectWorker } from './worker-provisioner'
+import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
 
 const forwardLog = log.child({ mod: 'project-forward' })
 
@@ -125,7 +125,7 @@ export async function forwardToProject(req: Request, projectId: string, body: Ar
   if (!token) return unavailable('worker_unavailable', 'Project workers are not configured (SPACES_INTERNAL_TOKEN).')
   if (!base) {
     // First use of a project that has no worker yet: create it, and say so.
-    if (provisionerConfig()) {
+    if (workerPlatform()) {
       const worker = await getProjectWorker(projectId)
       if (worker?.state === 'failed' && worker.lastError) return unavailable('worker_unavailable', `This project's worker could not be created: ${worker.lastError}`)
       void provisionProjectWorker(projectId).catch(() => undefined)
