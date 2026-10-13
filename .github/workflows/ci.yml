@@ -131,6 +131,14 @@ jobs:
           RESPONSIBILITY_BASE_URL: http://localhost:3100
         run: bun test tests/project-responsibilities.api.test.ts tests/project-responsibilities.security.test.ts
 
+      # 014-project-workers: the web role forwards project work to a project
+      # worker. The suite starts both servers itself (ports 3141 and 3142).
+      - name: Run project worker role tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test tests/project-forward.test.ts tests/project-roles.test.ts tests/worker-provisioner.test.ts tests/worker-platforms.test.ts
+
       - name: Install browser for responsibility UI tests
         run: bun run setup:browsers
 
