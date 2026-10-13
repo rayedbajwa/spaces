@@ -144,17 +144,23 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
   let turn = 0
   const tools = new Map<string, Span>()
   let failed = false
+  // What the open turn has used and how it went, for its root span.
+  let usage = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, llmCalls: 0, toolCalls: 0, toolErrors: 0, model: '' }
+  let turnError: string | undefined
 
+  const metadata = (extra: Record<string, unknown> = {}) => JSON.stringify({ kind: ctx.kind, orgId: ctx.orgId ?? undefined, projectId: ctx.projectId ?? undefined, runId: ctx.runId ?? undefined, stage: ctx.stage?.(), prompt, turn, ...extra })
   const common = () => {
     const stage = ctx.stage?.()
     return {
       [SC.SESSION_ID]: sessionId,
-      [SC.METADATA]: JSON.stringify({ kind: ctx.kind, orgId: ctx.orgId ?? undefined, projectId: ctx.projectId ?? undefined, runId: ctx.runId ?? undefined, stage, prompt, turn }),
+      [SC.METADATA]: metadata(),
       [SC.TAG_TAGS]: JSON.stringify([ctx.kind, stage].filter(Boolean)),
     }
   }
   const openTurn = () => {
     turn++
+    usage = { costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, llmCalls: 0, toolCalls: 0, toolErrors: 0, model: '' }
+    turnError = undefined
     const stage = ctx.stage?.()
     openSessions.add(closer)
     turnSpan = t.startSpan(`${ctx.kind}${stage ? ` · ${stage}` : ''} · turn ${turn}`, {
@@ -177,7 +183,12 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
     llmSpan = undefined
     tools.clear()
     if (turnSpan) {
-      if (interrupted) turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: interrupted })
+      // The turn's status, cost and tokens on its root, so they show (and filter) per trace.
+      const status = interrupted ? 'interrupted' : turnError ? 'error' : 'ok'
+      turnSpan.setAttribute(SC.METADATA, metadata({ status, costUsd: Math.round(usage.costUsd * 1e6) / 1e6, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheReadTokens: usage.cacheReadTokens, llmCalls: usage.llmCalls, toolCalls: usage.toolCalls, toolErrors: usage.toolErrors, model: usage.model || undefined }))
+      turnSpan.setAttribute(SC.TAG_TAGS, JSON.stringify([ctx.kind, ctx.stage?.(), status].filter(Boolean)))
+      if (interrupted || turnError) turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: interrupted ?? turnError })
+      else turnSpan.setStatus({ code: SpanStatusCode.OK })
       turnSpan.end()
       turnSpan = undefined
     }
@@ -217,19 +228,25 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
             if (message?.role !== 'assistant') break
             const span = llmSpan ?? child('llm', OpenInferenceSpanKind.LLM, {})
             llmSpan = undefined
-            const usage = message.usage ?? {}
+            const used = message.usage ?? {}
+            usage.llmCalls++
+            usage.inputTokens += used.input ?? 0
+            usage.outputTokens += used.output ?? 0
+            usage.cacheReadTokens += used.cacheRead ?? 0
+            usage.costUsd += used.cost?.total ?? 0
+            if (message.model) usage.model = message.model
             const attrs: Record<string, string | number> = {}
             if (message.model) attrs[SC.LLM_MODEL_NAME] = message.model
             if (message.provider) attrs[SC.LLM_PROVIDER] = message.provider
-            if (usage.input !== undefined) attrs[SC.LLM_TOKEN_COUNT_PROMPT] = usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
-            if (usage.output !== undefined) attrs[SC.LLM_TOKEN_COUNT_COMPLETION] = usage.output
-            if (usage.totalTokens !== undefined) attrs[SC.LLM_TOKEN_COUNT_TOTAL] = usage.totalTokens
-            if (usage.cacheRead) attrs[SC.LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ] = usage.cacheRead
-            if (usage.cacheWrite) attrs[SC.LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE] = usage.cacheWrite
-            if (usage.reasoning) attrs[SC.LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING] = usage.reasoning
-            if (usage.cost?.input !== undefined) attrs[SC.LLM_COST_PROMPT] = usage.cost.input
-            if (usage.cost?.output !== undefined) attrs[SC.LLM_COST_COMPLETION] = usage.cost.output
-            if (usage.cost?.total !== undefined) attrs[SC.LLM_COST_TOTAL] = usage.cost.total
+            if (used.input !== undefined) attrs[SC.LLM_TOKEN_COUNT_PROMPT] = used.input + (used.cacheRead ?? 0) + (used.cacheWrite ?? 0)
+            if (used.output !== undefined) attrs[SC.LLM_TOKEN_COUNT_COMPLETION] = used.output
+            if (used.totalTokens !== undefined) attrs[SC.LLM_TOKEN_COUNT_TOTAL] = used.totalTokens
+            if (used.cacheRead) attrs[SC.LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_READ] = used.cacheRead
+            if (used.cacheWrite) attrs[SC.LLM_TOKEN_COUNT_PROMPT_DETAILS_CACHE_WRITE] = used.cacheWrite
+            if (used.reasoning) attrs[SC.LLM_TOKEN_COUNT_COMPLETION_DETAILS_REASONING] = used.reasoning
+            if (used.cost?.input !== undefined) attrs[SC.LLM_COST_PROMPT] = used.cost.input
+            if (used.cost?.output !== undefined) attrs[SC.LLM_COST_COMPLETION] = used.cost.output
+            if (used.cost?.total !== undefined) attrs[SC.LLM_COST_TOTAL] = used.cost.total
             const output = safe(message.content)
             if (output) attrs[SC.OUTPUT_VALUE] = output
             span.setAttributes(attrs)
@@ -238,7 +255,9 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
             if (message.stopReason === 'error' || message.stopReason === 'aborted') {
               const failure = clip(scrub(message.errorMessage ?? message.stopReason))
               span.setStatus({ code: SpanStatusCode.ERROR, message: failure })
-              turnSpan?.setStatus({ code: SpanStatusCode.ERROR, message: failure })
+              turnError = failure
+            } else {
+              span.setStatus({ code: SpanStatusCode.OK })
             }
             span.end()
             break
@@ -246,7 +265,9 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
           case 'tool_execution_start': {
             const id = String(event.toolCallId ?? '')
             const name = String(event.toolName ?? 'tool')
+            // Opening the span may open the turn (and reset its counts): count after.
             tools.set(id, child(`tool ${name}`, OpenInferenceSpanKind.TOOL, { [SC.TOOL_NAME]: name, [SC.INPUT_VALUE]: safe(event.args) }))
+            usage.toolCalls++
             break
           }
           case 'tool_execution_end': {
@@ -256,7 +277,12 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
             tools.delete(id)
             const output = safe((event.result as { content?: unknown } | undefined)?.content ?? event.result)
             if (output) span.setAttribute(SC.OUTPUT_VALUE, output)
-            if (event.isError) span.setStatus({ code: SpanStatusCode.ERROR, message: clip(output.split('\n')[0] ?? 'tool failed') })
+            if (event.isError) {
+              usage.toolErrors++
+              span.setStatus({ code: SpanStatusCode.ERROR, message: clip(output.split('\n')[0] ?? 'tool failed') })
+            } else {
+              span.setStatus({ code: SpanStatusCode.OK })
+            }
             span.end()
             break
           }

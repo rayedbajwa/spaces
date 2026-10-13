@@ -71,7 +71,10 @@ describe('agent tracing', () => {
     expect(turn1.attributes[SC.OUTPUT_VALUE]).toContain('Reading.')
     expect(turn2.attributes[SC.INPUT_VALUE]).toBe('file body')
     expect(turn2.attributes[SC.OUTPUT_VALUE]).toBe('Done.')
-    expect(JSON.parse(String(turn1.attributes[SC.METADATA]))).toEqual({ kind: 'stage', orgId: 'org-1', projectId: 'proj-1', runId: 'run-1', stage: 'specify', prompt: 1, turn: 1 })
+    // The turn's status, cost and tokens are on its root.
+    expect(JSON.parse(String(turn1.attributes[SC.METADATA]))).toEqual({ kind: 'stage', orgId: 'org-1', projectId: 'proj-1', runId: 'run-1', stage: 'specify', prompt: 1, turn: 1, status: 'ok', costUsd: 0.01, inputTokens: 100, outputTokens: 20, cacheReadTokens: 50, llmCalls: 1, toolCalls: 1, toolErrors: 0, model: 'claude-sonnet-5-5' })
+    expect(turn1.status.code).toBe(1)
+    expect(JSON.parse(String(turn1.attributes[SC.TAG_TAGS]))).toEqual(['stage', 'specify', 'ok'])
 
     expect(llm1!.attributes[SC.LLM_MODEL_NAME]).toBe('claude-sonnet-5-5')
     expect(llm1!.attributes[SC.LLM_TOKEN_COUNT_PROMPT]).toBe(150)
@@ -150,6 +153,9 @@ describe('agent tracing', () => {
     const spans = exporter.getFinishedSpans()
     expect(spans.find((s) => s.name === 'tool bash')?.status).toEqual({ code: 2, message: 'exit 1' })
     expect(spans.find((s) => s.name === 'llm')?.status).toEqual({ code: 2, message: 'overloaded' })
+    const root = spans.find((s) => s.name.startsWith('subagent'))!
+    expect(root.status).toEqual({ code: 2, message: 'overloaded' })
+    expect(JSON.parse(String(root.attributes[SC.METADATA]))).toMatchObject({ status: 'error', toolCalls: 1, toolErrors: 1 })
   })
 
   test('a malformed event stops tracing that session without throwing into the agent', () => {

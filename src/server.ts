@@ -305,7 +305,11 @@ if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeSchedul
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
 // Arize Phoenix on Railway, when PHOENIX_AUTO_PROVISION=1 (lib/phoenix-provision.ts).
-if (!isProjectRole()) void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())
+if (!isProjectRole()) {
+  void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())
+    // Then the annotation configs Spaces writes (run status, cost, people's decisions).
+    .then(() => import('./lib/phoenix-annotations')).then((m) => m.ensureAnnotationConfigs())
+}
 // Moves run in this process: any left in progress were cut off by the restart.
 if (!isProjectRole()) void failInterruptedMigrations().catch((error) => serverLog.warn('clearing interrupted moves failed', { error: error instanceof Error ? error.message : String(error) }))
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
@@ -3362,7 +3366,7 @@ async function route(req: Request): Promise<Response> {
         }
       }
     }
-    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
+    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer, answeredBy: auth?.user.email ?? null })
     if (!answered.ok) {
       return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
     }
