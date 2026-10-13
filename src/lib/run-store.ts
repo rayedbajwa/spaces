@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { Sql, TransactionSql } from 'postgres'
 import { getDb } from './db'
 import { markSlackGatePromptsDecided } from './slack-gate-prompts'
 import type { FlowOptions, PauseKind, StageName } from './aidlc'
@@ -38,8 +39,8 @@ export async function createRun(input: {
   template: PipelineTemplate
   projectId?: string
   repoId?: string
-}): Promise<RunRow> {
-  const sql = getDb()
+}, executor?: Sql | TransactionSql): Promise<RunRow> {
+  const sql = executor ?? getDb()
   const runId = randomUUID()
 
   const [row] = await sql<RunRow[]>`

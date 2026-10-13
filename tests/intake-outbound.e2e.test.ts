@@ -87,6 +87,22 @@ describe('outbound configuration', () => {
   })
 })
 
+describe('workflow surfaces live under Integrations', () => {
+  test('Integrations guides setup and links Work inbox and Outbound updates', async () => {
+    const page = await context.newPage()
+    await page.goto(`${baseUrl}/organization?section=integrations`, { waitUntil: 'domcontentloaded' })
+    const surfaces = page.locator('.work-surfaces')
+    await surfaces.waitFor({ timeout: 60_000 })
+    expect(await surfaces.getByRole('heading', { name: 'Work inbox' }).count()).toBe(1)
+    expect(await surfaces.getByRole('heading', { name: 'Outbound updates' }).count()).toBe(1)
+    expect(await surfaces.getByText(/Connect a source under Project Management/).count()).toBe(1)
+    await surfaces.getByRole('button', { name: 'Open work inbox' }).click()
+    await page.locator('.intake-sources').waitFor({ timeout: 60_000 })
+    expect(new URL(page.url()).pathname).toBe('/intake')
+    await page.close()
+  })
+})
+
 describe('datadog connection panel', () => {
   test('the monitoring category exposes a Datadog connect dialog', async () => {
     const page = await context.newPage()

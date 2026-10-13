@@ -25,6 +25,9 @@ import {
 
 const deliverLog = log.child({ mod: 'outbound-deliver' })
 
+/** A dead target must degrade to a recorded failure, never stall the drain. */
+const TARGET_TIMEOUT_MS = 10_000
+
 export interface DeliveryResult {
   ok: boolean
   externalRef?: string
@@ -60,6 +63,7 @@ export async function performDelivery(subscription: OutboundSubscription, delive
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json; charset=utf-8' },
           body: JSON.stringify({ channel, text: link ? `${summary} — ${link}` : summary }),
+          signal: AbortSignal.timeout(TARGET_TIMEOUT_MS),
         })
         const body = (await response.json().catch(() => ({}))) as { ok?: boolean; error?: string; ts?: string }
         if (!response.ok || body.ok === false) return { ok: false, error: body.error ?? `Slack ${response.status}` }
@@ -74,6 +78,7 @@ export async function performDelivery(subscription: OutboundSubscription, delive
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify({ body: { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text: link ? `${summary} (${link})` : summary }] }] } }),
+          signal: AbortSignal.timeout(TARGET_TIMEOUT_MS),
         })
         if (!response.ok) { const text = await response.text().catch(() => ''); return { ok: false, error: `Jira ${response.status}: ${text.slice(0, 200)}` } }
         const body = (await response.json().catch(() => ({}))) as { id?: string }
@@ -101,14 +106,14 @@ export async function performDelivery(subscription: OutboundSubscription, delive
         const token = await getIntegrationAccessToken(subscription.orgId, 'github')
         const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'spaces', 'content-type': 'application/json' }
         if (subscription.action === 'create_issue') {
-          const response = await fetch(`https://api.github.com/repos/${repo}/issues`, { method: 'POST', headers, body: JSON.stringify({ title: summary, body: link ?? undefined }) })
+          const response = await fetch(`https://api.github.com/repos/${repo}/issues`, { method: 'POST', headers, body: JSON.stringify({ title: summary, body: link ?? undefined }), signal: AbortSignal.timeout(TARGET_TIMEOUT_MS) })
           if (!response.ok) { const text = await response.text().catch(() => ''); return { ok: false, error: `GitHub ${response.status}: ${text.slice(0, 200)}` } }
           const body = (await response.json().catch(() => ({}))) as { number?: number }
           return { ok: true, externalRef: body.number ? String(body.number) : undefined }
         }
         const issueNumber = Number(config.issueNumber)
         if (!issueNumber) return { ok: false, skipped: true, error: 'GitHub subscription has no issueNumber configured.' }
-        const response = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, { method: 'POST', headers, body: JSON.stringify({ body: link ? `${summary}\n${link}` : summary }) })
+        const response = await fetch(`https://api.github.com/repos/${repo}/issues/${issueNumber}/comments`, { method: 'POST', headers, body: JSON.stringify({ body: link ? `${summary}\n${link}` : summary }), signal: AbortSignal.timeout(TARGET_TIMEOUT_MS) })
         if (!response.ok) { const text = await response.text().catch(() => ''); return { ok: false, error: `GitHub ${response.status}: ${text.slice(0, 200)}` } }
         const body = (await response.json().catch(() => ({}))) as { id?: number }
         return { ok: true, externalRef: body.id ? String(body.id) : undefined }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { Sql, TransactionSql } from 'postgres'
 import { getDb } from './db'
 
 export type JobKind = 'pipeline_run' | 'task_run' | 'workstream_run' | 'verify_fix' | 'webhook'
@@ -64,8 +65,8 @@ export async function enqueueJob(input: {
   payload?: Record<string, unknown>
   priority?: number
   runId?: string
-}): Promise<JobRow> {
-  const sql = getDb()
+}, executor?: Sql | TransactionSql): Promise<JobRow> {
+  const sql = executor ?? getDb()
   // Archived projects are read-only: nothing new may be queued for them.
   const [archived] = await sql<Array<{ archivedAt: string | null }>>`SELECT archived_at AS "archivedAt" FROM projects WHERE project_id = ${input.projectId}`
   if (archived?.archivedAt) throw new Error('This project is archived. Unarchive it before starting new work.')
