@@ -132,11 +132,9 @@ At most `PROJECT_WORKERS_MAX_AWAKE` (default 5) workers run jobs at once. Work f
 
 The web service runs the version every worker should run: the git commit it was built from. Every minute it updates workers on another version that have nothing running, at most two at a time. A worker that's busy stays on its version until its stage ends. While a worker is being updated it isn't woken; queued work runs on the new version, which starts its job process when it boots. The **Project workers** page shows each worker's version and when an update is waiting for it to go idle.
 
-- **Railway:** workers follow the `spaces-workers` branch (`PROJECT_WORKER_BRANCH`), which nobody pushes to, so a push to `main` doesn't redeploy them. Spaces deploys the exact `main` commit to each one when it's idle. Create the branch once:
+One deployment path on every platform: **a push to `main` deploys the web service, and only the web service deploys workers**, each with the web service's exact commit once it's idle. A worker never deploys by itself.
 
-  ```sh
-  git push origin origin/main:refs/heads/spaces-workers
-  ```
+- **Railway:** the web service deploys on a push to `main` (its GitHub trigger). Workers are built from the same repository but have no branch and no deployment trigger. Spaces removes any trigger Railway attaches, when it creates a worker and on each update. Spaces deploys a commit to each worker through the API. A worker Railway has put to sleep isn't deployed just to update it, because that would start it. The rollout leaves it asleep, and when work wakes it, it's deployed on the current version, so the work runs on current code. That first start takes a build, a minute or so with Railway's cache.
 
 - **Kubernetes:** the worker's Deployment is patched with the image and a `spaces.dev/version` annotation, so its pod is replaced even when the tag (`spaces:local`) stays the same.
 - **Docker:** the container is recreated from the image, on the same volume.
@@ -161,8 +159,7 @@ Files keep their paths, since both sides mount `/data`, so nothing in the databa
 
 1. On the **spaces** service, set `SPACES_INTERNAL_TOKEN` (a long random string, sealed) and `HOST=::`. Workers pull the files from the shared service over Railway's private network, which uses IPv6. Railway sets `RAILWAY_PRIVATE_DOMAIN`, which gives the shared service's address. Set `MIGRATION_SOURCE_URL` only to override it.
 2. Check that `RAILWAY_PROVISIONER_TOKEN` passes **Check the token** and **Probe create and delete**.
-3. Make sure the `spaces-workers` branch exists (see "Updates only when idle").
-4. Run a **Copy (dry run)** on one project and check the result, then **Move** it and use it for a while before moving the others.
+3. Run a **Copy (dry run)** on one project and check the result, then **Move** it and use it for a while before moving the others.
 
 ### Switching over
 
@@ -200,7 +197,7 @@ Spaces sets each worker's build and start explicitly: `dockerfilePath: Dockerfil
 | `PROJECT_WORKERS_MAX_AWAKE` | all | Workers allowed to run jobs at once (5) |
 | `PROJECT_WORKER_DATABASE_URL` | Kubernetes, Docker | Database address as the workers see it, if it differs from the web service's |
 | `RAILWAY_PROVISIONER_TOKEN`, `RAILWAY_PROVISIONER_TOKEN_TYPE` | Railway | Provisioning token, and its type (`project` by default) |
-| `PROJECT_WORKER_REPO`, `PROJECT_WORKER_BRANCH` | Railway | What workers are built from; the branch (`spaces-workers`) must exist and should never be pushed to |
+| `PROJECT_WORKER_REPO` | Railway | Repository workers are built from (no branch: only Spaces deploys them) |
 | `PROJECT_WORKER_NAMESPACE`, `PROJECT_WORKER_SECRET`, `PROJECT_WORKER_STORAGE_CLASS`, `PROJECT_WORKER_IMAGE_PULL_POLICY`, `PROJECT_WORKER_CPU_REQUEST`, `PROJECT_WORKER_MEMORY_REQUEST` | Kubernetes | Where workers go and how they are scheduled |
 | `KUBE_API_URL`, `KUBE_TOKEN`, `KUBE_CA_FILE`, `KUBE_INSECURE` | Kubernetes | API access from outside the cluster |
 | `PROJECT_WORKER_DOCKER_NETWORK`, `DOCKER_SOCKET` | Docker | Network the workers join, and the engine's socket |

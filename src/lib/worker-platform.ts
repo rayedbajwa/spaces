@@ -50,6 +50,12 @@ export interface WorkerPlatform {
    * stops idle workers and starts them for work (lib/worker-sleep.ts).
    */
   scale?(spec: Pick<WorkerSpec, 'name'>, refs: WorkerRefs, replicas: 0 | 1): Promise<void>
+  /**
+   * Whether the platform has put the worker to sleep (Railway). Updating a
+   * sleeping worker would start it, so the rollout leaves it be and the wake
+   * for its next work updates it instead.
+   */
+  isAsleep?(refs: WorkerRefs): Promise<boolean>
   /** Remove the worker and its volume (its workspace files go with it). */
   remove(spec: Pick<WorkerSpec, 'name'>, refs: WorkerRefs): Promise<void>
   /** Read access always; with `probe`, make and delete something throwaway. */

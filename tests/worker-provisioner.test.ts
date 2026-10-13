@@ -15,7 +15,7 @@ const { projectA, projectTeamB } = fixture
 afterAll(async () => { await fixture.stop() })
 
 const config: RailwayWorkerConfig = {
-  token: 'test-token', tokenType: 'project', railwayProjectId: 'rp-1', environmentId: 'env-1', repo: 'acme/spaces', branch: 'main',
+  token: 'test-token', tokenType: 'project', railwayProjectId: 'rp-1', environmentId: 'env-1', repo: 'acme/spaces',
   webServiceName: 'spaces', postgresServiceName: 'Postgres', size: { vcpus: 2, memoryGb: 2, diskGb: 5 },
 }
 
@@ -35,6 +35,8 @@ function fakeRailway(fail: Partial<Record<string, string>> = {}) {
       serviceCreate: { serviceCreate: { id: `svc-${n}` } },
       volumeCreate: { volumeCreate: { id: `vol-${n}` } },
       project: { project: { services: { edges: [{ node: { id: 'a' } }, { node: { id: 'b' } }] } } },
+      // Railway attaches a push trigger to a service built from a repository.
+      deploymentTriggers: { deploymentTriggers: { edges: [{ node: { id: 'trigger-1' } }] } },
     }
     return (data[op] ?? { [op]: true }) as T
   }
@@ -49,17 +51,19 @@ describe('provisioning a project worker', () => {
   test('creates the service, sizes it, adds a volume, deploys and records its private address', async () => {
     const railway = fakeRailway()
     const worker = await provisionProjectWorker(projectA.projectId, { platform: railwayPlatform(config, railway.gql) })
-    expect(railway.ops()).toEqual(['serviceCreate', 'serviceInstanceUpdate', 'serviceInstanceLimitsUpdate', 'volumeCreate', 'serviceInstanceDeployV2'])
+    expect(railway.ops()).toEqual(['serviceCreate', 'deploymentTriggers', 'deploymentTriggerDelete', 'serviceInstanceUpdate', 'serviceInstanceLimitsUpdate', 'volumeCreate', 'serviceInstanceDeployV2'])
     const create = railway.calls[0]!.variables.input
-    expect(create.branch).toBe('main') // the test config; the default is spaces-workers
+    // No branch, and the trigger Railway attached is removed: only Spaces deploys a worker.
+    expect(create.branch).toBeUndefined()
+    expect(railway.calls.find((c) => c.op === 'deploymentTriggerDelete')!.variables).toEqual({ id: 'trigger-1' })
     expect(create.source).toEqual({ repo: 'acme/spaces' })
     expect(create.variables.SPACES_ROLE).toBe('project')
     expect(create.variables.WORKER_PROJECT_ID).toBe(projectA.projectId)
     expect(create.variables.DATABASE_URL).toBe('${{Postgres.DATABASE_URL}}')
     expect(create.variables.SPACES_INTERNAL_TOKEN).toBe('${{spaces.SPACES_INTERNAL_TOKEN}}')
-    expect(railway.calls[1]!.variables.input).toMatchObject({ sleepApplication: true, numReplicas: 1, dockerfilePath: 'Dockerfile', startCommand: 'bun run src/standalone.ts' })
-    expect(railway.calls[2]!.variables.input).toMatchObject({ vCPUs: 2, memoryGB: 2 })
-    expect(railway.calls[3]!.variables.input).toMatchObject({ mountPath: '/data', serviceId: 'svc-1' })
+    expect(railway.calls.find((c) => c.op === 'serviceInstanceUpdate')!.variables.input).toMatchObject({ sleepApplication: true, numReplicas: 1, dockerfilePath: 'Dockerfile', startCommand: 'bun run src/standalone.ts' })
+    expect(railway.calls.find((c) => c.op === 'serviceInstanceLimitsUpdate')!.variables.input).toMatchObject({ vCPUs: 2, memoryGB: 2 })
+    expect(railway.calls.find((c) => c.op === 'volumeCreate')!.variables.input).toMatchObject({ mountPath: '/data', serviceId: 'svc-1' })
     expect(worker.state).toBe('ready')
     expect(worker.internalUrl).toBe(`http://${create.name}.railway.internal:8080`)
   })

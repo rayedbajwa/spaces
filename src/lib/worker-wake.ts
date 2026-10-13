@@ -79,6 +79,8 @@ export interface WakeDeps {
   hasLocalFiles: (projectId: string) => Promise<boolean>
   capHit: (projectId: string, awake: number, cap: number) => Promise<void>
   cap: () => number
+  /** Asleep on an old version: deploy the current one, which starts it (lib/worker-rollout.ts). */
+  updateIfAsleep: (projectId: string) => Promise<boolean>
 }
 
 export type WakeOutcome = 'running' | 'woken' | 'provisioning' | 'at_cap' | 'unavailable'
@@ -93,6 +95,7 @@ const defaultDeps: WakeDeps = {
   hasLocalFiles: (projectId) => import('./project-migration').then((m) => m.hasLocalProjectFiles(projectId)),
   capHit: recordCapHit,
   cap: () => maxAwakeWorkers(),
+  updateIfAsleep: (projectId) => import('./worker-rollout').then((m) => m.updateSleepingWorker(projectId)),
 }
 
 const inFlight = new Map<string, Promise<WakeOutcome>>()
@@ -128,6 +131,8 @@ async function doWake(projectId: string, deps: WakeDeps): Promise<WakeOutcome> {
   }
   // Provisioning or being updated: the job process starts on its own when it boots.
   if (worker.state === 'provisioning' || worker.state === 'updating') return 'provisioning'
+  // Asleep on an old version (the rollout leaves sleeping workers be): start it on the current one.
+  if (await deps.updateIfAsleep(projectId).catch(() => false)) return 'woken'
   const ok = await deps.wake(projectId)
   if (!ok) wakeLog.warn('project worker did not answer the wake call', { projectId })
   return ok ? 'woken' : 'unavailable'

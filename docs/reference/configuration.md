@@ -146,7 +146,7 @@ makes the database suites skip with a message instead of writing to it.
 | `RAILWAY_PROVISIONER_TOKEN` | unset | Railway **workspace** token used to create and remove each project's worker service and volume (a project token can create but not delete); set it sealed, with `RAILWAY_PROVISIONER_TOKEN_TYPE=workspace`. Check it under the account menu → Project workers |
 | `RAILWAY_PROVISIONER_TOKEN_TYPE` | `project` | `workspace` or `account` if a broader token is used instead |
 | `PROJECT_WORKER_VCPUS` / `PROJECT_WORKER_MEMORY_GB` | `2` / `2` | Size of each project worker |
-| `PROJECT_WORKER_REPO` / `PROJECT_WORKER_BRANCH` | `rayedbajwa/spaces` / `main` | What project workers are built from |
+| `PROJECT_WORKER_REPO` | `rayedbajwa/spaces` | Repository project workers are built from; they have no branch or deployment trigger (only Spaces deploys them) |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user, invitees and people let in from the waitlist can, and the landing page offers the waitlist |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
 | `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |
