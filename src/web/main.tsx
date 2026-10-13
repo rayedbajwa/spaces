@@ -406,7 +406,7 @@ type WizardIntegrationDraft = {
 }
 
 type WizardState = {
-  step: 1 | 2 | 3 | 4
+  step: 1 | 2 | 3
   name: string
   description: string
   repos: WizardRepoDraft[]
@@ -1500,7 +1500,7 @@ function App() {
     return null
   }
 
-  function goToStep(next: 1 | 2 | 3 | 4) {
+  function goToStep(next: 1 | 2 | 3) {
     const validation = validateWizardStep(wizard.step)
     if (validation && next > wizard.step) {
       setStatusMessage(validation)
@@ -1511,7 +1511,7 @@ function App() {
   }
 
   async function submitWizard(runAidlc: boolean) {
-    for (const step of [1, 2, 3, 4] as const) {
+    for (const step of [1, 2, 3] as const) {
       const err = validateWizardStep(step)
       if (err) { setStatusMessage(err); setWizard((c) => ({ ...c, step })); return }
     }
@@ -3782,14 +3782,13 @@ function App() {
                 <p className="panel-subtitle">
                   {wizard.step === 1 && 'Name your project and describe what it does.'}
                   {wizard.step === 2 && 'Repositories are optional. Specs and memory live in a governing workspace; the plan names the code repositories from your GitHub catalog and they are cloned on demand. If nothing matches, discovery proposes a new repository to create.'}
-                  {wizard.step === 3 && 'Optionally connect external systems now. You can add more later.'}
-                  {wizard.step === 4 && 'Review, then optionally kick off the first AIDLC run.'}
+                  {wizard.step === 3 && 'Review, then optionally kick off the first AIDLC run.'}
                 </p>
               </div>
               {!onboarding && <button className="ghost-button icon-button" onClick={() => setIsWizardOpen(false)} type="button" aria-label="Close" title="Close (Esc)">×</button>}
             </div>
             <ol className="stepper" aria-label="Steps">
-              {([[1, 'Basics'], [2, 'Repositories'], [3, 'Integrations'], [4, 'First intent']] as Array<[1 | 2 | 3 | 4, string]>).map(([s, label]) => (
+              {([[1, 'Basics'], [2, 'Repositories'], [3, 'First intent']] as Array<[1 | 2 | 3, string]>).map(([s, label]) => (
                 <li key={s} className={wizard.step === s ? 'active' : wizard.step > s ? 'done' : ''}>
                   <button type="button" onClick={() => goToStep(s)} disabled={busy || !!onboarding}>
                     <span className="stepper-index">{wizard.step > s ? '✓' : s}</span>
@@ -3938,19 +3937,6 @@ function App() {
               </>
             )}
 
-            {wizard.step === 3 && (
-              <div className="card" style={{ padding: 16 }}>
-                <h3 style={{ marginTop: 0 }}>App-level integrations</h3>
-                <p className="panel-subtitle" style={{ marginTop: 4 }}>
-                  Integrations are now configured once for the whole app, not per project.
-                  Every project shares the same GitHub / Atlassian / Slack connection.
-                </p>
-                <p style={{ marginTop: 8 }}>
-                  Click <strong>Integrations</strong> on the main page to connect them
-                  (before or after creating this project — doesn't matter).
-                </p>
-              </div>
-            )}
 
             {onboarding && (
               <div className="wizard-onboarding-panel" aria-live="polite">
@@ -4050,7 +4036,7 @@ function App() {
                 )}
               </div>
             )}
-            {!onboarding && wizard.step === 4 && (
+            {!onboarding && wizard.step === 3 && (
               <>
                 <div className="card" style={{ padding: 12, marginBottom: 8 }}>
                   <strong>{wizard.name}</strong>
@@ -4109,12 +4095,12 @@ function App() {
 
             <div className="button-row wizard-actions">
               {wizard.step > 1 && (
-                <button className="ghost-button" disabled={busy} onClick={() => goToStep((wizard.step - 1) as 1 | 2 | 3 | 4)} type="button">Back</button>
+                <button className="ghost-button" disabled={busy} onClick={() => goToStep((wizard.step - 1) as 1 | 2 | 3)} type="button">Back</button>
               )}
-              {wizard.step < 4 && (
-                <button className="primary-button" disabled={busy} onClick={() => goToStep((wizard.step + 1) as 1 | 2 | 3 | 4)} type="button">Next</button>
+              {wizard.step < 3 && (
+                <button className="primary-button" disabled={busy} onClick={() => goToStep((wizard.step + 1) as 1 | 2 | 3)} type="button">Next</button>
               )}
-              {wizard.step === 4 && !onboarding && (
+              {wizard.step === 3 && !onboarding && (
                 <>
                   <button className="secondary-button" disabled={busy} onClick={() => void submitWizard(false)} type="button">Create project only</button>
                   <button className="primary-button" disabled={busy || !wizard.firstFeature.trim()} onClick={() => void submitWizard(true)} type="button">Create + run AIDLC</button>

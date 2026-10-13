@@ -113,8 +113,10 @@ Click **New project** and walk through the wizard:
 2. **Repositories (optional).** Specs and memory live in the project's
    *governing workspace*; code repositories can be added now (GitHub
    owner/name or local path) or left to onboarding and the plan.
-3. **Integrations.** Optional.
-4. **First feature.** Describe it and choose **Create + run AIDLC**.
+3. **First feature.** Describe it and choose **Create + run AIDLC**.
+
+Integrations are set up once for the organization (**Organization →
+Integrations**), not per project.
 
 Onboarding then runs while you watch: clone remote repos → initialise the Spec
 Kit workspace → inventory and learn each repo → build project memory → suggest
