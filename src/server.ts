@@ -304,6 +304,8 @@ if (!isProjectRole()) {
 if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
+// ...and, where the platform does not sleep idle services itself (Kubernetes), stops idle workers.
+if (isWebRole() || (!isProjectRole() && workerPlatform())) void import('./lib/worker-sleep').then((m) => m.startSleepLoop())
 // Arize Phoenix on Railway, when PHOENIX_AUTO_PROVISION=1 (lib/phoenix-provision.ts).
 if (!isProjectRole()) {
   void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())

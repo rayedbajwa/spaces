@@ -44,6 +44,12 @@ export interface WorkerPlatform {
   create(spec: WorkerSpec, existing: WorkerRefs, record: (refs: Partial<WorkerRefs>) => Promise<void>): Promise<{ internalUrl: string }>
   /** Move the worker to `spec.version`, keeping its volume. Called only while it is idle. */
   update(spec: WorkerSpec, refs: WorkerRefs): Promise<void>
+  /**
+   * Stop (0) or start (1) the worker, keeping its volume. Only platforms that do
+   * not put idle services to sleep themselves have it (Kubernetes); Spaces then
+   * stops idle workers and starts them for work (lib/worker-sleep.ts).
+   */
+  scale?(spec: Pick<WorkerSpec, 'name'>, refs: WorkerRefs, replicas: 0 | 1): Promise<void>
   /** Remove the worker and its volume (its workspace files go with it). */
   remove(spec: Pick<WorkerSpec, 'name'>, refs: WorkerRefs): Promise<void>
   /** Read access always; with `probe`, make and delete something throwaway. */

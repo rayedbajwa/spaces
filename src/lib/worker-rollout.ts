@@ -59,15 +59,30 @@ export async function rolloutOnce(deps: RolloutDeps = defaultDeps): Promise<Roll
      WHERE state = 'updating' AND updated_at < now() - make_interval(mins => ${STALE_UPDATE_MINUTES})
   `
   const candidates = await sql<Array<ProjectWorkerRow & { code: string | null; slug: string }>>`
-    SELECT w.project_id AS "projectId", w.service_ref AS "serviceRef", w.volume_ref AS "volumeRef", w.version, p.code, p.slug
+    SELECT w.project_id AS "projectId", w.service_ref AS "serviceRef", w.volume_ref AS "volumeRef", w.version, w.state, p.code, p.slug
       FROM project_workers w JOIN projects p ON p.project_id = w.project_id
-     WHERE w.state = 'ready' AND w.platform = ${platform.kind} AND w.service_ref IS NOT NULL
+     WHERE (w.state = 'ready' OR (w.state = 'sleeping' AND ${Boolean(platform.scale)})) AND w.platform = ${platform.kind} AND w.service_ref IS NOT NULL
        AND w.version IS DISTINCT FROM ${desired}
      ORDER BY w.updated_at
   `
   const busy = new Set(await deps.busy())
   for (const worker of candidates) {
     if (result.updated.length >= PER_CYCLE) break
+    if ((worker as { state?: string }).state === 'sleeping') {
+      // Stopped by Spaces (Kubernetes): the new version goes into its pod
+      // template without starting it, and is what it runs when it starts.
+      try {
+        await platform.update({ ...workerSpec(worker.projectId, worker), version: desired }, { serviceRef: worker.serviceRef, volumeRef: worker.volumeRef })
+        await sql`UPDATE project_workers SET version = ${desired}, last_error = NULL WHERE project_id = ${worker.projectId} AND state = 'sleeping'`
+        result.updated.push(worker.projectId)
+        rolloutLog.info('stopped project worker updated', { projectId: worker.projectId, from: worker.version, to: desired })
+      } catch (error) {
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 500)
+        await sql`UPDATE project_workers SET last_error = ${message} WHERE project_id = ${worker.projectId}`
+        result.failed.push(worker.projectId)
+      }
+      continue
+    }
     // A stage is running: leave the worker on its version until it ends.
     if (busy.has(worker.projectId)) { result.deferred.push(worker.projectId); continue }
     const [claimed] = await sql<Array<{ projectId: string }>>`
