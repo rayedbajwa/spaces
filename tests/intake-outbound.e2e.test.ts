@@ -27,6 +27,7 @@ const fixture = await createApprovalFixture({ port: 3371 })
 const { baseUrl, orgA, users, teamA } = fixture
 
 const suffix = randomUUID().slice(0, 8)
+const sourceLabel = `E2E Jira ${suffix}`
 const item = await upsertIntakeItem({
   orgId: orgA,
   source: 'datadog',
@@ -57,6 +58,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await browser?.close().catch(() => undefined)
   await getDb()`DELETE FROM intake_items WHERE intake_id = ${item.intakeId}`.catch(() => undefined)
+  await getDb()`DELETE FROM intake_sources WHERE org_id = ${orgA} AND label = ${sourceLabel}`.catch(() => undefined)
   await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`.catch(() => undefined)
   await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${pending.link.linkId}`.catch(() => undefined)
   await fixture.stop()
@@ -75,6 +77,28 @@ describe('intake queue', () => {
     // The triage controls for the queued item (US2) are present.
     expect(await page.getByRole('button', { name: 'Dismiss' }).count()).toBeGreaterThanOrEqual(1)
     expect(await page.getByLabel('Convert to').count()).toBeGreaterThanOrEqual(1)
+    await page.close()
+  })
+
+  test('an admin can add a watched source through the UI and it appears with health', async () => {
+    const page = await context.newPage()
+    await page.goto(`${baseUrl}/integrations/intake`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: 'Add source' }).click()
+    const form = page.locator('.intake-source-form')
+    await form.locator('select').selectOption('jira')
+    await form.locator('input').nth(0).fill(sourceLabel)
+    await form.locator('input').nth(1).fill(`OPS-${suffix}`)
+    await page.getByRole('button', { name: 'Add watched scope' }).click()
+    await page.getByText(sourceLabel).first().waitFor({ timeout: 60_000 })
+    const [row] = await getDb()<Array<{ kind: string; scopeKey: string; enabled: boolean }>>`
+      SELECT kind, scope_key AS "scopeKey", enabled FROM intake_sources WHERE org_id = ${orgA} AND label = ${sourceLabel}
+    `
+    expect(row?.kind).toBe('jira')
+    expect(row?.scopeKey).toBe(`OPS-${suffix}`)
+    expect(row?.enabled).toBe(true)
+    // Disable it from the row and confirm the state persists.
+    await page.getByRole('button', { name: 'Disable' }).first().click()
+    await page.getByText('disabled').first().waitFor({ timeout: 60_000 })
     await page.close()
   })
 })
