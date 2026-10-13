@@ -2998,3 +2998,13 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .delivery-badge.delivery-skipped { background: rgba(107,114,128,.18); color: #9aa0a6; }
 
 .worker-check { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+/* Workflow surfaces (Work inbox + Outbound updates) shown inside Integrations. */
+.work-surface-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.work-surface { display: grid; gap: 12px; align-content: start; padding: 16px; }
+.work-surface-head { display: flex; gap: 12px; align-items: flex-start; }
+.work-surface-icon { font-size: 22px; line-height: 1.2; }
+.work-surface-head h4 { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: var(--text); }
+.work-surface-head .panel-subtitle { margin: 0; }
+.work-surface-steps { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--text-subtle); line-height: 1.4; }
+.work-surface .secondary-button { justify-self: start; }
+.intake-source-empty { display: grid; gap: 10px; justify-items: start; }

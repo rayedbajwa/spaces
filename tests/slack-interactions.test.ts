@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { createHmac } from 'node:crypto'
 import { getDb } from '../src/lib/db'
+import { upsertAppIntegration, disconnectAppIntegration } from '../src/lib/app-integrations'
 import { saveSlackSigningSecret } from '../src/lib/oauth-apps'
 import { authenticateSlackRequest, fileSlackIntake, handleSlackCommand, handleSlackEvent, handleSlackInteraction, verifySlackSignature } from '../src/lib/slack-interactions'
 import { submitSlackClarification } from '../src/lib/approval-store'
@@ -59,6 +60,25 @@ describe('signature verification', () => {
     const found = await authenticateSlackRequest({ timestamp, signature, body })
     expect(found.ok).toBe(true)
     expect(found.orgId).toBe(orgA)
+  })
+
+  test('fails closed when a workspace maps to several organizations (R12)', async () => {
+    // The same Slack app (secret) connected to two orgs makes the request
+    // unattributable by signature alone.
+    const { saveOAuthApp, deleteOAuthApp } = await import('../src/lib/oauth-apps')
+    await saveOAuthApp(orgB, 'slack', { clientId: 'slack-client-id', clientSecret: 'slack-client-secret' })
+    await saveSlackSigningSecret(orgA, secret)
+    await saveSlackSigningSecret(orgB, secret)
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const body = '{"type":"event_callback"}'
+    const signature = `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`
+    try {
+      const found = await authenticateSlackRequest({ timestamp, signature, body })
+      expect(found.ok).toBe(false)
+      expect(found.reason).toBe('org_ambiguous')
+    } finally {
+      await deleteOAuthApp(orgB, 'slack')
+    }
   })
 })
 
@@ -144,6 +164,28 @@ describe('gate decisions are exactly once', () => {
       expect(count?.n).toBe(1)
     } finally {
       await getDb()`DELETE FROM slack_identity_links WHERE link_id IN (${outsiderLink}, ${poLink})`
+    }
+  })
+
+  test('an unlinked person acting on a gate is asked to verify and gets a one-time link', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const gateId = await openGate({ runId: runA, stepIndex: 0, kind: 'review', prompt: 'review' })
+    try {
+      const result = await handleSlackInteraction(orgA, { team_id: team, user: { id: slackUser }, actions: [{ action_id: 'approve', value: gateId }] })
+      expect(result.body.ok).toBe(false)
+      expect(String(result.body.reply).toLowerCase()).toContain('verify')
+      const [link] = await getDb()<Array<{ state: string; tokenHash: string | null }>>`
+        SELECT state, token_hash AS "tokenHash" FROM slack_identity_links
+         WHERE org_id = ${orgA} AND slack_team_id = ${team} AND slack_user_id = ${slackUser}
+      `
+      expect(link?.state).toBe('pending')
+      expect(link?.tokenHash).not.toBeNull()
+      const [decision] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM approval_decisions WHERE gate_id = ${gateId}`
+      expect(decision?.n).toBe(0)
+    } finally {
+      await getDb()`DELETE FROM slack_identity_links WHERE org_id = ${orgA} AND slack_team_id = ${team} AND slack_user_id = ${slackUser}`
+      await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
     }
   })
 })
@@ -279,6 +321,96 @@ describe('feedback decisions and clarification answers from Slack', () => {
       await getDb()`DELETE FROM slack_gate_prompts WHERE gate_id = ${gateId}`
       await getDb()`DELETE FROM approval_decisions WHERE gate_id = ${gateId}`
       await getDb()`DELETE FROM pipeline_gates WHERE gate_id = ${gateId}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+})
+
+describe('slack identity resolution and message shortcuts', () => {
+  test('a message shortcut files the message it was invoked on', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.memberA, team, slackUser)
+    const externalRef = `slack:${team}:1700.900`
+    try {
+      const result = await handleSlackInteraction(orgA, {
+        type: 'message_action',
+        team_id: team,
+        callback_id: 'spaces_file_intake',
+        user: { id: slackUser },
+        message: { ts: '1700.900', text: 'Shortcut request' },
+      })
+      expect(String(result.body.text)).toContain('Intake item')
+      const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intake_items WHERE org_id = ${orgA} AND source = 'slack' AND external_ref = ${externalRef}`
+      expect(row?.n).toBe(1)
+    } finally {
+      await getDb()`DELETE FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+
+  test('a Slack profile email verifies the identity immediately', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const email = await emailFor(users.memberA)
+    const realFetch = globalThis.fetch
+    await upsertAppIntegration({ orgId: orgA, kind: 'slack', status: 'connected', displayName: 'Slack', credentials: { access_token: 'xoxb-test' } })
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/users.info')) return new Response(JSON.stringify({ ok: true, user: { profile: { email } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify({ ok: false, error: 'unexpected_call' }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const result = await fileSlackIntake({ orgId: orgA, slackTeamId: team, slackUserId: slackUser, text: 'Profile-verified request' })
+      expect(result.ok).toBe(true)
+      expect(result.code).toBeUndefined()
+      const [link] = await getDb()<Array<{ state: string }>>`SELECT state FROM slack_identity_links WHERE org_id = ${orgA} AND slack_team_id = ${team} AND slack_user_id = ${slackUser}`
+      expect(link?.state).toBe('verified')
+    } finally {
+      globalThis.fetch = realFetch
+      await getDb()`DELETE FROM intake_items WHERE org_id = ${orgA} AND source = 'slack' AND title = 'Profile-verified request'`
+      await getDb()`DELETE FROM slack_identity_links WHERE org_id = ${orgA} AND slack_team_id = ${team} AND slack_user_id = ${slackUser}`
+      await disconnectAppIntegration(orgA, 'slack')
+    }
+  })
+  test('a foreign message shortcut callback is ignored', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.memberA, team, slackUser)
+    const externalRef = `slack:${team}:1800.100`
+    try {
+      const result = await handleSlackInteraction(orgA, {
+        type: 'message_action',
+        team_id: team,
+        callback_id: 'some_other_shortcut',
+        user: { id: slackUser },
+        message: { ts: '1800.100', text: 'Not ours' },
+      })
+      expect(result.body.ok).toBe(true)
+      const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
+      expect(row?.n).toBe(0)
+    } finally {
+      await getDb()`DELETE FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
+      await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
+    }
+  })
+
+  test('the event endpoint ignores a message shortcut payload', async () => {
+    const team = `T-${crypto.randomUUID().slice(0, 6)}`
+    const slackUser = `U-${crypto.randomUUID().slice(0, 6)}`
+    const linkId = await linkVerified(users.memberA, team, slackUser)
+    const externalRef = `slack:${team}:1800.200`
+    try {
+      const result = await handleSlackEvent(orgA, {
+        type: 'message_action',
+        team_id: team,
+        user: { id: slackUser },
+        message: { ts: '1800.200', text: 'Should not file' },
+      })
+      expect(result.body.ok).toBe(true)
+      const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
+      expect(row?.n).toBe(0)
+    } finally {
+      await getDb()`DELETE FROM intake_items WHERE org_id = ${orgA} AND external_ref = ${externalRef}`
       await getDb()`DELETE FROM slack_identity_links WHERE link_id = ${linkId}`
     }
   })

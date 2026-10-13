@@ -104,8 +104,18 @@ export function OutboundPage() {
 
   return (
     <>
-      <PageHead title="Outbound triggers" subtitle="Fire a reversible action in another tool when a notable Spaces event happens." />
+      <PageHead title="Outbound updates" subtitle="Keep the tools you already use current — Spaces sends a reversible update when a run fails, a gate opens or a feature is delivered." />
       {message && <div className="toast" role="status"><span>{message}</span><button type="button" className="ghost-button toast-close" onClick={() => setMessage(null)} aria-label="Dismiss">×</button></div>}
+
+      <section className="panel card" aria-label="How outbound updates work">
+        <h2 className="section-title">How it works</h2>
+        <ol className="work-surface-steps">
+          <li>Connect the target tool under Integrations (Jira, Linear, GitHub or Slack).</li>
+          <li>Add a subscription below: choose the event, the target tool and the action.</li>
+          <li>Spaces delivers it, retries on failure and records every attempt — never blocking a run.</li>
+        </ol>
+      </section>
+
 
       <section className="panel card" aria-label="Add a subscription">
         <h2 className="section-title">Add a subscription</h2>
@@ -135,7 +145,7 @@ export function OutboundPage() {
       {loading && subscriptions.length === 0 ? <LoadingBlock label="Loading subscriptions…" /> : (
         <section className="panel card" aria-label="Subscriptions">
           <h2 className="section-title">Subscriptions</h2>
-          {subscriptions.length === 0 && <p className="muted">No subscriptions. Events happen as normal but nothing is sent anywhere.</p>}
+          {subscriptions.length === 0 && <p className="muted">No subscriptions yet. Add one above; until then events happen as normal and nothing is sent anywhere.</p>}
           <div className="outbound-list">
             {subscriptions.map((subscription) => (
               <div className={`outbound-row ${subscription.enabled ? '' : 'disabled'}`}>

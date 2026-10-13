@@ -106,7 +106,7 @@ export function IntakePage() {
 
   return (
     <>
-      <PageHead title="Intake" count={items.length ? String(items.length) : undefined} subtitle="Inbound work from Jira, Linear, Slack and Datadog, in one prioritized queue.">
+      <PageHead title="Work inbox" count={items.length ? String(items.length) : undefined} subtitle="Everything your connected tools raise, in one prioritized queue — triage it into project work or dismiss it.">
         <div className="segmented" role="tablist" aria-label="Queue state">
           {(['new', 'converted', 'dismissed', 'merged'] as State[]).map((s) => (
             <button key={s} type="button" role="tab" aria-selected={view === s} className={view === s ? 'active' : ''} onClick={() => setView(s)}>{s}</button>
@@ -118,7 +118,13 @@ export function IntakePage() {
 
       <section className="panel card intake-sources" aria-label="Source health">
         <h2 className="section-title">Sources</h2>
-        {sources.length === 0 && <p className="muted">No intake sources configured. An org admin can add one under Intake sources.</p>}
+        <p className="panel-subtitle">Connection health for the tools that feed this inbox. Connect a source under Integrations so new work starts arriving automatically.</p>
+        {sources.length === 0 && (
+          <div className="intake-source-empty">
+            <p className="muted">No sources connected yet. Add Jira, Linear, Slack or Datadog under Integrations and new work will appear here on its own.</p>
+            <button type="button" className="secondary-button" onClick={() => navigate('/organization?section=integrations')}>Set up a source</button>
+          </div>
+        )}
         <div className="intake-source-list">
           {sources.map((source) => (
             <button key={source.sourceId} type="button" className={`intake-source ${sourceFilter === source.kind ? 'active' : ''}`} onClick={() => setSourceFilter(sourceFilter === source.kind ? '' : source.kind)}>

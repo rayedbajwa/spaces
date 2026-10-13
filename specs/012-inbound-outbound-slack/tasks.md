@@ -162,9 +162,9 @@ Docs match the shipped routes, event catalog and Slack manifest; CI wiring lists
 - [x] T061 Run `bun run typecheck`, `bun run db:migrate`, `bun run build:web` and `bun test`, and fix every failure
 - [x] T062 Run the end-to-end acceptance checks in `specs/012-inbound-outbound-slack/quickstart.md` against `PORT=3369`
 - [x] T063 Open the pull request for the `spaces` changes (feature documents synced in) against `main`
-- [ ] T064 Get CI green and review approval on the `spaces` pull request
-- [ ] T065 Merge the `spaces` pull request to `main`
-- [ ] T066 Confirm the deployment pipeline ran for the merged `spaces` change
+- [x] T064 Get CI green and review approval on the `spaces` pull request
+- [x] T065 Merge the `spaces` pull request to `main`
+- [x] T066 Confirm the deployment pipeline ran for the merged `spaces` change
 - [ ] T067 Run the `test-plan.md` UAT and final acceptance checks against the deployed `spaces` environment
 
 **Scoped files**
