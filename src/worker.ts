@@ -7,7 +7,7 @@ import { PipelineEngine } from './lib/pipeline-engine'
 async function fileExists(file: string): Promise<boolean> {
   try { await access(file); return true } catch { return false }
 }
-import { assertEnvOrExit, intakeSyncIntervalMs, outboundDrainIntervalMs } from './lib/env'
+import { assertEnvOrExit } from './lib/env'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 
 assertEnvOrExit('worker')
@@ -827,7 +827,8 @@ async function main(): Promise<void> {
   scrubProviderKeysFromEnv()
   await listenProviderKeys().catch(() => undefined)
   priceCatalog = await loadModelCatalog().catch(() => [])
-  void checkProviderKeys(workerLog)
+  // A per-project worker checks only its own organization's keys.
+  void (async () => checkProviderKeys(workerLog, WORKER_PROJECT_ID ? [await orgIdForProject(WORKER_PROJECT_ID)] : undefined))()
   timers.push(setInterval(() => {
     void heartbeatWorker(workerId, heartbeatMeta()).catch((err) => workerLog.error('heartbeat failed', err))
 
@@ -848,7 +849,10 @@ async function main(): Promise<void> {
 
   // Wake on any project_jobs INSERT via pg NOTIFY.
   const sql = getDb()
-  await sql.listen('project_job', () => {
+  await sql.listen('project_job', (projectId) => {
+    // Every project's job inserts notify this channel; a per-project worker
+    // only looks for work when the job is its own.
+    if (WORKER_PROJECT_ID && projectId && projectId !== WORKER_PROJECT_ID) return
     void drainDispatcher(workerId)
   })
 
@@ -894,7 +898,7 @@ async function main(): Promise<void> {
   timers.push(setInterval(() => { void drainDispatcher(workerId).catch((err) => { if (!shuttingDown) workerLog.error('poll failed', err instanceof Error ? err : new Error(String(err))) }) }, 5000))
   // Reap idle warm agents every 5 minutes (default cutoff: 30 min idle).
   timers.push(setInterval(() => {
-    void reapIdleAgents().then((n) => {
+    void reapIdleAgents(undefined, WORKER_PROJECT_ID).then((n) => {
       if (n > 0) workerLog.info('reaped idle agents', { count: n })
     })
   }, 5 * 60_000))
@@ -905,28 +909,15 @@ async function main(): Promise<void> {
   // project, and re-queued duplicates. A dead worker's run is handed off: the
   // job is closed and the run is re-queued from the stage it was in.
   timers.push(setInterval(() => { void reapDeadWorkerJobs() }, 60_000))
-  // Inbound intake sync (012): pull configured Jira/Linear/Datadog sources on
-  // their interval. A failed fetch marks the source unhealthy and keeps queued
-  // items; it never affects a run.
-  timers.push(setInterval(() => {
-    void import('./lib/intake-connectors')
-      .then((m) => m.runIntakeSync())
-      .catch((err) => workerLog.warn('intake sync failed', { error: err instanceof Error ? err.message : String(err) }))
-  }, intakeSyncIntervalMs()))
-  // Outbound delivery drain (012): perform configured, reversible actions for
-  // notable events with retry/backoff. A target outage never changes a run.
-  timers.push(setInterval(() => {
-    void import('./lib/outbound-deliver')
-      .then((m) => m.drainOutbound())
-      .catch((err) => workerLog.warn('outbound drain failed', { error: err instanceof Error ? err.message : String(err) }))
-  }, outboundDrainIntervalMs()))
+  // Intake sync and outbound delivery (012) are organization-wide: they run in
+  // the web service (src/server.ts), which is always up, never in a job worker.
   // Reap orphaned pipeline_runs — queued runs older than 30s with no matching
   // project_jobs row. Caused by a worker crash between the retry UPDATE and
   // the job INSERT before retryRunAndEnqueue was transactional. This reaper
   // is a safety net: even with the transactional fix, a crashed peer worker
   // or a manual DB manipulation could still leave orphans behind.
   timers.push(setInterval(() => {
-    void reapOrphanedRuns()
+    void reapOrphanedRuns(30_000, WORKER_PROJECT_ID)
       .then(({ reenqueued, failed, runIds }) => {
         if (reenqueued > 0 || failed > 0) {
           workerLog.info('reaped orphaned runs', { reenqueued, failed, runIds })

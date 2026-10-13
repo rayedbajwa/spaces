@@ -157,13 +157,15 @@ export async function acquireWarmSession(input: {
 }
 
 /** Reap agents idle for longer than `maxIdleMs`. */
-export async function reapIdleAgents(maxIdleMs = 30 * 60 * 1000): Promise<number> {
+export async function reapIdleAgents(maxIdleMs = 30 * 60 * 1000, projectId?: string): Promise<number> {
   const sql = getDb()
   const cutoff = new Date(Date.now() - maxIdleMs).toISOString()
+  // A per-project worker reaps only its own project's agents.
   const result = await sql`
     UPDATE project_agents
        SET status='dead'
      WHERE status='idle' AND last_used_at < ${cutoff}
+       AND (${projectId ?? null}::uuid IS NULL OR project_id = ${projectId ?? null}::uuid)
   `
   return result.count ?? 0
 }

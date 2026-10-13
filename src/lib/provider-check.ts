@@ -10,10 +10,11 @@ type Log = { warn: (msg: string, meta?: Record<string, unknown>) => void; info: 
  * went, and the routing each organization will use. Keys left in .env are
  * called out as ignored.
  */
-export async function checkProviderKeys(log: Log): Promise<void> {
+export async function checkProviderKeys(log: Log, onlyOrgIds?: string[]): Promise<void> {
   const leftovers = leftoverEnvKeys()
   if (leftovers.length) log.warn(`${leftovers.join(', ')} are set in the environment but ignored; provider keys are managed under Organization → Models. Remove them from .env.`)
-  const orgs = await listOrganizations().catch(() => [])
+  // A project's worker looks only at its own organization (specs/014-project-workers).
+  const orgs = (await listOrganizations().catch(() => [])).filter((org) => !onlyOrgIds || onlyOrgIds.includes(org.orgId))
   for (const org of orgs) {
     const providers = await configuredProvidersFor(org.orgId).catch(() => [])
     await warmModelRouting(org.orgId, log).catch((error) => log.warn('model routing could not be computed', { org: org.slug, error: error instanceof Error ? error.message : String(error) }))
