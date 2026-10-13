@@ -20,6 +20,8 @@ if (!dbAvailable) test.skip(`slack channel DB tests skipped: DATABASE_URL not re
 function fakeSlack(options: { taken?: string[]; team?: string; lookupError?: string } = {}) {
   const calls: Array<{ method: string; body: Record<string, unknown> }> = []
   const channels = new Map<string, string>((options.taken ?? []).map((name) => [name, `C_OLD_${name}`]))
+  // Channels starting C_OUT exist but the bot is not in them until it joins.
+  const joined = new Set<string>()
   const realFetch = globalThis.fetch
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
@@ -43,7 +45,11 @@ function fakeSlack(options: { taken?: string[]; team?: string; lookupError?: str
       case 'users.lookupByEmail':
         if (options.lookupError) return reply({ ok: false, error: options.lookupError })
         return String(body.email).endsWith('@slack-user.test') ? reply({ ok: true, user: { id: `U_${body.email}` } }) : reply({ ok: false, error: 'users_not_found' })
+      case 'conversations.join':
+        joined.add(String(body.channel))
+        return reply({ ok: true })
       case 'chat.postMessage':
+        if (String(body.channel).startsWith('C_OUT') && !joined.has(String(body.channel))) return reply({ ok: false, error: 'not_in_channel' })
         return String(body.channel).startsWith('C_GONE') ? reply({ ok: false, error: 'channel_not_found' }) : reply({ ok: true, ts: '1.2' })
       default:
         return reply({ ok: true })
@@ -112,6 +118,17 @@ dbSuite('slack project channels', () => {
     await notifyProject(projects[1]!, { kind: 'run_finished' })
     const [row] = await sql`SELECT 1 FROM project_slack_channels WHERE project_id = ${projects[1]!}`
     expect(row).toBeUndefined() // forgotten, so the next notice creates a fresh channel
+  })
+
+  test('a channel the bot is no longer in is joined, then the notice is posted', async () => {
+    slack = fakeSlack()
+    await notifyProject(projects[0]!, { kind: 'run_started', pipeline: 'aidlc', stages: ['specify'] })
+    await sql`UPDATE project_slack_channels SET channel_id = 'C_OUT_1' WHERE project_id = ${projects[0]!}`
+    slack.calls.length = 0
+    await notifyProject(projects[0]!, { kind: 'run_finished' })
+    expect(slack.calls.map((c) => c.method).filter((m) => m !== 'auth.test')).toEqual(['chat.postMessage', 'conversations.join', 'chat.postMessage'])
+    const [row] = await sql<Array<{ channelId: string }>>`SELECT channel_id AS "channelId" FROM project_slack_channels WHERE project_id = ${projects[0]!}`
+    expect(row?.channelId).toBe('C_OUT_1') // kept: joining fixed it
   })
 
   test('reconnecting Slack to another workspace makes the channel there', async () => {
