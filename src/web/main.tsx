@@ -564,6 +564,9 @@ function App() {
   // Team settings page (/teams/<slug>) replaces the board while open.
   const [teamPageSlug, setTeamPageSlug] = useState<string | null>(null)
   const [orgPageOpen, setOrgPageOpen] = useState(false)
+  // Work inbox / Outbound updates are sub-pages of Integrations, rendered in
+  // the shell (header + navigation) rather than as standalone pages.
+  const [workSurface, setWorkSurface] = useState<'intake' | 'outbound' | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [boardQuery, setBoardQuery] = useState('')
   const archivedCardsRef = useRef<BoardCard[]>([])
@@ -2164,6 +2167,23 @@ function App() {
   // URL ↔ project page: /spaces/<code> opens that project; Back returns to the board.
   useEffect(() => {
     const fromPath = () => {
+      // Work inbox and Outbound updates live under Integrations. The old
+      // top-level URLs redirect in place so existing links keep working.
+      if (window.location.pathname === '/intake') window.history.replaceState({}, '', '/integrations/intake')
+      if (window.location.pathname === '/outbound') window.history.replaceState({}, '', '/integrations/outbound')
+      const surface = window.location.pathname.startsWith('/integrations/intake')
+        ? 'intake'
+        : window.location.pathname.startsWith('/integrations/outbound')
+          ? 'outbound'
+          : null
+      setWorkSurface(surface)
+      if (surface) {
+        setOrgPageOpen(false)
+        setTeamPageSlug(null)
+        setIsProjectModalOpen(false)
+        document.title = surface === 'intake' ? 'Work inbox · Spaces' : 'Outbound updates · Spaces'
+        return
+      }
       const isOrg = window.location.pathname === '/organization'
       setOrgPageOpen(isOrg)
       if (isOrg) setIsIntegrationsModalOpen(false)
@@ -2207,9 +2227,6 @@ function App() {
 
   // An approval link renders its own focused page instead of the board shell.
   if (window.location.pathname.startsWith('/approvals/')) return <ApprovalPage />
-  // Intake is a full page, not a board overlay.
-  if (window.location.pathname.startsWith('/intake')) return <IntakePage />
-  if (window.location.pathname.startsWith('/outbound')) return <OutboundPage />
   if (window.location.pathname.startsWith('/slack-link/')) return <SlackLinkPage />
 
   return (
@@ -2241,8 +2258,10 @@ function App() {
 
       {orgPageOpen && <OrgPage />}
       {teamPageSlug && <TeamPage slug={teamPageSlug} teams={me?.teams ?? []} />}
+      {workSurface === 'intake' && <IntakePage />}
+      {workSurface === 'outbound' && <OutboundPage />}
 
-      {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && (<>
+      {!isProjectModalOpen && !teamPageSlug && !orgPageOpen && !workSurface && (<>
       <PageHead title="Projects" count={boardHasProjects ? `${allCards.length}` : undefined}>
         {boardHasProjects && <SearchBox value={boardQuery} onChange={setBoardQuery} placeholder="Search projects…" />}
         <button className={modelsReady ? 'primary-button' : 'secondary-button'} onClick={openWizard} type="button" title={modelsReady ? undefined : 'Add a model provider key first'}>+ New project</button>
@@ -2659,7 +2678,7 @@ function App() {
                           <div className="feature-row-main">
                             <code>{feature.id}</code>
                             <button type="button" className="link-button feature-title-link" title="Review everything this intent produced, and its history" onClick={() => setViewingIntent(feature.id)}><strong>{feature.title}</strong></button>
-                            {feature.intakeId && <button type="button" className="link-button feature-intake-link" title="This work was converted from a Work inbox item" onClick={() => navigate('/intake')}>Work inbox</button>}
+                            {feature.intakeId && <button type="button" className="link-button feature-intake-link" title="This work was converted from a Work inbox item" onClick={() => navigate('/integrations/intake')}>Work inbox</button>}
                             {feature.scope && <span className={`scope-badge scope-${feature.scope}`} title="Scope">{scopeLabel(feature.scope)}</span>}
                             <span className={`mini-badge ${feature.status === 'delivered' ? 'completed' : ['accepted', 'verified', 'delivering'].includes(feature.status) ? 'paused' : 'idle'}`}>{feature.status}</span>
                             {feature.current && <span className="mini-badge running">current</span>}

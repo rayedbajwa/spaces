@@ -410,7 +410,7 @@ async function route(req: Request): Promise<Response> {
   }
 
   // Client-side routes (sign-in page, invite acceptance, project pages, approval links) load the SPA shell.
-  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname.startsWith('/approvals/') || url.pathname.startsWith('/intake') || url.pathname.startsWith('/outbound') || url.pathname.startsWith('/slack-link/') || url.pathname === '/organization')) {
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname.startsWith('/approvals/') || url.pathname.startsWith('/integrations/') || url.pathname.startsWith('/intake') || url.pathname.startsWith('/outbound') || url.pathname.startsWith('/slack-link/') || url.pathname === '/organization')) {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
     return sendHtml(200, html)
   }
