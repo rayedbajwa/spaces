@@ -99,6 +99,14 @@ kubectl -n spaces rollout restart deploy -l spaces.dev/role=project-worker
 
 Workers are built from `PROJECT_WORKER_REPO` (default `rayedbajwa/spaces`). They get references to the web service's `DATABASE_URL`, `ENCRYPTION_KEY`, `SPACES_INTERNAL_TOKEN` and `PUBLIC_URL`, so those values stay in one place. They are sized 2 vCPU and 2 GB, with a volume at `/data`, and sleep when idle. A sleeping worker wakes when the web service sends it a request.
 
+## Sleeping, waking and the awake limit
+
+A worker's job process exits after `PROJECT_WORKER_IDLE_SECONDS` (default 300) with nothing to do. That includes runs waiting on a person at a gate: answering restarts the stage on the next worker. The worker's server then makes no network traffic, so Railway puts the service to sleep. Kubernetes and Docker keep the container, but it uses almost no CPU.
+
+When work is queued for a project, the web service wakes that project's worker, whichever path queued it: a run, an approval link, a Slack answer, or an intake conversion. It catches every job as it's added, and also checks every 30 seconds for queued work whose worker isn't running.
+
+At most `PROJECT_WORKERS_MAX_AWAKE` (default 5) workers run jobs at once. Work for another project waits until one goes idle. The super admin gets a Slack DM the first time the limit is hit, then at most once an hour while it stays hit. The **Project workers** page shows how many workers are awake and which projects are waiting.
+
 ## Settings
 
 | Variable | Platform | Meaning |
@@ -109,6 +117,8 @@ Workers are built from `PROJECT_WORKER_REPO` (default `rayedbajwa/spaces`). They
 | `PROJECT_WORKER_IMAGE` | Kubernetes, Docker | Image the workers run |
 | `PROJECT_WORKER_VCPUS`, `PROJECT_WORKER_MEMORY_GB`, `PROJECT_WORKER_DISK_GB` | all | Worker size (2, 2, 5) |
 | `PROJECT_WORKER_PORT` | all | Port workers listen on (8080) |
+| `PROJECT_WORKER_IDLE_SECONDS` | all | Idle time before a worker's job process stops (300) |
+| `PROJECT_WORKERS_MAX_AWAKE` | all | Workers allowed to run jobs at once (5) |
 | `PROJECT_WORKER_DATABASE_URL` | Kubernetes, Docker | Database address as the workers see it, if it differs from the web service's |
 | `RAILWAY_PROVISIONER_TOKEN`, `RAILWAY_PROVISIONER_TOKEN_TYPE` | Railway | Provisioning token, and its type (`project` by default) |
 | `PROJECT_WORKER_REPO`, `PROJECT_WORKER_BRANCH` | Railway | What workers are built from |

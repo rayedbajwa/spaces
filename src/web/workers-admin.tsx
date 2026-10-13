@@ -33,7 +33,7 @@ interface CheckResult {
 const STATE_TONE: Record<string, string> = { ready: 'completed', provisioning: 'running', updating: 'running', failed: 'error', sleeping: 'idle', pending: 'idle', removing: 'running' }
 
 export function WorkersSection() {
-  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[] } | null>(null)
+  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[]; awake: string[]; maxAwake: number; waiting: Array<{ projectId: string; name: string; since: string }> } | null>(null)
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -64,13 +64,19 @@ export function WorkersSection() {
     <section className="card panel team-section">
       <div className="team-section-head">
         <h3>Project workers</h3>
-        <span className="panel-subtitle">role <code>{data.role}</code> · platform {data.platform ? <code>{data.platform}</code> : 'not set up'}</span>
+        <span className="panel-subtitle">role <code>{data.role}</code> · platform {data.platform ? <code>{data.platform}</code> : 'not set up'} · {data.awake.length}/{data.maxAwake} awake</span>
       </div>
       <p className="panel-subtitle">
         Each project runs on its own worker with its own disk, on Railway, Kubernetes or the local Docker engine.
         The check confirms Spaces can reach the platform; the probe also confirms it may create what a worker needs.
       </p>
       {data.problem && <p className="error-text">{data.problem}</p>}
+      {data.waiting.length > 0 && (
+        <p className="error-text">
+          At the limit of {data.maxAwake} awake workers. Waiting for a free worker: {data.waiting.map((w) => w.name).join(', ')}.
+          Raise <code>PROJECT_WORKERS_MAX_AWAKE</code> or wait for one to go idle.
+        </p>
+      )}
       <div className="button-row">
         <button type="button" className="secondary-button small-button" disabled={Boolean(busy)} onClick={() => void runCheck(false)}>Check the token</button>
         <button type="button" className="ghost-button small-button" disabled={Boolean(busy) || !data.platform} onClick={() => void runCheck(true)}>Probe create and delete</button>
@@ -95,6 +101,7 @@ export function WorkersSection() {
                   <td><strong>{worker.projectName}</strong><div className="text-subtle">{[worker.projectCode, worker.platform].filter(Boolean).join(' · ')}</div></td>
                   <td>
                     <span className={`mini-badge ${STATE_TONE[worker.state] ?? 'idle'}`}>{worker.state}</span>
+                    {worker.state === 'ready' && <span className={`mini-badge ${data.awake.includes(worker.projectId) ? 'running' : 'idle'}`}>{data.awake.includes(worker.projectId) ? 'working' : 'idle'}</span>}
                     {worker.lastError && <div className="error-text">{worker.lastError}</div>}
                   </td>
                   <td>{worker.internalUrl ? <code>{worker.internalUrl}</code> : <span className="text-subtle">—</span>}</td>

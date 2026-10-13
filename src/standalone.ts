@@ -11,8 +11,10 @@
  *
  * SPACES_ROLE (specs/014-project-workers) picks what runs: `all` (default) the
  * server and the supervisor; `web` the server only (no workspace disk);
- * `project` the server for one project plus that project's worker, which never
- * idles out (the platform sleeps the whole service instead).
+ * `project` the server for one project plus that project's job worker. The job
+ * worker exits after PROJECT_WORKER_IDLE_SECONDS with nothing to do, so the
+ * service makes no traffic and the platform can put it to sleep; the server
+ * asks for it again (SIGUSR2) when the web service wakes it for queued work.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -28,12 +30,20 @@ let shuttingDown = false
 function start(name: string, script: string, env: Record<string, string> = {}): void {
   const child = spawn(process.execPath, ['run', path.join(srcDir, script)], {
     cwd: path.dirname(srcDir),
-    env: { ...process.env, ...env },
+    env: { ...process.env, SPACES_STANDALONE_CHILD: '1', ...env },
     stdio: ['ignore', 'inherit', 'inherit'],
   })
   children.push({ name, child })
   child.on('exit', (code, signal) => {
     if (shuttingDown) return
+    const index = children.findIndex((c) => c.child === child)
+    if (index >= 0) children.splice(index, 1)
+    // A project's job worker going idle is normal: the server stays up, and the
+    // worker is started again when work is queued.
+    if (name === 'worker' && code === 0) {
+      console.log('[standalone] job worker idle; stopped until work is queued')
+      return
+    }
     console.error(`[standalone] ${name} exited (${signal ?? `code ${code}`}); stopping the service so the platform restarts it`)
     void shutdown('child-exit', code ?? 1)
   })
@@ -67,6 +77,17 @@ async function shutdown(reason: string, exitCode = 0): Promise<void> {
 process.on('SIGINT', () => void shutdown('SIGINT'))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
+function startProjectWorker(): void {
+  if (shuttingDown || children.some((c) => c.name === 'worker')) return
+  start('worker', 'worker.ts', {
+    WORKER_PROJECT_ID: process.env.WORKER_PROJECT_ID?.trim() ?? '',
+    WORKER_IDLE_EXIT_SECONDS: process.env.PROJECT_WORKER_IDLE_SECONDS?.trim() || '300',
+    WORKER_IDLE_RELEASES_PAUSED: '1',
+  })
+}
+// The server's /internal/wake: start the job worker if it went idle.
+process.on('SIGUSR2', () => { if (process.env.SPACES_ROLE?.trim().toLowerCase() === 'project') startProjectWorker() })
+
 // The server applies the database schema at boot; give it a head start so the
 // supervisor's first queries see the tables on a fresh database.
 const role = process.env.SPACES_ROLE?.trim().toLowerCase()
@@ -75,8 +96,7 @@ if (role !== 'web') {
   setTimeout(() => {
     if (shuttingDown) return
     if (role === 'project') {
-      const projectId = process.env.WORKER_PROJECT_ID?.trim() ?? ''
-      start('worker', 'worker.ts', { WORKER_PROJECT_ID: projectId, WORKER_IDLE_EXIT_SECONDS: '0' })
+      startProjectWorker()
     } else {
       start('supervisor', 'supervisor.ts')
     }

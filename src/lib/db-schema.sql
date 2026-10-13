@@ -1461,3 +1461,11 @@ ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS service_ref TEXT;
 ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS volume_ref TEXT;
 -- What a new project's worker runs once it is up (the wizard's model and first feature).
 ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS bootstrap_json JSONB;
+
+-- 014 phase 3: projects the awake-worker cap held back, and when the super
+-- admin was last told (at most hourly).
+CREATE TABLE IF NOT EXISTS worker_cap_hits (
+  project_id   UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  hit_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  notified_at  TIMESTAMPTZ
+);

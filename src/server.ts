@@ -137,6 +137,7 @@ import {
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forwardTarget, forwardToProject, resolveForwardProject } from './lib/project-forward'
+import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
 import { publicOrigin } from './lib/public-url'
 import {
@@ -206,7 +207,9 @@ const versionMetadata = resolveVersionMetadata({ packageMetadata })
 const bootOrgId = await getDefaultOrgId()
 await importProviderKeysFromEnv(bootOrgId).catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
 scrubProviderKeysFromEnv()
-await listenProviderKeys((orgId) => { void warmModelRouting(orgId, serverLog).catch(() => undefined) }).catch(() => undefined)
+// A project worker holds no open LISTEN connection: its traffic would keep the
+// platform from putting an idle worker to sleep. Cached keys expire on their own.
+if (!isProjectRole()) await listenProviderKeys((orgId) => { void warmModelRouting(orgId, serverLog).catch(() => undefined) }).catch(() => undefined)
 void checkProviderKeys(serverLog)
 // What each tenant holds after the schema migrated, so an upgraded deployment
 // can be checked from its logs without reading the database by hand.
@@ -280,6 +283,8 @@ void (async () => {
 })().catch((error) => serverLog.warn('intent import failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
 // must not look like they are still running.
+// The web role wakes each project's worker as its work is queued (phase 3).
+if (isWebRole()) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // A new project's worker runs the wizard's bootstrap (governing workspace and
 // onboarding) once, the first time it starts.
 if (isProjectRole()) {
@@ -568,7 +573,7 @@ async function route(req: Request): Promise<Response> {
   if (url.pathname === '/api/admin/workers' || url.pathname.startsWith('/api/admin/workers/')) {
     if (!(await isSiteAdmin())) return sendJson(403, { error: "Only the deployment's super admin manages project workers." })
     if (method === 'GET' && url.pathname === '/api/admin/workers') {
-      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers() })
+      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers(), awake: await awakeProjects(), maxAwake: maxAwakeWorkers(), waiting: await capWaiting() })
     }
     if (method === 'POST' && url.pathname === '/api/admin/workers/check') {
       const body = await readJson<{ probe?: boolean }>(req).catch(() => ({} as { probe?: boolean }))
@@ -4205,7 +4210,12 @@ async function computeProjectState(projectRow: ProjectRow): Promise<{ artifacts:
  */
 async function internalRoute(req: Request, method: string, url: URL): Promise<Response> {
   const projectId = workerProjectId()!
-  if (method === 'POST' && url.pathname === '/internal/wake') return sendJson(200, { ok: true, projectId })
+  if (method === 'POST' && url.pathname === '/internal/wake') {
+    // The job worker exits when idle so the service can sleep; ask the launcher
+    // (src/standalone.ts) to start it again for the queued work.
+    if (process.env.SPACES_STANDALONE_CHILD === '1') process.kill(process.ppid, 'SIGUSR2')
+    return sendJson(200, { ok: true, projectId })
+  }
   const project = await projGet(projectId)
   if (!project) return sendJson(404, { error: 'Project not found.' })
   if (method === 'POST' && url.pathname === '/internal/bootstrap') {

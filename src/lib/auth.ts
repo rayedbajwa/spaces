@@ -153,6 +153,14 @@ export async function isSuperAdmin(user: { userId: string; email: string }): Pro
   return first?.userId === user.userId
 }
 
+/** The super admins' emails: SUPERADMIN_EMAILS, or the first registered account's. */
+export async function superAdminEmails(): Promise<string[]> {
+  const listed = (process.env.SUPERADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
+  if (listed.length) return listed
+  const [first] = await getDb()<Array<{ email: string }>>`SELECT email FROM users ORDER BY created_at, user_id LIMIT 1`
+  return first ? [first.email] : []
+}
+
 export async function countUsers(): Promise<number> {
   const sql = getDb()
   const [row] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM users`
