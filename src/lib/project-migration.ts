@@ -158,6 +158,24 @@ export function selfPrivateUrl(env: NodeJS.ProcessEnv = process.env): string | u
   return domain ? `http://${domain}:${env.PORT ?? '3000'}` : undefined
 }
 
+const IN_MOTION: MigrationState[] = ['copying', 'syncing', 'moving_back']
+
+/** A copy or move already running for the project (only one at a time). */
+export async function migrationInProgress(projectId: string): Promise<boolean> {
+  const [row] = await getDb()<Array<{ state: string | null }>>`SELECT migration_state AS state FROM project_workers WHERE project_id = ${projectId}`
+  return IN_MOTION.includes((row?.state ?? '') as MigrationState)
+}
+
+/** Claim the project for a copy or move, atomically; false when one is already running. */
+async function claimMigration(projectId: string, state: MigrationState): Promise<boolean> {
+  const rows = await getDb()`
+    UPDATE project_workers SET migration_state = ${state}, migration_json = ${getDb().json({ startedAt: new Date().toISOString() } as never)}, migration_at = now(), updated_at = now()
+     WHERE project_id = ${projectId} AND (migration_state IS NULL OR migration_state NOT IN ('copying', 'syncing', 'moving_back'))
+    RETURNING project_id
+  `
+  return rows.length > 0
+}
+
 async function busy(projectId: string): Promise<boolean> {
   const [row] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM project_jobs WHERE project_id = ${projectId} AND status IN ('claimed', 'running')`
   return Number(row?.n ?? 0) > 0
@@ -208,7 +226,8 @@ export async function moveProjectToWorker(projectId: string, options: { activate
   if (options.activate && await busy(projectId)) throw new Error('A stage is running for this project. Move it once the stage ends.')
 
   await sql`INSERT INTO project_workers (project_id, active) VALUES (${projectId}, false) ON CONFLICT (project_id) DO NOTHING`
-  await setMigration(projectId, options.activate ? 'syncing' : 'copying', { startedAt: new Date().toISOString() })
+  // One copy or move at a time: two pulls into the same paths would race.
+  if (!(await claimMigration(projectId, options.activate ? 'syncing' : 'copying'))) throw new Error('A copy or move is already running for this project.')
   try {
     await deps.provision(projectId)
     // The worker reports its version once it is up.
@@ -245,7 +264,7 @@ export async function moveProjectBack(projectId: string, deps: MigrationDeps = d
   const worker = await getProjectWorker(projectId)
   if (!worker?.active || !worker.internalUrl) throw new Error('This project does not run on its own worker.')
   if (await busy(projectId)) throw new Error('A stage is running for this project. Move it back once the stage ends.')
-  await setMigration(projectId, 'moving_back')
+  if (!(await claimMigration(projectId, 'moving_back'))) throw new Error('A copy or move is already running for this project.')
   try {
     const result = await deps.selfPull(projectId, worker.internalUrl)
     if (!result.ok) {

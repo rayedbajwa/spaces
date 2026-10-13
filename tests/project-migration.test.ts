@@ -116,6 +116,13 @@ describe('moving a project', () => {
   })
 })
 
+describe('one copy or move at a time', () => {
+  test('a second copy or move while one runs is refused', async () => {
+    await sql`INSERT INTO project_workers (project_id, active, migration_state) VALUES (${projectA.projectId}, false, 'syncing')`
+    await expect(moveProjectToWorker(projectA.projectId, { activate: false }, deps().d)).rejects.toThrow('already running')
+  })
+})
+
 describe('a restart during a move', () => {
   test('marks it failed, which releases the held jobs and allows a retry', async () => {
     await sql`INSERT INTO project_workers (project_id, active, migration_state) VALUES (${projectTeamB.projectId}, false, 'syncing')`
