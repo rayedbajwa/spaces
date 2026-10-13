@@ -145,6 +145,8 @@ function maskFields(input: IntakeItemInput, policy: GuardPolicy): IntakeItemInpu
     summary: input.summary ? maskOutput(String(input.summary).trim(), policy) : input.summary,
     requesterName: input.requesterName ? maskOutput(String(input.requesterName), policy) : input.requesterName,
     requesterEmail: input.requesterEmail ? maskOutput(String(input.requesterEmail), policy) : input.requesterEmail,
+    externalRef: maskOutput(String(input.externalRef), policy),
+    externalUrl: input.externalUrl ? maskOutput(String(input.externalUrl), policy) : input.externalUrl,
     raw: input.raw ? maskOutputDeep(input.raw, policy) : input.raw,
   }
 }
@@ -390,35 +392,50 @@ export async function convertIntakeItem(input: {
   `
   if (!claimed) return { error: 'This item is already converted.', status: 409 }
 
-  const started = await startSpecifyRun({
-    projectId: project.projectId,
-    projectSlug: project.slug,
-    feature: featureText,
-    scope,
-    actorName: input.actorUserId ? undefined : 'intake',
-  })
+  const linkId = randomUUID()
+  // The run insert, the work link, the item's transition and the job all commit
+  // together: a partial conversion cannot leave a running run while the item is
+  // still `new` and unlinked (FR-006/FR-007).
+  let started: Awaited<ReturnType<typeof startSpecifyRun>>
+  try {
+    started = await startSpecifyRun({
+      projectId: project.projectId,
+      projectSlug: project.slug,
+      feature: featureText,
+      scope,
+      actorName: input.actorUserId ? undefined : 'intake',
+      onCreate: async (tx, runId) => {
+        // A restored item that is converted again replaces its earlier link.
+        await tx`
+          INSERT INTO intake_work_links (link_id, intake_id, project_id, work_kind, run_id, source_update_state, created_by)
+          VALUES (${linkId}, ${input.intakeId}, ${input.projectId}, ${input.workKind}, ${runId}, 'pending', ${input.actorUserId ?? null})
+          ON CONFLICT (intake_id) DO UPDATE SET
+            link_id = EXCLUDED.link_id, project_id = EXCLUDED.project_id, work_kind = EXCLUDED.work_kind, run_id = EXCLUDED.run_id,
+            intent_id = NULL, source_update_state = 'pending', source_update_error = NULL, source_update_attempted_at = NULL,
+            created_by = EXCLUDED.created_by, created_at = now()
+        `
+        await tx`
+          INSERT INTO intake_transitions (transition_id, intake_id, actor_user_id, actor_surface, action, from_state, to_state, metadata_json)
+          VALUES (${randomUUID()}, ${input.intakeId}, ${input.actorUserId ?? null}, ${input.actorSurface ?? 'app'}, 'converted', ${item.state}, 'converted',
+                  ${tx.json({ projectId: input.projectId, workKind: input.workKind, runId } as never)})
+        `
+      },
+    })
+  } catch (error) {
+    await sql`UPDATE intake_items SET state = ${item.state}, updated_at = now() WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId} AND state = 'converted'`
+    // Only the one-link-per-item constraint means "already converted"; any
+    // other unique violation is a genuine failure and must surface as a 500.
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.includes('intake_work_links_intake_id_key')) return { error: 'This item is already converted.', status: 409 }
+    // Keep the DB detail in the log; never surface it to the caller.
+    storeLog.error('intake conversion failed', { intakeId: input.intakeId, error: message })
+    return { error: 'The conversion failed. Try again.', status: 500 }
+  }
   if (!started.ok) {
     await sql`UPDATE intake_items SET state = ${item.state}, updated_at = now() WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId} AND state = 'converted'`
     return { error: started.error, status: started.status }
   }
 
-  const linkId = randomUUID()
-  await sql.begin(async (tx) => {
-    // A restored item that is converted again replaces its earlier link.
-    await tx`
-      INSERT INTO intake_work_links (link_id, intake_id, project_id, work_kind, run_id, source_update_state, created_by)
-      VALUES (${linkId}, ${input.intakeId}, ${input.projectId}, ${input.workKind}, ${started.runId}, 'pending', ${input.actorUserId ?? null})
-      ON CONFLICT (intake_id) DO UPDATE SET
-        link_id = EXCLUDED.link_id, project_id = EXCLUDED.project_id, work_kind = EXCLUDED.work_kind, run_id = EXCLUDED.run_id,
-        intent_id = NULL, source_update_state = 'pending', source_update_error = NULL, source_update_attempted_at = NULL,
-        created_by = EXCLUDED.created_by, created_at = now()
-    `
-    await tx`
-      INSERT INTO intake_transitions (transition_id, intake_id, actor_user_id, actor_surface, action, from_state, to_state, metadata_json)
-      VALUES (${randomUUID()}, ${input.intakeId}, ${input.actorUserId ?? null}, ${input.actorSurface ?? 'app'}, 'converted', ${item.state}, 'converted',
-              ${tx.json({ projectId: input.projectId, workKind: input.workKind, runId: started.runId } as never)})
-    `
-  })
   const updated = await getIntakeItem(input.orgId, input.intakeId)
   return {
     item: updated!,

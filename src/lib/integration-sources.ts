@@ -128,12 +128,16 @@ function clip(text: string, max: number): string {
 // Linear (GraphQL)
 // ---------------------------------------------------------------------------
 
+/** A hung Linear endpoint must not stall an intake sync or an outbound drain. */
+const LINEAR_TIMEOUT_MS = 10_000
+
 export async function linearGraphQL<T>(orgId: string, query: string, variables: Record<string, unknown>): Promise<T> {
   const token = await requireToken(orgId, 'linear')
   const response = await fetch('https://api.linear.app/graphql', {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(LINEAR_TIMEOUT_MS),
   })
   if (!response.ok) {
     const text = await response.text().catch(() => '')

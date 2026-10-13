@@ -118,6 +118,54 @@ describe('slack delivery', () => {
       await drainOutbound(50)
       expect(body).not.toContain(fakeToken)
       expect(body).toContain('[redacted')
+      // Masked at rest too, not only on the way out (test-plan §5.9).
+      const [stored] = await getDb()<Array<{ payload: Record<string, unknown> }>>`
+        SELECT payload_json AS payload FROM outbound_deliveries WHERE subscription_id = ${subscription.subscriptionId}
+      `
+      expect(JSON.stringify(stored?.payload ?? {})).not.toContain(fakeToken)
+    } finally {
+      await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
+    }
+  })
+
+  test('a missing target config is recorded as skipped and never retried', async () => {
+    const subscription = await upsertSubscription({ orgId: orgA, eventKind: 'run_failed', targetKind: 'slack', action: 'post_message', targetConfig: {} })
+    const eventKey = `run:${randomUUID()}:failed`
+    await emitOutboundEvent({ orgId: orgA, eventKind: 'run_failed', eventKey, payload: { summary: 'no channel' } })
+    const deliveryId = (await ourDelivery(subscription.subscriptionId, eventKey))!
+    try {
+      const outcome = await drainOutbound(50)
+      expect(outcome.skipped).toBeGreaterThanOrEqual(1)
+      const state = await deliveryState(deliveryId)
+      expect(state?.state).toBe('skipped')
+      expect(state?.attempts).toBe(1)
+      expect(state?.nextAttemptAt).toBeNull()
+      // Terminal: the drain never selects it again.
+      await drainOutbound(50)
+      expect((await deliveryState(deliveryId))?.attempts).toBe(1)
+    } finally {
+      await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
+    }
+  })
+})
+
+describe('linear delivery', () => {
+  test('bounds the Linear GraphQL call with a timeout signal', async () => {
+    await upsertAppIntegration({ orgId: orgA, kind: 'linear', status: 'connected', credentials: { access_token: 'linear-token' } })
+    const subscription = await upsertSubscription({ orgId: orgA, eventKind: 'run_failed', targetKind: 'linear', action: 'comment', targetConfig: { issueId: 'uuid-1' } })
+    const eventKey = `run:${randomUUID()}:failed`
+    await emitOutboundEvent({ orgId: orgA, eventKind: 'run_failed', eventKey, payload: { summary: 'linear comment' } })
+    const deliveryId = (await ourDelivery(subscription.subscriptionId, eventKey))!
+    try {
+      let signal: AbortSignal | null | undefined
+      stubFetch((_url, init) => {
+        signal = init?.signal
+        return new Response(JSON.stringify({ data: { commentCreate: { success: true, comment: { id: 'c1' } } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      })
+      await drainOutbound(50)
+      expect(signal).toBeInstanceOf(AbortSignal)
+      expect(signal?.aborted).toBe(false)
+      expect((await deliveryState(deliveryId))?.state).toBe('delivered')
     } finally {
       await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
     }
