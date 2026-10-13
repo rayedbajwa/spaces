@@ -177,8 +177,8 @@ async function maybeAnswerClarification(
   } else {
     // A plain DM reply carries no thread ts, so match the newest open
     // clarification prompt posted to this person's DM channel (US3 #4).
-    const open = await listOpenSlackGatePromptsForUser(orgId, slackUserId).catch(() => [])
-    prompt = open.find((candidate) => candidate.promptKind === 'clarification' && candidate.channelId === channelId)
+    const open = await listOpenSlackGatePromptsForUser(orgId, slackUserId, channelId).catch(() => [])
+    prompt = open[0]
   }
   if (!prompt || prompt.promptKind !== 'clarification') return undefined
   if (prompt.slackUserId && prompt.slackUserId !== slackUserId) return undefined

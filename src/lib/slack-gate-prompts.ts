@@ -68,33 +68,42 @@ export async function findSlackGatePromptByMessage(orgId: string, channelId: str
   return row
 }
 
-/** Undecided prompts for one person, newest first (a DM reply has no thread ts). */
-export async function listOpenSlackGatePromptsForUser(orgId: string, slackUserId: string): Promise<SlackGatePrompt[]> {
+/**
+ * Undecided clarification prompts for one person in one channel, newest first
+ * (a plain DM reply has no thread ts). The channel is filtered in SQL so a
+ * person with many newer open prompts elsewhere cannot hide this one.
+ */
+export async function listOpenSlackGatePromptsForUser(orgId: string, slackUserId: string, channelId: string): Promise<SlackGatePrompt[]> {
   return await getDb()<SlackGatePrompt[]>`
     SELECT ${getDb().unsafe(COLS)} FROM slack_gate_prompts
-     WHERE org_id = ${orgId} AND slack_user_id = ${slackUserId} AND decided_at IS NULL
+     WHERE org_id = ${orgId} AND slack_user_id = ${slackUserId} AND channel_id = ${channelId}
+       AND prompt_kind = 'clarification' AND decided_at IS NULL
      ORDER BY created_at DESC LIMIT 5
   `.catch(() => [])
 }
 
-/** Mark every prompt for a decided gate as decided, and rewrite the message. */
+/**
+ * Mark every prompt for a decided gate as decided, and best-effort rewrite the
+ * posted message. The DB row is committed before the Slack network calls, and
+ * those calls are never awaited, so a surface that resolves a gate (in-app
+ * answer, programmatic answer) never waits on Slack availability.
+ */
 export async function markSlackGatePromptsDecided(gateId: string, text: string): Promise<void> {
   try {
     const prompts = await getDb()<SlackGatePrompt[]>`
       SELECT ${getDb().unsafe(COLS)} FROM slack_gate_prompts WHERE gate_id = ${gateId} AND decided_at IS NULL
     `
     if (prompts.length === 0) return
-    const { updateSlackMessage } = await import('./slack')
-    for (const prompt of prompts) {
-      await updateSlackMessage({
+    await getDb()`UPDATE slack_gate_prompts SET decided_at = now() WHERE gate_id = ${gateId} AND decided_at IS NULL`
+    void import('./slack')
+      .then(({ updateSlackMessage }) => Promise.allSettled(prompts.map((prompt) => updateSlackMessage({
         orgId: prompt.orgId,
         channel: prompt.channelId,
         ts: prompt.messageTs,
         text,
         blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }],
-      }).catch(() => false)
-    }
-    await getDb()`UPDATE slack_gate_prompts SET decided_at = now() WHERE gate_id = ${gateId} AND decided_at IS NULL`
+      }))))
+      .catch(() => undefined)
   } catch (error) {
     promptLog.warn('could not mark Slack gate prompts decided', { gateId, error: error instanceof Error ? error.message : String(error) })
   }

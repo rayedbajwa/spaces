@@ -40,6 +40,9 @@ type SlackResponse = { ok: boolean; error?: string; needed?: string } & Record<s
  */
 const FORM_METHODS = new Set(['users.lookupByEmail', 'conversations.list'])
 
+/** Slack Web API calls must never hang a request; give every call a hard ceiling. */
+const SLACK_API_TIMEOUT_MS = 5_000
+
 async function slackApi<T extends SlackResponse>(token: string, method: string, body: Record<string, unknown>): Promise<T> {
   const form = FORM_METHODS.has(method)
   const response = await fetch(`https://slack.com/api/${method}`, {
@@ -49,6 +52,7 @@ async function slackApi<T extends SlackResponse>(token: string, method: string, 
       'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8',
     },
     body: form ? new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(body),
+    signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
   })
   const data = (await response.json().catch(() => ({ ok: false, error: `http_${response.status}` }))) as T
   if (!data.ok) throw new SlackApiError(method, data.error ?? 'unknown_error', data.needed)
