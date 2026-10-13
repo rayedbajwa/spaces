@@ -48,6 +48,7 @@
     "supervisor": "bun run src/supervisor.ts",
     "standalone": "bun run src/standalone.ts",
     "setup:browsers": "bun run scripts/setup-browsers.ts",
+    "phoenix:provision": "bun run scripts/provision-phoenix.ts",
     "e2e": "bun run scripts/e2e-pipelines.ts",
     "dev": "bun --hot src/server.ts",
     "help": "bun run src/cli.ts --help",
