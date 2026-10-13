@@ -170,7 +170,7 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
         </div>
       </nav>
 
-      {signedIn && me?.user && <AccountBlock user={me.user} onSignOut={signOut} onTeam={active ? () => go(`/teams/${encodeURIComponent(active.slug)}`) : undefined} onWaitlist={me.siteAdmin ? () => go(orgPath('waitlist')) : undefined} />}
+      {signedIn && me?.user && <AccountBlock user={me.user} onSignOut={signOut} onTeam={active ? () => go(`/teams/${encodeURIComponent(active.slug)}`) : undefined} onWaitlist={me.siteAdmin ? () => go(orgPath('waitlist')) : undefined} onWorkers={me.siteAdmin ? () => go(orgPath('workers')) : undefined} />}
     </aside>
   )
 }
@@ -252,7 +252,7 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
   )
 }
 
-function AccountBlock({ user, onSignOut, onTeam, onWaitlist }: { user: { name: string; email: string; avatarUrl?: string | null }; onSignOut: () => Promise<void>; onTeam?: () => void; onWaitlist?: () => void }) {
+function AccountBlock({ user, onSignOut, onTeam, onWaitlist, onWorkers }: { user: { name: string; email: string; avatarUrl?: string | null }; onSignOut: () => Promise<void>; onTeam?: () => void; onWaitlist?: () => void; onWorkers?: () => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useDismiss(open, () => setOpen(false), ref)
@@ -279,6 +279,12 @@ function AccountBlock({ user, onSignOut, onTeam, onWaitlist }: { user: { name: s
             <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); onWaitlist() }}>
               <span className="menu-row-icon" aria-hidden="true">{I.users}</span>
               <span className="menu-row-main"><span className="menu-row-title">Waitlist</span><span className="menu-row-sub">Super admin: who asked for access</span></span>
+            </button>
+          )}
+          {onWorkers && (
+            <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); onWorkers() }}>
+              <span className="menu-row-icon" aria-hidden="true">{I.cpu}</span>
+              <span className="menu-row-main"><span className="menu-row-title">Project workers</span><span className="menu-row-sub">Super admin: a worker service per project</span></span>
             </button>
           )}
           <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); void onSignOut() }}>

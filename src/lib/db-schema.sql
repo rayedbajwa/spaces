@@ -1455,3 +1455,9 @@ CREATE TABLE IF NOT EXISTS project_workers (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Tables created before workers could run off Railway (phase 1) gain the platform columns.
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS platform TEXT;
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS service_ref TEXT;
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS volume_ref TEXT;
+-- What a new project's worker runs once it is up (the wizard's model and first feature).
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS bootstrap_json JSONB;

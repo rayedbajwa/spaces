@@ -69,3 +69,4 @@ nav:
   - Operations:
       - Running & troubleshooting: operations/troubleshooting.md
       - Deploying to the cloud: operations/cloud-deployment.md
+      - Project workers (Railway, Kubernetes, Docker): operations/project-workers.md

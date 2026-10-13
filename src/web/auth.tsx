@@ -52,7 +52,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
     try {
       const s = await json<AuthStatus>('/api/auth/status')
       setStatus(s)
-      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel, modelsReady: s.modelsReady }); setSignedOut(false); return }
+      if (!s.authEnabled) { setMe({ authEnabled: false, user: null, teams: [], activeTeam: null, defaultModel: s.defaultModel, modelsReady: s.modelsReady, siteAdmin: true }); setSignedOut(false); return }
       const m = await json<Me>('/api/me')
       setMe(m)
       setSignedOut(false)

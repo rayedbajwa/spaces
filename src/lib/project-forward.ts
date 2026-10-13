@@ -16,6 +16,7 @@
 import { getDb } from './db'
 import { log } from './logger'
 import { INTERNAL_TOKEN_HEADER, internalToken } from './role'
+import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
 
 const forwardLog = log.child({ mod: 'project-forward' })
 
@@ -109,7 +110,7 @@ export interface ForwardOptions {
 
 const DEFAULT_WAKE_TIMEOUT_MS = 30_000
 
-function unavailable(code: 'worker_unavailable' | 'worker_waking', message: string): Response {
+function unavailable(code: 'worker_unavailable' | 'worker_waking' | 'worker_provisioning', message: string): Response {
   return new Response(JSON.stringify({ error: message, code }), { status: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5' } })
 }
 
@@ -121,7 +122,17 @@ function unavailable(code: 'worker_unavailable' | 'worker_waking', message: stri
 export async function forwardToProject(req: Request, projectId: string, body: ArrayBuffer | undefined, options: ForwardOptions = {}): Promise<Response> {
   const base = await workerBaseUrl(projectId)
   const token = internalToken()
-  if (!base || !token) return unavailable('worker_unavailable', 'This project has no worker yet.')
+  if (!token) return unavailable('worker_unavailable', 'Project workers are not configured (SPACES_INTERNAL_TOKEN).')
+  if (!base) {
+    // First use of a project that has no worker yet: create it, and say so.
+    if (workerPlatform()) {
+      const worker = await getProjectWorker(projectId)
+      if (worker?.state === 'failed' && worker.lastError) return unavailable('worker_unavailable', `This project's worker could not be created: ${worker.lastError}`)
+      void provisionProjectWorker(projectId).catch(() => undefined)
+      return unavailable('worker_provisioning', "This project's worker is being set up. It takes a few minutes the first time.")
+    }
+    return unavailable('worker_unavailable', 'This project has no worker yet.')
+  }
   const url = new URL(req.url)
   const target = `${base}${url.pathname}${url.search}`
   const headers = new Headers()

@@ -1,0 +1,44 @@
+# Development Postgres (pgvector). In a real cluster point DATABASE_URL in
+# secrets.env at a managed Postgres 16 and drop this file from kustomization.yaml.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: pgvector/pgvector:pg16
+          env:
+            - { name: POSTGRES_USER, value: aidlc }
+            - { name: POSTGRES_PASSWORD, value: aidlc }
+            - { name: POSTGRES_DB, value: aidlc }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - { containerPort: 5432, name: postgres }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "aidlc", "-d", "aidlc"] }
+            periodSeconds: 3
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources: { requests: { storage: 2Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector: { app: postgres }
+  ports:
+    - { port: 5432, targetPort: 5432, name: postgres }

@@ -137,6 +137,7 @@ import {
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forwardTarget, forwardToProject, resolveForwardProject } from './lib/project-forward'
+import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
 import { publicOrigin } from './lib/public-url'
 import {
   convertIntakeItem,
@@ -279,6 +280,18 @@ void (async () => {
 })().catch((error) => serverLog.warn('intent import failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
 // must not look like they are still running.
+// A new project's worker runs the wizard's bootstrap (governing workspace and
+// onboarding) once, the first time it starts.
+if (isProjectRole()) {
+  void (async () => {
+    const projectId = workerProjectId()!
+    const bootstrap = await takeWorkerBootstrap(projectId)
+    if (!bootstrap) return
+    const project = await projGet(projectId)
+    if (project) await bootstrapProjectWorkspace(project, bootstrap)
+    serverLog.info('project worker bootstrapped', { projectId })
+  })().catch((error) => serverLog.warn('project worker bootstrap failed', { error: error instanceof Error ? error.message : String(error) }))
+}
 if (!isProjectRole()) void recoverInterruptedImports().then((n) => { if (n > 0) serverLog.warn('marked interrupted knowledge imports as failed', { count: n }) }).catch(() => undefined)
 // Keep the GitHub repository catalog fresh (on boot when connected, then every 6h).
 {
@@ -300,6 +313,8 @@ ignoreShutdownDbErrors((reason) => serverLog.error('unhandled rejection', reason
 
 const server = Bun.serve({
   port,
+  // A project worker is reached over Railway's private network: HOST=:: listens on IPv6 too.
+  ...(process.env.HOST?.trim() ? { hostname: process.env.HOST.trim() } : {}),
   idleTimeout: 0,
   async fetch(req) {
     try {
@@ -526,7 +541,7 @@ async function route(req: Request): Promise<Response> {
     const meOrg = await orgIdOf()
     const modelsReady = (await configuredProvidersFor(meOrg)).length > 0
     const organization = await getOrganization(meOrg).catch(() => undefined)
-    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady })
+    if (!auth) return sendJson(200, { authEnabled: false, user: null, teams: [], activeTeam: null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady, siteAdmin: await isSiteAdmin() })
     return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady, siteAdmin: await isSiteAdmin() })
   }
 
@@ -545,6 +560,37 @@ async function route(req: Request): Promise<Response> {
     const entryPath = /^\/api\/admin\/waitlist\/([^/]+)$/.exec(url.pathname)
     if (method === 'DELETE' && entryPath) {
       return (await removeFromWaitlist(decodeURIComponent(entryPath[1]!))) ? sendJson(200, { ok: true }) : sendJson(404, { error: 'Not on the waitlist.' })
+    }
+    return sendJson(404, { error: 'Not found.' })
+  }
+
+  // ---- Project workers (specs/014-project-workers; the deployment's super admin) ----
+  if (url.pathname === '/api/admin/workers' || url.pathname.startsWith('/api/admin/workers/')) {
+    if (!(await isSiteAdmin())) return sendJson(403, { error: "Only the deployment's super admin manages project workers." })
+    if (method === 'GET' && url.pathname === '/api/admin/workers') {
+      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers() })
+    }
+    if (method === 'POST' && url.pathname === '/api/admin/workers/check') {
+      const body = await readJson<{ probe?: boolean }>(req).catch(() => ({} as { probe?: boolean }))
+      const result = await checkProvisioner({ probe: body.probe === true })
+      serverLog.info('provisioner check', { by: auth?.user.email, probe: body.probe === true, canRead: result.canRead, canCreate: result.canCreate })
+      return sendJson(200, result)
+    }
+    const provisionPath = /^\/api\/admin\/workers\/([0-9a-f-]{36})\/provision$/.exec(url.pathname)
+    if (method === 'POST' && provisionPath) {
+      if (!workerPlatform()) return sendJson(409, { error: workerPlatformProblem() ?? 'Project workers are not set up.' })
+      try {
+        return sendJson(200, await provisionProjectWorker(provisionPath[1]!))
+      } catch (error) {
+        return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    const workerPath = /^\/api\/admin\/workers\/([0-9a-f-]{36})$/.exec(url.pathname)
+    if (method === 'DELETE' && workerPath) {
+      const worker = await getProjectWorker(workerPath[1]!)
+      if (!worker) return sendJson(404, { error: 'This project has no worker.' })
+      await removeProjectWorker(worker)
+      return sendJson(200, { ok: true })
     }
     return sendJson(404, { error: 'Not found.' })
   }
@@ -921,7 +967,15 @@ async function route(req: Request): Promise<Response> {
       if (target.kind === 'run-create' && body) { try { parsed = JSON.parse(new TextDecoder().decode(body)) } catch { parsed = undefined } }
       const projectId = await resolveForwardProject(target, parsed)
       if (!projectId) return sendJson(404, { error: target.kind === 'run' ? 'Run not found.' : 'Project not found.' })
-      return forwardToProject(req, projectId, body)
+      // Deleting a project deletes its row (and the worker record with it) on the
+      // worker: keep the Railway ids to remove the service and volume afterwards.
+      const deleting = method === 'DELETE' && target.kind === 'project' && /^\/api\/projects\/[^/]+$/.test(url.pathname)
+      const worker = deleting ? await getProjectWorker(projectId) : undefined
+      const response = await forwardToProject(req, projectId, body)
+      if (deleting && worker && response.ok) {
+        void removeProjectWorker(worker).catch((error) => serverLog.warn('removing the project worker failed', { projectId, error: error instanceof Error ? error.message : String(error) }))
+      }
+      return response
     }
   }
 
@@ -978,6 +1032,13 @@ async function route(req: Request): Promise<Response> {
     const onboardingInput = { model: body.model?.trim() || await defaultModel(await orgIdOf()), feature: body.feature?.trim() || undefined }
     // The web role has no disk: the project's worker makes the governing
     // workspace and runs onboarding next to it.
+    if (isWebRole() && workerPlatform()) {
+      // The worker does not exist yet: it runs this bootstrap once it is up.
+      await recordWorkerBootstrap(project.projectId, onboardingInput)
+      void provisionProjectWorker(project.projectId).catch(() => undefined)
+      const detail = await projGetDetail(project.projectId)
+      return sendJson(201, { ...detail, onboarding: getOnboardingSnapshot(project.projectId), worker: 'provisioning' })
+    }
     if (isWebRole()) {
       const started = await callProjectWorker<{ onboarding: ReturnType<typeof getOnboardingSnapshot> }>(project.projectId, '/internal/bootstrap', { method: 'POST', body: onboardingInput, timeoutMs: 15_000, wakeTimeoutMs: 60_000 })
       if (!started) serverLog.warn('project worker did not take onboarding', { slug: project.slug })

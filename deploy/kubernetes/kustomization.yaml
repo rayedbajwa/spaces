@@ -1,0 +1,20 @@
+# Spaces on Kubernetes with a worker per project (specs/014-project-workers).
+# minikube walkthrough: docs/operations/project-workers.md
+#
+#   cp deploy/kubernetes/secrets.env.example deploy/kubernetes/secrets.env   # then edit
+#   kubectl apply -k deploy/kubernetes
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: spaces
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - postgres.yaml
+  - web.yaml
+secretGenerator:
+  - name: spaces-secrets
+    envs:
+      - secrets.env
+generatorOptions:
+  # Project workers reference the Secret by this exact name (PROJECT_WORKER_SECRET).
+  disableNameSuffixHash: true

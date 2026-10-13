@@ -13,6 +13,23 @@ if [ "$(id -u)" = "0" ]; then
   # chown over many cloned repositories would slow every restart.
   chown bun:bun "$DATA_DIR" "$DATA_DIR/home" "$DATA_DIR/aidlc" "$DATA_DIR/aidlc/workspaces" 2>/dev/null || true
   find "$DATA_DIR" -maxdepth 2 ! -user bun -exec chown bun:bun {} + 2>/dev/null || true
+  # Project workers on the local Docker engine (PROJECT_WORKER_PLATFORM=docker):
+  # the web service drives the mounted Docker socket. bun joins the socket's
+  # group when that group may write to it (Linux hosts); Docker Desktop's
+  # socket is root-only, so there the web service keeps running as root.
+  # Local development only: the socket is root on the host either way.
+  SOCK="${DOCKER_SOCKET:-/var/run/docker.sock}"
+  if [ "${PROJECT_WORKER_PLATFORM:-}" = "docker" ] && [ -S "$SOCK" ]; then
+    if [ "$(stat -c %a "$SOCK" | cut -c2)" -ge 6 ] && [ "$(stat -c %g "$SOCK")" != "0" ]; then
+      SOCK_GID="$(stat -c %g "$SOCK")"
+      SOCK_GROUP="$(getent group "$SOCK_GID" | cut -d: -f1)"
+      if [ -z "$SOCK_GROUP" ]; then SOCK_GROUP=dockerhost; groupadd -g "$SOCK_GID" "$SOCK_GROUP"; fi
+      usermod -aG "$SOCK_GROUP" bun
+    else
+      echo "docker-entrypoint: the Docker socket is not writable by a group; running as root to manage project workers" >&2
+      exec "$@"
+    fi
+  fi
   exec gosu bun "$@"
 fi
 exec "$@"

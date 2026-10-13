@@ -52,3 +52,6 @@ site/
 
 # Browser test screenshots
 /test-results/
+
+# Kubernetes secrets for deploy/kubernetes (see secrets.env.example)
+deploy/kubernetes/secrets.env

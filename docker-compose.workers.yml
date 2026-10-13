@@ -1,0 +1,74 @@
+# A worker per project on the local Docker engine (specs/014-project-workers).
+#
+# The web service has no workspace disk. When a project is created (or first
+# used) it starts that project's worker as its own container, `spaces-proj-<code>`,
+# with its own volume, on the `spaces-workers` network — the same layout as on
+# Railway and Kubernetes, so engineers can test it on one machine.
+#
+#   docker compose -f docker-compose.workers.yml up --build
+#   open http://localhost:3000      # add an LLM key under Organization → Models
+#
+# Workers are created by the web service, not by compose: `docker ps` shows them,
+# and `docker compose -f docker-compose.workers.yml down` leaves them running.
+# Remove them from the account menu → Project workers, or with
+#   docker rm -f $(docker ps -aq --filter label=spaces.dev/role=project-worker)
+#
+# The web container drives the Docker socket. That is root on this machine:
+# use this for local development only.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aidlc
+      POSTGRES_PASSWORD: aidlc
+      POSTGRES_DB: aidlc
+    volumes:
+      - workers-pgdata:/var/lib/postgresql/data
+    networks: [workers]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aidlc -d aidlc"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: .
+    # Project workers run this same image.
+    image: spaces:local
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPACES_ROLE: web
+      SPACES_INTERNAL_TOKEN: "${SPACES_INTERNAL_TOKEN:-local-dev-internal-token-change-me}"
+      DATABASE_URL: postgres://aidlc:aidlc@postgres:5432/aidlc
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-local-dev-encryption-key-change-me-please}"
+      PUBLIC_URL: "${PUBLIC_URL:-http://localhost:3000}"
+      PORT: 3000
+      PROJECT_WORKER_PLATFORM: docker
+      PROJECT_WORKER_IMAGE: spaces:local
+      PROJECT_WORKER_DOCKER_NETWORK: spaces-workers
+      # Engineers' machines rarely spare 2 vCPU / 2 GB per project.
+      PROJECT_WORKER_VCPUS: "${PROJECT_WORKER_VCPUS:-1}"
+      PROJECT_WORKER_MEMORY_GB: "${PROJECT_WORKER_MEMORY_GB:-2}"
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [workers]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+networks:
+  workers:
+    # A fixed name: the web service attaches each project's worker to it.
+    name: spaces-workers
+
+volumes:
+  workers-pgdata:
