@@ -164,7 +164,7 @@ Docs match the shipped routes, event catalog and Slack manifest; CI wiring lists
 - [x] T063 Open the pull request for the `spaces` changes (feature documents synced in) against `main`
 - [x] T064 Get CI green and review approval on the `spaces` pull request
 - [x] T065 Merge the `spaces` pull request to `main`
-- [ ] T066 Confirm the deployment pipeline ran for the merged `spaces` change
+- [x] T066 Confirm the deployment pipeline ran for the merged `spaces` change
 - [ ] T067 Run the `test-plan.md` UAT and final acceptance checks against the deployed `spaces` environment
 
 **Scoped files**
