@@ -16,6 +16,7 @@
 import { getDb } from './db'
 import { log } from './logger'
 import { callProjectWorker } from './project-forward'
+import { isWebRole } from './role'
 import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
 
 const wakeLog = log.child({ mod: 'worker-wake' })
@@ -43,6 +44,7 @@ export async function projectsWaitingForWorker(): Promise<string[]> {
   const rows = await getDb()<Array<{ projectId: string }>>`
     SELECT DISTINCT j.project_id AS "projectId"
       FROM project_jobs j JOIN projects p ON p.project_id = j.project_id
+      JOIN project_workers pw ON pw.project_id = j.project_id AND pw.active AND pw.migration_state IS DISTINCT FROM 'syncing'
      WHERE j.status = 'queued' AND p.paused_at IS NULL AND p.archived_at IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM workers w
@@ -57,6 +59,8 @@ export interface WakeDeps {
   provision: (projectId: string) => Promise<unknown>
   wake: (projectId: string) => Promise<boolean>
   hasPlatform: () => boolean
+  /** Create workers for projects without one (the web role); otherwise wake only moved projects' workers. */
+  provisionMissing: () => boolean
   capHit: (projectId: string, awake: number, cap: number) => Promise<void>
   cap: () => number
 }
@@ -69,6 +73,7 @@ const defaultDeps: WakeDeps = {
   provision: (projectId) => provisionProjectWorker(projectId),
   wake: async (projectId) => Boolean(await callProjectWorker<{ ok: boolean }>(projectId, '/internal/wake', { method: 'POST', body: {}, timeoutMs: 10_000, wakeTimeoutMs: 60_000 })),
   hasPlatform: () => Boolean(workerPlatform()),
+  provisionMissing: () => isWebRole(),
   capHit: recordCapHit,
   cap: () => maxAwakeWorkers(),
 }
@@ -93,6 +98,9 @@ async function doWake(projectId: string, deps: WakeDeps): Promise<WakeOutcome> {
     return 'at_cap'
   }
   const worker = await deps.getWorker(projectId)
+  // Outside the web role only projects already moved to their own worker are woken.
+  if (!deps.provisionMissing() && (!worker || !worker.active)) return 'unavailable'
+  if (worker && !worker.active) return 'unavailable'
   if (!worker || worker.state === 'pending' || worker.state === 'failed') {
     if (!deps.hasPlatform()) return 'unavailable'
     // A worker that never finished provisioning is retried; its bootstrap starts the work.

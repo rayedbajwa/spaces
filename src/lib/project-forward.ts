@@ -15,7 +15,7 @@
 
 import { getDb } from './db'
 import { log } from './logger'
-import { INTERNAL_TOKEN_HEADER, internalToken } from './role'
+import { INTERNAL_TOKEN_HEADER, internalToken, isWebRole } from './role'
 import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
 
 const forwardLog = log.child({ mod: 'project-forward' })
@@ -199,4 +199,25 @@ export async function callProjectWorker<T>(projectId: string, path: string, init
     await sleep(delay)
     delay = Math.min(delay * 2, 4_000)
   }
+}
+
+const activeCache = new Map<string, { at: number; active: boolean }>()
+
+/**
+ * Whether a project's work runs on its own worker: always in the web role; in
+ * the shared (`all`) role only for projects already moved to one (phase 5).
+ */
+export async function isRemoteProject(projectId: string): Promise<boolean> {
+  if (isWebRole()) return true
+  const cached = activeCache.get(projectId)
+  if (cached && Date.now() - cached.at < 10_000) return cached.active
+  const [row] = await getDb()<Array<{ active: boolean }>>`SELECT active FROM project_workers WHERE project_id = ${projectId} AND active AND internal_url IS NOT NULL`
+  const active = Boolean(row?.active)
+  activeCache.set(projectId, { at: Date.now(), active })
+  return active
+}
+
+/** Forget cached answers (a project was just moved). */
+export function forgetRemoteProject(projectId: string): void {
+  activeCache.delete(projectId)
 }

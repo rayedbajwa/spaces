@@ -211,9 +211,12 @@ const ADVISORY_LOCK_NS = 8140
  * used by per-project workers spawned by the supervisor; a general worker
  * passes nothing and serves every project.
  */
-export async function claimNextJob(workerId: string, projectId?: string): Promise<JobRow | undefined> {
+export async function claimNextJob(workerId: string, projectId?: string, scope: 'shared' | 'dedicated' = 'shared'): Promise<JobRow | undefined> {
   const sql = getDb()
   const projectFilter = projectId ?? null
+  // specs/014-project-workers: a project with an active worker of its own is
+  // served only there, and a project being moved is held by both sides.
+  const dedicated = scope === 'dedicated'
 
   const result = await sql.begin(async (tx) => {
     // Phase 1: pick a candidate job that's currently under the concurrency
@@ -235,6 +238,10 @@ export async function claimNextJob(workerId: string, projectId?: string): Promis
          AND p.paused_at IS NULL
          AND (${projectFilter}::uuid IS NULL OR j.project_id = ${projectFilter}::uuid)
          AND inflight.in_flight < COALESCE(o.max_concurrent, 1)
+         AND (CASE WHEN ${dedicated}::boolean
+               THEN EXISTS (SELECT 1 FROM project_workers pw WHERE pw.project_id = j.project_id AND pw.active AND pw.migration_state IS DISTINCT FROM 'syncing')
+               ELSE NOT EXISTS (SELECT 1 FROM project_workers pw WHERE pw.project_id = j.project_id AND (pw.active OR pw.migration_state = 'syncing'))
+             END)
        ORDER BY j.priority DESC, j.created_at ASC
        FOR UPDATE OF j SKIP LOCKED
        LIMIT 1
