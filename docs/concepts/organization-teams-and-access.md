@@ -61,8 +61,10 @@ top of the sidebar.
 - After the first account, **registration is by invitation** unless
   `OPEN_REGISTRATION=1`.
 - While registration is by invitation, the landing page offers a **waitlist**
-  instead of sign-up. Owners and admins of the default organization see it under
-  **Organization → Waitlist** (and in the sidebar). **Invite** makes a join link
+  instead of sign-up. Only the deployment's super admin sees it, from the
+  account menu (**Waitlist**). The super admin is anyone listed in
+  `SUPERADMIN_EMAILS`, or the first registered account when that is unset;
+  organization owners and admins are not. **Invite** makes a join link
   for that email, valid for 14 days, which they send themselves; registering
   through it starts the person's own organization. With Slack connected to the
   default organization, each signup is posted to `#spaces-waitlist` (name,

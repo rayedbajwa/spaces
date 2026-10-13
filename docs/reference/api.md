@@ -18,7 +18,7 @@ All `/api/*` routes except the ones marked public require a session cookie
 | `GET /api/invites/:token` | public: invite preview (team, role, email) |
 | `POST /api/waitlist` | public: `{ email, name?, company?, teamSize? }` joins the waitlist; the same `{ ok: true }` whether or not the email was already on it; 5 signups per IP per 10 minutes |
 | `GET /api/waitlist/join/:token` | public: join-link preview (email, name, company) |
-| `GET /api/admin/waitlist` · `POST /api/admin/waitlist/:id/invite` · `DELETE /api/admin/waitlist/:id` | owners and admins of the default organization: list, issue a join link (`{ link }`), remove |
+| `GET /api/admin/waitlist` · `POST /api/admin/waitlist/:id/invite` · `DELETE /api/admin/waitlist/:id` | the super admin (`SUPERADMIN_EMAILS`, else the first account): list, issue a join link (`{ link }`), remove |
 | `POST /api/invites/:token/accept` | Join the team the invite is for (email must match) |
 | `GET /api/me` · `POST /api/me/team` | Current user, teams, active team and the active `organization` / switch active team `{ teamId }` |
 | `GET /api/teams` · `POST /api/teams` | My teams / create a team in the caller's organization (creator becomes owner) |

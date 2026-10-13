@@ -137,7 +137,6 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
       ...(active ? [{ id: 'people', label: 'People', icon: I.users, path: `/teams/${encodeURIComponent(active.slug)}`, match: (l: { pathname: string }) => l.pathname.startsWith('/teams/'), hint: active.name } as NavItem] : []),
       { id: 'organization', label: 'Organization', icon: I.building, path: '/organization', match: () => onOrg('overview') || onOrg('teams') },
       { id: 'promotions', label: 'Promotions', icon: I.megaphone, path: orgPath('promotions'), match: () => onOrg('promotions'), count: promotionsPending },
-      ...(me?.siteAdmin ? [{ id: 'waitlist', label: 'Waitlist', icon: I.users, path: orgPath('waitlist'), match: () => onOrg('waitlist') } as NavItem] : []),
     ],
   ]
 
@@ -171,7 +170,7 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
         </div>
       </nav>
 
-      {signedIn && me?.user && <AccountBlock user={me.user} onSignOut={signOut} onTeam={active ? () => go(`/teams/${encodeURIComponent(active.slug)}`) : undefined} />}
+      {signedIn && me?.user && <AccountBlock user={me.user} onSignOut={signOut} onTeam={active ? () => go(`/teams/${encodeURIComponent(active.slug)}`) : undefined} onWaitlist={me.siteAdmin ? () => go(orgPath('waitlist')) : undefined} />}
     </aside>
   )
 }
@@ -253,7 +252,7 @@ function ArchivedNav({ count, load, onOpen }: { count: number; load: () => Promi
   )
 }
 
-function AccountBlock({ user, onSignOut, onTeam }: { user: { name: string; email: string; avatarUrl?: string | null }; onSignOut: () => Promise<void>; onTeam?: () => void }) {
+function AccountBlock({ user, onSignOut, onTeam, onWaitlist }: { user: { name: string; email: string; avatarUrl?: string | null }; onSignOut: () => Promise<void>; onTeam?: () => void; onWaitlist?: () => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   useDismiss(open, () => setOpen(false), ref)
@@ -274,6 +273,12 @@ function AccountBlock({ user, onSignOut, onTeam }: { user: { name: string; email
             <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); onTeam() }}>
               <span className="menu-row-icon" aria-hidden="true">{I.users}</span>
               <span className="menu-row-main"><span className="menu-row-title">Team settings</span><span className="menu-row-sub">Members, invites, defaults</span></span>
+            </button>
+          )}
+          {onWaitlist && (
+            <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); onWaitlist() }}>
+              <span className="menu-row-icon" aria-hidden="true">{I.users}</span>
+              <span className="menu-row-main"><span className="menu-row-title">Waitlist</span><span className="menu-row-sub">Super admin: who asked for access</span></span>
             </button>
           )}
           <button type="button" className="menu-row" role="menuitem" onClick={() => { setOpen(false); void onSignOut() }}>
