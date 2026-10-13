@@ -67,10 +67,14 @@ project sets its own.
 
 Every agent session can be traced to [Arize Phoenix](https://arize.com/phoenix/):
 pipeline stages, tasks, workstreams, sub-agents, development setup and the
-project assistant. Each prompt is an agent span with a child span per model
-response (model, tokens, cost, output) and per tool call (arguments, result,
-errors). Spans carry the organization, project and stage, and the run is the
-Phoenix session, so one run's agents read as one conversation. Text is masked
+project assistant. Each agent turn is one trace: an agent span (the turn's
+input and answer) with a child span for the model response (model, tokens,
+cost, output) and one per tool call (arguments, result, errors), named like
+`stage · implement · turn 12`. Turns are sent as they finish, so traces appear
+while a stage runs; a turn cut off by a restart is sent marked interrupted.
+Spans carry the organization, project, stage, prompt and turn, and the run is
+the Phoenix session, so one run's turns read as one conversation (Sessions
+tab). Text is masked
 by the organization's data guardrails, secrets are always redacted, and long
 text is cut to 16,000 characters.
 

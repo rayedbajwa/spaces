@@ -2,11 +2,11 @@
  * Agent traces for Arize Phoenix (OpenInference over OTLP).
  *
  * Every agent session — a pipeline stage, a task or workstream run, a
- * sub-agent, the project assistant — is traced from its Pi events: an AGENT
- * span per prompt, an LLM span per model response (model, provider, tokens,
- * cost, output) and a TOOL span per tool call. Spans carry the organization,
- * project, run and stage so Phoenix can be filtered by them, and the run is the
- * Phoenix session.
+ * sub-agent, the project assistant — is traced from its Pi events: a trace per
+ * agent turn, its root an AGENT span with an LLM span (model, provider,
+ * tokens, cost, output) and a TOOL span per tool call underneath. Spans carry
+ * the organization, project, run and stage so Phoenix can be filtered by them,
+ * and the run is the Phoenix session that groups its turns.
  *
  * Off unless PHOENIX_COLLECTOR_ENDPOINT is set (e.g.
  * http://phoenix.railway.internal:6006). Text sent to Phoenix goes through the
@@ -15,6 +15,7 @@
  * bounded size. Tracing never throws into an agent.
  */
 
+import { randomUUID } from 'node:crypto'
 import { context, SpanStatusCode, trace, type Span, type Tracer } from '@opentelemetry/api'
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-proto'
 import { resourceFromAttributes } from '@opentelemetry/resources'
@@ -75,7 +76,9 @@ function getTracer(): Tracer | undefined {
 }
 
 /** Send what is buffered (on shutdown, so the last spans of a stage are not lost). */
-export async function flushTracing(): Promise<void> {
+export async function flushTracing(reason = 'interrupted: the process stopped'): Promise<void> {
+  // A turn cut off by the shutdown is sent as failed rather than lost.
+  for (const close of openSessions) { try { close(reason) } catch { /* tracing never throws */ } }
   await provider?.forceFlush().catch(() => undefined)
 }
 
@@ -110,9 +113,21 @@ interface AssistantLike {
 
 type Subscribable = { subscribe: (listener: (event: { type: string } & Record<string, unknown>) => void) => unknown }
 
+/** Sessions with a turn open, ended (as interrupted) before a flush on shutdown. */
+const openSessions = new Set<(reason: string) => void>()
+
 /**
  * Trace one agent session. Returns nothing and never throws: a tracing fault
  * is logged once and the session carries on untraced.
+ *
+ * Each agent turn (one model response and the tool calls it makes) is its own
+ * trace: a root AGENT span with the LLM span and TOOL spans as its children.
+ * A stage runs for many minutes and a span is only sent when it ends, so one
+ * span over the whole stage left every child without its parent (no trace in
+ * Phoenix) until the stage finished, and for ever when a worker restarted.
+ * Turns end within seconds, so traces appear while the agent works. The run
+ * is the Phoenix session that groups them (a session without a run gets its
+ * own id), and each turn carries its stage, prompt and turn number.
  */
 export function traceAgentSession(session: Subscribable, ctx: TraceContext): void {
   const t = getTracer()
@@ -121,42 +136,76 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
   // The organization's masking, and secrets always (even with guardrails off or warning).
   const scrub = (text: string) => redactSecretValues(maskOutput(text, policy))
   const safe = (value: unknown) => clip(scrub(textOf(value)))
-  let agentSpan: Span | undefined
+  const sessionId = ctx.runId || `${ctx.kind}-${randomUUID()}`
+  let turnSpan: Span | undefined
   let llmSpan: Span | undefined
   let lastInput = ''
+  let prompt = 0
+  let turn = 0
   const tools = new Map<string, Span>()
   let failed = false
 
+  const common = () => {
+    const stage = ctx.stage?.()
+    return {
+      [SC.SESSION_ID]: sessionId,
+      [SC.METADATA]: JSON.stringify({ kind: ctx.kind, orgId: ctx.orgId ?? undefined, projectId: ctx.projectId ?? undefined, runId: ctx.runId ?? undefined, stage, prompt, turn }),
+      [SC.TAG_TAGS]: JSON.stringify([ctx.kind, stage].filter(Boolean)),
+    }
+  }
+  const openTurn = () => {
+    turn++
+    const stage = ctx.stage?.()
+    openSessions.add(closer)
+    turnSpan = t.startSpan(`${ctx.kind}${stage ? ` · ${stage}` : ''} · turn ${turn}`, {
+      root: true,
+      attributes: { [SC.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.AGENT, ...common(), ...(lastInput ? { [SC.INPUT_VALUE]: lastInput } : {}) },
+    })
+    return turnSpan
+  }
   const child = (name: string, kind: OpenInferenceSpanKind, attributes: Record<string, string | number>) => {
-    const parent = agentSpan ? trace.setSpan(context.active(), agentSpan) : context.active()
+    const parent = trace.setSpan(context.active(), turnSpan ?? openTurn())
     return t.startSpan(name, { attributes: { [SC.OPENINFERENCE_SPAN_KIND]: kind, ...common(), ...attributes } }, parent)
   }
-  const common = () => {
-    const attrs: Record<string, string> = {}
-    if (ctx.runId) attrs[SC.SESSION_ID] = ctx.runId
-    attrs[SC.METADATA] = JSON.stringify({ kind: ctx.kind, orgId: ctx.orgId ?? undefined, projectId: ctx.projectId ?? undefined, runId: ctx.runId ?? undefined, stage: ctx.stage?.() })
-    return attrs
+  /** End whatever is open: children first, then the turn. */
+  const closeTurn = (interrupted?: string) => {
+    for (const span of [llmSpan, ...tools.values()]) {
+      if (!span) continue
+      if (interrupted) span.setStatus({ code: SpanStatusCode.ERROR, message: interrupted })
+      span.end()
+    }
+    llmSpan = undefined
+    tools.clear()
+    if (turnSpan) {
+      if (interrupted) turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: interrupted })
+      turnSpan.end()
+      turnSpan = undefined
+    }
+    openSessions.delete(closer)
   }
+  const closer = (reason: string): void => closeTurn(reason)
 
   try {
     session.subscribe((event) => {
       if (failed) return
       try {
         switch (event.type) {
-          case 'agent_start': {
-            const stage = ctx.stage?.()
-            agentSpan = t.startSpan(`${ctx.kind}${stage ? ` · ${stage}` : ''}`, {
-              attributes: { [SC.OPENINFERENCE_SPAN_KIND]: OpenInferenceSpanKind.AGENT, ...common(), [SC.TAG_TAGS]: JSON.stringify([ctx.kind, stage].filter(Boolean)) },
-            })
+          case 'agent_start':
+            prompt++
+            turn = 0
+            lastInput = ''
             break
-          }
+          case 'turn_start':
+            closeTurn()
+            openTurn()
+            break
           case 'message_start': {
             const message = event.message as AssistantLike
-            if (message?.role === 'user') {
+            if (message?.role === 'user' || message?.role === 'toolResult') {
+              // Tool results are the next turn's input. A prompt arrives just
+              // after its turn has started (Pi's order), so it is that turn's.
               lastInput = safe(message.content)
-              if (agentSpan && lastInput) agentSpan.setAttribute(SC.INPUT_VALUE, lastInput)
-            } else if (message?.role === 'toolResult') {
-              lastInput = safe(message.content)
+              if (message.role === 'user' && turnSpan && lastInput) turnSpan.setAttribute(SC.INPUT_VALUE, lastInput)
             } else if (message?.role === 'assistant') {
               llmSpan?.end()
               llmSpan = child('llm', OpenInferenceSpanKind.LLM, lastInput ? { [SC.INPUT_VALUE]: lastInput } : {})
@@ -184,8 +233,12 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
             const output = safe(message.content)
             if (output) attrs[SC.OUTPUT_VALUE] = output
             span.setAttributes(attrs)
+            // The turn answers with what the model said.
+            if (output) turnSpan?.setAttribute(SC.OUTPUT_VALUE, output)
             if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-              span.setStatus({ code: SpanStatusCode.ERROR, message: clip(scrub(message.errorMessage ?? message.stopReason)) })
+              const failure = clip(scrub(message.errorMessage ?? message.stopReason))
+              span.setStatus({ code: SpanStatusCode.ERROR, message: failure })
+              turnSpan?.setStatus({ code: SpanStatusCode.ERROR, message: failure })
             }
             span.end()
             break
@@ -207,31 +260,21 @@ export function traceAgentSession(session: Subscribable, ctx: TraceContext): voi
             span.end()
             break
           }
-          case 'agent_end': {
-            llmSpan?.end()
-            llmSpan = undefined
-            for (const span of tools.values()) span.end()
-            tools.clear()
-            if (agentSpan) {
-              const messages = (event.messages as AssistantLike[] | undefined) ?? []
-              const final = [...messages].reverse().find((m) => m.role === 'assistant')
-              const output = final ? safe(final.content) : ''
-              if (output) agentSpan.setAttribute(SC.OUTPUT_VALUE, output)
-              if (final?.stopReason === 'error') agentSpan.setStatus({ code: SpanStatusCode.ERROR, message: clip(scrub(final.errorMessage ?? 'error')) })
-              agentSpan.end()
-              agentSpan = undefined
-            }
+          case 'turn_end':
+          case 'agent_end':
+            closeTurn()
             break
-          }
           default:
             break
         }
       } catch (error) {
         failed = true
+        openSessions.delete(closer)
         traceLog.warn('agent tracing stopped for a session', { kind: ctx.kind, error: error instanceof Error ? error.message : String(error) })
       }
     })
   } catch (error) {
+    openSessions.delete(closer)
     traceLog.warn('agent tracing could not attach', { kind: ctx.kind, error: error instanceof Error ? error.message : String(error) })
   }
 }
