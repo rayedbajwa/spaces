@@ -778,7 +778,7 @@ async function drainDispatcher(workerId: string): Promise<void> {
   try {
     // Claim runnable jobs until every slot is busy or nothing is runnable.
     while (inFlightJobs.size < MAX_CONCURRENT_JOBS) {
-      const job = await claimNextJob(workerId, WORKER_PROJECT_ID)
+      const job = await claimNextJob(workerId, WORKER_PROJECT_ID, process.env.SPACES_ROLE?.trim().toLowerCase() === 'project' ? 'dedicated' : 'shared')
       if (!job) return
       const task: Promise<void> = handleProjectJob(job.jobId)
         .catch((err) => workerLog.error('job handler crashed', { jobId: job.jobId }, err instanceof Error ? err : new Error(String(err))))

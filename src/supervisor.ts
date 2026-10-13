@@ -77,6 +77,8 @@ async function projectsWithWork(): Promise<Array<{ projectId: string; slug: stri
        -- An archived project must not hold a worker slot; archiving is how a
        -- stuck project is taken out of the way.
        AND p.archived_at IS NULL
+       -- Projects on a worker of their own (or being moved to one) are not ours.
+       AND NOT EXISTS (SELECT 1 FROM project_workers pw WHERE pw.project_id = p.project_id AND (pw.active OR pw.migration_state = 'syncing'))
      GROUP BY p.project_id, p.slug
      ORDER BY MIN(j.created_at)
   `

@@ -19,6 +19,10 @@ interface WorkerRow {
   version: string | null
   lastError: string | null
   updatedAt: string
+  active: boolean
+  migrationState: string | null
+  migrationJson: { error?: string; files?: number; bytes?: number; direction?: string } | null
+  migrationAt: string | null
 }
 
 interface CheckResult {
@@ -33,7 +37,7 @@ interface CheckResult {
 const STATE_TONE: Record<string, string> = { ready: 'completed', provisioning: 'running', updating: 'running', failed: 'error', sleeping: 'idle', pending: 'idle', removing: 'running' }
 
 export function WorkersSection() {
-  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[]; version: string; awake: string[]; maxAwake: number; waiting: Array<{ projectId: string; name: string; since: string }> } | null>(null)
+  const [data, setData] = useState<{ role: string; platform: string | null; problem: string | null; workers: WorkerRow[]; projects: Array<{ projectId: string; name: string; code: string | null }>; version: string; awake: string[]; maxAwake: number; waiting: Array<{ projectId: string; name: string; since: string }> } | null>(null)
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [busy, setBusy] = useState('')
   const [error, setError] = useState('')
@@ -58,7 +62,32 @@ export function WorkersSection() {
     } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy('') }
   }
 
+  async function move(projectId: string, name: string, action: 'copy' | 'move' | 'move-back') {
+    const question = action === 'copy'
+      ? `Copy ${name}'s files to its own worker and check them? The shared service keeps running the project.`
+      : action === 'move'
+        ? `Move ${name} to its own worker? Its jobs are held while the files are copied again and checked; then the worker runs the project.`
+        : `Move ${name} back to the shared service? Its files are copied back from the worker and checked first.`
+    if (!window.confirm(question)) return
+    setBusy(projectId); setError('')
+    try { await json(`/api/admin/workers/${projectId}/${action}`, { method: 'POST', body: '{}' }); await load() } catch (e) { setError(e instanceof Error ? e.message : String(e)) } finally { setBusy('') }
+  }
+
+  // A move takes minutes: follow it.
+  const moving = data?.workers.some((w) => ['copying', 'syncing', 'moving_back'].includes(w.migrationState ?? ''))
+  useEffect(() => {
+    if (!moving) return
+    const timer = window.setInterval(() => { void load() }, 5_000)
+    return () => window.clearInterval(timer)
+  }, [moving, load])
+
   if (data === null) return error ? <p className="error-text">{error}</p> : <SkeletonRows count={3} label="Loading project workers…" />
+  const workerFor = new Map(data.workers.map((w) => [w.projectId, w]))
+  const describeMove = (w?: WorkerRow) => {
+    if (!w?.migrationState) return w?.active ? 'own worker' : 'shared service'
+    const size = w.migrationJson?.files !== undefined ? ` (${w.migrationJson.files} files, ${Math.round((w.migrationJson.bytes ?? 0) / 1024 / 1024)} MB)` : ''
+    return ({ copying: 'copying…', syncing: 'moving…', moving_back: 'moving back…', verified: `copy checked${size}`, moved: `moved${size}`, failed: 'move failed' } as Record<string, string>)[w.migrationState] ?? w.migrationState
+  }
 
   return (
     <section className="card panel team-section">
@@ -120,6 +149,42 @@ export function WorkersSection() {
             </tbody>
           </table>
         </div>
+      )}
+      {data.role !== 'project' && data.platform && data.projects.length > 0 && (
+        <>
+          <h4 className="workers-subhead">Existing projects</h4>
+          <p className="panel-subtitle">
+            Move projects one at a time. <strong>Copy</strong> is a dry run: it creates the worker and copies and checks the files while the shared service keeps the project.
+            <strong> Move</strong> holds the project's jobs, copies again and hands it to its worker. <strong>Move back</strong> returns it, with the worker's files.
+          </p>
+          <div className="table-wrap">
+            <table className="project-table">
+              <thead><tr><th>Project</th><th>Runs on</th><th /></tr></thead>
+              <tbody>
+                {data.projects.map((project) => {
+                  const worker = workerFor.get(project.projectId)
+                  const inMotion = ['copying', 'syncing', 'moving_back'].includes(worker?.migrationState ?? '')
+                  return (
+                    <tr key={project.projectId}>
+                      <td><strong>{project.name}</strong>{project.code && <div className="text-subtle">{project.code}</div>}</td>
+                      <td>
+                        <span className={`mini-badge ${worker?.active ? 'completed' : worker?.migrationState === 'failed' ? 'error' : inMotion ? 'running' : 'idle'}`}>{describeMove(worker)}</span>
+                        {worker?.migrationState === 'failed' && worker.migrationJson?.error && <div className="error-text">{worker.migrationJson.error}</div>}
+                      </td>
+                      <td>
+                        <div className="button-row">
+                          {!worker?.active && <button type="button" className="ghost-button small-button" disabled={busy === project.projectId || inMotion} onClick={() => void move(project.projectId, project.name, 'copy')}>Copy (dry run)</button>}
+                          {!worker?.active && <button type="button" className="secondary-button small-button" disabled={busy === project.projectId || inMotion} onClick={() => void move(project.projectId, project.name, 'move')}>Move</button>}
+                          {worker?.active && data.role === 'all' && <button type="button" className="ghost-button small-button" disabled={busy === project.projectId || inMotion} onClick={() => void move(project.projectId, project.name, 'move-back')}>Move back</button>}
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </section>
   )

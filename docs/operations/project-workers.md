@@ -126,12 +126,35 @@ Locally, build with `GIT_COMMIT` so the web service knows its version. Without i
 GIT_COMMIT="$(git rev-parse HEAD)" docker compose -f docker-compose.workers.yml up --build
 ```
 
+## Moving existing projects
+
+Projects created before workers live on the shared service's disk. Move them one at a time from the account menu → **Project workers** → **Existing projects**. The shared service stays in `SPACES_ROLE=all` throughout: a moved project's requests and jobs go to its worker, and every other project carries on as before.
+
+- **Copy (dry run)** creates the project's worker, copies the project's files to it (repositories, governing workspace, worktrees, agent sessions), and checks every path has the same files and bytes. The shared service keeps running the project.
+- **Move** holds the project's jobs, copies again (so anything written since the dry run arrives), checks, then hands the project to its worker. A project with a stage running can't be moved: wait for the stage to end.
+- **Move back** copies the worker's files back, checks them, and returns the project to the shared service.
+
+Files keep their paths, since both sides mount `/data`, so nothing in the database changes.
+
+### On Railway, before the first move
+
+1. On the **spaces** service, set `SPACES_INTERNAL_TOKEN` (a long random string, sealed) and `HOST=::`. Workers pull the files from the shared service over Railway's private network, which uses IPv6. Railway sets `RAILWAY_PRIVATE_DOMAIN`, which gives the shared service's address. Set `MIGRATION_SOURCE_URL` only to override it.
+2. Check that `RAILWAY_PROVISIONER_TOKEN` passes **Check the token** and **Probe create and delete**.
+3. Make sure the `spaces-workers` branch exists (see "Updates only when idle").
+4. Run a **Copy (dry run)** on one project and check the result, then **Move** it and use it for a while before moving the others.
+
+### Switching over
+
+Once every project has moved, set `SPACES_ROLE=web` on the shared service. Nothing changes for moved projects, but the shared service stops running workers and stops sweeping its disk. Keep its volume for a week as a fallback. To go back, set `SPACES_ROLE=all` again and **Move back** the projects that need it.
+
 ## Settings
 
 | Variable | Platform | Meaning |
 |---|---|---|
 | `SPACES_ROLE` | all | `all`, `web` or `project` |
 | `SPACES_INTERNAL_TOKEN` | all | Shared secret between the web service and workers |
+| `MIGRATION_SOURCE_URL` | all | The shared service's private address, which workers pull a moved project from (Railway: from `RAILWAY_PRIVATE_DOMAIN`) |
+| `HOST` | all | Address to listen on; `::` on Railway so workers can reach the shared service privately |
 | `PROJECT_WORKER_PLATFORM` | all | `railway`, `kubernetes` or `docker` (Railway is assumed when `RAILWAY_PROVISIONER_TOKEN` is set) |
 | `PROJECT_WORKER_IMAGE` | Kubernetes, Docker | Image the workers run |
 | `PROJECT_WORKER_VCPUS`, `PROJECT_WORKER_MEMORY_GB`, `PROJECT_WORKER_DISK_GB` | all | Worker size (2, 2, 5) |

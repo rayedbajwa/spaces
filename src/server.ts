@@ -136,7 +136,8 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
-import { callProjectWorker, forwardTarget, forwardToProject, resolveForwardProject } from './lib/project-forward'
+import { callProjectWorker, forgetRemoteProject, forwardTarget, forwardToProject, isRemoteProject, resolveForwardProject } from './lib/project-forward'
+import { archiveStream, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
 import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
 import { runningVersion } from './lib/worker-platform'
@@ -286,9 +287,9 @@ void (async () => {
 // Knowledge imports run inside this process; ones cut off by the last restart
 // must not look like they are still running.
 // The web role wakes each project's worker as its work is queued (phase 3).
-if (isWebRole()) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
+if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
-if (isWebRole()) startRolloutLoop()
+if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
 // A new project's worker runs the wizard's bootstrap (governing workspace and
 // onboarding) once, the first time it starts.
@@ -378,6 +379,12 @@ async function route(req: Request): Promise<Response> {
   if (isProjectRole()) {
     if (!hasInternalToken(req)) return sendJson(404, { error: 'Not found.' })
     if (url.pathname.startsWith('/internal/')) return internalRoute(req, method, url)
+  }
+  // Moving a project (phase 5): the shared service serves its copy of a project
+  // to that project's worker, on the private network, with the internal token.
+  if (url.pathname.startsWith('/internal/migrate/')) {
+    if (!hasInternalToken(req)) return sendJson(404, { error: 'Not found.' })
+    return migrateExportRoute(method, url) ?? sendJson(404, { error: 'Not found.' })
   }
 
   if (method === 'GET' && url.pathname === '/api/version') {
@@ -578,7 +585,7 @@ async function route(req: Request): Promise<Response> {
   if (url.pathname === '/api/admin/workers' || url.pathname.startsWith('/api/admin/workers/')) {
     if (!(await isSiteAdmin())) return sendJson(403, { error: "Only the deployment's super admin manages project workers." })
     if (method === 'GET' && url.pathname === '/api/admin/workers') {
-      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers(), version: runningVersion(), awake: await awakeProjects(), maxAwake: maxAwakeWorkers(), waiting: await capWaiting() })
+      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers(), projects: await getDb()<Array<{ projectId: string; name: string; code: string | null }>>`SELECT project_id AS "projectId", name, code FROM projects WHERE archived_at IS NULL ORDER BY name`, version: runningVersion(), awake: await awakeProjects(), maxAwake: maxAwakeWorkers(), waiting: await capWaiting() })
     }
     if (method === 'POST' && url.pathname === '/api/admin/workers/check') {
       const body = await readJson<{ probe?: boolean }>(req).catch(() => ({} as { probe?: boolean }))
@@ -594,6 +601,19 @@ async function route(req: Request): Promise<Response> {
       } catch (error) {
         return sendJson(502, { error: error instanceof Error ? error.message : String(error) })
       }
+    }
+    // Moving existing projects (phase 5): a copy (dry run), the move, and back.
+    const movePath = /^\/api\/admin\/workers\/([0-9a-f-]{36})\/(copy|move|move-back)$/.exec(url.pathname)
+    if (method === 'POST' && movePath) {
+      if (isProjectRole()) return sendJson(409, { error: 'Projects are moved from the shared service.' })
+      if (!workerPlatform()) return sendJson(409, { error: workerPlatformProblem() ?? 'Project workers are not set up.' })
+      const projectId = movePath[1]!
+      const action = movePath[2]!
+      // It takes minutes: answer now, and let the page follow migration_state.
+      const work = action === 'move-back' ? moveProjectBack(projectId) : moveProjectToWorker(projectId, { activate: action === 'move' })
+      void work.then(() => forgetRemoteProject(projectId)).catch((error) => serverLog.warn('moving the project failed', { projectId, action, error: error instanceof Error ? error.message : String(error) }))
+      serverLog.info('project move started', { projectId, action, by: auth?.user.email })
+      return sendJson(202, { ok: true, action })
     }
     const workerPath = /^\/api\/admin\/workers\/([0-9a-f-]{36})$/.exec(url.pathname)
     if (method === 'DELETE' && workerPath) {
@@ -968,21 +988,24 @@ async function route(req: Request): Promise<Response> {
     }
   }
 
-  // The web role has no workspace disk: project work runs on the project's worker.
-  if (isWebRole()) {
-    const target = forwardTarget(method, url.pathname)
-    if (target) {
+  // Project work runs on the project's worker: always in the web role (no
+  // workspace disk), and in the shared role for projects already moved to one.
+  const forwardTo = isProjectRole() ? undefined : forwardTarget(method, url.pathname)
+  if (forwardTo) {
+    const target = forwardTo
+    let parsed: unknown
+    if (target.kind === 'run-create') parsed = await req.clone().json().catch(() => undefined)
+    const projectId = await resolveForwardProject(target, parsed)
+    if (isWebRole() && !projectId) return sendJson(404, { error: target.kind === 'run' ? 'Run not found.' : 'Project not found.' })
+    if (projectId && await isRemoteProject(projectId)) {
       const body = method === 'GET' || method === 'HEAD' ? undefined : await req.arrayBuffer()
-      let parsed: unknown
-      if (target.kind === 'run-create' && body) { try { parsed = JSON.parse(new TextDecoder().decode(body)) } catch { parsed = undefined } }
-      const projectId = await resolveForwardProject(target, parsed)
-      if (!projectId) return sendJson(404, { error: target.kind === 'run' ? 'Run not found.' : 'Project not found.' })
       // Deleting a project deletes its row (and the worker record with it) on the
       // worker: keep the Railway ids to remove the service and volume afterwards.
       const deleting = method === 'DELETE' && target.kind === 'project' && /^\/api\/projects\/[^/]+$/.test(url.pathname)
       const worker = deleting ? await getProjectWorker(projectId) : undefined
       const response = await forwardToProject(req, projectId, body)
       if (deleting && worker && response.ok) {
+        forgetRemoteProject(projectId)
         void removeProjectWorker(worker).catch((error) => serverLog.warn('removing the project worker failed', { projectId, error: error instanceof Error ? error.message : String(error) }))
       }
       return response
@@ -4154,7 +4177,7 @@ async function openPullRequestsForProject(projectNamespace: string): Promise<Ope
   const lookup = (async () => {
     const registry = await import('./lib/project-registry')
     const project = await registry.getProjectBySlug(projectNamespace)
-    if (isWebRole()) {
+    if (project && await isRemoteProject(project.projectId)) {
       // The branches are read from the workspace, which the project's worker has.
       const prs = project ? await callProjectWorker<OpenPullRequestLink[]>(project.projectId, '/internal/open-pull-requests', { timeoutMs: 5_000 }) : undefined
       if (prs) openPullRequestCache.set(projectNamespace, { at: Date.now(), prs })
@@ -4209,6 +4232,20 @@ async function computeProjectState(projectRow: ProjectRow): Promise<{ artifacts:
   return { artifacts, tasksDone }
 }
 
+/** A project's files for the other side of a move: its manifest, or a tar stream of them. */
+function migrateExportRoute(method: string, url: URL, onlyProject?: string): Promise<Response> | undefined {
+  const match = /^\/internal\/migrate\/([0-9a-f-]{36})\/(manifest|archive)$/.exec(url.pathname)
+  if (method !== 'GET' || !match) return undefined
+  const projectId = match[1]!
+  if (onlyProject && projectId !== onlyProject) return Promise.resolve(sendJson(403, { error: 'This worker serves another project.' }))
+  return (async () => {
+    const paths = await projectPaths(projectId)
+    if (match[2] === 'manifest') return sendJson(200, await manifestFor(paths))
+    if (paths.length === 0) return sendJson(404, { error: 'This project has no files here.' })
+    return new Response(archiveStream(paths), { headers: { 'content-type': 'application/gzip' } })
+  })()
+}
+
 /**
  * The project worker's internal API (project role, internal token checked by
  * the caller): what the web service asks of the project's disk directly.
@@ -4228,6 +4265,14 @@ async function internalRoute(req: Request, method: string, url: URL): Promise<Re
     await bootstrapProjectWorkspace(project, { model: body.model?.trim() || await defaultModel(await orgIdForProject(projectId)), feature: body.feature?.trim() || undefined })
     return sendJson(200, { onboarding: getOnboardingSnapshot(projectId) })
   }
+  // Moving: this worker pulls its project's files from the shared service, or
+  // (moving back) serves them.
+  if (method === 'POST' && url.pathname === '/internal/migrate/pull') {
+    const body = await readJson<{ sourceUrl?: string }>(req)
+    if (!body.sourceUrl) return sendJson(400, { error: 'sourceUrl is required.' })
+    return sendJson(200, await pullProject(projectId, body.sourceUrl))
+  }
+  if (url.pathname.startsWith('/internal/migrate/')) return migrateExportRoute(method, url, projectId) ?? sendJson(404, { error: 'Not found.' })
   if (method === 'GET' && url.pathname === '/internal/project-state') {
     return sendJson(200, await computeProjectState(project))
   }
@@ -4268,10 +4313,11 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
     const fresh = stored && isProjectStateFresh(stored, project.path, runRow?.updatedAt)
     // The web role reads no files: the project's worker recomputes the state.
     // A worker that does not answer quickly (asleep) leaves the last stored state.
-    const fromWorker = !fresh && isWebRole()
+    const remote = !fresh && await isRemoteProject(row.projectId)
+    const fromWorker = remote
       ? await callProjectWorker<{ artifacts: ProjectArtifacts; tasksDone: number }>(row.projectId, '/internal/project-state', { timeoutMs: stored ? 3_000 : 20_000 })
       : undefined
-    if (fresh || (isWebRole() && stored && !fromWorker)) {
+    if (fresh || (remote && stored && !fromWorker)) {
       artifacts = stored!.artifacts
       tasksDone = stored!.tasksDone
     } else if (fromWorker) {

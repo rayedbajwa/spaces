@@ -76,12 +76,18 @@ export interface ProjectWorkerRow {
   diskUsedBytes: number | null
   lastError: string | null
   updatedAt: string
+  /** Serves its project (requests and jobs); false while an existing project is being copied over. */
+  active: boolean
+  migrationState: string | null
+  migrationJson: Record<string, unknown> | null
+  migrationAt: string | null
 }
 
 function columns(prefix = ''): string {
   return `${prefix}project_id AS "projectId", ${prefix}internal_url AS "internalUrl", ${prefix}platform AS platform,
   ${prefix}service_ref AS "serviceRef", ${prefix}volume_ref AS "volumeRef", ${prefix}state AS state, ${prefix}version AS version,
-  ${prefix}last_seen_at AS "lastSeenAt", ${prefix}disk_used_bytes AS "diskUsedBytes", ${prefix}last_error AS "lastError", ${prefix}updated_at AS "updatedAt"`
+  ${prefix}last_seen_at AS "lastSeenAt", ${prefix}disk_used_bytes AS "diskUsedBytes", ${prefix}last_error AS "lastError", ${prefix}updated_at AS "updatedAt",
+  ${prefix}active AS active, ${prefix}migration_state AS "migrationState", ${prefix}migration_json AS "migrationJson", ${prefix}migration_at AS "migrationAt"`
 }
 const ROW_COLS = columns()
 
@@ -125,7 +131,7 @@ const inFlight = new Map<string, Promise<ProjectWorkerRow>>()
  * Create the project's worker (idempotent). Concurrent calls in this process
  * share one attempt; across processes the row's state claims it.
  */
-export function provisionProjectWorker(projectId: string, options: { platform?: WorkerPlatform } = {}): Promise<ProjectWorkerRow> {
+export function provisionProjectWorker(projectId: string, options: { platform?: WorkerPlatform; active?: boolean } = {}): Promise<ProjectWorkerRow> {
   const existing = inFlight.get(projectId)
   if (existing) return existing
   const attempt = doProvision(projectId, options).finally(() => inFlight.delete(projectId))
@@ -133,14 +139,14 @@ export function provisionProjectWorker(projectId: string, options: { platform?: 
   return attempt
 }
 
-async function doProvision(projectId: string, options: { platform?: WorkerPlatform }): Promise<ProjectWorkerRow> {
+async function doProvision(projectId: string, options: { platform?: WorkerPlatform; active?: boolean }): Promise<ProjectWorkerRow> {
   const platform = options.platform ?? workerPlatform()
   if (!platform) throw new Error(workerPlatformProblem() ?? 'Project workers are not set up.')
   const sql = getDb()
   const [project] = await sql<Array<{ code: string | null; slug: string }>>`SELECT code, slug FROM projects WHERE project_id = ${projectId}`
   if (!project) throw new Error('Project not found.')
 
-  await sql`INSERT INTO project_workers (project_id) VALUES (${projectId}) ON CONFLICT (project_id) DO NOTHING`
+  await sql`INSERT INTO project_workers (project_id, active) VALUES (${projectId}, ${options.active ?? true}) ON CONFLICT (project_id) DO NOTHING`
   // Claim it: one provisioner at a time. A claim older than 15 minutes is abandoned.
   const [claimed] = await sql<ProjectWorkerRow[]>`
     UPDATE project_workers SET state = 'provisioning', platform = ${platform.kind}, last_error = NULL, updated_at = now()

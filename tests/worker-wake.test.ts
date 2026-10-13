@@ -21,7 +21,7 @@ afterAll(async () => {
   await fixture.stop()
 })
 
-const ready = (projectId: string): ProjectWorkerRow => ({ projectId, internalUrl: 'http://w', platform: 'docker', serviceRef: 's', volumeRef: 'v', state: 'ready', version: null, lastSeenAt: null, diskUsedBytes: null, lastError: null, updatedAt: '' })
+const ready = (projectId: string): ProjectWorkerRow => ({ projectId, internalUrl: 'http://w', platform: 'docker', serviceRef: 's', volumeRef: 'v', state: 'ready', version: null, lastSeenAt: null, diskUsedBytes: null, lastError: null, updatedAt: '', active: true, migrationState: null, migrationJson: null, migrationAt: null })
 
 function deps(overrides: Partial<WakeDeps> = {}) {
   const calls: string[] = []
@@ -31,6 +31,7 @@ function deps(overrides: Partial<WakeDeps> = {}) {
     provision: async (projectId) => { calls.push(`provision ${projectId}`) },
     wake: async (projectId) => { calls.push(`wake ${projectId}`); return true },
     hasPlatform: () => true,
+    provisionMissing: () => true,
     capHit: async (projectId, awake, cap) => { calls.push(`cap ${projectId} ${awake}/${cap}`) },
     cap: () => 2,
     ...overrides,
@@ -73,6 +74,14 @@ describe('waking a project worker', () => {
     const { d, calls } = deps({ wake: async (projectId) => { calls.push(`wake ${projectId}`); await new Promise((r) => setTimeout(r, 20)); return true } })
     await Promise.all([wakeProjectWorker('p2', d), wakeProjectWorker('p2', d), wakeProjectWorker('p2', d)])
     expect(calls).toEqual(['wake p2'])
+  })
+
+  test('outside the web role only moved projects are woken; nothing is provisioned', async () => {
+    const { d, calls } = deps({ provisionMissing: () => false, getWorker: async () => undefined })
+    expect(await wakeProjectWorker('p3', d)).toBe('unavailable')
+    const inactive = deps({ provisionMissing: () => false, getWorker: async (projectId) => ({ ...ready(projectId), active: false }) })
+    expect(await wakeProjectWorker('p4', inactive.d)).toBe('unavailable')
+    expect([...calls, ...inactive.calls]).toEqual([])
   })
 
   test('the cap defaults to 5', () => {

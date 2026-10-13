@@ -3008,3 +3008,4 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .work-surface-steps { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13px; color: var(--text-subtle); line-height: 1.4; }
 .work-surface .secondary-button { justify-self: start; }
 .intake-source-empty { display: grid; gap: 10px; justify-items: start; }
+.workers-subhead { margin: 16px 0 4px; font-size: 14px; }

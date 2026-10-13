@@ -1469,3 +1469,11 @@ CREATE TABLE IF NOT EXISTS worker_cap_hits (
   hit_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   notified_at  TIMESTAMPTZ
 );
+
+-- 014 phase 5: an existing project moves to its own worker one at a time. A
+-- worker serves its project only while active; a move holds the project's jobs
+-- (migration_state = 'syncing') so neither side starts a stage mid-copy.
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS migration_state TEXT;
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS migration_json JSONB;
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS migration_at TIMESTAMPTZ;
