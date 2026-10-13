@@ -910,8 +910,14 @@ function App() {
   // project's live SSE writing into currentRun (cross-project log leak).
   const connectedRunIdRef = useRef<string | null>(null)
   const subagentEventSourceRef = useRef<EventSource | null>(null)
+  // A dropped live log (a deploy restarting the web service, a network blip)
+  // reconnects on its own with backoff; before, it closed for good and the run
+  // looked empty until the page was reloaded.
+  const runReconnectRef = useRef<{ timer?: ReturnType<typeof setTimeout>; attempt: number }>({ attempt: 0 })
 
   function disconnectRunEvents(): void {
+    if (runReconnectRef.current.timer) clearTimeout(runReconnectRef.current.timer)
+    runReconnectRef.current = { attempt: 0 }
     runEventSourceRef.current?.close()
     runEventSourceRef.current = null
     connectedRunIdRef.current = null
@@ -1639,6 +1645,7 @@ function App() {
     connectedRunIdRef.current = runId
 
     eventSource.onmessage = (event) => {
+      runReconnectRef.current.attempt = 0
       const next = JSON.parse(event.data) as RunSnapshot
       setCurrentRun(next)
       if (next.status === 'completed') {
@@ -1662,6 +1669,22 @@ function App() {
 
     eventSource.onerror = () => {
       eventSource.close()
+      // Still the run on screen: reconnect (2 s, 4 s, 8 s … up to 30 s). The first
+      // message after reconnecting is the run's full current state.
+      if (connectedRunIdRef.current !== runId || runEventSourceRef.current !== eventSource) return
+      runEventSourceRef.current = null
+      const attempt = runReconnectRef.current.attempt + 1
+      const delay = Math.min(30_000, 1_000 * 2 ** attempt)
+      runReconnectRef.current = {
+        attempt,
+        timer: setTimeout(() => {
+          if (connectedRunIdRef.current === runId && !runEventSourceRef.current) {
+            connectedRunIdRef.current = null
+            connectRunEvents(runId)
+            runReconnectRef.current.attempt = attempt
+          }
+        }, delay),
+      }
     }
   }
 
@@ -1679,6 +1702,10 @@ function App() {
     }
     eventSource.onerror = () => {
       eventSource.close()
+      // Reconnect while it is still the stream on screen (a restart dropped it).
+      setTimeout(() => {
+        if (subagentEventSourceRef.current === eventSource) connectSubagentEvents(namespace)
+      }, 3_000)
     }
   }
 
