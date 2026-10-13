@@ -124,6 +124,8 @@ export async function updateRunStatus(runId: string, patch: {
       error_message = ${patch.errorMessage ?? null}
     WHERE run_id = ${runId}
   `
+  // The run's status (and, once ended, its cost) on its Phoenix session, when tracing is on.
+  void import('./phoenix-annotations').then((m) => m.reportRunStatus(runId, { status: patch.status, pauseKind: patch.pauseKind, stage: patch.currentStage, error: patch.errorMessage }))
 }
 
 export async function appendEvent(input: {
@@ -260,6 +262,8 @@ export async function answerPausedRun(input: {
   runId: string
   projectId: string
   answer: string
+  /** Who answered (user id or email), for the Phoenix annotation; a decision names its own. */
+  answeredBy?: string | null
   decision?: {
     requestId: string | null
     linkId: string | null
@@ -350,6 +354,18 @@ export async function answerPausedRun(input: {
   if (result.ok && !input.decision && resolvedGateId) {
     const text = result.pauseKind === 'clarification' ? 'Clarification answered in Spaces.' : 'Decision recorded in Spaces.'
     await markSlackGatePromptsDecided(resolvedGateId, text)
+  }
+  // A person's answer, as a HUMAN annotation on the run's Phoenix session.
+  if (result.ok) {
+    void import('./phoenix-annotations').then((m) => m.reportGateAnswer(input.runId, {
+      gateId: resolvedGateId,
+      stage: result.stage,
+      pauseKind: result.pauseKind,
+      text: input.decision?.feedback ?? input.answer,
+      outcome: input.decision?.outcome ?? null,
+      by: input.decision?.decidedBy ?? input.answeredBy ?? null,
+      via: input.decision?.via ?? (input.decision?.linkId ? 'link' : input.decision ? 'slack' : 'app'),
+    }))
   }
   return result
 }
