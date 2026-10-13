@@ -105,6 +105,20 @@ Locally: `docker compose --profile tracing up -d phoenix`, then set
 http://localhost:6006. Project workers created by the provisioner inherit
 these variables from the web service (on Railway as references to it).
 
+**Evaluating agents in Phoenix.** `bun run phoenix:evals` uploads the dataset
+`spaces-agent-expectations` (a passing and a failing output for each
+expectation Spaces places on agent output: the verify, review, delivery and
+dev-setup status lines and sections, question, task, plan and workstream
+formats, no git commit/push from workstream agents, conventional commits,
+JSON-only suggestions, no secrets in the clear) and runs the code checks of
+`src/lib/agent-evals.ts` on it as an experiment; `matches-expected` shows the
+checks agree with each sample's verdict. `--traces 300` runs the same checks
+on recent real agent outputs (dataset `spaces-agent-turns`, each example
+linked to its span). `--judges` prints LLM-judge prompts for the rules that
+need judgement, to add as evaluators in Phoenix's UI. Set
+`PHOENIX_COLLECTOR_ENDPOINT` to the Phoenix URL and `PHOENIX_API_KEY` to a
+system API key (Phoenix → Settings → API Keys).
+
 ### Running the test suite
 
 `bun test` runs a preload (`tests/setup/db-guard.ts`) that keeps the suite off

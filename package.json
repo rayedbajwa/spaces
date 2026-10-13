@@ -49,6 +49,7 @@
     "standalone": "bun run src/standalone.ts",
     "setup:browsers": "bun run scripts/setup-browsers.ts",
     "phoenix:provision": "bun run scripts/provision-phoenix.ts",
+    "phoenix:evals": "bun run scripts/phoenix-evals.ts",
     "e2e": "bun run scripts/e2e-pipelines.ts",
     "dev": "bun --hot src/server.ts",
     "help": "bun run src/cli.ts --help",
@@ -60,6 +61,7 @@
   },
   "dependencies": {
     "@arizeai/openinference-semantic-conventions": "^2.14.0",
+    "@arizeai/phoenix-client": "7.16.1",
     "@earendil-works/pi-coding-agent": "^0.85.1",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.223.0",
