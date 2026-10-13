@@ -228,6 +228,15 @@ inspectable artifacts each stage produces.
 - **Postgres-backed** job queue with per-project concurrency (SKIP LOCKED),
   stale-job reaper, and LISTEN/NOTIFY for reactive workers; a worker whose
   project has no work left hands its slot to a waiting project at once
+- **A worker per project, asleep when idle** — in production every project
+  runs on its own service and volume (Railway, Kubernetes or Docker), created
+  by Spaces; idle workers sleep, work wakes them, and a deploy of the web
+  service never interrupts an agent: workers move to the new version only
+  when idle
+- **Agent tracing in Arize Phoenix** — a trace per agent turn (model, tokens,
+  cost, every tool call), a session per run with its status, cost and
+  people's gate decisions as annotations, and datasets and evaluators for what
+  Spaces expects of its agents; masked by the data guardrails
 
 ---
 
@@ -240,7 +249,8 @@ Full docs are published at **https://rayedbajwa.github.io/spaces/** (built from
 Start with [Intents](docs/concepts/intents.md),
 [Data guardrails](docs/concepts/data-guardrails.md) and
 [Agents, workers & context](docs/concepts/agents-and-workers.md) for the
-latest behaviour.
+latest behaviour, and [Architecture & scaling](docs/concepts/architecture.md)
+for how it runs in production.
 
 ## Quickstart
 
@@ -339,52 +349,61 @@ integration tokens.
 
 ## Architecture
 
+One image runs in three roles (`SPACES_ROLE`), connected by Postgres, which is
+the database, the job queue and the event bus. In production the public **web**
+service has no disk and runs no agents; every project gets its own **worker**
+service with its own volume, created by Spaces, which sleeps when idle.
+
+```mermaid
+flowchart LR
+  U[Browser] -->|HTTPS + SSE| W["web · SPACES_ROLE=web<br/>UI · API · OAuth<br/>provisioner · wake · sleep · rollout"]
+  GH[push to main] -->|deploys| W
+  W -->|"private network: forward project routes,<br/>wake, deploy idle workers"| A["spaces-proj-A · SPACES_ROLE=project<br/>server + job worker · Pi SDK agents · git"]
+  W -.-> B["spaces-proj-B (asleep)"]
+  A --- VA[("volume A at /data")]
+  B --- VB[("volume B at /data")]
+  W & A --> P[("Postgres 16 + pgvector<br/>runs · events · job queue<br/>SKIP LOCKED · LISTEN/NOTIFY")]
+  A --> X[LLM providers · GitHub · Jira · Linear · Slack]
+  W & A -->|OTLP| PX[Arize Phoenix]
 ```
-┌─────────┐     SSE + HTTP     ┌──────────────┐
-│ Browser │ ─────────────────► │  src/server  │  (Bun.serve)
-└─────────┘                    └──────┬───────┘
-                                      │
-                                      ▼
-                              ┌──────────────┐
-                              │   Postgres   │  pipeline_runs, project_jobs,
-                              │              │  app_integrations, artifacts…
-                              └──────┬───────┘
-                                     │  LISTEN/NOTIFY + 5s poll floor
-                                     ▼
-                              ┌──────────────┐
-                              │  src/worker  │  claims jobs via SKIP LOCKED
-                              └──────┬───────┘
-                                     │
-              ┌──────────────────────┼──────────────────────┐
-              ▼                      ▼                      ▼
-     ┌───────────────┐     ┌──────────────────┐    ┌─────────────────┐
-     │  agent-pool   │     │  pipeline-engine │    │   dispatcher    │
-     │ warm sessions │◄───►│  per-stage model │    │ per-project     │
-     │ + reaper      │     │  + handoff memo  │    │ concurrency SQL │
-     └───────┬───────┘     └────────┬─────────┘    └─────────────────┘
-             │                      │
-             └──────────┬───────────┘
-                        ▼
-              @earendil-works/pi-coding-agent (Pi SDK)
-                        │
-                        ▼
-                    LLM provider
-                    (Anthropic / OpenAI)
-```
+
+- **Work flow:** starting a run, approving or answering queues a job in
+  `project_jobs`; the web service wakes the project's worker, which claims it
+  with `SKIP LOCKED`, runs the stage on the
+  [Pi Coding Agent SDK](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+  and streams events back through `LISTEN/NOTIFY`. At a gate it stores the agent
+  session in Postgres and lets go, so any worker can continue it.
+- **Scale:** projects are isolated (CPU, memory, disk); at most
+  `PROJECT_WORKERS_MAX_AWAKE` (5) run at once and the rest sleep at no compute
+  cost. Idle job processes exit after 5 minutes; Railway then sleeps the
+  service, and on Kubernetes Spaces scales it to 0.
+- **One deployment path:** a push to `main` deploys the web service, which
+  moves each worker to its exact commit once that worker is idle. Deploys never
+  interrupt agents, and sleeping workers aren't woken to be updated.
+- **Platforms:** Railway (production), Kubernetes (any cluster, k3s/minikube
+  locally) and Docker. `SPACES_ROLE=all` (the default) runs everything in one
+  service for local development and single-VM installs.
+- **Observability:** JSON logs, a **Project workers** admin page, and agent
+  traces in Arize Phoenix with run status, cost and gate decisions as
+  annotations.
+
+Details: [Architecture & scaling](docs/concepts/architecture.md) ·
+[Deploying to the cloud](docs/operations/cloud-deployment.md) ·
+[Project workers](docs/operations/project-workers.md).
 
 Key files:
 
-- `src/server.ts` — Bun HTTP server, routes for projects/runs/orchestrator/oauth
-- `src/worker.ts` — dispatcher loop that claims jobs and runs pipelines
-- `src/lib/aidlc.ts` — thin wrapper around Pi SDK's `AIDLCFlow`
-- `src/lib/pipeline-engine.ts` — pipeline template execution (per-stage models, handoff memory)
-- `src/lib/dispatcher.ts` — job queue with per-project concurrency limits
-- `src/lib/agent-pool.ts` — cross-run warm agent pool
-- `src/lib/oauth.ts` — generic OAuth 2.0 flow, provider registry
-- `src/lib/crypto-vault.ts` — AES-256-GCM sealing for stored tokens
-- `data/pipelines/*.yml` — pipeline template DSL
-- `data/personas/*.md` — persona system prompts
-- `data/org/*` — shared org context injected into every run
+- `src/standalone.ts` — entry point for every role (server + supervisor or job worker)
+- `src/server.ts` — Bun HTTP server: UI, API, SSE, OAuth
+- `src/worker.ts`, `src/supervisor.ts` — job worker; per-project supervisor for `SPACES_ROLE=all`
+- `src/lib/project-forward.ts` — forwarding project routes from web to worker
+- `src/lib/worker-provisioner.ts`, `src/lib/worker-platform-{railway,kubernetes,docker}.ts` — creating workers
+- `src/lib/worker-wake.ts`, `src/lib/worker-sleep.ts`, `src/lib/worker-rollout.ts` — wake, sleep, idle updates
+- `src/lib/pipeline-engine.ts`, `src/lib/aidlc.ts` — pipeline templates on the Pi SDK
+- `src/lib/dispatcher.ts` — job queue with per-project concurrency
+- `src/lib/tracing.ts`, `src/lib/phoenix-annotations.ts`, `src/lib/agent-evals.ts` — Phoenix
+- `src/lib/crypto-vault.ts` — AES-256-GCM sealing for stored keys and tokens
+- `data/pipelines/*.yml`, `data/personas/*.md`, `data/org/*` — templates, personas, org context
 
 ---
 
@@ -597,22 +616,24 @@ worktree on their own branch and get their own PR; a workstream whose
 branch and its PR targets it — a stacked PR — and workstreams run in
 dependency order.
 
-### Workers: shared or one per project
+### Workers: one per project
 
-`bun run src/worker.ts` starts one shared worker that runs jobs from different
-projects concurrently (`WORKER_MAX_CONCURRENT_JOBS`, default 4) while still
-honouring each project's `max_concurrent`.
+In production (`SPACES_ROLE=web`) each project runs on its own worker service,
+`spaces-proj-<code>`, with its own volume, created the first time the project
+needs one. Its job process exits after `PROJECT_WORKER_IDLE_SECONDS` (300) of
+idleness and the service sleeps; queued work, opening the project or answering
+a gate wakes it. `PROJECT_WORKERS_MAX_AWAKE` (5) caps how many run jobs at once.
+The super admin manages them under the account menu → **Project workers**. See
+[Project workers](docs/operations/project-workers.md).
 
-`bun run src/supervisor.ts` scales instead: it watches the job queue and spawns
-a dedicated worker for every project that has work, each claiming only its own
-project's jobs. A worker is **hot** while running jobs, **warm** while alive but
-idle (it keeps paused runs' engines in memory), and exits after
-`WORKER_IDLE_EXIT_SECONDS` (default 300) of idleness; the supervisor respawns it
-the moment new work appears. `SUPERVISOR_MAX_WORKERS` (default 4) caps the
-fleet; each worker is a Bun process holding live agent sessions, roughly
-300–500 MB, so size the cap to the host's memory. Workers
-heartbeat into the `workers` table, which drives the worker indicator in the
-project overview and lets the server detect a dead owner when routing answers.
+Locally (`SPACES_ROLE=all`), `bun run src/supervisor.ts` spawns a job process
+per project with work, each claiming only its own project's jobs, and lets it
+exit after `WORKER_IDLE_EXIT_SECONDS` (300). `SUPERVISOR_MAX_WORKERS` (4) caps
+them (each holds live agent sessions, about 300–500 MB); a process whose
+project has no work left gives its slot to a waiting project at once.
+`bun run src/worker.ts` is a single shared worker instead
+(`WORKER_MAX_CONCURRENT_JOBS`, default 4). Workers heartbeat into the `workers`
+table, which drives the worker indicator in the project overview.
 
 ### Runs that fail or get interrupted
 
@@ -661,31 +682,32 @@ per-stage model selection.
 
 ---
 
-## Deployment note
+## Deployment
 
 Spaces runs locally by default. Sign-in is on (first account is owner,
 others join by invite), but agents execute code and hold repository tokens,
-so treat a hosted instance as a small, trusted deployment.
+so treat a hosted instance as a small, trusted deployment. See
+[SECURITY.md](SECURITY.md).
 
-**Railway** is the quickest hosted setup: deploy the repository as one
-service (the shipped `railway.json` builds the `Dockerfile` and starts
-`bun run src/standalone.ts`, which runs the web server and the supervisor
-together so they share one `/data` volume), add a Postgres database and a
-volume mounted at `/data`, set `DATABASE_URL` and `ENCRYPTION_KEY`. Behind
-Railway's TLS proxy the app derives its public `https://` origin from the
-forwarded headers (or `PUBLIC_URL`), so OAuth callbacks and the GitHub App
-manifest just work.
+**Production (Railway or Kubernetes): web + a worker per project.** Deploy the
+repository as a `spaces` service with `SPACES_ROLE=web` and
+`RAILWAY_DOCKERFILE_PATH=Dockerfile.web`, add Postgres with pgvector, and give
+it `ENCRYPTION_KEY`, `SPACES_INTERNAL_TOKEN`, `PUBLIC_URL` and a Railway
+**workspace** token as `RAILWAY_PROVISIONER_TOKEN`. Spaces then creates,
+deploys, wakes and removes each project's worker itself. Only the web service
+has a deployment trigger (push to `main`); it moves idle workers to its commit.
+On Kubernetes, `kubectl apply -k deploy/kubernetes` sets up the same layout.
 
-See [SECURITY.md](SECURITY.md) for the caveats before deploying, and the
-[cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/cloud-deployment/)
-for Railway step by step, Docker Compose, managed containers
-(ECS/Cloud Run/Container Apps), Kubernetes, and Fly/Render.
-The shipped image includes git and stores repos, governing workspaces and agent
-sessions under a `/data` volume. For production use an **external, dedicated
-Postgres 16** (managed service or HA cluster) and
-`docker compose -f docker-compose.prod.yml up -d --build`, which runs only the
-app and the supervisor; the Postgres container in `docker-compose.yml` is for
-local development.
+**One VM or one service: `SPACES_ROLE=all`.**
+`docker compose -f docker-compose.prod.yml up -d --build` runs the app and the
+supervisor on one `/data` volume against an external Postgres 16. On Railway,
+Fly or Render, one service started with `bun run src/standalone.ts` and a
+volume at `/data` does the same; set `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=900`
+so deploys let running stages finish.
+
+The [cloud deployment guide](https://rayedbajwa.github.io/spaces/operations/cloud-deployment/)
+covers both step by step, plus managed containers (ECS/Cloud Run/Container
+Apps), database sizing and operations.
 
 ---
 

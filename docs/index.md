@@ -112,6 +112,19 @@ The pipeline follows the ideas of AWS's
     stamped with the time and the agent's name. See
     [Agents, workers & context](concepts/agents-and-workers.md#what-the-log-shows).
 
+-   **A worker per project, asleep when idle**
+
+    In production every project runs on its own service and volume on Railway,
+    Kubernetes or Docker. Idle workers sleep, work wakes them, and deploys
+    never interrupt an agent: workers move to the new version when idle. See
+    [Architecture & scaling](concepts/architecture.md).
+
+-   **Agent traces and evaluations**
+
+    Every agent turn is a trace in Arize Phoenix, each run a session with its
+    status, cost and people's gate decisions. See
+    [Configuration](reference/configuration.md#agent-tracing-arize-phoenix).
+
 -   **Resilient runs**
 
     Worker restarts re-queue or pause runs instead of failing them, transient

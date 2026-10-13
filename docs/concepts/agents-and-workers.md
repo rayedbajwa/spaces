@@ -178,8 +178,15 @@ stop the run instead.
 ## Workers
 
 Jobs land in a Postgres queue (`project_jobs`) with per-project concurrency.
-Two ways to run them:
+Three ways to run them:
 
+- **A worker per project** — production (`SPACES_ROLE=web`): each project has
+  its own worker service and volume, created by Spaces on Railway, Kubernetes
+  or Docker. Its job process claims only that project's jobs and exits after
+  `PROJECT_WORKER_IDLE_SECONDS`; the service then sleeps until work, a visit
+  or an answer wakes it. `PROJECT_WORKERS_MAX_AWAKE` (5) caps how many run at
+  once. See [Architecture & scaling](architecture.md) and
+  [Project workers](../operations/project-workers.md).
 - **Shared worker** — `bun run worker`: one process running jobs from different
   projects concurrently (`WORKER_MAX_CONCURRENT_JOBS`, default 4).
 - **Supervisor** — `bun run supervisor`: watches the queue and spawns one
@@ -204,7 +211,7 @@ missing documents are restored from the database (see [Intents](intents.md)).
 If there is no copy either, an approval moves on to the next stage and any
 other answer re-runs the stage with the answer in its context.
 
-**Slots go where the work is.** When a project waits at
+**Slots go where the work is.** With the supervisor, when a project waits at
 `SUPERVISOR_MAX_WORKERS`, a worker whose project has no work left gives its
 slot up at once instead of waiting out its idle timeout; one whose project has
 queued jobs but runs none gives it up after a minute. A worker running a job is
@@ -228,7 +235,8 @@ restarted). Use it when a hung worker would never act on a normal **Cancel**.
 | Job whose worker stopped heartbeating | Closed and its run handed off (no fixed 10-minute timeout) |
 | Job stuck with a hung worker | **Force kill** in Recent jobs: run cancelled, worker killed and replaced |
 | A command that never returns | Capped at `AGENT_COMMAND_TIMEOUT_SECONDS` (default 20 minutes) |
-| A deploy while a stage runs | The worker finishes the stage (up to the drain budget) and hands the run back at the stage boundary |
+| A deploy while a stage runs | Worker layout: the web service deploys alone and project workers are updated only when idle. Single service: the worker finishes the stage (up to the drain budget) and hands the run back at the stage boundary |
+| A project's worker is asleep | Queued work, opening the project or answering a gate wakes it; on a new version it's deployed first |
 | Failed or finished run | **Rerun from &lt;stage&gt;** / **Rerun from start**, resuming the previous session |
 
 ## Memory and knowledge

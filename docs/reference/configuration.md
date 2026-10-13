@@ -47,8 +47,10 @@ back to the same-size tier.
 | `PUBLIC_URL` | unset | Public origin behind a TLS-terminating proxy, for OAuth callbacks, GitHub App manifests and invite links; the forwarded headers are honoured when unset |
 | `WORKER_ID` | random UUID | Worker identity (per process) |
 | `WORKER_MAX_CONCURRENT_JOBS` | `4` | Jobs one worker runs at once across projects |
-| `SUPERVISOR_MAX_WORKERS` | `4` | Cap on per-project workers (each ~300–500 MB) |
-| `WORKER_IDLE_EXIT_SECONDS` | `300` | Idle time before a per-project worker exits |
+| `SUPERVISOR_MAX_WORKERS` | `4` | `SPACES_ROLE=all`: cap on the supervisor's per-project job processes (each ~300–500 MB) |
+| `WORKER_IDLE_EXIT_SECONDS` | `300` | `SPACES_ROLE=all`: idle time before a supervisor's job process exits |
+| `PROJECT_WORKERS_MAX_AWAKE` | `5` | Worker per project: how many workers may run jobs at once |
+| `PROJECT_WORKER_IDLE_SECONDS` | `300` | Worker per project: idle time before a worker's job process stops (and the service can sleep) |
 | `AIDLC_WORKSPACE_ROOT` | `~/.aidlc/workspaces` | Where GitHub repos are cloned (`<owner>/<name>`) |
 | `SPACES_BROWSER_PATH` | Playwright's bundled Chromium, else a system Chromium/Chrome | Override the Chromium binary for the agents' built-in browser tools |
 | `PLAYWRIGHT_BROWSERS_PATH` | Playwright default (`~/.cache/ms-playwright`) | Where `playwright install chromium` puts browsers; the Docker image uses `/ms-playwright` |
@@ -146,7 +148,8 @@ makes the database suites skip with a message instead of writing to it.
 | `RAILWAY_PROVISIONER_TOKEN` | unset | Railway **workspace** token used to create and remove each project's worker service and volume (a project token can create but not delete); set it sealed, with `RAILWAY_PROVISIONER_TOKEN_TYPE=workspace`. Check it under the account menu → Project workers |
 | `RAILWAY_PROVISIONER_TOKEN_TYPE` | `project` | `workspace` or `account` if a broader token is used instead |
 | `PROJECT_WORKER_VCPUS` / `PROJECT_WORKER_MEMORY_GB` | `2` / `2` | Size of each project worker |
-| `PROJECT_WORKER_REPO` | `rayedbajwa/spaces` | Repository project workers are built from; they have no branch or deployment trigger (only Spaces deploys them) |
+| `PROJECT_WORKER_REPO` | `rayedbajwa/spaces` | Repository project workers are built from; they have no branch or deployment trigger (only Spaces deploys them). Set it to your fork |
+| `PROJECT_WORKER_PLATFORM` | Railway when `RAILWAY_PROVISIONER_TOKEN` is set | `railway`, `kubernetes` or `docker`; every platform setting is in [Project workers → Settings](../operations/project-workers.md#settings) |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user, invitees and people let in from the waitlist can, and the landing page offers the waitlist |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
 | `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |
