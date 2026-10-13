@@ -45,7 +45,10 @@ function start(name: string, script: string, env: Record<string, string> = {}): 
       return
     }
     console.error(`[standalone] ${name} exited (${signal ?? `code ${code}`}); stopping the service so the platform restarts it`)
-    void shutdown('child-exit', code ?? 1)
+    // Always a failure exit: a child that stopped cleanly (a server that got
+    // SIGTERM exits 0) must still bring the service back, and Railway's
+    // ON_FAILURE policy restarts only on a non-zero exit.
+    void shutdown('child-exit', code ? code : 1)
   })
   console.log(`[standalone] ${name} started (pid ${child.pid})`)
 }
