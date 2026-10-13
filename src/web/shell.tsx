@@ -129,7 +129,7 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
       { id: 'memory', label: 'Memory', icon: I.brain, path: orgPath('memory'), match: () => onOrg('memory') },
       // Work inbox and Outbound updates are sub-pages of Integrations, reached
       // from its workflow-surface cards rather than the main navigation.
-      { id: 'integrations', label: 'Integrations', icon: I.plug, path: orgPath('integrations'), match: (l) => onOrg('integrations') || l.pathname.startsWith('/intake') || l.pathname.startsWith('/outbound') },
+      { id: 'integrations', label: 'Integrations', icon: I.plug, path: orgPath('integrations'), match: (l) => onOrg('integrations') || l.pathname.startsWith('/integrations/intake') || l.pathname.startsWith('/integrations/outbound') || l.pathname.startsWith('/intake') || l.pathname.startsWith('/outbound') },
       { id: 'models', label: 'Models', icon: I.cpu, path: orgPath('models'), match: () => onOrg('models') },
       { id: 'guardrails', label: 'Data guardrails', icon: I.shield, path: orgPath('guardrails'), match: () => onOrg('guardrails') },
     ],
