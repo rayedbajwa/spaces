@@ -68,7 +68,7 @@ const WORK_SURFACES = [
     id: 'intake',
     label: 'Work inbox',
     icon: '📥',
-    path: '/intake',
+    path: '/integrations/intake',
     blurb: 'Every request from outside Spaces lands here first — Jira and Linear issues, Slack requests and Datadog alerts — in one prioritized queue.',
     how: [
       'Connect a source under Project Management, Communication or Monitoring below.',
@@ -80,7 +80,7 @@ const WORK_SURFACES = [
     id: 'outbound',
     label: 'Outbound updates',
     icon: '📤',
-    path: '/outbound',
+    path: '/integrations/outbound',
     blurb: 'Tell the tools you already use when something happens in Spaces — a run fails, a gate opens, a feature is delivered.',
     how: [
       'Connect the target tool below (Jira, Linear, GitHub or Slack).',

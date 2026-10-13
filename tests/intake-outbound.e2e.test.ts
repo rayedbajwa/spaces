@@ -65,9 +65,12 @@ afterAll(async () => {
 describe('intake queue', () => {
   test('renders the prioritized item with its source health and triage controls', async () => {
     const page = await context.newPage()
-    await page.goto(`${baseUrl}/intake`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${baseUrl}/integrations/intake`, { waitUntil: 'domcontentloaded' })
     await page.getByText(`E2E CPU saturation ${suffix}`).first().waitFor({ timeout: 60_000 })
     expect(await page.locator('.intake-sources').count()).toBe(1)
+    // It is a sub-page of Integrations, inside the app shell (header + nav).
+    expect(await page.locator('.topstrip').count()).toBe(1)
+    expect(await page.locator('.sidebar-nav').count()).toBe(1)
     expect(await page.locator('.intake-item.priority-urgent').count()).toBeGreaterThanOrEqual(1)
     // The triage controls for the queued item (US2) are present.
     expect(await page.getByRole('button', { name: 'Dismiss' }).count()).toBeGreaterThanOrEqual(1)
@@ -79,10 +82,13 @@ describe('intake queue', () => {
 describe('outbound configuration', () => {
   test('shows the saved subscription and exposes the add form', async () => {
     const page = await context.newPage()
-    await page.goto(`${baseUrl}/outbound`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${baseUrl}/integrations/outbound`, { waitUntil: 'domcontentloaded' })
     await page.getByText('#spaces-e2e').first().waitFor({ timeout: 60_000 })
     expect(await page.locator('.outbound-row').count()).toBeGreaterThanOrEqual(1)
     expect(await page.getByRole('button', { name: 'Save' }).count()).toBe(1)
+    // It is a sub-page of Integrations, inside the app shell (header + nav).
+    expect(await page.locator('.topstrip').count()).toBe(1)
+    expect(await page.locator('.sidebar-nav').count()).toBe(1)
     await page.close()
   })
 })
@@ -102,7 +108,9 @@ describe('workflow surfaces live under Integrations', () => {
     expect(navText).not.toContain('Outbound')
     await surfaces.getByRole('button', { name: 'Open work inbox' }).click()
     await page.locator('.intake-sources').waitFor({ timeout: 60_000 })
-    expect(new URL(page.url()).pathname).toBe('/intake')
+    expect(new URL(page.url()).pathname).toBe('/integrations/intake')
+    expect(await page.locator('.topstrip').count()).toBe(1)
+    expect(await page.locator('.sidebar-nav').count()).toBe(1)
     await page.close()
   })
 })
