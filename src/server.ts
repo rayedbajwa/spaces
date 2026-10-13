@@ -138,7 +138,7 @@ import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forgetRemoteProject, forwardTarget, forwardToProject, isRemoteProject, resolveForwardProject } from './lib/project-forward'
 import { archiveStream, failInterruptedMigrations, manifestFor, migrationInProgress, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
-import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
+import { capWaiting, awakeProjects, isProjectWorkerAwake, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
 import { runningVersion } from './lib/worker-platform'
 import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
@@ -174,7 +174,7 @@ import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProj
 import { laneForProject } from './lib/board-drop'
 import { ACCEPTANCE_FILE, readAcceptance, renderAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
-import { reapAbandonedJobs } from './lib/job-reaper'
+import { reapAbandonedJobs, reapStrandedRuns } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 
@@ -263,7 +263,7 @@ if (!isProjectRole()) void (async () => {
 // whole project. Workers sweep for those, but a project whose worker never
 // spawned has nobody to sweep for it, so the server sweeps too.
 {
-  const sweep = () => reapAbandonedJobs()
+  const sweep = () => reapAbandonedJobs().then(() => reapStrandedRuns())
     .catch((error) => serverLog.warn('abandoned job sweep failed', { error: error instanceof Error ? error.message : String(error) }))
   if (!isProjectRole()) {
     void sweep()
@@ -305,7 +305,11 @@ if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeSchedul
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
 // Arize Phoenix on Railway, when PHOENIX_AUTO_PROVISION=1 (lib/phoenix-provision.ts).
-if (!isProjectRole()) void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())
+if (!isProjectRole()) {
+  void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())
+    // Then the annotation configs Spaces writes (run status, cost, people's decisions).
+    .then(() => import('./lib/phoenix-annotations')).then((m) => m.ensureAnnotationConfigs())
+}
 // Moves run in this process: any left in progress were cut off by the restart.
 if (!isProjectRole()) void failInterruptedMigrations().catch((error) => serverLog.warn('clearing interrupted moves failed', { error: error instanceof Error ? error.message : String(error) }))
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
@@ -3362,7 +3366,7 @@ async function route(req: Request): Promise<Response> {
         }
       }
     }
-    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer })
+    const answered = await answerPausedRun({ runId, projectId: row.projectId, answer, answeredBy: auth?.user.email ?? null })
     if (!answered.ok) {
       return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
     }
@@ -4226,10 +4230,16 @@ async function openPullRequestsForProject(projectNamespace: string): Promise<Ope
   return lookup
 }
 
-function cachedOpenPullRequests(projectNamespace: string): OpenPullRequestLink[] {
+function cachedOpenPullRequests(projectNamespace: string, projectId?: string): OpenPullRequestLink[] {
   const cached = openPullRequestCache.get(projectNamespace)
-  if (!cached || Date.now() - cached.at >= OPEN_PR_TTL_MS) void openPullRequestsForProject(projectNamespace)
+  if (!cached || Date.now() - cached.at >= OPEN_PR_TTL_MS) void refreshOpenPullRequestsQuietly(projectNamespace, projectId)
   return cached?.prs ?? []
+}
+
+/** The board's refresh: a project on a worker is looked up only while that worker is awake (looking would wake it). */
+async function refreshOpenPullRequestsQuietly(projectNamespace: string, projectId?: string): Promise<void> {
+  if (projectId && await isRemoteProject(projectId) && !(await isProjectWorkerAwake(projectId))) return
+  await openPullRequestsForProject(projectNamespace)
 }
 
 /**
@@ -4340,7 +4350,12 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
     // The web role reads no files: the project's worker recomputes the state.
     // A worker that does not answer quickly (asleep) leaves the last stored state.
     const remote = !fresh && await isRemoteProject(row.projectId)
-    const fromWorker = remote
+    // Only an awake worker is asked: asking wakes it, and the board refreshes
+    // every 10 s. A sleeping worker's files have not changed since it last
+    // stored them (it stays up for minutes after its last job and refreshes
+    // them then), so its stored state stands. With nothing stored, ask anyway.
+    const ask = remote && (!stored || await isProjectWorkerAwake(row.projectId))
+    const fromWorker = ask
       ? await callProjectWorker<{ artifacts: ProjectArtifacts; tasksDone: number }>(row.projectId, '/internal/project-state', { timeoutMs: stored ? 3_000 : 20_000 })
       : undefined
     if (fresh || (remote && stored && !fromWorker)) {
@@ -4411,7 +4426,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
       usage: usageByProject.get(project.namespace) ?? EMPTY_USAGE,
-      ...(status === 'implementing' || status === 'releasing' ? { pullRequests: cachedOpenPullRequests(project.namespace) } : {}),
+      ...(status === 'implementing' || status === 'releasing' ? { pullRequests: cachedOpenPullRequests(project.namespace, row.projectId) } : {}),
     })
   }
 
