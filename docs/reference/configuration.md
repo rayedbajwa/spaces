@@ -83,6 +83,10 @@ makes the database suites skip with a message instead of writing to it.
 |---|---|---|
 | `AUTH_DISABLED` | unset | `1` turns sign-in off (single-user local use); every route is open |
 | `SUPERADMIN_EMAILS` | unset | Comma-separated emails of the deployment's super admins, who manage the waitlist; when unset, the first registered account is the super admin |
+| `SPACES_ROLE` | `all` | `all` runs everything in one service. `web` is the public app with no workspace disk, forwarding project work to the project's worker. `project` is one project's worker (see specs/014-project-workers) |
+| `SPACES_INTERNAL_TOKEN` | unset | Shared secret between the web service and project workers; required for `web` and `project` |
+| `WORKER_PROJECT_ID` | unset | The project a `project`-role service serves |
+| `PROJECT_WORKER_URL_TEMPLATE` | unset | `web` role: a project worker's address before provisioning records one, e.g. `http://spaces-proj-{code}.railway.internal:3000` (`{code}`, `{slug}`, `{projectId}`) |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user, invitees and people let in from the waitlist can, and the landing page offers the waitlist |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
 | `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |

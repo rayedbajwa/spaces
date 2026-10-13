@@ -1436,3 +1436,19 @@ CREATE TABLE IF NOT EXISTS outbound_deliveries (
 ALTER TABLE outbound_deliveries ALTER COLUMN next_attempt_at DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS outbound_deliveries_due_idx ON outbound_deliveries (state, next_attempt_at);
 CREATE INDEX IF NOT EXISTS outbound_deliveries_org_idx ON outbound_deliveries (org_id, created_at DESC);
+
+-- 014-project-workers: each project's worker service (one per project, own disk).
+-- internal_url is its private-network address; provisioning fills the rest.
+CREATE TABLE IF NOT EXISTS project_workers (
+  project_id          UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+  internal_url        TEXT,
+  railway_service_id  TEXT,
+  railway_volume_id   TEXT,
+  state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','provisioning','ready','sleeping','updating','failed','removing')),
+  version             TEXT,
+  last_seen_at        TIMESTAMPTZ,
+  disk_used_bytes     BIGINT,
+  last_error          TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);

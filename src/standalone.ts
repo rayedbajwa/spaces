@@ -8,6 +8,11 @@
  * exits when either child dies so the platform restarts the whole service.
  *
  *   bun run src/standalone.ts        (railway.json uses this start command)
+ *
+ * SPACES_ROLE (specs/014-project-workers) picks what runs: `all` (default) the
+ * server and the supervisor; `web` the server only (no workspace disk);
+ * `project` the server for one project plus that project's worker, which never
+ * idles out (the platform sleeps the whole service instead).
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -20,10 +25,10 @@ const srcDir = path.dirname(fileURLToPath(import.meta.url))
 const children: Array<{ name: string; child: ChildProcess }> = []
 let shuttingDown = false
 
-function start(name: string, script: string): void {
+function start(name: string, script: string, env: Record<string, string> = {}): void {
   const child = spawn(process.execPath, ['run', path.join(srcDir, script)], {
     cwd: path.dirname(srcDir),
-    env: process.env,
+    env: { ...process.env, ...env },
     stdio: ['ignore', 'inherit', 'inherit'],
   })
   children.push({ name, child })
@@ -52,9 +57,9 @@ async function shutdown(reason: string, exitCode = 0): Promise<void> {
   console.log(`[standalone] shutting down (${reason}); waiting up to ${Math.round(waitMs / 1000)}s for workers`)
   // Workers first: with a drain budget they finish their running stages, and the
   // server keeps serving (the old version) until they are gone.
-  const supervisor = children.find((c) => c.name === 'supervisor')?.child
+  const workers = children.filter((c) => c.name !== 'server').map((c) => c.child)
   const server = children.find((c) => c.name === 'server')?.child
-  if (supervisor) await stop(supervisor, reason === 'SIGINT' ? 'SIGINT' : 'SIGTERM', waitMs)
+  await Promise.all(workers.map((child) => stop(child, reason === 'SIGINT' ? 'SIGINT' : 'SIGTERM', waitMs)))
   if (server) await stop(server, 'SIGTERM', 5_000)
   process.exit(exitCode)
 }
@@ -64,5 +69,16 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
 // The server applies the database schema at boot; give it a head start so the
 // supervisor's first queries see the tables on a fresh database.
+const role = process.env.SPACES_ROLE?.trim().toLowerCase()
 start('server', 'server.ts')
-setTimeout(() => { if (!shuttingDown) start('supervisor', 'supervisor.ts') }, Number(process.env.STANDALONE_SUPERVISOR_DELAY_MS ?? '4000'))
+if (role !== 'web') {
+  setTimeout(() => {
+    if (shuttingDown) return
+    if (role === 'project') {
+      const projectId = process.env.WORKER_PROJECT_ID?.trim() ?? ''
+      start('worker', 'worker.ts', { WORKER_PROJECT_ID: projectId, WORKER_IDLE_EXIT_SECONDS: '0' })
+    } else {
+      start('supervisor', 'supervisor.ts')
+    }
+  }, Number(process.env.STANDALONE_SUPERVISOR_DELAY_MS ?? '4000'))
+}
