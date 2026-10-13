@@ -39,6 +39,20 @@ export async function awakeProjects(): Promise<string[]> {
   return rows.map((r) => r.projectId)
 }
 
+let awakeCache: { at: number; ids: Set<string> } | undefined
+
+/**
+ * Whether a project's worker is running its job process now. Reads that only
+ * decorate the board (project state, open pull requests) ask the worker only
+ * then: any request to a sleeping worker wakes it, and the board refreshing
+ * every 10 s kept idle workers from ever sleeping. Cached briefly, so one
+ * board refresh makes one query.
+ */
+export async function isProjectWorkerAwake(projectId: string, now = Date.now(), load: () => Promise<string[]> = awakeProjects): Promise<boolean> {
+  if (!awakeCache || now - awakeCache.at > 5_000) awakeCache = { at: now, ids: new Set(await load()) }
+  return awakeCache.ids.has(projectId)
+}
+
 /** Projects with runnable queued jobs and a dedicated worker that is not running. */
 export async function projectsWaitingForWorker(): Promise<string[]> {
   const rows = await getDb()<Array<{ projectId: string }>>`
