@@ -169,8 +169,8 @@ export const PROVIDER_TEMPLATES: Record<OAuthProviderId, OAuthProviderTemplate> 
     // read: issues/projects/docs for knowledge; write: create issues/comments from tasks.
     scopes: ['read', 'write'],
     extraAuthorizeParams: { prompt: 'consent' },
-    // Linear opens this in the signed-in workspace (linear.app/<workspace>/settings/applications).
-    consoleUrl: 'https://linear.app/settings/applications',
+    // Linear opens this in the signed-in workspace (linear.app/<workspace>/settings/api/applications/new).
+    consoleUrl: 'https://linear.app/settings/api/applications/new',
   },
   railway: {
     provider: 'railway',

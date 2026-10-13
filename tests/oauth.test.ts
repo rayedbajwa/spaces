@@ -230,6 +230,6 @@ describe('Figma token exchange and refresh request shape', () => {
 describe('Railway provider template: OAuth app setup', () => {
   test('links to the Railway developer apps page where a new OAuth app is created', () => {
     expect(PROVIDER_TEMPLATES.railway.consoleUrl).toBe('https://railway.com/workspace/developer/apps/new')
-    expect(PROVIDER_TEMPLATES.linear.consoleUrl).toBe('https://linear.app/settings/applications')
+    expect(PROVIDER_TEMPLATES.linear.consoleUrl).toBe('https://linear.app/settings/api/applications/new')
   })
 })
