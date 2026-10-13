@@ -112,7 +112,11 @@ export async function sweepWorkspaces(options: { root: string; aggressive?: bool
 
   // 2. Governing workspaces of projects that no longer exist or are archived.
   const governance = path.join(options.root, '_governance')
-  const live = await getDb()<Array<{ slug: string }>>`SELECT slug FROM projects WHERE archived_at IS NULL`.catch(() => [])
+  // A project's worker knows only its own project (specs/014-project-workers).
+  const own = process.env.SPACES_ROLE?.trim().toLowerCase() === 'project' ? process.env.WORKER_PROJECT_ID?.trim() : undefined
+  const live = own
+    ? await getDb()<Array<{ slug: string }>>`SELECT slug FROM projects WHERE project_id = ${own} AND archived_at IS NULL`.catch(() => [])
+    : await getDb()<Array<{ slug: string }>>`SELECT slug FROM projects WHERE archived_at IS NULL`.catch(() => [])
   const liveSlugs = new Set(live.map((row) => row.slug))
   if (live.length > 0) {
     for (const dir of await directories(governance)) {
