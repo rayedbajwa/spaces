@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+
+# ==============================================================================
+# Spaces — web service image (specs/014-project-workers)
+# ==============================================================================
+# The web service (SPACES_ROLE=web) serves the app and forwards project work to
+# each project's worker; it runs no agents. So this image leaves out what only
+# agents need — Chromium (~1.7 GB), the Docker CLI, psql — and builds and starts
+# much faster than the full image (Dockerfile), which project workers run.
+#
+# Railway: set RAILWAY_DOCKERFILE_PATH=Dockerfile.web on the web service only.
+# ==============================================================================
+
+FROM oven/bun:1.4 AS deps
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+
+FROM oven/bun:1.4 AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN bun run build:web
+
+FROM oven/bun:1.4 AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+
+# git and tar stay: during the fallback week the web service can still copy a
+# project back from its worker (tar), and a few server paths read git metadata.
+# gosu lets the entrypoint fix /data ownership, as in the full image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git ca-certificates gosu curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV HOME=/data/home
+ENV AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces
+RUN mkdir -p /data/home /data/aidlc/workspaces && chown -R bun:bun /data
+
+# Same dependencies as the full image: the server can rebuild the frontend at boot.
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build --chown=bun:bun /app/public ./public
+COPY package.json tsconfig.json ./
+COPY src ./src
+COPY data ./data
+COPY schemas ./schemas
+COPY scripts ./scripts
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Build identity last, so a commit invalidates only this layer.
+ARG GIT_COMMIT
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG SPACES_VERSION
+ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
+    SPACES_VERSION=$SPACES_VERSION
+
+EXPOSE 3000
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["bun", "run", "src/standalone.ts"]

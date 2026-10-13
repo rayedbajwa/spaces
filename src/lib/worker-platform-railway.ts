@@ -123,7 +123,10 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
       env.serviceId = serviceId
       await call(
         `mutation serviceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
-        { ...env, input: { sleepApplication: true, numReplicas: 1, healthcheckPath: '/health' } },
+        // Railway ignores railway.json for services created through the API: without
+        // these it builds with Railpack (no Chromium, psql or gosu) and starts only
+        // the server, so no job process ever runs.
+        { ...env, input: { sleepApplication: true, numReplicas: 1, healthcheckPath: '/health', healthcheckTimeout: 300, dockerfilePath: 'Dockerfile', startCommand: 'bun run src/standalone.ts' } },
       )
       // Size it; a plan or API that refuses leaves Railway's default, which still works.
       await call(

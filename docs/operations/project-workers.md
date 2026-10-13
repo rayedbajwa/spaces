@@ -147,6 +147,21 @@ Files keep their paths, since both sides mount `/data`, so nothing in the databa
 
 Once every project has moved, set `SPACES_ROLE=web` on the shared service. Nothing changes for moved projects, but the shared service stops running workers and stops sweeping its disk. Keep its volume for a week as a fallback. To go back, set `SPACES_ROLE=all` again and **Move back** the projects that need it.
 
+## Faster builds
+
+Each Railway worker builds its own image from the repository with the `Dockerfile`. Railway has no shared registry between services, so there's no building once and pulling everywhere. Instead, the Dockerfile is ordered for Railway's build cache:
+
+1. system packages
+2. dependencies, then Chromium (about 1.7 GB, cached until `bun.lock` changes)
+3. the code
+4. the commit, last
+
+A worker's first build takes a few minutes. After that, an update rebuilds only the code layers.
+
+The web service runs no agents, so it uses `Dockerfile.web`: 675 MB instead of 2.5 GB, with no Chromium, Docker CLI or psql. On Railway, set `RAILWAY_DOCKERFILE_PATH=Dockerfile.web` on the web service only.
+
+Spaces sets each worker's build and start explicitly: `dockerfilePath: Dockerfile` and `startCommand: bun run src/standalone.ts`. Railway doesn't apply `railway.json` to services created through its API, so without these a worker builds with Railpack (no Chromium, psql or gosu) and starts only the server, and its job process never runs.
+
 ## Settings
 
 | Variable | Platform | Meaning |
