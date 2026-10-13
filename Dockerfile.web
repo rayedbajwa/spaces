@@ -26,11 +26,6 @@ FROM oven/bun:1.4 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
-ARG GIT_COMMIT
-ARG RAILWAY_GIT_COMMIT_SHA
-ARG SPACES_VERSION
-ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
-    SPACES_VERSION=$SPACES_VERSION
 
 # git and tar stay: during the fallback week the web service can still copy a
 # project back from its worker (tar), and a few server paths read git metadata.
@@ -52,6 +47,13 @@ COPY data ./data
 COPY schemas ./schemas
 COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+
+# Build identity last, so a commit invalidates only this layer.
+ARG GIT_COMMIT
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG SPACES_VERSION
+ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
+    SPACES_VERSION=$SPACES_VERSION
 
 EXPOSE 3000
 ENTRYPOINT ["docker-entrypoint.sh"]

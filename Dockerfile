@@ -36,11 +36,6 @@ ENV PORT=3000
 # Platform build pipelines like Railway automatically provide RAILWAY_GIT_COMMIT_SHA.
 # When omitted, the resolver falls back to git (unavailable in the image) and
 # the package.json version, so the endpoint reports "unknown"/the placeholder.
-ARG GIT_COMMIT
-ARG RAILWAY_GIT_COMMIT_SHA
-ARG SPACES_VERSION
-ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
-    SPACES_VERSION=$SPACES_VERSION
 
 # Agents clone repositories, create worktrees, commit and push: git is required.
 # ca-certificates for HTTPS to GitHub/Anthropic; openssh-client for ssh remotes.
@@ -81,8 +76,19 @@ ENV AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces
 # instruction: Railway's builder rejects it and Docker does not need it.
 RUN mkdir -p /data/home /data/aidlc/workspaces && chown -R bun:bun /data
 
-# Copy production node_modules + source + built assets
+# Layers are ordered for Railway's build cache: what changes rarely comes
+# first (system packages above, then dependencies and Chromium, ~1.7 GB), the
+# code and the commit last, so a code change rebuilds only the last layers.
 COPY --from=deps  /app/node_modules ./node_modules
+
+# Agents' browser: Playwright's Chromium (+ its system libraries) and the
+# pi-playwright skill wiring, installed to a path every user can read. Needs
+# only node_modules and this script, so it is cached until dependencies change.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY scripts/setup-browsers.ts ./scripts/setup-browsers.ts
+RUN SPACES_BROWSER_DEPS=1 bun run scripts/setup-browsers.ts && chmod -R a+rX /ms-playwright && rm -rf /var/lib/apt/lists/*
+
+# Source + built assets.
 COPY --from=build --chown=bun:bun /app/public ./public
 COPY package.json tsconfig.json ./
 COPY src ./src
@@ -91,10 +97,13 @@ COPY schemas ./schemas
 COPY scripts ./scripts
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Agents' browser: Playwright's Chromium (+ its system libraries) and the
-# pi-playwright skill wiring, installed to a path every user can read.
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN SPACES_BROWSER_DEPS=1 bun run scripts/setup-browsers.ts && chmod -R a+rX /ms-playwright && rm -rf /var/lib/apt/lists/*
+# Build identity last: it changes with every commit and would otherwise
+# invalidate every layer after it.
+ARG GIT_COMMIT
+ARG RAILWAY_GIT_COMMIT_SHA
+ARG SPACES_VERSION
+ENV GIT_COMMIT=${GIT_COMMIT:-$RAILWAY_GIT_COMMIT_SHA} \
+    SPACES_VERSION=$SPACES_VERSION
 
 EXPOSE 3000
 

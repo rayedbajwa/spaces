@@ -72,13 +72,6 @@ describe('rollout', () => {
     }
   })
 
-  test('nothing is updated until the version image is published', async () => {
-    const { p, updates } = platform()
-    const waiting = { ...p, versionAvailable: async () => false }
-    expect((await rolloutOnce({ desired: () => 'new2222', platform: () => waiting, busy: async () => [] })).updated).toEqual([])
-    expect(updates).toEqual([])
-  })
-
   test('an unknown version (local build without GIT_COMMIT) updates nothing', async () => {
     const { p, updates } = platform()
     expect((await rolloutOnce({ desired: () => 'unknown', platform: () => p, busy: async () => [] })).updated).toEqual([])

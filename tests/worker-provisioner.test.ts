@@ -57,7 +57,7 @@ describe('provisioning a project worker', () => {
     expect(create.variables.WORKER_PROJECT_ID).toBe(projectA.projectId)
     expect(create.variables.DATABASE_URL).toBe('${{Postgres.DATABASE_URL}}')
     expect(create.variables.SPACES_INTERNAL_TOKEN).toBe('${{spaces.SPACES_INTERNAL_TOKEN}}')
-    expect(railway.calls[1]!.variables.input).toMatchObject({ sleepApplication: true, numReplicas: 1 })
+    expect(railway.calls[1]!.variables.input).toMatchObject({ sleepApplication: true, numReplicas: 1, dockerfilePath: 'Dockerfile', startCommand: 'bun run src/standalone.ts' })
     expect(railway.calls[2]!.variables.input).toMatchObject({ vCPUs: 2, memoryGB: 2 })
     expect(railway.calls[3]!.variables.input).toMatchObject({ mountPath: '/data', serviceId: 'svc-1' })
     expect(worker.state).toBe('ready')

@@ -147,14 +147,20 @@ Files keep their paths, since both sides mount `/data`, so nothing in the databa
 
 Once every project has moved, set `SPACES_ROLE=web` on the shared service. Nothing changes for moved projects, but the shared service stops running workers and stops sweeping its disk. Keep its volume for a week as a fallback. To go back, set `SPACES_ROLE=all` again and **Move back** the projects that need it.
 
-## Faster workers: one image, built once
+## Faster builds
 
-Each Railway worker used to build the full image (about 2.5 GB, mostly Chromium for the agents) from source when it was created or updated: 3–4 minutes of build time per worker. Now:
+Each Railway worker builds its own image from the repository with the `Dockerfile`. Railway has no shared registry between services, so there's no building once and pulling everywhere. Instead, the Dockerfile is ordered for Railway's build cache:
 
-- **Worker image.** CI (`.github/workflows/worker-image.yml`) builds the full image once per commit on `main`, with a layer cache, and publishes it as `ghcr.io/rayedbajwa/spaces-worker:<commit>` and `:latest`. Set `PROJECT_WORKER_IMAGE=ghcr.io/rayedbajwa/spaces-worker` on the web service, and workers pull that image instead of building, so creating or updating one takes about a minute. A worker is updated only once its commit's image is published. A new worker whose commit isn't published yet starts from `:latest`, and the next update pass moves it to the commit. Existing workers built from the repo switch to the image the next time they're updated.
-- **Web image.** The web service runs no agents, so it uses `Dockerfile.web`: 675 MB instead of 2.5 GB, with no Chromium, Docker CLI or psql. It builds and restarts faster. On Railway, set `RAILWAY_DOCKERFILE_PATH=Dockerfile.web` on the web service only.
+1. system packages
+2. dependencies, then Chromium (about 1.7 GB, cached until `bun.lock` changes)
+3. the code
+4. the commit, last
 
-**Once, after the first `Worker image` run:** make the package public. On GitHub, open the profile's **Packages** → `spaces-worker` → **Package settings** → **Change visibility** → Public. Railway pulls it without credentials, and the repository is already public.
+A worker's first build takes a few minutes. After that, an update rebuilds only the code layers.
+
+The web service runs no agents, so it uses `Dockerfile.web`: 675 MB instead of 2.5 GB, with no Chromium, Docker CLI or psql. On Railway, set `RAILWAY_DOCKERFILE_PATH=Dockerfile.web` on the web service only.
+
+Spaces sets each worker's build and start explicitly: `dockerfilePath: Dockerfile` and `startCommand: bun run src/standalone.ts`. Railway doesn't apply `railway.json` to services created through its API, so without these a worker builds with Railpack (no Chromium, psql or gosu) and starts only the server, and its job process never runs.
 
 ## Settings
 
@@ -165,7 +171,7 @@ Each Railway worker used to build the full image (about 2.5 GB, mostly Chromium 
 | `MIGRATION_SOURCE_URL` | all | The shared service's private address, which workers pull a moved project from (Railway: from `RAILWAY_PRIVATE_DOMAIN`) |
 | `HOST` | all | Address to listen on; `::` on Railway so workers can reach the shared service privately |
 | `PROJECT_WORKER_PLATFORM` | all | `railway`, `kubernetes` or `docker` (Railway is assumed when `RAILWAY_PROVISIONER_TOKEN` is set) |
-| `PROJECT_WORKER_IMAGE` | all | Image the workers run. Railway: the repository (`ghcr.io/rayedbajwa/spaces-worker`), tagged with each commit; Kubernetes and Docker: the full reference |
+| `PROJECT_WORKER_IMAGE` | Kubernetes, Docker | Image the workers run |
 | `PROJECT_WORKER_VCPUS`, `PROJECT_WORKER_MEMORY_GB`, `PROJECT_WORKER_DISK_GB` | all | Worker size (2, 2, 5) |
 | `PROJECT_WORKER_PORT` | all | Port workers listen on (8080) |
 | `PROJECT_WORKER_IDLE_SECONDS` | all | Idle time before a worker's job process stops (300) |

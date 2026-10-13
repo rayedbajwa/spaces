@@ -18,12 +18,6 @@ export interface RailwayWorkerConfig {
   environmentId: string
   repo: string
   branch: string
-  /**
-   * A prebuilt image (e.g. ghcr.io/rayedbajwa/spaces-worker), tagged with the
-   * commit by CI. When set, workers run it instead of building from the repo:
-   * creating or updating one is a pull, not a build.
-   */
-  image?: string
   /** The web service's name in Railway, for variable references. */
   webServiceName: string
   postgresServiceName: string
@@ -45,7 +39,6 @@ export function railwayWorkerConfig(env: NodeJS.ProcessEnv = process.env): Railw
     // Workers follow a branch nobody pushes to, so a push to main does not
     // redeploy them; Spaces deploys the exact commit to each one when idle.
     branch: env.PROJECT_WORKER_BRANCH?.trim() || 'spaces-workers',
-    image: env.PROJECT_WORKER_IMAGE?.trim() || undefined,
     webServiceName: env.RAILWAY_SERVICE_NAME?.trim() || 'spaces',
     postgresServiceName: env.PROJECT_WORKER_POSTGRES_SERVICE?.trim() || 'Postgres',
     size: workerSize(env),
@@ -63,40 +56,7 @@ export function railwayWorkerVariables(config: RailwayWorkerConfig, spec: Worker
     ENCRYPTION_KEY: `\${{${web}.ENCRYPTION_KEY}}`,
     SPACES_INTERNAL_TOKEN: `\${{${web}.SPACES_INTERNAL_TOKEN}}`,
     PUBLIC_URL: `\${{${web}.PUBLIC_URL}}`,
-    // A built-from-repo worker learns its commit from Railway; an image carries it.
-    ...(config.image ? {} : { GIT_COMMIT: '${{RAILWAY_GIT_COMMIT_SHA}}' }),
-  }
-}
-
-/** The image reference for a version: the commit tag CI pushed, or latest when unknown. */
-export function imageRef(image: string, version: string): string {
-  if (/:[^/]+$/.test(image) || image.includes('@')) return image
-  return `${image}:${/^[0-9a-f]{7,40}$/.test(version) ? version : 'latest'}`
-}
-
-/**
- * Whether the image for a version has been pushed yet. CI pushes it after the
- * commit lands, possibly after the web service already runs it; an update waits
- * for it. Public GitHub Container Registry images are checked anonymously;
- * other registries are assumed ready.
- */
-export async function imageAvailable(ref: string, fetchImpl: typeof fetch = fetch): Promise<boolean> {
-  const match = /^ghcr\.io\/([^:@]+):(.+)$/.exec(ref)
-  if (!match) return true
-  const [, repository, tag] = match
-  try {
-    const tokenRes = await fetchImpl(`https://ghcr.io/token?scope=repository:${repository}:pull`)
-    const token = ((await tokenRes.json()) as { token?: string }).token
-    const res = await fetchImpl(`https://ghcr.io/v2/${repository}/manifests/${tag}`, {
-      method: 'HEAD',
-      headers: {
-        ...(token ? { authorization: `Bearer ${token}` } : {}),
-        accept: 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json',
-      },
-    })
-    return res.ok
-  } catch {
-    return false
+    GIT_COMMIT: '${{RAILWAY_GIT_COMMIT_SHA}}',
   }
 }
 
@@ -153,28 +113,20 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
     kind: 'railway',
     async create(spec, existing, record) {
       let serviceId = existing.serviceRef
-      // This commit's image may not be pushed yet: start from latest; the
-      // rollout moves the worker to the commit once its image exists.
-      const image = config.image
-        ? (await imageAvailable(imageRef(config.image, spec.version)) ? imageRef(config.image, spec.version) : imageRef(config.image, 'latest'))
-        : undefined
       if (!serviceId) {
         serviceId = (await call<{ serviceCreate: { id: string } }>(
           `mutation serviceCreate($input: ServiceCreateInput!) { serviceCreate(input: $input) { id } }`,
-          { input: {
-            projectId: config.railwayProjectId,
-            name: spec.name,
-            ...(image ? { source: { image } } : { source: { repo: config.repo }, branch: config.branch }),
-            variables: railwayWorkerVariables(config, spec),
-          } },
+          { input: { projectId: config.railwayProjectId, name: spec.name, source: { repo: config.repo }, branch: config.branch, variables: railwayWorkerVariables(config, spec) } },
         )).serviceCreate.id
         await record({ serviceRef: serviceId })
       }
       env.serviceId = serviceId
       await call(
         `mutation serviceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
-        // An image does not come with railway.json: give it the start command too.
-        { ...env, input: { sleepApplication: true, numReplicas: 1, healthcheckPath: '/health', ...(config.image ? { startCommand: 'bun run src/standalone.ts' } : {}) } },
+        // Railway ignores railway.json for services created through the API: without
+        // these it builds with Railpack (no Chromium, psql or gosu) and starts only
+        // the server, so no job process ever runs.
+        { ...env, input: { sleepApplication: true, numReplicas: 1, healthcheckPath: '/health', healthcheckTimeout: 300, dockerfilePath: 'Dockerfile', startCommand: 'bun run src/standalone.ts' } },
       )
       // Size it; a plan or API that refuses leaves Railway's default, which still works.
       await call(
@@ -182,31 +134,12 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
         { input: { ...env, vCPUs: config.size.vcpus, memoryGB: config.size.memoryGb } },
       ).catch((error) => railwayLog.warn('worker size not applied', { service: spec.name, error: error instanceof Error ? error.message : String(error) }))
       if (!existing.volumeRef) await record({ volumeRef: await createVolume(serviceId) })
-      if (config.image) await call(`mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }`, env)
-      else await deployVersion(serviceId, spec.version)
+      await deployVersion(serviceId, spec.version)
       return { internalUrl: `http://${spec.name}.railway.internal:${spec.port}` }
     },
     async update(spec, refs) {
       if (!refs.serviceRef) throw new Error('This worker has no Railway service yet.')
-      if (config.image) {
-        // Point the service at the version's image (this also moves a worker that
-        // was built from the repo onto the image), then deploy it.
-        const serviceId = refs.serviceRef
-        await call(`mutation serviceConnect($id: String!, $input: ServiceConnectInput!) { serviceConnect(id: $id, input: $input) { id } }`, { id: serviceId, input: { image: imageRef(config.image, spec.version) } })
-        await call(
-          `mutation serviceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
-          { serviceId, environmentId: config.environmentId, input: { startCommand: 'bun run src/standalone.ts' } },
-        )
-        // The built-from-repo GIT_COMMIT reference is empty on an image service and
-        // would hide the image's own commit.
-        await call(`mutation variableDelete($input: VariableDeleteInput!) { variableDelete(input: $input) }`, { input: { projectId: config.railwayProjectId, environmentId: config.environmentId, serviceId, name: 'GIT_COMMIT' } }).catch(() => undefined)
-        await call(`mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }`, { serviceId, environmentId: config.environmentId })
-        return
-      }
       await deployVersion(refs.serviceRef, spec.version)
-    },
-    async versionAvailable(version) {
-      return config.image ? imageAvailable(imageRef(config.image, version)) : true
     },
     async remove(_spec, refs) {
       if (refs.volumeRef) await deleteVolume(refs.volumeRef)
