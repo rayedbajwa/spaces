@@ -57,6 +57,7 @@ import { notifyProject } from './lib/slack'
 import { stageSummary, summaryForGate } from './lib/approval-store'
 import { deliverApprovalRequestsForGate } from './lib/approval-notify'
 import { drainBudget } from './lib/drain'
+import { flushTracing } from './lib/tracing'
 import { emitGateOutbound, emitRunOutbound } from './lib/outbound-emit'
 
 const workerLog = log.child({ mod: 'worker' })
@@ -297,6 +298,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
     ...(Object.keys(priorVisits).length ? { priorVisits } : {}),
     // The run's guardrail tokens outlive this process (a gate answer or a redeploy resumes elsewhere).
     guardVault: runGuardVault(runId),
+    runId,
     ...(resumeSessionFile
       ? {
           // Same session file as the previous attempt → the agent keeps its context.
@@ -1010,6 +1012,8 @@ async function shutdown(signal: string): Promise<void> {
   engines.clear()
   activeJobs.clear()
   await unregisterWorker(getWorkerId()).catch(() => undefined)
+  // The last agent spans of the interrupted stages (Phoenix, when configured).
+  await flushTracing()
   await closeDb()
   process.exit(0)
 }

@@ -58,7 +58,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@arizeai/openinference-semantic-conventions": "^2.14.0",
     "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.223.0",
+    "@opentelemetry/resources": "^2.12.0",
+    "@opentelemetry/sdk-trace-base": "^2.12.0",
     "@playwright/cli": "^0.1.21",
     "@the-agency/pi-spec-kit": "^0.2.5",
     "marked": "^14.1.2",

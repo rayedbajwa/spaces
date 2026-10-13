@@ -1,6 +1,7 @@
 import { decryptSecret, encryptSecret } from './crypto-vault'
 import { getDb } from './db'
 import { AgentGuard, DEFAULT_POLICY, GUARD_MODES, type GuardMode, type GuardPolicy } from './guardrails'
+import { traceAgentSession, type TraceContext } from './tracing'
 
 /**
  * Each organization's AI data guardrails setting (organizations.ai_guardrails),
@@ -38,9 +39,16 @@ export async function saveGuardPolicy(orgId: string, input: unknown): Promise<Gu
 
 /** A guard for one agent session, installed on it, under the organization's setting. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export async function guardSession(session: { agent: unknown; prompt?: (text: string, options?: any) => Promise<unknown> }, orgId: string | null | undefined): Promise<AgentGuard> {
-  const guard = new AgentGuard(await loadGuardPolicy(orgId))
+export async function guardSession(
+  session: { agent: unknown; prompt?: (text: string, options?: any) => Promise<unknown>; subscribe?: (listener: (event: any) => void) => unknown },
+  orgId: string | null | undefined,
+  trace?: Omit<TraceContext, 'orgId' | 'policy'>,
+): Promise<AgentGuard> {
+  const policy = await loadGuardPolicy(orgId)
+  const guard = new AgentGuard(policy)
   guard.install(session)
+  // Phoenix tracing (lib/tracing.ts), when configured; spans are masked with the same policy.
+  if (trace && session.subscribe) traceAgentSession(session as Parameters<typeof traceAgentSession>[0], { ...trace, orgId, policy })
   return guard
 }
 
