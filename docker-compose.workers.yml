@@ -34,7 +34,12 @@ services:
       retries: 20
 
   web:
-    build: .
+    build:
+      context: .
+      args:
+        # The version workers are moved to when idle; without it nothing is updated.
+        #   GIT_COMMIT="$(git rev-parse HEAD)" docker compose -f docker-compose.workers.yml up --build
+        GIT_COMMIT: "${GIT_COMMIT:-}"
     # Project workers run this same image.
     image: spaces:local
     restart: unless-stopped

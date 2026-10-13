@@ -138,6 +138,8 @@ import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forwardTarget, forwardToProject, resolveForwardProject } from './lib/project-forward'
 import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
+import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
+import { runningVersion } from './lib/worker-platform'
 import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
 import { publicOrigin } from './lib/public-url'
 import {
@@ -285,6 +287,9 @@ void (async () => {
 // must not look like they are still running.
 // The web role wakes each project's worker as its work is queued (phase 3).
 if (isWebRole()) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
+// ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
+if (isWebRole()) startRolloutLoop()
+if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
 // A new project's worker runs the wizard's bootstrap (governing workspace and
 // onboarding) once, the first time it starts.
 if (isProjectRole()) {
@@ -573,7 +578,7 @@ async function route(req: Request): Promise<Response> {
   if (url.pathname === '/api/admin/workers' || url.pathname.startsWith('/api/admin/workers/')) {
     if (!(await isSiteAdmin())) return sendJson(403, { error: "Only the deployment's super admin manages project workers." })
     if (method === 'GET' && url.pathname === '/api/admin/workers') {
-      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers(), awake: await awakeProjects(), maxAwake: maxAwakeWorkers(), waiting: await capWaiting() })
+      return sendJson(200, { role: spacesRole(), platform: workerPlatform()?.kind ?? null, problem: workerPlatformProblem() ?? null, workers: await listProjectWorkers(), version: runningVersion(), awake: await awakeProjects(), maxAwake: maxAwakeWorkers(), waiting: await capWaiting() })
     }
     if (method === 'POST' && url.pathname === '/api/admin/workers/check') {
       const body = await readJson<{ probe?: boolean }>(req).catch(() => ({} as { probe?: boolean }))

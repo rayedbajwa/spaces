@@ -46,6 +46,7 @@ describe('provisioning a project worker', () => {
     const worker = await provisionProjectWorker(projectA.projectId, { platform: railwayPlatform(config, railway.gql) })
     expect(railway.ops()).toEqual(['serviceCreate', 'serviceInstanceUpdate', 'serviceInstanceLimitsUpdate', 'volumeCreate', 'serviceInstanceDeployV2'])
     const create = railway.calls[0]!.variables.input
+    expect(create.branch).toBe('main') // the test config; the default is spaces-workers
     expect(create.source).toEqual({ repo: 'acme/spaces' })
     expect(create.variables.SPACES_ROLE).toBe('project')
     expect(create.variables.WORKER_PROJECT_ID).toBe(projectA.projectId)
