@@ -1452,3 +1452,5 @@ CREATE TABLE IF NOT EXISTS project_workers (
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- What a new project's worker runs once it is up (the wizard's model and first feature).
+ALTER TABLE project_workers ADD COLUMN IF NOT EXISTS bootstrap_json JSONB;

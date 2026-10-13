@@ -2996,3 +2996,5 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .delivery-badge.delivery-failed { background: rgba(229,72,77,.18); color: #f2555a; }
 .delivery-badge.delivery-pending { background: rgba(94,106,210,.18); color: #8a93e0; }
 .delivery-badge.delivery-skipped { background: rgba(107,114,128,.18); color: #9aa0a6; }
+
+.worker-check { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }

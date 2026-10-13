@@ -87,6 +87,10 @@ makes the database suites skip with a message instead of writing to it.
 | `SPACES_INTERNAL_TOKEN` | unset | Shared secret between the web service and project workers; required for `web` and `project` |
 | `WORKER_PROJECT_ID` | unset | The project a `project`-role service serves |
 | `PROJECT_WORKER_URL_TEMPLATE` | unset | `web` role: a project worker's address before provisioning records one, e.g. `http://spaces-proj-{code}.railway.internal:3000` (`{code}`, `{slug}`, `{projectId}`) |
+| `RAILWAY_PROVISIONER_TOKEN` | unset | Railway project token (this project's environment) used to create and remove each project's worker service and volume; set it sealed. Check it under the account menu → Project workers |
+| `RAILWAY_PROVISIONER_TOKEN_TYPE` | `project` | `workspace` or `account` if a broader token is used instead |
+| `PROJECT_WORKER_VCPUS` / `PROJECT_WORKER_MEMORY_GB` | `2` / `2` | Size of each project worker |
+| `PROJECT_WORKER_REPO` / `PROJECT_WORKER_BRANCH` | `rayedbajwa/spaces` / `main` | What project workers are built from |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user, invitees and people let in from the waitlist can, and the landing page offers the waitlist |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
 | `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |

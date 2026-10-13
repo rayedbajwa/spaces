@@ -8,6 +8,7 @@ import { PageHead } from './shell'
 import { ModelsSection } from './models'
 import { formatTokens, formatUsd, type UsageSummary } from './usage'
 import { WaitlistSection } from './waitlist-admin'
+import { WorkersSection } from './workers-admin'
 
 /**
  * Organization page at /organization: the layer every team shares.
@@ -34,7 +35,7 @@ interface PromotionProposal {
 
 interface KnowledgeStatus { sources: number; documents: number; chunks: number; embeddings: { available: boolean; model: string }; vectorSearch: boolean; lastSyncAt: string | null }
 
-type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'guardrails' | 'promotions' | 'teams' | 'waitlist'
+type Section = 'overview' | 'memory' | 'knowledge' | 'integrations' | 'models' | 'guardrails' | 'promotions' | 'teams' | 'waitlist' | 'workers'
 
 const SECTION_BLURB: Record<Section, string> = {
   overview: '',
@@ -46,6 +47,7 @@ const SECTION_BLURB: Record<Section, string> = {
   models: 'Bring your own Anthropic, OpenAI or OpenRouter key. Routing picks a model per task by cost and speed.',
   guardrails: 'Keep secrets and personal data from AI models: masked before they are sent, restored only where agents need them.',
   waitlist: 'Who asked for access on the landing page. Invite someone to send them a link that sets up their own organization.',
+  workers: "Each project's worker service on Railway, and the provisioning token check.",
 }
 
 const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string }> = [
@@ -58,6 +60,7 @@ const SECTIONS: Array<{ id: Section; label: string; hint: string; group: string 
   { id: 'models', label: 'Models', hint: 'Provider keys and routing', group: 'Setup' },
   { id: 'guardrails', label: 'Data guardrails', hint: 'Secrets and personal data', group: 'Setup' },
   { id: 'waitlist', label: 'Waitlist', hint: 'Who asked for access', group: 'Setup' },
+  { id: 'workers', label: 'Project workers', hint: 'A worker service per project', group: 'Setup' },
 ]
 
 export function OrgPage() {
@@ -212,6 +215,9 @@ export function OrgPage() {
           {section === 'waitlist' && (me?.siteAdmin
             ? <WaitlistSection />
             : <p className="empty-state">Only the deployment's super admin manages the waitlist.</p>)}
+          {section === 'workers' && (me?.siteAdmin
+            ? <WorkersSection />
+            : <p className="empty-state">Only the deployment's super admin manages project workers.</p>)}
 
           {section === 'teams' && (
             <TeamsSection teams={teams} busy={busy} act={act} onCreated={refresh} />
