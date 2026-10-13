@@ -1442,8 +1442,11 @@ CREATE INDEX IF NOT EXISTS outbound_deliveries_org_idx ON outbound_deliveries (o
 CREATE TABLE IF NOT EXISTS project_workers (
   project_id          UUID PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
   internal_url        TEXT,
-  railway_service_id  TEXT,
-  railway_volume_id   TEXT,
+  -- Where it runs (railway, kubernetes, docker) and that platform's ids for its
+  -- service and volume.
+  platform            TEXT,
+  service_ref         TEXT,
+  volume_ref          TEXT,
   state               TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','provisioning','ready','sleeping','updating','failed','removing')),
   version             TEXT,
   last_seen_at        TIMESTAMPTZ,
