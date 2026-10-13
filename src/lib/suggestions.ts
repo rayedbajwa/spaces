@@ -35,7 +35,7 @@ async function catalogForPrompt(orgId: string, limit = 120): Promise<CatalogRow[
  * Models sometimes wrap JSON in fences, add `// comments`, trailing commas or
  * literal "high|medium|low" placeholders. Clean the common cases before parsing.
  */
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1]
   let candidate = (fenced ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)).trim()
   try {
