@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base'
 import { SemanticConventions as SC } from '@arizeai/openinference-semantic-conventions'
-import { traceAgentSession, tracingEndpoint, useTracingExporter } from '../src/lib/tracing'
+import { flushTracing, traceAgentSession, tracingEndpoint, useTracingExporter } from '../src/lib/tracing'
 import { railwayWorkerVariables } from '../src/lib/worker-platform-railway'
 import { sharedSecrets } from '../src/lib/worker-platform'
 
@@ -26,60 +26,115 @@ describe('agent tracing', () => {
   })
   afterEach(() => useTracingExporter(undefined))
 
-  test('a prompt becomes an AGENT span with LLM and TOOL children, labelled with its run and stage', () => {
+  test('each turn is its own complete trace: an AGENT root with its LLM and TOOL spans, grouped by the run', () => {
     const session = fakeSession()
     let stage = 'specify'
     traceAgentSession(session, { kind: 'stage', orgId: 'org-1', projectId: 'proj-1', runId: 'run-1', stage: () => stage })
 
+    // Pi's order: the turn starts, then the prompt arrives.
     session.emit({ type: 'agent_start' })
+    session.emit({ type: 'turn_start' })
     session.emit({ type: 'message_start', message: { role: 'user', content: 'Write the spec' } })
     session.emit({ type: 'message_start', message: assistant([]) })
     session.emit({ type: 'message_end', message: assistant([{ type: 'text', text: 'Reading.' }, { type: 'toolCall', name: 'read', arguments: { path: 'a.md' } }], { usage: { input: 100, output: 20, cacheRead: 50, totalTokens: 170, cost: { total: 0.01 } } }) })
     session.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'read', args: { path: 'a.md' } })
+    // The turn's root is not sent before the turn ends; its children wait with it.
+    expect(exporter.getFinishedSpans().some((s) => s.name.includes('turn'))).toBe(false)
     session.emit({ type: 'tool_execution_end', toolCallId: 't1', result: { content: [{ type: 'text', text: 'file body' }] }, isError: false })
-    session.emit({ type: 'agent_end', messages: [assistant([{ type: 'text', text: 'Done.' }])] })
+    session.emit({ type: 'message_start', message: { role: 'toolResult', content: [{ type: 'text', text: 'file body' }] } })
+    session.emit({ type: 'turn_end' })
+    session.emit({ type: 'turn_start' })
+    session.emit({ type: 'message_start', message: assistant([]) })
+    session.emit({ type: 'message_end', message: assistant([{ type: 'text', text: 'Done.' }]) })
+    session.emit({ type: 'turn_end' })
+    session.emit({ type: 'agent_end', messages: [] })
 
     const spans = exporter.getFinishedSpans()
-    const byKind = (kind: string) => spans.filter((s) => s.attributes[SC.OPENINFERENCE_SPAN_KIND] === kind)
-    const [agent] = byKind('AGENT')
-    const [llm] = byKind('LLM')
-    const [tool] = byKind('TOOL')
-    expect(agent?.name).toBe('stage · specify')
-    expect(agent?.attributes[SC.INPUT_VALUE]).toBe('Write the spec')
-    expect(agent?.attributes[SC.OUTPUT_VALUE]).toBe('Done.')
-    expect(agent?.attributes[SC.SESSION_ID]).toBe('run-1')
-    expect(JSON.parse(String(agent?.attributes[SC.METADATA]))).toEqual({ kind: 'stage', orgId: 'org-1', projectId: 'proj-1', runId: 'run-1', stage: 'specify' })
+    const turn1 = spans.find((s) => s.name === 'stage · specify · turn 1')!
+    const turn2 = spans.find((s) => s.name === 'stage · specify · turn 2')!
+    const [llm1] = spans.filter((s) => s.attributes[SC.OPENINFERENCE_SPAN_KIND] === 'LLM')
+    const tool = spans.find((s) => s.name === 'tool read')!
 
-    expect(llm?.attributes[SC.LLM_MODEL_NAME]).toBe('claude-sonnet-5-5')
-    expect(llm?.attributes[SC.LLM_TOKEN_COUNT_PROMPT]).toBe(150)
-    expect(llm?.attributes[SC.LLM_TOKEN_COUNT_COMPLETION]).toBe(20)
-    expect(llm?.attributes[SC.LLM_COST_TOTAL]).toBe(0.01)
-    expect(llm?.parentSpanContext?.spanId).toBe(agent?.spanContext().spanId)
+    // Roots: no parent, a trace each, one session (the run).
+    for (const root of [turn1, turn2]) {
+      expect(root.attributes[SC.OPENINFERENCE_SPAN_KIND]).toBe('AGENT')
+      expect(root.parentSpanContext).toBeUndefined()
+      expect(root.attributes[SC.SESSION_ID]).toBe('run-1')
+    }
+    expect(turn1.spanContext().traceId).not.toBe(turn2.spanContext().traceId)
+    // Children belong to their turn's trace, directly under its root.
+    for (const childSpan of [llm1!, tool]) {
+      expect(childSpan.spanContext().traceId).toBe(turn1.spanContext().traceId)
+      expect(childSpan.parentSpanContext?.spanId).toBe(turn1.spanContext().spanId)
+    }
+    expect(turn1.attributes[SC.INPUT_VALUE]).toBe('Write the spec')
+    expect(turn1.attributes[SC.OUTPUT_VALUE]).toContain('Reading.')
+    expect(turn2.attributes[SC.INPUT_VALUE]).toBe('file body')
+    expect(turn2.attributes[SC.OUTPUT_VALUE]).toBe('Done.')
+    expect(JSON.parse(String(turn1.attributes[SC.METADATA]))).toEqual({ kind: 'stage', orgId: 'org-1', projectId: 'proj-1', runId: 'run-1', stage: 'specify', prompt: 1, turn: 1 })
 
-    expect(tool?.name).toBe('tool read')
-    expect(tool?.attributes[SC.OUTPUT_VALUE]).toBe('file body')
-    expect(tool?.parentSpanContext?.spanId).toBe(agent?.spanContext().spanId)
+    expect(llm1!.attributes[SC.LLM_MODEL_NAME]).toBe('claude-sonnet-5-5')
+    expect(llm1!.attributes[SC.LLM_TOKEN_COUNT_PROMPT]).toBe(150)
+    expect(llm1!.attributes[SC.LLM_TOKEN_COUNT_COMPLETION]).toBe(20)
+    expect(llm1!.attributes[SC.LLM_COST_TOTAL]).toBe(0.01)
+    expect(tool.attributes[SC.OUTPUT_VALUE]).toBe('file body')
 
-    // The next prompt reads the stage again: one session spans several stages.
+    // The next prompt reads the stage again and numbers its turns afresh.
     stage = 'plan'
     session.emit({ type: 'agent_start' })
+    session.emit({ type: 'turn_start' })
+    session.emit({ type: 'turn_end' })
     session.emit({ type: 'agent_end', messages: [] })
-    expect(exporter.getFinishedSpans().at(-1)?.name).toBe('stage · plan')
+    const next = exporter.getFinishedSpans().at(-1)!
+    expect(next.name).toBe('stage · plan · turn 1')
+    // No input carried over from the previous prompt's tool results.
+    expect(next.attributes[SC.INPUT_VALUE]).toBeUndefined()
+  })
+
+  test('a turn cut off by shutdown is sent, marked interrupted, with its children', async () => {
+    const session = fakeSession()
+    traceAgentSession(session, { kind: 'stage', runId: 'run-2', stage: () => 'implement' })
+    session.emit({ type: 'agent_start' })
+    session.emit({ type: 'turn_start' })
+    session.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'bun test' } })
+    await flushTracing('interrupted: worker restart')
+    const spans = exporter.getFinishedSpans()
+    const root = spans.find((s) => s.name === 'stage · implement · turn 1')!
+    expect(root.status).toEqual({ code: 2, message: 'interrupted: worker restart' })
+    expect(spans.find((s) => s.name === 'tool bash')?.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+  })
+
+  test('without turn events a turn is opened for the first child, and a session without a run gets its own id', () => {
+    const session = fakeSession()
+    traceAgentSession(session, { kind: 'assistant' })
+    session.emit({ type: 'agent_start' })
+    session.emit({ type: 'message_start', message: assistant([]) })
+    session.emit({ type: 'message_end', message: assistant([{ type: 'text', text: 'hi' }]) })
+    session.emit({ type: 'agent_end', messages: [] })
+    const spans = exporter.getFinishedSpans()
+    const root = spans.find((s) => s.name === 'assistant · turn 1')!
+    expect(spans.find((s) => s.name === 'llm')?.parentSpanContext?.spanId).toBe(root.spanContext().spanId)
+    expect(String(root.attributes[SC.SESSION_ID])).toMatch(/^assistant-[0-9a-f-]{36}$/)
   })
 
   test('text sent to Phoenix is masked, and secrets are redacted even with guardrails off', () => {
     const session = fakeSession()
     traceAgentSession(session, { kind: 'task', policy: { mode: 'off', allow: [] } })
     session.emit({ type: 'agent_start' })
+    session.emit({ type: 'turn_start' })
     session.emit({ type: 'message_start', message: { role: 'user', content: 'use GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789' } })
+    session.emit({ type: 'turn_end' })
     session.emit({ type: 'agent_end', messages: [] })
     const [agent] = exporter.getFinishedSpans()
+    expect(String(agent?.attributes[SC.INPUT_VALUE])).toStartWith('use GITHUB_TOKEN=')
     expect(String(agent?.attributes[SC.INPUT_VALUE])).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123456789')
 
     const masked = fakeSession()
     traceAgentSession(masked, { kind: 'task' })
     masked.emit({ type: 'agent_start' })
+    masked.emit({ type: 'turn_start' })
     masked.emit({ type: 'message_start', message: { role: 'user', content: 'mail jane@acme.io' } })
+    masked.emit({ type: 'turn_end' })
     masked.emit({ type: 'agent_end', messages: [] })
     expect(exporter.getFinishedSpans().at(-1)?.attributes[SC.INPUT_VALUE]).toBe('mail [email]')
   })
