@@ -145,6 +145,8 @@ function maskFields(input: IntakeItemInput, policy: GuardPolicy): IntakeItemInpu
     summary: input.summary ? maskOutput(String(input.summary).trim(), policy) : input.summary,
     requesterName: input.requesterName ? maskOutput(String(input.requesterName), policy) : input.requesterName,
     requesterEmail: input.requesterEmail ? maskOutput(String(input.requesterEmail), policy) : input.requesterEmail,
+    externalRef: maskOutput(String(input.externalRef), policy),
+    externalUrl: input.externalUrl ? maskOutput(String(input.externalUrl), policy) : input.externalUrl,
     raw: input.raw ? maskOutputDeep(input.raw, policy) : input.raw,
   }
 }
@@ -425,7 +427,9 @@ export async function convertIntakeItem(input: {
     // other unique violation is a genuine failure and must surface as a 500.
     const message = error instanceof Error ? error.message : String(error)
     if (message.includes('intake_work_links_intake_id_key')) return { error: 'This item is already converted.', status: 409 }
-    return { error: message, status: 500 }
+    // Keep the DB detail in the log; never surface it to the caller.
+    storeLog.error('intake conversion failed', { intakeId: input.intakeId, error: message })
+    return { error: 'The conversion failed. Try again.', status: 500 }
   }
   if (!started.ok) {
     await sql`UPDATE intake_items SET state = ${item.state}, updated_at = now() WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId} AND state = 'converted'`

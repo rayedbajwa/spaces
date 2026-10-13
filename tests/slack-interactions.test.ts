@@ -61,6 +61,25 @@ describe('signature verification', () => {
     expect(found.ok).toBe(true)
     expect(found.orgId).toBe(orgA)
   })
+
+  test('fails closed when a workspace maps to several organizations (R12)', async () => {
+    // The same Slack app (secret) connected to two orgs makes the request
+    // unattributable by signature alone.
+    const { saveOAuthApp, deleteOAuthApp } = await import('../src/lib/oauth-apps')
+    await saveOAuthApp(orgB, 'slack', { clientId: 'slack-client-id', clientSecret: 'slack-client-secret' })
+    await saveSlackSigningSecret(orgA, secret)
+    await saveSlackSigningSecret(orgB, secret)
+    const timestamp = String(Math.floor(Date.now() / 1000))
+    const body = '{"type":"event_callback"}'
+    const signature = `v0=${createHmac('sha256', secret).update(`v0:${timestamp}:${body}`).digest('hex')}`
+    try {
+      const found = await authenticateSlackRequest({ timestamp, signature, body })
+      expect(found.ok).toBe(false)
+      expect(found.reason).toBe('org_ambiguous')
+    } finally {
+      await deleteOAuthApp(orgB, 'slack')
+    }
+  })
 })
 
 describe('gate renderers', () => {
