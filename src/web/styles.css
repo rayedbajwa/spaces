@@ -2947,3 +2947,52 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .approval-back { margin: 4px 0 0; }
 .approval-decided { display: grid; gap: 8px; }
 .integration-logo.email { background: linear-gradient(135deg, #2b6cb0, #63b3ed); }
+
+/* Intake queue (012-inbound-outbound-slack) */
+.intake-sources { margin-bottom: 16px; }
+.intake-source-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.intake-source { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated-2); color: var(--text); cursor: pointer; }
+.intake-source.active { border-color: var(--accent, #5e6ad2); }
+.intake-source-name { font-weight: 600; }
+.intake-source-kind { color: var(--text-muted); font-size: 12px; }
+.intake-source-error { color: var(--danger, #e5484d); font-size: 12px; }
+.intake-queue { display: grid; gap: 12px; }
+.intake-item { border: 1px solid var(--border); border-left: 4px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--bg-elevated-2); }
+.intake-item.priority-urgent { border-left-color: #e5484d; }
+.intake-item.priority-high { border-left-color: #f5a623; }
+.intake-item.priority-normal { border-left-color: #5e6ad2; }
+.intake-item.priority-low { border-left-color: #6b7280; }
+.intake-item-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+.intake-item-title { margin: 6px 0 4px; font-size: 15px; }
+.intake-ref { color: var(--text-muted); font-weight: 400; font-size: 12px; }
+.intake-item-summary { color: var(--text-muted); font-size: 13px; margin: 0 0 6px; white-space: pre-wrap; }
+.intake-item-meta { display: flex; gap: 12px; font-size: 12px; color: var(--text-muted); margin-bottom: 8px; }
+.intake-item-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.intake-action { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted); }
+.intake-action select { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); }
+.priority-badge { padding: 2px 8px; border-radius: 999px; font-weight: 600; font-size: 11px; }
+.priority-badge.priority-urgent { background: rgba(229,72,77,.18); color: #f2555a; }
+.priority-badge.priority-high { background: rgba(245,166,35,.18); color: #f5a623; }
+.priority-badge.priority-normal { background: rgba(94,106,210,.18); color: #8a93e0; }
+.priority-badge.priority-low { background: rgba(107,114,128,.18); color: #9aa0a6; }
+.intake-repeat, .intake-unavailable, .intake-rule { color: var(--text-muted); }
+.intake-rule.overridden { color: var(--accent, #5e6ad2); }
+.intake-back { margin-top: 16px; }
+
+/* Outbound triggers (012-inbound-outbound-slack) */
+.outbound-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+.outbound-form .intake-action.grow { flex: 1 1 260px; }
+.outbound-form input { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); min-width: 240px; font-family: ui-monospace, monospace; }
+.outbound-list { display: grid; gap: 8px; }
+.outbound-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated-2); }
+.outbound-row.disabled { opacity: .55; }
+.outbound-event { font-weight: 600; }
+.outbound-arrow { color: var(--text-muted); }
+.outbound-target { color: var(--text-muted); }
+.outbound-config { flex: 1 1 200px; color: var(--text-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.outbound-error { color: var(--danger, #e5484d); font-size: 12px; }
+.delivery-badge { padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.delivery-badge.delivery-delivered { background: rgba(46,160,67,.18); color: #3fb950; }
+.delivery-badge.delivery-failed { background: rgba(229,72,77,.18); color: #f2555a; }
+.delivery-badge.delivery-pending { background: rgba(94,106,210,.18); color: #8a93e0; }
+.delivery-badge.delivery-skipped { background: rgba(107,114,128,.18); color: #9aa0a6; }

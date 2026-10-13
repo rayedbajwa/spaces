@@ -7,7 +7,7 @@ import { PipelineEngine } from './lib/pipeline-engine'
 async function fileExists(file: string): Promise<boolean> {
   try { await access(file); return true } catch { return false }
 }
-import { assertEnvOrExit } from './lib/env'
+import { assertEnvOrExit, intakeSyncIntervalMs, outboundDrainIntervalMs } from './lib/env'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 
 assertEnvOrExit('worker')
@@ -57,6 +57,7 @@ import { notifyProject } from './lib/slack'
 import { stageSummary, summaryForGate } from './lib/approval-store'
 import { deliverApprovalRequestsForGate } from './lib/approval-notify'
 import { drainBudget } from './lib/drain'
+import { emitGateOutbound, emitRunOutbound } from './lib/outbound-emit'
 
 const workerLog = log.child({ mod: 'worker' })
 
@@ -345,6 +346,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
       await queueEvent(runId, 'error', { message, reason: 'disk_full' })
       workerLog.error('refusing to start a run on a full volume', new Error(message))
       void notifyProject(run.projectId, { kind: 'run_failed', message })
+      emitRunOutbound(run, 'run_failed', `run:${runId}:failed`, { projectName: run.projectLabel, summary: message, runId })
       return
     }
   }
@@ -418,6 +420,7 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
           VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
         `
         void notifyProject(run.projectId, { kind: 'stage_finished', stage: h.stage, summary: stageSummary(h.summary, h.tail) })
+        emitRunOutbound(run, 'stage_completed', `run:${runId}:stage:${h.stage}`, { projectName: run.projectLabel, stage: h.stage, summary: stageSummary(h.summary, h.tail), runId })
         // Plan named repositories? Register + clone the missing ones now so the
         // following stages (tasks, implement) can work in them.
         if (h.stage === 'plan' && run.projectId) {
@@ -558,12 +561,13 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
     const engine = engines.get(runId)
     const template = engine ? getTemplateFromEngine(engine) : undefined
     const stepIndex = template ? indexOfStage(template, progress.stage) : 0
-    await openGate({
+    const gateId = await openGate({
       runId,
       stepIndex,
       kind: progress.pauseKind ?? 'clarification',
       prompt: progress.stage,
     })
+    emitGateOutbound(runId, gateId, progress.stage, progress.pauseKind ?? 'clarification')
     await queueEvent(runId, 'paused', { stage: progress.stage, pauseKind: progress.pauseKind })
     void exportRunProjectState(runId, `stage ${progress.stage ?? '?'} paused`)
     void notifyGate(runId, progress)
@@ -682,12 +686,14 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
   await updateRunStatus(runId, { status: 'error', errorMessage: message, currentStage: failedStage ?? null })
   await queueEvent(runId, retry ? 'dead_letter' : 'error', { message, attempts })
   void notifyProject(run?.projectId, { kind: 'run_failed', stage: failedStage, message })
+  if (run) emitRunOutbound(run, 'run_failed', `run:${runId}:failed`, { projectName: run.projectLabel, stage: failedStage ?? null, summary: message, runId })
   await drainEvents(runId)
   const engine = engines.get(runId)
   await engine?.dispose()
   engines.delete(runId)
 }
 
+/** Fire-and-forget outbound emission from a run path (never blocks or changes the run). */
 function getTemplateFromEngine(engine: PipelineEngine): ReturnType<typeof engine.getCurrentStage> extends undefined ? never : never {
   // helper is unused; kept for future template metadata plumbing
   return undefined as never
@@ -902,6 +908,21 @@ async function main(): Promise<void> {
   // project, and re-queued duplicates. A dead worker's run is handed off: the
   // job is closed and the run is re-queued from the stage it was in.
   timers.push(setInterval(() => { void reapDeadWorkerJobs() }, 60_000))
+  // Inbound intake sync (012): pull configured Jira/Linear/Datadog sources on
+  // their interval. A failed fetch marks the source unhealthy and keeps queued
+  // items; it never affects a run.
+  timers.push(setInterval(() => {
+    void import('./lib/intake-connectors')
+      .then((m) => m.runIntakeSync())
+      .catch((err) => workerLog.warn('intake sync failed', { error: err instanceof Error ? err.message : String(err) }))
+  }, intakeSyncIntervalMs()))
+  // Outbound delivery drain (012): perform configured, reversible actions for
+  // notable events with retry/backoff. A target outage never changes a run.
+  timers.push(setInterval(() => {
+    void import('./lib/outbound-deliver')
+      .then((m) => m.drainOutbound())
+      .catch((err) => workerLog.warn('outbound drain failed', { error: err instanceof Error ? err.message : String(err) }))
+  }, outboundDrainIntervalMs()))
   // Reap orphaned pipeline_runs — queued runs older than 30s with no matching
   // project_jobs row. Caused by a worker crash between the retry UPDATE and
   // the job INSERT before retryRunAndEnqueue was transactional. This reaper

@@ -35,6 +35,8 @@ export interface FeatureSummary {
   verification?: 'pass' | 'partial' | 'fail'
   delivery?: 'merged' | 'partial' | 'blocked'
   documents: Array<{ label: string; path: string }>
+  /** Set when this intent was started by converting an Intake item (012, US2). */
+  intakeId?: string
   /** Figma design links referenced in the spec (for review-gate design fidelity checks). */
   designLinks?: FigmaDesignLink[]
 }

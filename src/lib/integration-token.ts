@@ -24,6 +24,7 @@ export const KIND_PROVIDER: Record<AppIntegrationKind, OAuthProviderId | undefin
   figma: 'figma',
   railway: 'railway',
   email: undefined,
+  datadog: undefined,
 }
 
 const PROVIDER_KINDS: Record<OAuthProviderId, AppIntegrationKind[]> = {

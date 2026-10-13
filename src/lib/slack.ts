@@ -40,6 +40,9 @@ type SlackResponse = { ok: boolean; error?: string; needed?: string } & Record<s
  */
 const FORM_METHODS = new Set(['users.lookupByEmail', 'conversations.list'])
 
+/** Slack Web API calls must never hang a request; give every call a hard ceiling. */
+const SLACK_API_TIMEOUT_MS = 5_000
+
 async function slackApi<T extends SlackResponse>(token: string, method: string, body: Record<string, unknown>): Promise<T> {
   const form = FORM_METHODS.has(method)
   const response = await fetch(`https://slack.com/api/${method}`, {
@@ -49,6 +52,7 @@ async function slackApi<T extends SlackResponse>(token: string, method: string, 
       'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8',
     },
     body: form ? new URLSearchParams(Object.entries(body).map(([k, v]) => [k, String(v)])).toString() : JSON.stringify(body),
+    signal: AbortSignal.timeout(SLACK_API_TIMEOUT_MS),
   })
   const data = (await response.json().catch(() => ({ ok: false, error: `http_${response.status}` }))) as T
   if (!data.ok) throw new SlackApiError(method, data.error ?? 'unknown_error', data.needed)
@@ -84,6 +88,15 @@ async function slackToken(orgId: string): Promise<string | undefined> {
   return await getIntegrationAccessToken(orgId, 'slack').catch(() => undefined)
 }
 
+/**
+ * The org's bot token, exposed for signature-authenticated inbound handlers that
+ * must call Slack itself (opening a feedback modal). Returns undefined when
+ * Slack is not connected.
+ */
+export async function slackBotToken(orgId: string): Promise<string | undefined> {
+  return await slackToken(orgId)
+}
+
 const warnedMissingScope = new Set<string>()
 
 function reportSlackError(orgId: string, what: string, error: unknown): void {
@@ -112,6 +125,17 @@ async function currentWorkspace(token: string): Promise<string> {
   const data = await slackApi<SlackResponse & { team_id: string }>(token, 'auth.test', {})
   workspaceByToken.set(token, { teamId: data.team_id, at: Date.now() })
   return data.team_id
+}
+
+/** The Slack workspace connected to an org, or undefined when Slack is not connected. */
+export async function slackWorkspaceTeamId(orgId: string): Promise<string | undefined> {
+  const token = await slackToken(orgId)
+  if (!token) return undefined
+  try {
+    return await currentWorkspace(token)
+  } catch {
+    return undefined
+  }
 }
 
 /** Find a public channel by name (the project's channel may already exist from an earlier connection). */
@@ -350,33 +374,114 @@ export async function notifyWaitlistSignup(entry: { name: string | null; company
 // ---------------------------------------------------------------------------
 
 /**
- * The Block Kit message for a direct approval request. Exported and pure so its
- * content can be asserted without Slack. It contains exactly the one link given
- * and never a shared-channel substitute.
+ * Interactive approval prompt for a gate: the summary plus the three decisions
+ * the in-app gate accepts. Button values carry only the gate id; the handler
+ * resolves the org from the signature/team mapping and re-checks authority.
  */
-export function renderApprovalDm(input: {
+export function renderGateActions(input: {
+  gateId: string
   project: { name: string; code: string | null; slug: string }
   stage: string
+  kind: 'review' | 'clarification'
   summary?: string | null
-  link: string
-  responsibility?: string | null
-  fallback?: boolean
+  /** The recipient's single-use in-app link, when one was minted. */
+  link?: string | null
 }): { text: string; blocks: unknown[] } {
   const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
   const safeLabel = slackText(label, 300)
   const stage = slackText(input.stage, 200)
-  const role = input.responsibility ? slackText(input.responsibility, 120) : ''
-  const who = role ? `${role}${input.fallback ? ' (Owner fallback)' : ''}` : (input.fallback ? 'Owner fallback' : '')
-  const text = `Approval needed: ${safeLabel} · ${stage}`
+  const headline = input.kind === 'review' ? 'Approval needed' : 'Clarification needed'
+  const text = `${headline}: ${safeLabel} · ${stage}`
   const blocks: unknown[] = [
     { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
-    { type: 'section', text: { type: 'mrkdwn', text: `🟡 *Approval needed* on *${stage}*${who ? ` — ${who}` : ''}.` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `🟡 *${headline}* on *${stage}*.` } },
   ]
   const summary = input.summary?.trim()
   if (summary) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(summary, 2600).replace(/\n/g, '\n>')}` } })
-  blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Review and decide' }, url: input.link, style: 'primary' }] })
-  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'This link is personal and can be used once. The in-app gate stays available.' }] })
+  blocks.push({
+    type: 'actions',
+    elements: [
+      { type: 'button', action_id: 'approve', text: { type: 'plain_text', text: 'Approve' }, style: 'primary', value: input.gateId },
+      { type: 'button', action_id: 'approve_with_notes', text: { type: 'plain_text', text: 'Approve with notes' }, value: input.gateId },
+      { type: 'button', action_id: 'request_changes', text: { type: 'plain_text', text: 'Request changes' }, style: 'danger', value: input.gateId },
+      ...(input.link ? [{ type: 'button', text: { type: 'plain_text', text: 'Review in Spaces' }, url: input.link }] : []),
+    ],
+  })
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Your Slack identity must be verified and you must be an accountable recipient of this gate.' }] })
   return { text, blocks }
+}
+
+/**
+ * Clarification question prompt for a Slack thread: the agent's question, no
+ * decision buttons (a clarification is answered in the app or by reply), and a
+ * link to the in-app gate. Kept as a thread reply so it does not ping the room.
+ */
+export function renderQuestionThread(input: {
+  project: { name: string; code: string | null; slug: string }
+  stage: string
+  question?: string | null
+  link?: string | null
+}): { text: string; blocks: unknown[] } {
+  const label = `${input.project.code ? `${input.project.code} · ` : ''}${input.project.name}`
+  const safeLabel = slackText(label, 300)
+  const stage = slackText(input.stage, 200)
+  const text = `Question on ${safeLabel} · ${stage}`
+  const blocks: unknown[] = [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: safeLabel }] },
+    { type: 'section', text: { type: 'mrkdwn', text: `❓ *Clarification needed* on *${stage}*.` } },
+  ]
+  const question = input.question?.trim()
+  if (question) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `>${slackText(question, 2600).replace(/\n/g, '\n>')}` } })
+  if (input.link) blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Answer in Spaces' }, url: input.link }] })
+  blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: 'Reply in this thread to answer verbatim; the in-app gate stays available.' }] })
+  return { text, blocks }
+}
+
+/** Mark an already-posted Slack prompt as decided by a later/wider action. */
+export async function updateSlackMessage(input: { orgId: string; channel: string; ts: string; text: string; blocks?: unknown[] }): Promise<boolean> {
+  const token = await slackToken(input.orgId)
+  if (!token) return false
+  try {
+    await slackApi(token, 'chat.update', { channel: input.channel, ts: input.ts, text: input.text, ...(input.blocks ? { blocks: input.blocks } : {}) })
+    return true
+  } catch (error) {
+    reportSlackError(input.orgId, 'update a Slack prompt', error)
+    return false
+  }
+}
+
+/**
+ * Post blocks to a person's DM, resolved by email or by Slack user id, and
+ * return the message coordinates. Never throws: `users_not_found` means "fall
+ * back to email", not an error.
+ */
+export async function postDirectMessage(input: {
+  orgId: string
+  email?: string | null
+  slackUserId?: string | null
+  text: string
+  blocks: unknown[]
+}): Promise<{ ok: true; slackUserId: string; channelId: string; ts: string } | { ok: false; reason: 'no_slack' | 'users_not_found' | 'slack_error'; message?: string }> {
+  const token = await slackToken(input.orgId)
+  if (!token) return { ok: false, reason: 'no_slack' }
+  try {
+    let slackUserId = input.slackUserId ?? ''
+    if (!slackUserId) {
+      try {
+        const found = await slackApi<SlackResponse & { user: { id: string } }>(token, 'users.lookupByEmail', { email: input.email ?? '' })
+        slackUserId = found.user.id
+      } catch (error) {
+        if (error instanceof SlackApiError && error.code === 'users_not_found') return { ok: false, reason: 'users_not_found' }
+        throw error
+      }
+    }
+    const opened = await slackApi<SlackResponse & { channel: { id: string } }>(token, 'conversations.open', { users: slackUserId })
+    const posted = await slackApi<SlackResponse & { ts: string }>(token, 'chat.postMessage', { channel: opened.channel.id, text: input.text, blocks: input.blocks, unfurl_links: false })
+    return { ok: true, slackUserId, channelId: opened.channel.id, ts: posted.ts }
+  } catch (error) {
+    reportSlackError(input.orgId, 'send a direct message', error)
+    return { ok: false, reason: 'slack_error', message: error instanceof Error ? error.message : String(error) }
+  }
 }
 
 /**
@@ -389,22 +494,6 @@ export async function sendDirectMessage(input: {
   text: string
   blocks: unknown[]
 }): Promise<{ ok: true; slackUserId: string } | { ok: false; reason: 'no_slack' | 'users_not_found' | 'slack_error'; message?: string }> {
-  const token = await slackToken(input.orgId)
-  if (!token) return { ok: false, reason: 'no_slack' }
-  try {
-    let slackUserId: string
-    try {
-      const found = await slackApi<SlackResponse & { user: { id: string } }>(token, 'users.lookupByEmail', { email: input.email })
-      slackUserId = found.user.id
-    } catch (error) {
-      if (error instanceof SlackApiError && error.code === 'users_not_found') return { ok: false, reason: 'users_not_found' }
-      throw error
-    }
-    const opened = await slackApi<SlackResponse & { channel: { id: string } }>(token, 'conversations.open', { users: slackUserId })
-    await slackApi(token, 'chat.postMessage', { channel: opened.channel.id, text: input.text, blocks: input.blocks, unfurl_links: false })
-    return { ok: true, slackUserId }
-  } catch (error) {
-    reportSlackError(input.orgId, 'send an approval DM', error)
-    return { ok: false, reason: 'slack_error', message: error instanceof Error ? error.message : String(error) }
-  }
+  const result = await postDirectMessage({ orgId: input.orgId, email: input.email, text: input.text, blocks: input.blocks })
+  return result.ok ? { ok: true, slackUserId: result.slackUserId } : result
 }

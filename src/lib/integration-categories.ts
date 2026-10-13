@@ -1,7 +1,7 @@
 import type { OAuthProviderId } from './oauth'
 import type { AppIntegrationKind } from './app-integrations'
 
-export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'deployment' | 'communication' | 'notifications'
+export type IntegrationCategoryId = 'source_control' | 'project_management' | 'design' | 'deployment' | 'communication' | 'notifications' | 'monitoring'
 
 export type CategoryReadinessState =
   | 'connected'
@@ -91,6 +91,14 @@ export const INTEGRATION_CATEGORIES: readonly IntegrationCategoryDefinition[] = 
     emptyGuidance: 'Connect email to deliver approval links straight to the accountable owner when chat is unavailable, or rely on the platform sender.',
     providers: [],
     kinds: ['email'],
+  },
+  {
+    id: 'monitoring',
+    label: 'Monitoring & Alerts',
+    description: 'Datadog monitors and alerts that land in the organization-scoped Intake queue alongside Jira, Linear and Slack work.',
+    emptyGuidance: 'Connect Datadog with an API and application key so alerts become inbound Intake items that can be triaged into project work.',
+    providers: [],
+    kinds: ['datadog'],
   },
 ] as const
 

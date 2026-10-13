@@ -13,8 +13,8 @@ import type { AppIntegrationKind } from '../src/lib/app-integrations'
 
 describe('Integration Categories Domain Model', () => {
   describe('TC-CAT-001: Canonical Categories Ordering & Definitions', () => {
-    test('contains exactly 6 categories in canonical order', () => {
-      expect(INTEGRATION_CATEGORIES).toHaveLength(6)
+    test('contains exactly 7 categories in canonical order', () => {
+      expect(INTEGRATION_CATEGORIES).toHaveLength(7)
       expect(INTEGRATION_CATEGORIES.map((c) => c.id)).toEqual([
         'source_control',
         'project_management',
@@ -22,6 +22,7 @@ describe('Integration Categories Domain Model', () => {
         'deployment',
         'communication',
         'notifications',
+        'monitoring',
       ])
     })
 
@@ -64,7 +65,7 @@ describe('Integration Categories Domain Model', () => {
   })
 
   describe('TC-CAT-003: Kind Exhaustiveness', () => {
-    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma', 'railway', 'email']
+    const allKinds: AppIntegrationKind[] = ['github', 'jira', 'confluence', 'slack', 'linear', 'figma', 'railway', 'email', 'datadog']
 
     test('every AppIntegrationKind maps to exactly one category', () => {
       for (const kind of allKinds) {
@@ -85,6 +86,7 @@ describe('Integration Categories Domain Model', () => {
       expect(getCategoryForKind('railway')?.id).toBe('deployment')
       expect(getCategoryForKind('slack')?.id).toBe('communication')
       expect(getCategoryForKind('email')?.id).toBe('notifications')
+      expect(getCategoryForKind('datadog')?.id).toBe('monitoring')
     })
 
     test('Deployment category maps Railway and has a clear identity', () => {

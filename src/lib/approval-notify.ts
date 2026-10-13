@@ -17,7 +17,8 @@ import { loadGuardPolicy } from './guardrails-policy'
 import { maskOutputDeep } from './guardrails'
 import { log } from './logger'
 import { emailConfigured, emailSender, sendEmail } from './email'
-import { sendDirectMessage, renderApprovalDm, slackText } from './slack'
+import { postDirectMessage, sendDirectMessage, renderGateActions, renderQuestionThread, slackText } from './slack'
+import { saveSlackGatePrompt } from './slack-gate-prompts'
 import { STANDARD_RESPONSIBILITIES } from './project-responsibilities'
 import {
   createApprovalRequests,
@@ -63,18 +64,24 @@ async function deliverOne(created: CreatedApprovalRequest, target: ApprovalNotif
   const policy = await loadGuardPolicy(orgId).catch(() => undefined)
   const link = approvalLinkUrl(created.token, target.origin)
 
-  const dm = renderApprovalDm({
-    project: target.project,
-    stage: target.stage,
-    summary: target.summary ?? request.summary,
-    link,
-    responsibility: target.responsibility,
-    fallback: target.fallback,
-  })
-  const maskedDm = policy ? maskOutputDeep(dm, policy) : dm
-
-  const slack = await sendDirectMessage({ orgId, email: request.recipientEmail, text: maskedDm.text, blocks: maskedDm.blocks })
+  // A review gate gets the same three decisions the in-app gate accepts as
+  // interactive buttons; a clarification gets a thread prompt whose reply is
+  // delivered verbatim. Both persist the message coordinates so a later
+  // decision from any surface can mark the prompt decided.
+  const prompt = target.kind === 'review'
+    ? renderGateActions({ gateId: request.gateId, project: target.project, stage: target.stage, kind: 'review', summary: target.summary ?? request.summary, link })
+    : renderQuestionThread({ project: target.project, stage: target.stage, question: target.summary ?? request.summary, link })
+  const maskedPrompt = policy ? maskOutputDeep(prompt, policy) : prompt
+  const slack = await postDirectMessage({ orgId, email: request.recipientEmail, text: maskedPrompt.text, blocks: maskedPrompt.blocks })
   if (slack.ok) {
+    await saveSlackGatePrompt({
+      orgId,
+      gateId: request.gateId,
+      slackUserId: slack.slackUserId,
+      channelId: slack.channelId,
+      messageTs: slack.ts,
+      promptKind: target.kind,
+    })
     await recordDelivery(request.requestId, 'slack', 'delivered')
     notifyLog.info('approval delivered by Slack DM', { requestId: request.requestId, stage: target.stage })
     return 'slack'

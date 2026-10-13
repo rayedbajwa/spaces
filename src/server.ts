@@ -135,6 +135,28 @@ import {
 } from './lib/integration-sources'
 import { log } from './lib/logger'
 import { publicOrigin } from './lib/public-url'
+import {
+  convertIntakeItem,
+  dismissIntakeItem,
+  getIntakeItem,
+  listIntake,
+  listIntakeSources,
+  markRuleOverride,
+  markSourceUpdate,
+  mergeIntakeItems,
+  restoreIntakeItem,
+  setIntakePriority,
+  upsertIntakeSource,
+  deleteIntakeSource,
+} from './lib/intake-store'
+import { pushIntakeSourceUpdate } from './lib/intake-connectors'
+import { listRoutingRules, replaceRoutingRules } from './lib/intake-routing'
+import { deleteSubscription, listDeliveries, listSubscriptions, upsertSubscription, OUTBOUND_ACTIONS, OUTBOUND_EVENT_KINDS, OUTBOUND_TARGET_KINDS, type OutboundAction, type OutboundEventKind, type OutboundTargetKind } from './lib/outbound-store'
+import { verifyDatadog } from './lib/datadog'
+import { authenticateSlackRequest, handleSlackCommand, handleSlackEvent, handleSlackInteraction } from './lib/slack-interactions'
+import { confirmSlackIdentity, verifySlackIdentityToken } from './lib/slack-identity'
+import { getSlackSigningSecret, saveSlackSigningSecret } from './lib/oauth-apps'
+import { INTAKE_PRIORITIES, INTAKE_SOURCES, INTAKE_STATES, type IntakePriority, type IntakeState, type IntakeSource, type WorkKind } from './lib/intake-types'
 import { createSignupLimiter, getWaitlistInvite, inviteFromWaitlist, joinWaitlist, listWaitlist, markWaitlistJoined, parseWaitlistInput, removeFromWaitlist } from './lib/waitlist'
 
 const waitlistLimiter = createSignupLimiter()
@@ -310,13 +332,38 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, versionMetadata)
   }
 
+  // ---- Slack inbound (signature-authenticated; no session) ----
+  // The raw body is verified against the org's sealed signing secret before any
+  // side effect. A missing secret means Slack inbound is not configured and the
+  // endpoints fail closed.
+  if (method === 'POST' && (url.pathname === '/api/slack/events' || url.pathname === '/api/slack/interactions' || url.pathname === '/api/slack/commands')) {
+    const body = await req.text().catch(() => '')
+    const authResult = await authenticateSlackRequest({ timestamp: req.headers.get('x-slack-request-timestamp'), signature: req.headers.get('x-slack-signature'), body })
+    if (!authResult.ok || !authResult.orgId) {
+      serverLog.warn('slack inbound refused', { path: url.pathname, reason: authResult.reason })
+      return sendJson(authResult.reason === 'not_configured' ? 503 : 401, { error: authResult.reason ?? 'bad_signature', code: authResult.reason ?? 'bad_signature' })
+    }
+    let payload: Record<string, unknown> = {}
+    try { payload = JSON.parse(body) as Record<string, unknown> } catch { return sendJson(400, { error: 'Malformed Slack payload.' }) }
+    if (url.pathname === '/api/slack/events') {
+      const result = await handleSlackEvent(authResult.orgId, payload)
+      return sendJson(result.status, result.body)
+    }
+    if (url.pathname === '/api/slack/commands') {
+      const result = await handleSlackCommand(authResult.orgId, payload)
+      return sendJson(result.status, result.body)
+    }
+    const result = await handleSlackInteraction(authResult.orgId, payload)
+    return sendJson(result.status, result.body)
+  }
+
   // Older project links used /p/<code>; send them to /spaces/<code>.
   if (method === 'GET' && url.pathname.startsWith('/p/')) {
     return Response.redirect(`${origin}/spaces/${url.pathname.slice('/p/'.length)}${url.search}`, 301)
   }
 
   // Client-side routes (sign-in page, invite acceptance, project pages, approval links) load the SPA shell.
-  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname.startsWith('/approvals/') || url.pathname === '/organization')) {
+  if (method === 'GET' && (url.pathname === '/login' || url.pathname.startsWith('/invite/') || url.pathname.startsWith('/join/') || url.pathname.startsWith('/spaces/') || url.pathname.startsWith('/teams/') || url.pathname.startsWith('/approvals/') || url.pathname.startsWith('/intake') || url.pathname.startsWith('/outbound') || url.pathname.startsWith('/slack-link/') || url.pathname === '/organization')) {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
     return sendHtml(200, html)
   }
@@ -1982,6 +2029,20 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, await listOAuthApps(await orgIdOf(), origin))
   }
 
+  // The Slack app signing secret is captured here (Slack's Basic Information →
+  // App Credentials) and sealed; without it all Slack inbound fails closed.
+  if (method === 'PUT' && url.pathname === '/api/oauth-apps/slack/signing-secret') {
+    const denied = requireOrgAdmin('Only team owners or admins can set the Slack signing secret.'); if (denied) return denied
+    const body = await readJson<{ signingSecret?: string }>(req)
+    if (!body.signingSecret?.trim()) return sendJson(400, { error: 'A signing secret is required.' })
+    try {
+      await saveSlackSigningSecret(await orgIdOf(), body.signingSecret, auth?.user.userId ?? null)
+      return sendJson(200, { ok: true, configured: true })
+    } catch (error) {
+      return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
   // GitHub App, created for the user through the manifest flow: this page
   // posts the manifest to GitHub, the user confirms there, GitHub redirects to
   // the manifest callback with a one-hour code that we convert into the app's
@@ -2218,6 +2279,223 @@ async function route(req: Request): Promise<Response> {
       ok: true,
       integration: { kind: 'email', status: 'connected', displayName: row.displayName, credentialsOk: true, lastSyncedAt: new Date().toISOString() },
     })
+  }
+
+  // ---- Inbound work intake (012-inbound-outbound-slack) ----
+  // Datadog is a token integration like Figma/Railway: API + application key are
+  // verified, sealed and never returned. Intake routes are org-scoped.
+
+  if (method === 'POST' && url.pathname === '/api/integrations/datadog/verify') {
+    const denied = requireOrgAdmin('Only team owners or admins can verify Datadog credentials.'); if (denied) return denied
+    const body = await readJson<{ apiKey?: string; appKey?: string; site?: string }>(req)
+    const orgId = await orgIdOf()
+    let apiKey = body.apiKey?.trim()
+    let appKey = body.appKey?.trim()
+    let site = body.site?.trim()
+    if (!apiKey || !appKey) {
+      const creds = await import('./lib/app-integrations').then((m) => m.getAppIntegrationCredentials(orgId, 'datadog'))
+      if (typeof creds?.api_key === 'string') apiKey = apiKey || creds.api_key
+      if (typeof creds?.app_key === 'string') appKey = appKey || creds.app_key
+      if (!site && typeof creds?.site === 'string') site = creds.site
+    }
+    if (!apiKey || !appKey) return sendJson(400, { ok: false, error: 'Both the API key and the application key are required.' })
+    const result = await verifyDatadog({ apiKey, appKey, site })
+    return sendJson(result.ok ? 200 : 400, result)
+  }
+
+  if (method === 'POST' && url.pathname === '/api/integrations/datadog/token') {
+    const denied = requireOrgAdmin('Only team owners or admins can connect Datadog.'); if (denied) return denied
+    const body = await readJson<{ apiKey?: string; appKey?: string; site?: string; displayName?: string }>(req)
+    const apiKey = body.apiKey?.trim()
+    const appKey = body.appKey?.trim()
+    const site = body.site?.trim() || 'datadoghq.com'
+    if (!apiKey || !appKey) return sendJson(400, { ok: false, error: 'Both the API key and the application key are required.' })
+    const verification = await verifyDatadog({ apiKey, appKey, site })
+    if (!verification.ok) return sendJson(400, { ok: false, error: verification.error || 'Failed to verify the Datadog credentials.' })
+    const orgId = await orgIdOf()
+    const { upsertAppIntegration } = await import('./lib/app-integrations')
+    const row = await upsertAppIntegration({
+      orgId, kind: 'datadog', status: 'connected',
+      displayName: body.displayName?.trim() || `Datadog (${site})`,
+      config: { site },
+      credentials: { api_key: apiKey, app_key: appKey, site },
+    })
+    return sendJson(200, { ok: true, integration: { kind: 'datadog', status: 'connected', displayName: row.displayName, credentialsOk: true } })
+  }
+
+  if (method === 'GET' && url.pathname === '/api/intake') {
+    const orgId = await orgIdOf()
+    const stateParam = url.searchParams.get('state')
+    const sourceParam = url.searchParams.get('source')
+    const priorityParam = url.searchParams.get('priority')
+    const result = await listIntake(orgId, {
+      state: stateParam && (INTAKE_STATES as readonly string[]).includes(stateParam) ? (stateParam as IntakeState) : 'new',
+      source: sourceParam && (INTAKE_SOURCES as readonly string[]).includes(sourceParam) ? (sourceParam as IntakeSource) : undefined,
+      priority: priorityParam && (INTAKE_PRIORITIES as readonly string[]).includes(priorityParam) ? (priorityParam as IntakePriority) : undefined,
+      limit: Number(url.searchParams.get('limit')) || undefined,
+      cursor: url.searchParams.get('cursor') ?? undefined,
+    })
+    return sendJson(200, result)
+  }
+
+  if (method === 'GET' && url.pathname === '/api/intake/sources') {
+    return sendJson(200, { sources: await listIntakeSources(await orgIdOf()) })
+  }
+
+  if (method === 'PUT' && url.pathname === '/api/intake/sources') {
+    const denied = requireOrgAdmin('Only team owners or admins can configure intake sources.'); if (denied) return denied
+    const body = await readJson<{ kind?: IntakeSource; label?: string; scopeKey?: string; config?: Record<string, unknown>; enabled?: boolean; syncIntervalMinutes?: number }>(req)
+    if (!body.kind || !(INTAKE_SOURCES as readonly string[]).includes(body.kind)) return sendJson(400, { error: `kind must be one of ${INTAKE_SOURCES.join(', ')}.` })
+    if (!body.label?.trim() || !body.scopeKey?.trim()) return sendJson(400, { error: 'label and scopeKey are required.' })
+    const source = await upsertIntakeSource({ orgId: await orgIdOf(), kind: body.kind, label: body.label.trim(), scopeKey: body.scopeKey.trim(), config: body.config, enabled: body.enabled, syncIntervalMinutes: body.syncIntervalMinutes })
+    return sendJson(200, { source })
+  }
+
+  if (method === 'DELETE' && /^\/api\/intake\/sources\/[^/]+$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can configure intake sources.'); if (denied) return denied
+    const sourceId = url.pathname.split('/')[4]!
+    const ok = await deleteIntakeSource(await orgIdOf(), sourceId)
+    return ok ? sendJson(200, { ok: true }) : sendJson(404, { error: 'Source not found.' })
+  }
+
+  if (method === 'GET' && url.pathname === '/api/intake/routing-rules') {
+    return sendJson(200, { rules: await listRoutingRules(await orgIdOf()) })
+  }
+
+  if (method === 'PUT' && url.pathname === '/api/intake/routing-rules') {
+    const denied = requireOrgAdmin('Only team owners or admins can configure routing rules.'); if (denied) return denied
+    const body = await readJson<{ rules?: Array<Record<string, unknown>> }>(req)
+    if (!Array.isArray(body.rules)) return sendJson(400, { error: 'rules must be an array.' })
+    const rules = body.rules.map((rule, index) => {
+      if (!rule.label || typeof rule.label !== 'string') throw new Error(`Rule ${index + 1} needs a label.`)
+      return {
+        ruleId: typeof rule.ruleId === 'string' ? rule.ruleId : undefined,
+        label: rule.label,
+        enabled: rule.enabled !== false,
+        priorityOrder: Number(rule.priorityOrder) || 0,
+        match: (rule.match ?? {}) as Record<string, never>,
+        targetProjectId: (rule.targetProjectId as string | null) ?? null,
+        targetTeamId: (rule.targetTeamId as string | null) ?? null,
+        targetPriority: (rule.targetPriority as IntakePriority | null) ?? null,
+      }
+    })
+    try {
+      return sendJson(200, { rules: await replaceRoutingRules(await orgIdOf(), rules as never, auth?.user.userId ?? null) })
+    } catch (error) {
+      return sendJson(400, { error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+
+  if (method === 'PATCH' && /^\/api\/intake\/[^/]+$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can triage intake items.'); if (denied) return denied
+    const orgId = await orgIdOf()
+    const intakeId = url.pathname.split('/')[3]!
+    if (!(await getIntakeItem(orgId, intakeId))) return sendJson(404, { error: 'Intake item not found.' })
+    const body = await readJson<{ priority?: IntakePriority; suggestedProjectId?: string; ruleOverride?: boolean }>(req)
+    let item
+    if (body.priority !== undefined) {
+      if (!(INTAKE_PRIORITIES as readonly string[]).includes(body.priority)) return sendJson(400, { error: `priority must be one of ${INTAKE_PRIORITIES.join(', ')}.` })
+      item = await setIntakePriority({ orgId, intakeId, priority: body.priority, actorUserId: auth?.user.userId ?? null, actorSurface: 'app' })
+    }
+    if (body.suggestedProjectId !== undefined || body.ruleOverride) {
+      item = await markRuleOverride({ orgId, intakeId, actorUserId: auth?.user.userId ?? null, actorSurface: 'app', projectId: body.suggestedProjectId ?? null, priority: body.priority })
+    }
+    return sendJson(200, { item: item ?? (await getIntakeItem(orgId, intakeId)) })
+  }
+
+  if (method === 'POST' && /^\/api\/intake\/[^/]+\/convert$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can convert intake items.'); if (denied) return denied
+    const orgId = await orgIdOf()
+    const intakeId = url.pathname.split('/')[3]!
+    const body = await readJson<{ projectId?: string; workKind?: WorkKind }>(req)
+    if (!body.projectId) return sendJson(400, { error: 'projectId is required.' })
+    if (body.workKind !== 'feature' && body.workKind !== 'bugfix') return sendJson(400, { error: 'workKind must be feature or bugfix.' })
+    const result = await convertIntakeItem({ orgId, intakeId, projectId: body.projectId, workKind: body.workKind, actorUserId: auth?.user.userId ?? null, actorSurface: 'app' })
+    if ('error' in result) return sendJson(result.status, { error: result.error })
+    // Best-effort source update; a failure is recorded and never undoes the conversion (FR-008).
+    try {
+      const pushed = await pushIntakeSourceUpdate({ intakeId, workKind: body.workKind }, result.item)
+      await markSourceUpdate({ intakeId, state: pushed.state, error: pushed.error ?? null })
+    } catch (error) {
+      await markSourceUpdate({ intakeId, state: 'failed', error: error instanceof Error ? error.message : String(error) })
+    }
+    return sendJson(200, { intakeId, state: 'converted', link: result.link })
+  }
+
+  if (method === 'POST' && /^\/api\/intake\/[^/]+\/dismiss$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can triage intake items.'); if (denied) return denied
+    const orgId = await orgIdOf()
+    const intakeId = url.pathname.split('/')[3]!
+    const body = await readJson<{ reason?: string }>(req)
+    if (!body.reason?.trim()) return sendJson(400, { error: 'A reason is required to dismiss an item.' })
+    const item = await dismissIntakeItem({ orgId, intakeId, reason: body.reason.trim(), actorUserId: auth?.user.userId ?? null, actorSurface: 'app' })
+    return item ? sendJson(200, { item }) : sendJson(404, { error: 'Intake item not found.' })
+  }
+
+  if (method === 'POST' && /^\/api\/intake\/[^/]+\/restore$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can triage intake items.'); if (denied) return denied
+    const orgId = await orgIdOf()
+    const intakeId = url.pathname.split('/')[3]!
+    const item = await restoreIntakeItem({ orgId, intakeId, actorUserId: auth?.user.userId ?? null, actorSurface: 'app' })
+    return item ? sendJson(200, { item }) : sendJson(404, { error: 'Intake item not found.' })
+  }
+
+  if (method === 'POST' && /^\/api\/intake\/[^/]+\/merge$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can triage intake items.'); if (denied) return denied
+    const orgId = await orgIdOf()
+    const intakeId = url.pathname.split('/')[3]!
+    const body = await readJson<{ intoId?: string; reason?: string }>(req)
+    if (!body.intoId) return sendJson(400, { error: 'intoId is required.' })
+    const item = await mergeIntakeItems({ orgId, intakeId, intoId: body.intoId, reason: body.reason ?? null, actorUserId: auth?.user.userId ?? null, actorSurface: 'app' })
+    return item ? sendJson(200, { item }) : sendJson(404, { error: 'Intake item not found.' })
+  }
+
+  // ---- Outbound subscriptions (012-inbound-outbound-slack, US4) ----
+
+  if (method === 'GET' && url.pathname === '/api/outbound/subscriptions') {
+    const orgId = await orgIdOf()
+    const projectId = url.searchParams.get('projectId')
+    return sendJson(200, { subscriptions: await listSubscriptions(orgId, projectId ?? undefined), deliveries: await listDeliveries(orgId, 50) })
+  }
+
+  if (method === 'PUT' && url.pathname === '/api/outbound/subscriptions') {
+    const denied = requireOrgAdmin('Only team owners or admins can configure outbound triggers.'); if (denied) return denied
+    const body = await readJson<{ subscriptionId?: string; projectId?: string | null; eventKind?: OutboundEventKind; targetKind?: OutboundTargetKind; action?: OutboundAction; targetConfig?: Record<string, unknown>; enabled?: boolean }>(req)
+    if (!body.eventKind || !(OUTBOUND_EVENT_KINDS as readonly string[]).includes(body.eventKind)) return sendJson(400, { error: `eventKind must be one of ${OUTBOUND_EVENT_KINDS.join(', ')}.` })
+    if (!body.targetKind || !(OUTBOUND_TARGET_KINDS as readonly string[]).includes(body.targetKind)) return sendJson(400, { error: `targetKind must be one of ${OUTBOUND_TARGET_KINDS.join(', ')}.` })
+    if (!body.action || !(OUTBOUND_ACTIONS as readonly string[]).includes(body.action)) return sendJson(400, { error: `action must be one of ${OUTBOUND_ACTIONS.join(', ')}.` })
+    const subscription = await upsertSubscription({
+      orgId: await orgIdOf(), subscriptionId: body.subscriptionId, projectId: body.projectId ?? null,
+      eventKind: body.eventKind, targetKind: body.targetKind, action: body.action,
+      targetConfig: body.targetConfig, enabled: body.enabled, createdBy: auth?.user.userId ?? null,
+    })
+    return sendJson(200, { subscription })
+  }
+
+  if (method === 'DELETE' && /^\/api\/outbound\/subscriptions\/[^/]+$/.test(url.pathname)) {
+    const denied = requireOrgAdmin('Only team owners or admins can configure outbound triggers.'); if (denied) return denied
+    const subscriptionId = url.pathname.split('/')[4]!
+    const ok = await deleteSubscription(await orgIdOf(), subscriptionId)
+    return ok ? sendJson(200, { ok: true }) : sendJson(404, { error: 'Subscription not found.' })
+  }
+
+  // ---- Slack identity verification (session-authenticated) ----
+  if (method === 'GET' && /^\/api\/slack\/identity\/[^/]+$/.test(url.pathname)) {
+    const token = decodeURIComponent(url.pathname.split('/')[4]!)
+    const verified = await verifySlackIdentityToken(token)
+    if (verified.verdict === 'invalid') return sendJson(404, { error: 'This verification link is invalid.' })
+    if (verified.verdict === 'revoked') return sendJson(409, { error: 'This verification link was revoked.' })
+    if (verified.verdict === 'expired') return sendJson(409, { error: 'This verification link has expired. Ask for a new one in Slack.' })
+    return sendJson(200, { state: verified.verdict === 'consumed' ? 'verified' : 'pending', member: verified.link ? { userId: verified.link.userId, email: verified.link.email } : null })
+  }
+
+  if (method === 'POST' && /^\/api\/slack\/identity\/[^/]+\/confirm$/.test(url.pathname)) {
+    if (!auth) return sendJson(401, { error: 'Sign in required.', code: 'unauthenticated' })
+    const token = decodeURIComponent(url.pathname.split('/')[4]!)
+    const result = await confirmSlackIdentity(token, auth.user.userId)
+    if (result.ok) return sendJson(200, { ok: true, link: result.link })
+    if (result.reason === 'wrong_recipient') return sendJson(403, { error: 'This link belongs to another person.' })
+    return sendJson(409, { error: result.reason === 'consumed' ? 'This link was already used.' : 'This verification link is invalid or expired.' })
   }
 
   // ---- OAuth authorize + callback (app-level, no projectId) ----

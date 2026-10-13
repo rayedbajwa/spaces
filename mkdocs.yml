@@ -60,6 +60,7 @@ nav:
       - Agents, workers & context: concepts/agents-and-workers.md
       - Data guardrails: concepts/data-guardrails.md
       - Integrations as knowledge: concepts/integrations-and-knowledge.md
+      - Inbound Intake & outbound triggers: concepts/inbound-intake-and-outbound.md
       - "Delivery: PRs, review, merge, UAT": concepts/delivery.md
   - Reference:
       - Configuration: reference/configuration.md

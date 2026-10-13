@@ -159,6 +159,16 @@ jobs:
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
         run: bun test tests/approval-store.test.ts tests/approval-migration.test.ts tests/approval-answer.test.ts tests/approval-delivery.test.ts tests/approval-security.test.ts tests/approval-api.test.ts tests/approval-email-integration.test.ts tests/approval.e2e.test.ts
 
+      # Inbound Intake, outbound triggers and the two-way Slack surface (012).
+      # DB-backed with external HTTP stubbed at the fetch boundary; the REST and
+      # browser suites start their own servers (:3370, :3371), distinct from the
+      # deployment suites on :3369 so the full suite never races for a port.
+      - name: Run intake, outbound and Slack tests
+        env:
+          DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
+          ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
+        run: bun test tests/intake-store.test.ts tests/intake-conversion.test.ts tests/intake-connectors.test.ts tests/intake-routing.test.ts tests/intake-migration.test.ts tests/datadog-integration.test.ts tests/outbound-store.test.ts tests/outbound-delivery.test.ts tests/outbound-payload-context.test.ts tests/slack-identity.test.ts tests/slack-interactions.test.ts tests/intake-api.test.ts tests/intake-outbound.e2e.test.ts
+
       - name: Stop responsibility server
         if: always()
         run: |

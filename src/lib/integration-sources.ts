@@ -305,6 +305,7 @@ export interface JiraIssue {
     priority?: { name: string }
     labels?: string[]
     assignee?: { displayName: string } | null
+    reporter?: { displayName: string } | null
     updated?: string
     comment?: { comments: Array<{ author?: { displayName: string }; created: string; body: unknown }> }
   }

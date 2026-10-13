@@ -123,6 +123,8 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
   const groups: NavItem[][] = [
     [
       { id: 'projects', label: 'Projects', icon: I.grid, path: '/', match: (l) => l.pathname === '/' || l.pathname.startsWith('/spaces/') },
+      { id: 'intake', label: 'Intake', icon: I.bell, path: '/intake', match: (l) => l.pathname.startsWith('/intake') },
+      { id: 'outbound', label: 'Outbound', icon: I.megaphone, path: '/outbound', match: (l) => l.pathname.startsWith('/outbound') },
     ],
     [
       { id: 'knowledge', label: 'Knowledge base', icon: I.book, path: orgPath('knowledge'), match: () => onOrg('knowledge') },

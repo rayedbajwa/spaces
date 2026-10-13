@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
+import { markSlackGatePromptsDecided } from './slack-gate-prompts'
 import type { FlowOptions, PauseKind, StageName } from './aidlc'
 import type { PipelineTemplate } from './pipeline-template'
 
@@ -259,17 +260,20 @@ export async function answerPausedRun(input: {
   projectId: string
   answer: string
   decision?: {
-    requestId: string
-    linkId: string
+    requestId: string | null
+    linkId: string | null
     gateId: string
     outcome: 'approve' | 'approve_with_notes' | 'request_changes'
     feedback: string | null
     summaryShown: string | null
     decidedBy: string
+    /** Which surface recorded the decision; the event payload records it. */
+    via?: 'link' | 'slack'
   }
 }): Promise<{ ok: true; stage: StageName | null; pauseKind: 'review' | 'clarification' } | { ok: false; reason: 'not_waiting' | 'archived' }> {
   const sql = getDb()
-  return await sql.begin(async (tx) => {
+  let resolvedGateId: string | undefined
+  const result = await sql.begin(async (tx) => {
     const [project] = await tx<Array<{ archivedAt: string | null }>>`SELECT archived_at AS "archivedAt" FROM projects WHERE project_id = ${input.projectId}`
     if (project?.archivedAt) return { ok: false as const, reason: 'archived' as const }
     // Locked, so two answers arriving together cannot both pass this check.
@@ -290,13 +294,14 @@ export async function answerPausedRun(input: {
        WHERE gate_id = (SELECT gate_id FROM pipeline_gates WHERE run_id = ${input.runId} AND status = 'open' ORDER BY opened_at DESC LIMIT 1)
        RETURNING gate_id AS "gateId", kind
     `
+    if (gate?.gateId) resolvedGateId = gate.gateId
     await tx`
       INSERT INTO pipeline_events (run_id, kind, payload)
       VALUES (${input.runId}, 'gate_resolved', ${tx.json({
         gateId: gate?.gateId,
         kind: gate?.kind,
         response: input.answer,
-        ...(input.decision ? { decision: { outcome: input.decision.outcome, feedback: input.decision.feedback, decidedBy: input.decision.decidedBy, via: 'link' } } : {}),
+        ...(input.decision ? { decision: { outcome: input.decision.outcome, feedback: input.decision.feedback, decidedBy: input.decision.decidedBy, via: input.decision.via ?? (input.decision.linkId ? 'link' : 'slack') } } : {}),
       } as never)})
     `
     if (input.decision && gate?.gateId) {
@@ -312,7 +317,8 @@ export async function answerPausedRun(input: {
       await tx`UPDATE approval_requests SET state = 'decided', updated_at = now() WHERE request_id = ${decision.requestId}`
       await tx`
         UPDATE approval_requests SET state = 'invalidated', updated_at = now()
-         WHERE gate_id = ${gate.gateId} AND request_id <> ${decision.requestId} AND state IN ('pending','delivered')
+         WHERE gate_id = ${gate.gateId} AND state IN ('pending','delivered')
+           AND (${decision.requestId}::uuid IS NULL OR request_id <> ${decision.requestId})
       `
       await tx`
         UPDATE approval_links SET consumed_at = now()
@@ -336,6 +342,15 @@ export async function answerPausedRun(input: {
     `
     return { ok: true as const, stage: run.stage, pauseKind: run.pauseKind }
   })
+  // Any surface that resolves a gate closes the Slack prompt it posted, so the
+  // buttons never outlive the gate. Decision paths already rewrite the message
+  // with their outcome; this covers the in-app answer route and programmatic
+  // answers (FR-016, test-plan §5.6). Best effort and idempotent.
+  if (result.ok && !input.decision && resolvedGateId) {
+    const text = result.pauseKind === 'clarification' ? 'Clarification answered in Spaces.' : 'Decision recorded in Spaces.'
+    await markSlackGatePromptsDecided(resolvedGateId, text)
+  }
+  return result
 }
 
 /** Forget which worker owns a run (its engine is gone), so answers fall back to re-queueing. */

@@ -114,12 +114,26 @@ export function githubAppInstallUrl(slug: string): string {
 export function slackManifestUrl(origin: string): string {
   const manifest = {
     display_information: { name: 'Spaces', description: 'Agent-driven SDLC orchestrator notifications', background_color: '#5e6ad2' },
-    features: { bot_user: { display_name: 'Spaces', always_online: false } },
+    features: {
+      bot_user: { display_name: 'Spaces', always_online: false },
+      slash_commands: [{
+        command: '/spaces',
+        description: 'File a work request into the Spaces Intake queue',
+        usage_hint: '[request]',
+        should_escape: false,
+      }],
+    },
     oauth_config: {
       redirect_urls: [`${origin}/api/oauth/slack/callback`],
       scopes: { bot: SLACK_BOT_SCOPES },
     },
-    settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
+    settings: {
+      org_deploy_enabled: false,
+      socket_mode_enabled: false,
+      token_rotation_enabled: false,
+      event_subscriptions: { request_url: `${origin}/api/slack/events` },
+      interactivity: { is_enabled: true, request_url: `${origin}/api/slack/interactions` },
+    },
   }
   return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`
 }
