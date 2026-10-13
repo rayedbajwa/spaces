@@ -211,7 +211,7 @@ export function OrgPage() {
 
           {section === 'waitlist' && (me?.siteAdmin
             ? <WaitlistSection />
-            : <p className="empty-state">Only owners and admins of the default organization manage the waitlist.</p>)}
+            : <p className="empty-state">Only the deployment's super admin manages the waitlist.</p>)}
 
           {section === 'teams' && (
             <TeamsSection teams={teams} busy={busy} act={act} onCreated={refresh} />

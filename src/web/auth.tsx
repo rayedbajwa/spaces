@@ -17,7 +17,7 @@ import { LoadingBlock } from './loading'
 export type TeamRole = 'owner' | 'admin' | 'member' | 'viewer'
 export interface MeUser { userId: string; email: string; name: string; avatarUrl?: string | null; githubLogin?: string | null }
 export interface MeTeam { teamId: string; name: string; slug: string; role: TeamRole; memberCount: number; projectCount: number }
-export interface Me { /** Owner or admin of the default organization: manages the deployment's waitlist. */ siteAdmin?: boolean; authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string; /** A model provider key is stored; projects cannot be created without one. */ modelsReady?: boolean }
+export interface Me { /** The deployment's super admin: manages its waitlist. */ siteAdmin?: boolean; authEnabled: boolean; user: MeUser | null; teams: MeTeam[]; activeTeam: MeTeam | null; org?: { name: string; manualText: string }; defaultModel?: string; /** A model provider key is stored; projects cannot be created without one. */ modelsReady?: boolean }
 
 interface AuthState { me: Me | null; refresh: () => Promise<void>; signOut: () => Promise<void>; switchTeam: (teamId: string) => Promise<void> }
 

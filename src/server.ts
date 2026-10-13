@@ -52,6 +52,7 @@ import {
   authenticate,
   clearSessionCookie,
   countUsers,
+  isSuperAdmin,
   createInvite,
   createSession,
   createTeam,
@@ -393,12 +394,11 @@ async function route(req: Request): Promise<Response> {
   }
   /** The caller's organization (tenant): the active team's, or the default one when sign-in is disabled. */
   const orgIdOf = async (): Promise<string> => auth?.orgId ?? (await getDefaultOrgId())
-  /** Owners and admins of the default organization run the deployment: the waitlist is theirs. */
+  /** The deployment's super admin runs it: the waitlist is theirs (lib/auth.ts isSuperAdmin). */
   const isSiteAdmin = async (): Promise<boolean> => {
     if (authDisabled()) return true
     if (!auth) return false
-    const defaultOrg = await getDefaultOrgId()
-    return auth.teams.some((t) => t.orgId === defaultOrg && roleAtLeast(t.role, 'admin'))
+    return isSuperAdmin(auth.user)
   }
 
   if (method === 'GET' && url.pathname === '/api/auth/status') {
@@ -504,10 +504,10 @@ async function route(req: Request): Promise<Response> {
     return sendJson(200, { authEnabled: true, user: auth.user, teams: auth.teams, activeTeam: auth.activeTeam ?? null, organization: organization ?? null, org: await getOrgMemory(meOrg), defaultModel: await defaultModel(meOrg), modelsReady, siteAdmin: await isSiteAdmin() })
   }
 
-  // ---- Waitlist (the deployment's; managed by the default organization's owners and admins) ----
+  // ---- Waitlist (the deployment's; managed by its super admin) ----
 
   if (url.pathname === '/api/admin/waitlist' || url.pathname.startsWith('/api/admin/waitlist/')) {
-    if (!(await isSiteAdmin())) return sendJson(403, { error: 'Only owners and admins of the default organization manage the waitlist.' })
+    if (!(await isSiteAdmin())) return sendJson(403, { error: 'Only the deployment\'s super admin manages the waitlist.' })
     if (method === 'GET' && url.pathname === '/api/admin/waitlist') return sendJson(200, { entries: await listWaitlist() })
     const invitePath = /^\/api\/admin\/waitlist\/([^/]+)\/invite$/.exec(url.pathname)
     if (method === 'POST' && invitePath) {
