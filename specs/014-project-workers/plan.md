@@ -79,7 +79,9 @@ Each phase is its own PR against `main`, and production behaviour stays the same
    - poll until healthy
    - one provisioner per project at a time (advisory lock)
 3. Provision on project creation and lazily on first forwarded request or job. Remove the service and volume on project delete.
-4. Tests: a mock Railway GraphQL API, covering the happy path, retries, a partial failure being cleaned up, and the lock.
+4. Size each service at 2 vCPU / 2 GB (`serviceInstanceLimitsUpdate`), with a 5 GB volume.
+5. Awake cap (default 5, `PROJECT_WORKERS_MAX_AWAKE`): before waking or provisioning, count the workers that are awake. At the cap, the job stays queued and the project shows "waiting for a free worker". The first time the cap is hit, the super admin gets a Slack DM and a banner in the Workers view, then at most once an hour while it stays hit.
+6. Tests: a mock Railway GraphQL API, covering the happy path, retries, a partial failure being cleaned up, and the lock.
 
 ### Phase 3: jobs and waking
 
@@ -120,7 +122,7 @@ In the super admin's account menu, a **Workers** view lists each project's worke
 | A route that touches the workspace is missed and runs on the web service with no volume, silently reading "missing" files | The route classification is exhaustive, with a test. In the web role the workspace root points at a path that does not exist, and file helpers throw instead of returning empty. |
 | Cold start 502s | Forwarding retries for up to 30 s, and the UI shows "waking". |
 | Railway API limits or changes | One module for provisioning, mocked in tests; failures leave the project on its current worker. |
-| Cost of one service per project | Workers sleep when idle; a cap on awake workers (open question). |
+| Cost of one service per project | Workers sleep when idle; at most 5 awake, with the super admin notified when the cap is hit. |
 | SSE through the forwarder | Streamed passthrough with a heartbeat at least every 5 minutes, which also fits Railway's 15-minute request cap. |
 | In-memory job state (onboarding, sub-agent jobs, chat history) lost on a worker redeploy | Same as today, but per project; the rollout only runs when the worker is idle. |
 

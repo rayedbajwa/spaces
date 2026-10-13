@@ -73,6 +73,9 @@ The super admin sees each project's worker: state (provisioning, sleeping, awake
 - **FR-008**: Existing projects MUST be migrated from the shared volume to their own worker with verification, one at a time, and only while idle.
 - **FR-009**: Deleting a project MUST remove its worker service and volume.
 - **FR-010**: The super admin MUST see each worker's state, version and disk use, and retry, update or remove it.
+- **FR-012**: Each project worker MUST be created with 2 vCPU, 2 GB memory and a 5 GB volume; the super admin can change these per worker.
+- **FR-013**: At most 5 project workers MAY be awake (running or starting) at once by default (configurable). Work for another project MUST queue until one sleeps, and the super admin MUST be notified (Slack DM and in the Workers view) the first time the cap is hit, then at most once an hour while it stays hit.
+- **FR-014**: Provisioning MUST use a dedicated Railway project token for the `spaces` project's production environment (`RAILWAY_PROVISIONER_TOKEN`), separate from users' Railway connections; it is stored as a sealed service variable and never logged.
 - **FR-011**: The web service MUST keep working (board, settings, approvals from the database) while a project worker is asleep, waking or failed, and say which project is unavailable.
 
 ### Key Entities
@@ -96,8 +99,10 @@ The super admin sees each project's worker: state (provisioning, sleeping, awake
 - Railway allows one volume per service and no replicas with volumes; private-network requests wake sleeping services; the first request may return 502.
 - Spaces gets a Railway API token for its own Railway project, separate from users' Railway connections used for deployment targets.
 
-## Open questions
+## Clarifications
 
-- [NEEDS CLARIFICATION: Railway token — an account/workspace token that can create services and volumes in the `spaces` project. A project token may not be allowed to create volumes; to verify before Phase 2.]
-- [NEEDS CLARIFICATION: worker size and volume size per project (Hobby defaults to 5 GB per volume; the shared volume is 4.4 GB today).]
-- [NEEDS CLARIFICATION: cost ceiling — a maximum number of awake workers, beyond which new work queues?]
+### Session 2026-10-13
+
+- Q: Which Railway token does provisioning use? → A: A token scoped just for provisioning: a project token for the `spaces` project's production environment (FR-014). Railway only creates tokens in the dashboard (Project → Settings → Tokens). Before Phase 2, check that a project token can create services and volumes; if it cannot, fall back to a workspace token and record that here.
+- Q: Worker and volume size? → A: 2 vCPU, 2 GB memory, 5 GB volume per project (FR-012).
+- Q: Cap on awake workers? → A: 5 to start; notify the super admin when the cap is hit (FR-013).
