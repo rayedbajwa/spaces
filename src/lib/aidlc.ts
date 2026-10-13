@@ -296,6 +296,8 @@ export class AIDLCFlow {
   private sessionContextText?: string
   private stageIndex = 0
   private waitState?: WaitState
+  /** An answer is being worked on: the gate's waitState stays set until the stage moves on, but nobody is waited for. */
+  private answering = false
   private log = ''
   private sessionFile?: string
   private activeFeatureBranch?: string
@@ -371,11 +373,15 @@ export class AIDLCFlow {
       throw new Error('Response cannot be empty.')
     }
 
-    if (this.waitState.kind === 'clarification') {
-      return this.handleClarificationAnswer(trimmed)
+    this.answering = true
+    try {
+      if (this.waitState.kind === 'clarification') {
+        return await this.handleClarificationAnswer(trimmed)
+      }
+      return await this.handleReviewAnswer(trimmed)
+    } finally {
+      this.answering = false
     }
-
-    return this.handleReviewAnswer(trimmed)
   }
 
   async dispose(): Promise<void> {
@@ -411,9 +417,13 @@ export class AIDLCFlow {
     return 'next stage'
   }
 
-  /** True while the flow is paused at a clarification/review gate and can accept an answer. */
+  /**
+   * True while the flow is paused at a clarification/review gate and can accept
+   * an answer. False while an answer is being worked on: the agent is busy, and
+   * a worker restart must hand the run back rather than treat it as paused.
+   */
   isWaitingForInput(): boolean {
-    return Boolean(this.waitState)
+    return Boolean(this.waitState) && !this.answering
   }
 
   getCurrentStage(): StageName | undefined {

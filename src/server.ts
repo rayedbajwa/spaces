@@ -174,7 +174,7 @@ import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProj
 import { laneForProject } from './lib/board-drop'
 import { ACCEPTANCE_FILE, readAcceptance, renderAcceptance, type Acceptance } from './lib/acceptance'
 import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
-import { reapAbandonedJobs } from './lib/job-reaper'
+import { reapAbandonedJobs, reapStrandedRuns } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
 
@@ -263,7 +263,7 @@ if (!isProjectRole()) void (async () => {
 // whole project. Workers sweep for those, but a project whose worker never
 // spawned has nobody to sweep for it, so the server sweeps too.
 {
-  const sweep = () => reapAbandonedJobs()
+  const sweep = () => reapAbandonedJobs().then(() => reapStrandedRuns())
     .catch((error) => serverLog.warn('abandoned job sweep failed', { error: error instanceof Error ? error.message : String(error) }))
   if (!isProjectRole()) {
     void sweep()

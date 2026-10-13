@@ -38,7 +38,7 @@ import {
 import { getWorkerId, heartbeatWorker, unregisterWorker } from './lib/worker-registry'
 import { parseApprovalAnswer, type FlowProgress, type StageName } from './lib/aidlc'
 import { buildResumeNote, resolveResumePoint } from './lib/run-resume'
-import { reapAbandonedJobs } from './lib/job-reaper'
+import { reapAbandonedJobs, reapStrandedRuns } from './lib/job-reaper'
 import { restoreIntentFilesQuietly, syncProjectIntentsQuietly } from './lib/intent-store'
 import { restoreRunSession, saveRunSession } from './lib/session-store'
 import { createLineCarry, createLineStamper, redactSecrets } from './lib/agent-activity'
@@ -803,6 +803,7 @@ async function drainDispatcher(workerId: string): Promise<void> {
 async function reapDeadWorkerJobs(): Promise<void> {
   try {
     await reapAbandonedJobs({ projectId: WORKER_PROJECT_ID ?? undefined, selfWorkerId: getWorkerId() })
+    await reapStrandedRuns({ projectId: WORKER_PROJECT_ID ?? undefined })
   } catch (err) {
     workerLog.error('dead-worker reaper failed', err instanceof Error ? err : new Error(String(err)))
   }
@@ -971,12 +972,14 @@ async function shutdown(signal: string): Promise<void> {
       const run = await getRun(runId)
       // Trust the engine, not the DB row: a run whose answer is being processed
       // can still read 'paused' in the DB for a moment while the engine is busy.
-      if (run && engine.isWaitingForInput() && run.status !== 'paused') {
+      if (run && engine.isWaitingForInput() && run.status === 'queued') {
         // Answered while the engine still waited: the answer is already a queued
         // job. Rewriting the row as paused here used to leave it paused with no
-        // pause kind, which neither answering nor resuming accepted.
+        // pause kind, which neither answering nor resuming accepted. Only a
+        // 'queued' row has that job; any other status falls through to a hand-back,
+        // or the run would be left 'running' with no job and no worker (DEFA-1).
         await clearRunOwner(runId)
-      } else if (run && engine.isWaitingForInput()) {
+      } else if (run && engine.isWaitingForInput() && run.status === 'paused') {
         // Nothing was executing. Keep the run paused; the next answer restarts
         // the stage on a fresh worker (see handleAnswerJob's no-engine path).
         await updateRunStatus(runId, {
@@ -999,8 +1002,11 @@ async function shutdown(signal: string): Promise<void> {
         await queueEvent(runId, 'requeued', { fromStage: stage, reason: note, signal })
         const jobId = activeJobs.get(runId)
         if (jobId) await failJob(jobId, `Worker shutting down (${signal}); run re-queued`)
+        // Interrupted while working on a person's answer: the next worker reopens the gate with it, so it is not lost.
+        const pending = pendingAnswers.get(runId)
+        const carry = pending && pending.stage === stage ? { answer: pending.answer } : {}
         if (run.projectId) {
-          await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId, fromStage: stage ?? undefined }, runId })
+          await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'api', payload: { runId, fromStage: stage ?? undefined, ...carry }, runId })
         }
       }
       await drainEvents(runId)

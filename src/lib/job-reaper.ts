@@ -62,3 +62,39 @@ export async function reapAbandonedJobs(options: ReapOptions = {}): Promise<numb
   if (closed > 0) reaperLog.info('closed abandoned jobs', { count: closed, projectId })
   return closed
 }
+
+/**
+ * Runs left 'running' with nothing driving them: no live job, and no live
+ * worker owning them. A run is only 'running' while a job executes it, so this
+ * is a run whose job was closed without the run being handed back (a restart
+ * mid-answer did this to DEFA-1 on 2026-10-13). Nothing else ever looks at such
+ * a run, and it blocks its project's lane, so it is re-queued from its stage.
+ */
+export async function reapStrandedRuns(options: ReapOptions = {}): Promise<number> {
+  const sql = getDb()
+  const projectId = options.projectId ?? null
+  const stranded = await sql<Array<{ runId: string; projectId: string; stage: string | null }>>`
+    SELECT r.run_id AS "runId", r.project_id AS "projectId", r.current_stage AS stage
+      FROM pipeline_runs r
+      LEFT JOIN workers w ON w.worker_id = r.owning_worker_id
+     WHERE r.status = 'running'
+       AND r.project_id IS NOT NULL
+       AND (${projectId}::uuid IS NULL OR r.project_id = ${projectId}::uuid)
+       AND (r.owning_worker_id IS NULL OR w.worker_id IS NULL OR w.last_heartbeat_at < now() - interval '90 seconds')
+       AND NOT EXISTS (
+         SELECT 1 FROM project_jobs j WHERE j.run_id = r.run_id AND j.status IN ('queued','claimed','running')
+       )
+       -- Give a job that just finished time to move its run on (paused, completed).
+       AND COALESCE((SELECT max(COALESCE(j.ended_at, j.updated_at)) FROM project_jobs j WHERE j.run_id = r.run_id), r.created_at) < now() - interval '2 minutes'
+  `
+
+  for (const run of stranded) {
+    const stage = (run.stage as StageName | null) ?? null
+    const note = `Run was left running with no worker during stage ${stage ?? 'start'}; re-queued from that stage.`
+    await requeueRunFromStage(run.runId, stage, note)
+    await appendEvent({ runId: run.runId, kind: 'requeued', payload: { fromStage: stage, reason: note, stranded: true } })
+    await enqueueJob({ projectId: run.projectId, kind: 'pipeline_run', triggerSource: 'reaper', payload: { runId: run.runId, fromStage: stage ?? undefined }, runId: run.runId })
+    reaperLog.info('re-queued a run left running with no worker', { runId: run.runId, stage })
+  }
+  return stranded.length
+}
