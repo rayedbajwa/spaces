@@ -72,6 +72,26 @@ describe('kubernetes', () => {
     expect(api.calls[0]!.body.spec.template.spec.containers[0].image).toBe('spaces:local')
   })
 
+  test('an update leaves the replicas alone, so a stopped worker stays stopped', async () => {
+    const api = fake()
+    await kubernetesPlatform(config, api.call).update({ ...spec, version: 'def5678' }, { serviceRef: 'spaces-proj-defa-1', volumeRef: null })
+    expect(api.calls[0]!.body.spec.replicas).toBeUndefined()
+    // Every update replaces the pod, even when the template already names the version.
+    expect(Date.parse(api.calls[0]!.body.spec.template.metadata.annotations['kubectl.kubernetes.io/restartedAt'])).toBeGreaterThan(0)
+  })
+
+  test('scale sets the Deployment replicas (stop or start, the claim stays)', async () => {
+    const api = fake()
+    const platform = kubernetesPlatform(config, api.call)
+    await platform.scale!(spec, { serviceRef: 'spaces-proj-defa-1', volumeRef: 'spaces-proj-defa-1-data' }, 0)
+    await platform.scale!(spec, { serviceRef: 'spaces-proj-defa-1', volumeRef: 'spaces-proj-defa-1-data' }, 1)
+    expect(api.calls).toEqual([
+      { method: 'PATCH', path: '/apis/apps/v1/namespaces/spaces/deployments/spaces-proj-defa-1', body: { spec: { replicas: 0 } } },
+      { method: 'PATCH', path: '/apis/apps/v1/namespaces/spaces/deployments/spaces-proj-defa-1', body: { spec: { replicas: 1 } } },
+    ])
+    await expect(kubernetesPlatform(config, fake({ 'PATCH /apis/apps/v1/namespaces/spaces/deployments/spaces-proj-defa-1': 403 }).call).scale!(spec, { serviceRef: 'spaces-proj-defa-1', volumeRef: null }, 0)).rejects.toThrow('scale deployment to 0')
+  })
+
   test('the probe is a server-side dry run; remove deletes all three, ignoring ones already gone', async () => {
     const api = fake()
     const check = await kubernetesPlatform(config, api.call).check(true)

@@ -83,6 +83,23 @@ docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t spaces:local .
 kubectl -n spaces rollout restart deploy/spaces-web
 ```
 
+### k3s in Docker (when minikube will not start)
+
+minikube's binary crashes on start on some recent macOS versions. k3s runs a single-node cluster in a container, and its kubeconfig goes in its own file:
+
+```sh
+docker run -d --privileged --name k3s-spaces --tmpfs /run --tmpfs /var/run -p 16443:6443 \
+  rancher/k3s:v1.31.4-k3s1 server --disable traefik --disable metrics-server --tls-san 127.0.0.1
+docker exec k3s-spaces cat /etc/rancher/k3s/k3s.yaml | sed 's#:6443#:16443#' > k3s.kubeconfig
+export KUBECONFIG=$PWD/k3s.kubeconfig
+
+docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t spaces:local .
+docker save spaces:local | docker exec -i k3s-spaces ctr -n k8s.io images import -
+kubectl apply -k deploy/kubernetes
+```
+
+To try sleeping quickly, set `PROJECT_WORKER_IDLE_SECONDS=30` and `PROJECT_WORKER_SLEEP_SECONDS=60` on `spaces-web`. A worker then scales to 0 about a minute and a half after its last job. A request to the project, or queued work, starts it again.
+
 ### Other clusters
 
 - Push the image to a registry the cluster can pull from. Set `PROJECT_WORKER_IMAGE` and the web container's `image` to it, and set `PROJECT_WORKER_IMAGE_PULL_POLICY=Always` if the tag moves.
@@ -101,7 +118,11 @@ Workers are built from `PROJECT_WORKER_REPO` (default `rayedbajwa/spaces`). They
 
 ## Sleeping, waking and the awake limit
 
-A worker's job process exits after `PROJECT_WORKER_IDLE_SECONDS` (default 300) with nothing to do. That includes runs waiting on a person at a gate: answering restarts the stage on the next worker. The worker's server then makes no network traffic, so Railway puts the service to sleep. Kubernetes and Docker keep the container, but it uses almost no CPU.
+A worker's job process exits after `PROJECT_WORKER_IDLE_SECONDS` (default 300) with nothing to do. That includes runs waiting on a person at a gate: answering restarts the stage on the next worker. The worker's server then makes no network traffic, so Railway puts the service to sleep. Docker keeps the container, but it uses almost no CPU.
+
+On Kubernetes nothing sleeps a pod, so Spaces does it: once a worker has been quiet for `PROJECT_WORKER_SLEEP_SECONDS` (default 600; 0 turns it off), the web service scales its Deployment to 0 and marks it `sleeping`. Quiet means no job process running, nothing queued or running, not being moved, and not just started. The PersistentVolumeClaim keeps the files. Anything that needs the worker scales it back to 1 and waits for the pod: queued work, someone opening the project, or an approval. On a local cluster the pod is answering within about ten seconds. A sleeping worker gets new Spaces versions in its pod template without starting, so it wakes on the current version.
+
+Reads that only decorate the board never wake a worker on any platform. They use what the worker stored the last time it was up.
 
 When work is queued for a project, the web service wakes that project's worker, whichever path queued it: a run, an approval link, a Slack answer, or an intake conversion. It catches every job as it's added, and also checks every 30 seconds for queued work whose worker isn't running.
 
@@ -175,6 +196,7 @@ Spaces sets each worker's build and start explicitly: `dockerfilePath: Dockerfil
 | `PROJECT_WORKER_VCPUS`, `PROJECT_WORKER_MEMORY_GB`, `PROJECT_WORKER_DISK_GB` | all | Worker size (2, 2, 5) |
 | `PROJECT_WORKER_PORT` | all | Port workers listen on (8080) |
 | `PROJECT_WORKER_IDLE_SECONDS` | all | Idle time before a worker's job process stops (300) |
+| `PROJECT_WORKER_SLEEP_SECONDS` | Kubernetes | Quiet time before the web service scales a worker to 0 (600; 0 keeps workers running) |
 | `PROJECT_WORKERS_MAX_AWAKE` | all | Workers allowed to run jobs at once (5) |
 | `PROJECT_WORKER_DATABASE_URL` | Kubernetes, Docker | Database address as the workers see it, if it differs from the web service's |
 | `RAILWAY_PROVISIONER_TOKEN`, `RAILWAY_PROVISIONER_TOKEN_TYPE` | Railway | Provisioning token, and its type (`project` by default) |

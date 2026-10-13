@@ -166,9 +166,18 @@ export function kubernetesPlatform(config: KubernetesWorkerConfig, call: KubeCal
     async update(spec, refs) {
       const name = refs.serviceRef ?? spec.name
       const res = await call('PATCH', `${paths.deployment}/${encodeURIComponent(name)}`, {
-        spec: { template: { metadata: { annotations: { 'spaces.dev/version': spec.version } }, spec: { containers: [{ name: 'worker', image: config.image }] } } },
+        // restartedAt (what `kubectl rollout restart` sets) changes on every update,
+        // so the pod is always replaced and reports its version, even when the
+        // template already names this version (a stopped worker updated earlier).
+        // Replicas are untouched: a stopped worker stays stopped.
+        spec: { template: { metadata: { annotations: { 'spaces.dev/version': spec.version, 'kubectl.kubernetes.io/restartedAt': new Date().toISOString() } }, spec: { containers: [{ name: 'worker', image: config.image }] } } },
       })
       if (res.status >= 300) throw kubeError('update deployment', res)
+    },
+    async scale(spec, refs, replicas) {
+      // The Deployment's replicas: the pod stops or starts; the claim keeps the files.
+      const res = await call('PATCH', `${paths.deployment}/${encodeURIComponent(refs.serviceRef ?? spec.name)}`, { spec: { replicas } })
+      if (res.status >= 300) throw kubeError(`scale deployment to ${replicas}`, res)
     },
     async remove(spec, refs) {
       await remove('service', refs.serviceRef ?? spec.name)

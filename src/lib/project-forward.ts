@@ -17,6 +17,7 @@ import { getDb } from './db'
 import { log } from './logger'
 import { INTERNAL_TOKEN_HEADER, internalToken, isWebRole } from './role'
 import { getProjectWorker, provisionProjectWorker, workerPlatform } from './worker-provisioner'
+import { wakeIfSleeping } from './worker-sleep'
 import { hasLocalProjectFiles } from './project-migration'
 
 const forwardLog = log.child({ mod: 'project-forward' })
@@ -110,6 +111,8 @@ export interface ForwardOptions {
 }
 
 const DEFAULT_WAKE_TIMEOUT_MS = 30_000
+/** A worker Spaces stopped (Kubernetes) needs its pod scheduled and started. */
+const STOPPED_WAKE_TIMEOUT_MS = 180_000
 
 function unavailable(code: 'worker_unavailable' | 'worker_waking' | 'worker_provisioning', message: string): Response {
   return new Response(JSON.stringify({ error: message, code }), { status: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'retry-after': '5' } })
@@ -140,6 +143,8 @@ export async function forwardToProject(req: Request, projectId: string, body: Ar
     }
     return unavailable('worker_unavailable', 'This project has no worker yet.')
   }
+  // A worker Spaces stopped while idle is started first, and given time to come up.
+  const started = await wakeIfSleeping(projectId).catch(() => false)
   const url = new URL(req.url)
   const target = `${base}${url.pathname}${url.search}`
   const headers = new Headers()
@@ -150,7 +155,7 @@ export async function forwardToProject(req: Request, projectId: string, body: Ar
 
   const doFetch = options.fetchImpl ?? fetch
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
-  const deadline = Date.now() + (options.wakeTimeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS)
+  const deadline = Date.now() + Math.max(options.wakeTimeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS, started ? STOPPED_WAKE_TIMEOUT_MS : 0)
   let delay = 500
   for (;;) {
     try {
@@ -186,7 +191,10 @@ export async function callProjectWorker<T>(projectId: string, path: string, init
   const token = internalToken()
   if (!base || !token) return undefined
   const sleep = init.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)))
-  const deadline = Date.now() + (init.wakeTimeoutMs ?? 0)
+  // Only a caller that waits for a waking worker starts a stopped one: reads
+  // that just decorate the board must not keep idle workers running.
+  const started = (init.wakeTimeoutMs ?? 0) > 0 && await wakeIfSleeping(projectId).catch(() => false)
+  const deadline = Date.now() + Math.max(init.wakeTimeoutMs ?? 0, started ? STOPPED_WAKE_TIMEOUT_MS : 0)
   let delay = 500
   for (;;) {
     try {
