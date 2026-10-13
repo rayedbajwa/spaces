@@ -103,6 +103,40 @@ describe('conversion to project work', () => {
     }
   })
 
+  test('two conversions at once start one run and leave one work link', async () => {
+    const item = await upsertIntakeItem(input())
+    const results = await Promise.all([1, 2].map(() =>
+      convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: users.ownerA })))
+    const runIds = results.flatMap((r) => ('link' in r && r.link.runId ? [r.link.runId] : []))
+    try {
+      expect(results.filter((r) => 'error' in r && r.status === 409)).toHaveLength(1)
+      const links = await getDb()`SELECT run_id FROM intake_work_links WHERE intake_id = ${item.intakeId}`
+      expect(links.length).toBeLessThanOrEqual(1)
+      expect(runIds.length).toBeLessThanOrEqual(1)
+    } finally {
+      await cleanup([item.intakeId], runIds)
+    }
+  })
+
+  test('a restored item can be converted again, replacing its earlier link', async () => {
+    const item = await upsertIntakeItem(input())
+    const first = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: users.ownerA })
+    if ('error' in first) return
+    const runIds = [first.link.runId!]
+    try {
+      // The first run must not hold the project, so the second conversion can start.
+      await cleanup([], [first.link.runId!])
+      await restoreIntakeItem({ orgId: orgA, intakeId: item.intakeId, actorUserId: users.ownerA })
+      const again = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'bugfix', actorUserId: users.ownerA })
+      expect('error' in again).toBe(false)
+      if ('link' in again) runIds.push(again.link.runId!)
+      const links = await getDb()<Array<{ workKind: string }>>`SELECT work_kind AS "workKind" FROM intake_work_links WHERE intake_id = ${item.intakeId}`
+      expect(links.map((l) => l.workKind)).toEqual(['bugfix'])
+    } finally {
+      await cleanup([item.intakeId], runIds)
+    }
+  })
+
   test('a newly synced intent attaches to the converted work link', async () => {
     const item = await upsertIntakeItem(input())
     const result = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: users.ownerA })

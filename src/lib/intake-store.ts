@@ -380,6 +380,16 @@ export async function convertIntakeItem(input: {
   const sourceRef = `${item.source}:${item.externalRef}${item.externalUrl ? ` (${item.externalUrl})` : ''}`
   const featureText = [feature, description, `Source: ${sourceRef}`].filter(Boolean).join('\n\n')
 
+  // Claim the item before starting work: two conversions at once (a double
+  // click, Slack and the app) would otherwise both start a run, and the second
+  // would then fail on the one-link-per-item constraint.
+  const [claimed] = await sql`
+    UPDATE intake_items SET state = 'converted', updated_at = now()
+     WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId} AND state NOT IN ('converted', 'merged')
+    RETURNING intake_id
+  `
+  if (!claimed) return { error: 'This item is already converted.', status: 409 }
+
   const started = await startSpecifyRun({
     projectId: project.projectId,
     projectSlug: project.slug,
@@ -387,15 +397,22 @@ export async function convertIntakeItem(input: {
     scope,
     actorName: input.actorUserId ? undefined : 'intake',
   })
-  if (!started.ok) return { error: started.error, status: started.status }
+  if (!started.ok) {
+    await sql`UPDATE intake_items SET state = ${item.state}, updated_at = now() WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId} AND state = 'converted'`
+    return { error: started.error, status: started.status }
+  }
 
   const linkId = randomUUID()
   await sql.begin(async (tx) => {
+    // A restored item that is converted again replaces its earlier link.
     await tx`
       INSERT INTO intake_work_links (link_id, intake_id, project_id, work_kind, run_id, source_update_state, created_by)
       VALUES (${linkId}, ${input.intakeId}, ${input.projectId}, ${input.workKind}, ${started.runId}, 'pending', ${input.actorUserId ?? null})
+      ON CONFLICT (intake_id) DO UPDATE SET
+        link_id = EXCLUDED.link_id, project_id = EXCLUDED.project_id, work_kind = EXCLUDED.work_kind, run_id = EXCLUDED.run_id,
+        intent_id = NULL, source_update_state = 'pending', source_update_error = NULL, source_update_attempted_at = NULL,
+        created_by = EXCLUDED.created_by, created_at = now()
     `
-    await tx`UPDATE intake_items SET state = 'converted', updated_at = now() WHERE org_id = ${input.orgId} AND intake_id = ${input.intakeId}`
     await tx`
       INSERT INTO intake_transitions (transition_id, intake_id, actor_user_id, actor_surface, action, from_state, to_state, metadata_json)
       VALUES (${randomUUID()}, ${input.intakeId}, ${input.actorUserId ?? null}, ${input.actorSurface ?? 'app'}, 'converted', ${item.state}, 'converted',
