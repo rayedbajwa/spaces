@@ -56,7 +56,7 @@ The web service uses that account to create each project's worker.
 ```sh
 minikube start --cpus 4 --memory 8g --disk-size 40g
 eval "$(minikube docker-env)"          # build straight into minikube's Docker
-docker build -t spaces:local .
+docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t spaces:local .
 
 cp deploy/kubernetes/secrets.env.example deploy/kubernetes/secrets.env
 # edit secrets.env: ENCRYPTION_KEY and SPACES_INTERNAL_TOKEN (long random strings)
@@ -76,11 +76,11 @@ kubectl -n spaces logs -f deploy/spaces-proj-<code>
 
 Workers request 250m CPU and 512 MiB and may use up to 2 vCPU and 2 GiB, so a few fit on a 4-CPU minikube. Change the limits with `PROJECT_WORKER_VCPUS`, `PROJECT_WORKER_MEMORY_GB` and `PROJECT_WORKER_DISK_GB` on the web Deployment. Change the requests with `PROJECT_WORKER_CPU_REQUEST` and `PROJECT_WORKER_MEMORY_REQUEST`.
 
-To rebuild after a code change, run `docker build -t spaces:local .` again (with minikube's Docker), then:
+To rebuild after a code change, build again with the new `GIT_COMMIT` (using minikube's Docker) and restart the web service. It updates each worker when that worker is idle:
 
 ```sh
+docker build --build-arg GIT_COMMIT="$(git rev-parse HEAD)" -t spaces:local .
 kubectl -n spaces rollout restart deploy/spaces-web
-kubectl -n spaces rollout restart deploy -l spaces.dev/role=project-worker
 ```
 
 ### Other clusters
@@ -107,6 +107,25 @@ When work is queued for a project, the web service wakes that project's worker, 
 
 At most `PROJECT_WORKERS_MAX_AWAKE` (default 5) workers run jobs at once. Work for another project waits until one goes idle. The super admin gets a Slack DM the first time the limit is hit, then at most once an hour while it stays hit. The **Project workers** page shows how many workers are awake and which projects are waiting.
 
+## Updates only when idle
+
+The web service runs the version every worker should run: the git commit it was built from. Every minute it updates workers on another version that have nothing running, at most two at a time. A worker that's busy stays on its version until its stage ends. While a worker is being updated it isn't woken; queued work runs on the new version, which starts its job process when it boots. The **Project workers** page shows each worker's version and when an update is waiting for it to go idle.
+
+- **Railway:** workers follow the `spaces-workers` branch (`PROJECT_WORKER_BRANCH`), which nobody pushes to, so a push to `main` doesn't redeploy them. Spaces deploys the exact `main` commit to each one when it's idle. Create the branch once:
+
+  ```sh
+  git push origin origin/main:refs/heads/spaces-workers
+  ```
+
+- **Kubernetes:** the worker's Deployment is patched with the image and a `spaces.dev/version` annotation, so its pod is replaced even when the tag (`spaces:local`) stays the same.
+- **Docker:** the container is recreated from the image, on the same volume.
+
+Locally, build with `GIT_COMMIT` so the web service knows its version. Without it the version is "unknown" and nothing is updated:
+
+```sh
+GIT_COMMIT="$(git rev-parse HEAD)" docker compose -f docker-compose.workers.yml up --build
+```
+
 ## Settings
 
 | Variable | Platform | Meaning |
@@ -121,7 +140,7 @@ At most `PROJECT_WORKERS_MAX_AWAKE` (default 5) workers run jobs at once. Work f
 | `PROJECT_WORKERS_MAX_AWAKE` | all | Workers allowed to run jobs at once (5) |
 | `PROJECT_WORKER_DATABASE_URL` | Kubernetes, Docker | Database address as the workers see it, if it differs from the web service's |
 | `RAILWAY_PROVISIONER_TOKEN`, `RAILWAY_PROVISIONER_TOKEN_TYPE` | Railway | Provisioning token, and its type (`project` by default) |
-| `PROJECT_WORKER_REPO`, `PROJECT_WORKER_BRANCH` | Railway | What workers are built from |
+| `PROJECT_WORKER_REPO`, `PROJECT_WORKER_BRANCH` | Railway | What workers are built from; the branch (`spaces-workers`) must exist and should never be pushed to |
 | `PROJECT_WORKER_NAMESPACE`, `PROJECT_WORKER_SECRET`, `PROJECT_WORKER_STORAGE_CLASS`, `PROJECT_WORKER_IMAGE_PULL_POLICY`, `PROJECT_WORKER_CPU_REQUEST`, `PROJECT_WORKER_MEMORY_REQUEST` | Kubernetes | Where workers go and how they are scheduled |
 | `KUBE_API_URL`, `KUBE_TOKEN`, `KUBE_CA_FILE`, `KUBE_INSECURE` | Kubernetes | API access from outside the cluster |
 | `PROJECT_WORKER_DOCKER_NETWORK`, `DOCKER_SOCKET` | Docker | Network the workers join, and the engine's socket |

@@ -5,7 +5,7 @@ import type { WorkerRefs, WorkerSpec } from '../src/lib/worker-platform'
 
 /** 014-project-workers: project workers on Kubernetes (minikube) and the local Docker engine. */
 
-const spec: WorkerSpec = { projectId: 'p-1', name: 'spaces-proj-defa-1', port: 8080, env: { SPACES_ROLE: 'project', WORKER_PROJECT_ID: 'p-1', PORT: '8080', HOST: '::' } }
+const spec: WorkerSpec = { projectId: 'p-1', name: 'spaces-proj-defa-1', port: 8080, version: 'abc1234', env: { SPACES_ROLE: 'project', WORKER_PROJECT_ID: 'p-1', PORT: '8080' } }
 
 function recorder() {
   const refs: WorkerRefs = { serviceRef: null, volumeRef: null }
@@ -64,6 +64,14 @@ describe('kubernetes', () => {
     await expect(kubernetesPlatform(config, fake({ 'POST /api/v1/namespaces/spaces/services': 403 }).call).create(spec, recorder().refs, recorder().record)).rejects.toThrow('403')
   })
 
+  test('an update patches the version annotation and image, so the pod is replaced', async () => {
+    const api = fake()
+    await kubernetesPlatform(config, api.call).update({ ...spec, version: 'def5678' }, { serviceRef: 'spaces-proj-defa-1', volumeRef: null })
+    expect(api.calls[0]).toMatchObject({ method: 'PATCH', path: '/apis/apps/v1/namespaces/spaces/deployments/spaces-proj-defa-1' })
+    expect(api.calls[0]!.body.spec.template.metadata.annotations['spaces.dev/version']).toBe('def5678')
+    expect(api.calls[0]!.body.spec.template.spec.containers[0].image).toBe('spaces:local')
+  })
+
   test('the probe is a server-side dry run; remove deletes all three, ignoring ones already gone', async () => {
     const api = fake()
     const check = await kubernetesPlatform(config, api.call).check(true)
@@ -101,6 +109,13 @@ describe('docker', () => {
     const api = fake()
     await dockerPlatform(config, api.call).remove(spec, { serviceRef: 'spaces-proj-defa-1', volumeRef: 'spaces-proj-defa-1-data' })
     expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['DELETE /containers/spaces-proj-defa-1?force=true', 'DELETE /volumes/spaces-proj-defa-1-data'])
+  })
+
+  test('an update replaces the container on the same volume', async () => {
+    const api = fake()
+    await dockerPlatform(config, api.call).update(spec, { serviceRef: 'spaces-proj-defa-1', volumeRef: 'spaces-proj-defa-1-data' })
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(['DELETE /containers/spaces-proj-defa-1?force=true', 'POST /containers/create?name=spaces-proj-defa-1', 'POST /containers/spaces-proj-defa-1/start'])
+    expect(api.calls[1]!.body.HostConfig.Mounts[0].Source).toBe('spaces-proj-defa-1-data')
   })
 
   test('the check lists worker containers; the probe makes and removes a volume', async () => {

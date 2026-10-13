@@ -36,7 +36,9 @@ export function railwayWorkerConfig(env: NodeJS.ProcessEnv = process.env): Railw
     railwayProjectId,
     environmentId,
     repo: env.PROJECT_WORKER_REPO?.trim() || 'rayedbajwa/spaces',
-    branch: env.PROJECT_WORKER_BRANCH?.trim() || 'main',
+    // Workers follow a branch nobody pushes to, so a push to main does not
+    // redeploy them; Spaces deploys the exact commit to each one when idle.
+    branch: env.PROJECT_WORKER_BRANCH?.trim() || 'spaces-workers',
     webServiceName: env.RAILWAY_SERVICE_NAME?.trim() || 'spaces',
     postgresServiceName: env.PROJECT_WORKER_POSTGRES_SERVICE?.trim() || 'Postgres',
     size: workerSize(env),
@@ -64,6 +66,14 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
   const call: GraphQL = gql ?? (<T>(query: string, variables: Record<string, unknown> = {}) => railwayGraphQLRequest<T>(config.token, config.tokenType, query, variables))
   const env = { serviceId: '', environmentId: config.environmentId }
 
+  /** Deploy an exact commit (the web service's), or the branch head when the version is unknown. */
+  async function deployVersion(serviceId: string, version: string) {
+    if (/^[0-9a-f]{7,40}$/.test(version)) {
+      await call(`mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!, $commitSha: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId, commitSha: $commitSha) }`, { serviceId, environmentId: config.environmentId, commitSha: version })
+    } else {
+      await call(`mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }`, { serviceId, environmentId: config.environmentId })
+    }
+  }
   async function deleteVolume(volumeId: string) {
     await call(`mutation volumeDelete($volumeId: String!) { volumeDelete(volumeId: $volumeId) }`, { volumeId })
   }
@@ -99,8 +109,12 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
         { input: { ...env, vCPUs: config.size.vcpus, memoryGB: config.size.memoryGb } },
       ).catch((error) => railwayLog.warn('worker size not applied', { service: spec.name, error: error instanceof Error ? error.message : String(error) }))
       if (!existing.volumeRef) await record({ volumeRef: await createVolume(serviceId) })
-      await call(`mutation serviceInstanceDeployV2($serviceId: String!, $environmentId: String!) { serviceInstanceDeployV2(serviceId: $serviceId, environmentId: $environmentId) }`, env)
+      await deployVersion(serviceId, spec.version)
       return { internalUrl: `http://${spec.name}.railway.internal:${spec.port}` }
+    },
+    async update(spec, refs) {
+      if (!refs.serviceRef) throw new Error('This worker has no Railway service yet.')
+      await deployVersion(refs.serviceRef, spec.version)
     },
     async remove(_spec, refs) {
       if (refs.volumeRef) await deleteVolume(refs.volumeRef)

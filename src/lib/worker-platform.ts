@@ -15,6 +15,8 @@ export interface WorkerSpec {
   /** SPACES_ROLE=project, WORKER_PROJECT_ID, PORT. Platforms add the shared secrets their own way. */
   env: Record<string, string>
   port: number
+  /** The Spaces version (git commit) this worker should run: the web service's own. */
+  version: string
 }
 
 /** A platform's ids for what it made, recorded as each exists so a retry resumes. */
@@ -38,6 +40,8 @@ export interface WorkerPlatform {
    * ref as soon as it exists, and start the worker. Returns its private address.
    */
   create(spec: WorkerSpec, existing: WorkerRefs, record: (refs: Partial<WorkerRefs>) => Promise<void>): Promise<{ internalUrl: string }>
+  /** Move the worker to `spec.version`, keeping its volume. Called only while it is idle. */
+  update(spec: WorkerSpec, refs: WorkerRefs): Promise<void>
   /** Remove the worker and its volume (its workspace files go with it). */
   remove(spec: Pick<WorkerSpec, 'name'>, refs: WorkerRefs): Promise<void>
   /** Read access always; with `probe`, make and delete something throwaway. */
@@ -72,4 +76,9 @@ export function sharedSecrets(env: NodeJS.ProcessEnv = process.env): Record<stri
     if (value) out[key] = value
   }
   return out
+}
+
+/** The version this process runs: the git commit it was built from. */
+export function runningVersion(env: NodeJS.ProcessEnv = process.env): string {
+  return env.GIT_COMMIT?.trim() || env.RAILWAY_GIT_COMMIT_SHA?.trim() || 'unknown'
 }

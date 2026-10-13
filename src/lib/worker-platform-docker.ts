@@ -53,7 +53,7 @@ export function dockerContainer(config: DockerWorkerConfig, spec: WorkerSpec): o
     Image: config.image,
     Cmd: ['bun', 'run', 'src/standalone.ts'],
     Env: Object.entries(env).map(([key, value]) => `${key}=${value}`),
-    Labels: { ...LABELS, 'spaces.dev/project': spec.projectId },
+    Labels: { ...LABELS, 'spaces.dev/project': spec.projectId, 'spaces.dev/version': spec.version },
     ExposedPorts: { [`${spec.port}/tcp`]: {} },
     StopTimeout: 900,
     HostConfig: {
@@ -83,6 +83,16 @@ export function dockerPlatform(config: DockerWorkerConfig, call: DockerCall = do
       const started = await call('POST', `/containers/${encodeURIComponent(spec.name)}/start`)
       if (started.status >= 300 && started.status !== 304) throw dockerError('start container', started)
       return { internalUrl: `http://${spec.name}:${spec.port}` }
+    },
+    async update(spec, refs) {
+      // A container cannot change image: replace it, keeping the named volume.
+      const name = refs.serviceRef ?? spec.name
+      const removed = await call('DELETE', `/containers/${encodeURIComponent(name)}?force=true`)
+      if (removed.status >= 300 && removed.status !== 404) throw dockerError('remove container', removed)
+      const created = await call('POST', `/containers/create?name=${encodeURIComponent(name)}`, dockerContainer(config, spec))
+      if (created.status >= 300) throw dockerError('create container', created)
+      const started = await call('POST', `/containers/${encodeURIComponent(name)}/start`)
+      if (started.status >= 300 && started.status !== 304) throw dockerError('start container', started)
     },
     async remove(spec, refs) {
       const container = await call('DELETE', `/containers/${encodeURIComponent(refs.serviceRef ?? spec.name)}?force=true`)

@@ -99,7 +99,8 @@ async function doWake(projectId: string, deps: WakeDeps): Promise<WakeOutcome> {
     void Promise.resolve(deps.provision(projectId)).then(() => deps.wake(projectId)).catch((error) => wakeLog.warn('provisioning for queued work failed', { projectId, error: error instanceof Error ? error.message : String(error) }))
     return 'provisioning'
   }
-  if (worker.state === 'provisioning') return 'provisioning'
+  // Provisioning or being updated: the job process starts on its own when it boots.
+  if (worker.state === 'provisioning' || worker.state === 'updating') return 'provisioning'
   const ok = await deps.wake(projectId)
   if (!ok) wakeLog.warn('project worker did not answer the wake call', { projectId })
   return ok ? 'woken' : 'unavailable'
