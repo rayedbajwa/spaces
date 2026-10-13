@@ -138,7 +138,7 @@ import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forgetRemoteProject, forwardTarget, forwardToProject, isRemoteProject, resolveForwardProject } from './lib/project-forward'
 import { archiveStream, failInterruptedMigrations, manifestFor, migrationInProgress, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
-import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
+import { capWaiting, awakeProjects, isProjectWorkerAwake, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
 import { runningVersion } from './lib/worker-platform'
 import { checkProvisioner, getProjectWorker, listProjectWorkers, provisionProjectWorker, recordWorkerBootstrap, removeProjectWorker, takeWorkerBootstrap, workerPlatform, workerPlatformProblem } from './lib/worker-provisioner'
@@ -4230,10 +4230,16 @@ async function openPullRequestsForProject(projectNamespace: string): Promise<Ope
   return lookup
 }
 
-function cachedOpenPullRequests(projectNamespace: string): OpenPullRequestLink[] {
+function cachedOpenPullRequests(projectNamespace: string, projectId?: string): OpenPullRequestLink[] {
   const cached = openPullRequestCache.get(projectNamespace)
-  if (!cached || Date.now() - cached.at >= OPEN_PR_TTL_MS) void openPullRequestsForProject(projectNamespace)
+  if (!cached || Date.now() - cached.at >= OPEN_PR_TTL_MS) void refreshOpenPullRequestsQuietly(projectNamespace, projectId)
   return cached?.prs ?? []
+}
+
+/** The board's refresh: a project on a worker is looked up only while that worker is awake (looking would wake it). */
+async function refreshOpenPullRequestsQuietly(projectNamespace: string, projectId?: string): Promise<void> {
+  if (projectId && await isRemoteProject(projectId) && !(await isProjectWorkerAwake(projectId))) return
+  await openPullRequestsForProject(projectNamespace)
 }
 
 /**
@@ -4344,7 +4350,12 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
     // The web role reads no files: the project's worker recomputes the state.
     // A worker that does not answer quickly (asleep) leaves the last stored state.
     const remote = !fresh && await isRemoteProject(row.projectId)
-    const fromWorker = remote
+    // Only an awake worker is asked: asking wakes it, and the board refreshes
+    // every 10 s. A sleeping worker's files have not changed since it last
+    // stored them (it stays up for minutes after its last job and refreshes
+    // them then), so its stored state stands. With nothing stored, ask anyway.
+    const ask = remote && (!stored || await isProjectWorkerAwake(row.projectId))
+    const fromWorker = ask
       ? await callProjectWorker<{ artifacts: ProjectArtifacts; tasksDone: number }>(row.projectId, '/internal/project-state', { timeoutMs: stored ? 3_000 : 20_000 })
       : undefined
     if (fresh || (remote && stored && !fromWorker)) {
@@ -4415,7 +4426,7 @@ async function buildBoard(projectRows: ProjectRow[]): Promise<BoardResponse> {
       artifactLinks: artifacts.links,
       artifactDiffs: artifacts.diffs,
       usage: usageByProject.get(project.namespace) ?? EMPTY_USAGE,
-      ...(status === 'implementing' || status === 'releasing' ? { pullRequests: cachedOpenPullRequests(project.namespace) } : {}),
+      ...(status === 'implementing' || status === 'releasing' ? { pullRequests: cachedOpenPullRequests(project.namespace, row.projectId) } : {}),
     })
   }
 
