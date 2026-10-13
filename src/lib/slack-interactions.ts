@@ -27,7 +27,7 @@ const MAX_SKEW_SECONDS = 60 * 5
 export interface SlackSignatureResult {
   ok: boolean
   orgId?: string
-  reason?: 'not_configured' | 'bad_timestamp' | 'bad_signature'
+  reason?: 'not_configured' | 'bad_timestamp' | 'bad_signature' | 'org_ambiguous'
 }
 
 /** Constant-time HMAC comparison, with a bounded timestamp window. */
@@ -41,13 +41,20 @@ export function verifySlackSignature(input: { secret: string; timestamp: string 
   return a.length === b.length && timingSafeEqual(a, b)
 }
 
-/** Identify the org whose signing secret verifies this request. */
+/**
+ * Identify the org whose signing secret verifies this request. A workspace that
+ * maps to several orgs (the same Slack app connected to two tenants) cannot be
+ * attributed by signature alone, so it fails closed (FR-027/R12).
+ */
 export async function authenticateSlackRequest(input: { timestamp: string | null; signature: string | null; body: string }): Promise<SlackSignatureResult> {
   const orgs = await listSlackSigningSecretOrgs()
   if (orgs.length === 0) return { ok: false, reason: 'not_configured' }
+  const matched: string[] = []
   for (const org of orgs) {
-    if (verifySlackSignature({ secret: org.secret, timestamp: input.timestamp, signature: input.signature, body: input.body })) return { ok: true, orgId: org.orgId }
+    if (verifySlackSignature({ secret: org.secret, timestamp: input.timestamp, signature: input.signature, body: input.body })) matched.push(org.orgId)
   }
+  if (matched.length > 1) return { ok: false, reason: 'org_ambiguous' }
+  if (matched.length === 1) return { ok: true, orgId: matched[0]! }
   if (input.timestamp && Math.abs(Date.now() / 1000 - Number(input.timestamp)) > MAX_SKEW_SECONDS) return { ok: false, reason: 'bad_timestamp' }
   return { ok: false, reason: 'bad_signature' }
 }

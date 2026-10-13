@@ -152,6 +152,12 @@ export async function drainOutbound(limit = 20): Promise<{ delivered: number; fa
       delivered += 1
       continue
     }
+    // A missing target config is permanent: terminal, never retried.
+    if (result.skipped) {
+      await recordDeliveryAttempt({ deliveryId: delivery.deliveryId, state: 'skipped', error: result.error ?? 'no target configured', nextAttemptAt: null })
+      skipped += 1
+      continue
+    }
     const exhausted = attempt >= cap
     const next = new Date(Date.now() + Math.min(base * 2 ** (attempt - 1), max))
     await recordDeliveryAttempt({
