@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import { getDb } from '../src/lib/db'
 import type { WorkerPlatform, WorkerSpec } from '../src/lib/worker-platform'
-import { busyProjects, reportWorkerVersion, rolloutOnce } from '../src/lib/worker-rollout'
+import { busyProjects, reportWorkerVersion, rolloutOnce, updateSleepingWorker } from '../src/lib/worker-rollout'
 import { getProjectWorker } from '../src/lib/worker-provisioner'
 import { createApprovalFixture } from './helpers/approval-fixture'
 
@@ -15,9 +15,10 @@ afterAll(async () => {
   await fixture.stop()
 })
 
-function platform(fail = false) {
+function platform(fail = false, asleep: string[] = []) {
   const updates: Array<{ projectId: string; version: string }> = []
   const p: WorkerPlatform = {
+    isAsleep: async (refs) => asleep.includes(refs.serviceRef ?? ''),
     kind: 'docker',
     create: async () => ({ internalUrl: 'http://x' }),
     update: async (spec: WorkerSpec) => { if (fail) throw new Error('engine refused'); updates.push({ projectId: spec.projectId, version: spec.version }) },
@@ -76,5 +77,26 @@ describe('rollout', () => {
     const { p, updates } = platform()
     expect((await rolloutOnce({ desired: () => 'unknown', platform: () => p, busy: async () => [] })).updated).toEqual([])
     expect(updates).toEqual([])
+  })
+
+  test('a worker the platform put to sleep is left asleep by the rollout', async () => {
+    const { p, updates } = platform(false, ['a'])
+    const result = await rolloutOnce({ desired: () => 'new2222', platform: () => p, busy: async () => [] })
+    expect(result.deferred).toContain(projectA.projectId)
+    expect(updates.map((u) => u.projectId)).toEqual([projectTeamB.projectId])
+    const [a] = await sql<Array<{ state: string; version: string }>>`SELECT state, version FROM project_workers WHERE project_id = ${projectA.projectId}`
+    expect(a).toEqual({ state: 'ready', version: 'old1111' })
+  })
+
+  test('woken for work while asleep on an old version, a worker is deployed on the current one', async () => {
+    const { p, updates } = platform(false, ['a'])
+    expect(await updateSleepingWorker(projectA.projectId, { desired: () => 'new2222', platform: () => p })).toBe(true)
+    expect(updates).toEqual([{ projectId: projectA.projectId, version: 'new2222' }])
+    const [a] = await sql<Array<{ state: string }>>`SELECT state FROM project_workers WHERE project_id = ${projectA.projectId}`
+    expect(a!.state).toBe('updating')
+    // Awake (not asleep), or already current: nothing to do.
+    expect(await updateSleepingWorker(projectTeamB.projectId, { desired: () => 'new2222', platform: () => p })).toBe(false)
+    expect(await updateSleepingWorker(projectTeamB.projectId, { desired: () => 'old1111', platform: () => platform(false, ['b']).p })).toBe(false)
+    expect(updates).toHaveLength(1)
   })
 })

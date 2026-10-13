@@ -17,7 +17,6 @@ export interface RailwayWorkerConfig {
   railwayProjectId: string
   environmentId: string
   repo: string
-  branch: string
   /** The web service's name in Railway, for variable references. */
   webServiceName: string
   postgresServiceName: string
@@ -36,9 +35,6 @@ export function railwayWorkerConfig(env: NodeJS.ProcessEnv = process.env): Railw
     railwayProjectId,
     environmentId,
     repo: env.PROJECT_WORKER_REPO?.trim() || 'rayedbajwa/spaces',
-    // Workers follow a branch nobody pushes to, so a push to main does not
-    // redeploy them; Spaces deploys the exact commit to each one when idle.
-    branch: env.PROJECT_WORKER_BRANCH?.trim() || 'spaces-workers',
     webServiceName: env.RAILWAY_SERVICE_NAME?.trim() || 'spaces',
     postgresServiceName: env.PROJECT_WORKER_POSTGRES_SERVICE?.trim() || 'Postgres',
     size: workerSize(env),
@@ -107,6 +103,24 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
   async function deleteService(id: string) {
     await call(`mutation serviceDelete($id: String!) { serviceDelete(id: $id) }`, { id })
   }
+  /**
+   * Workers deploy only when Spaces deploys them: the web service's exact
+   * commit, once idle (lib/worker-rollout.ts). Railway may attach a deployment
+   * trigger to a service built from a repository (a push to its branch would
+   * redeploy it, mid-stage too), so any is removed. Only the web service
+   * deploys on a push to main.
+   */
+  async function removeDeployTriggers(serviceId: string): Promise<number> {
+    const data = await call<{ deploymentTriggers: { edges: Array<{ node: { id: string } }> } }>(
+      `query deploymentTriggers($projectId: String!, $environmentId: String!, $serviceId: String!) { deploymentTriggers(projectId: $projectId, environmentId: $environmentId, serviceId: $serviceId) { edges { node { id } } } }`,
+      { projectId: config.railwayProjectId, environmentId: config.environmentId, serviceId },
+    )
+    for (const edge of data.deploymentTriggers.edges) {
+      await call(`mutation deploymentTriggerDelete($id: String!) { deploymentTriggerDelete(id: $id) }`, { id: edge.node.id })
+    }
+    if (data.deploymentTriggers.edges.length) railwayLog.info('removed deployment triggers from a project worker', { serviceId, count: data.deploymentTriggers.edges.length })
+    return data.deploymentTriggers.edges.length
+  }
   async function createVolume(serviceId: string): Promise<string> {
     return (await call<{ volumeCreate: { id: string } }>(
       `mutation volumeCreate($input: VolumeCreateInput!) { volumeCreate(input: $input) { id } }`,
@@ -121,11 +135,12 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
       if (!serviceId) {
         serviceId = (await call<{ serviceCreate: { id: string } }>(
           `mutation serviceCreate($input: ServiceCreateInput!) { serviceCreate(input: $input) { id } }`,
-          { input: { projectId: config.railwayProjectId, name: spec.name, source: { repo: config.repo }, branch: config.branch, variables: railwayWorkerVariables(config, spec) } },
+          { input: { projectId: config.railwayProjectId, name: spec.name, source: { repo: config.repo }, variables: railwayWorkerVariables(config, spec) } },
         )).serviceCreate.id
         await record({ serviceRef: serviceId })
       }
       env.serviceId = serviceId
+      await removeDeployTriggers(serviceId)
       await call(
         `mutation serviceInstanceUpdate($serviceId: String!, $environmentId: String!, $input: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: $input) }`,
         // Railway ignores railway.json for services created through the API: without
@@ -142,8 +157,18 @@ export function railwayPlatform(config: RailwayWorkerConfig, gql?: GraphQL): Wor
       await deployVersion(serviceId, spec.version)
       return { internalUrl: `http://${spec.name}.railway.internal:${spec.port}` }
     },
+    async isAsleep(refs) {
+      if (!refs.serviceRef) return false
+      const data = await call<{ deployments: { edges: Array<{ node: { status: string } }> } }>(
+        `query deployments($input: DeploymentListInput!) { deployments(first: 1, input: $input) { edges { node { status } } } }`,
+        { input: { projectId: config.railwayProjectId, environmentId: config.environmentId, serviceId: refs.serviceRef } },
+      )
+      return data.deployments.edges[0]?.node.status === 'SLEEPING'
+    },
     async update(spec, refs) {
       if (!refs.serviceRef) throw new Error('This worker has no Railway service yet.')
+      // Workers made before Spaces removed them keep a trigger until their next update.
+      await removeDeployTriggers(refs.serviceRef).catch((error) => railwayLog.warn('deployment triggers not checked', { serviceId: refs.serviceRef, error: error instanceof Error ? error.message : String(error) }))
       await deployVersion(refs.serviceRef, spec.version)
     },
     async remove(_spec, refs) {

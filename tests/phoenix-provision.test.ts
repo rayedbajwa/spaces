@@ -3,7 +3,7 @@ import { provisionPhoenix } from '../src/lib/phoenix-provision'
 import type { GraphQL, RailwayWorkerConfig } from '../src/lib/worker-platform-railway'
 
 const config = {
-  token: 't', tokenType: 'workspace', railwayProjectId: 'proj', environmentId: 'env', repo: 'r', branch: 'b',
+  token: 't', tokenType: 'workspace', railwayProjectId: 'proj', environmentId: 'env', repo: 'r',
   webServiceName: 'spaces', postgresServiceName: 'Postgres', size: { vcpus: 2, memoryGb: 4 },
 } as RailwayWorkerConfig
 

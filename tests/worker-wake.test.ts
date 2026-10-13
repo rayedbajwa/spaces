@@ -35,12 +35,19 @@ function deps(overrides: Partial<WakeDeps> = {}) {
     hasLocalFiles: async () => false,
     capHit: async (projectId, awake, cap) => { calls.push(`cap ${projectId} ${awake}/${cap}`) },
     cap: () => 2,
+    updateIfAsleep: async () => false,
     ...overrides,
   }
   return { d, calls }
 }
 
 describe('waking a project worker', () => {
+  test('a worker asleep on an old version is deployed on the current one instead of woken', async () => {
+    const { d, calls } = deps({ updateIfAsleep: async (projectId) => { calls.push(`update ${projectId}`); return true } })
+    expect(await wakeProjectWorker('p1', d)).toBe('woken')
+    expect(calls).toEqual(['update p1'])
+  })
+
   test('a ready worker that is not running is woken', async () => {
     const { d, calls } = deps()
     expect(await wakeProjectWorker('p1', d)).toBe('woken')

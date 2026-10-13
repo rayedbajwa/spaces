@@ -85,6 +85,13 @@ export async function rolloutOnce(deps: RolloutDeps = defaultDeps): Promise<Roll
     }
     // A stage is running: leave the worker on its version until it ends.
     if (busy.has(worker.projectId)) { result.deferred.push(worker.projectId); continue }
+    // Asleep (Railway): deploying would start it, for nothing. Every merge used
+    // to keep idle workers up for another quarter hour; the wake for its next
+    // work updates it instead (lib/worker-wake.ts).
+    if (platform.isAsleep && await platform.isAsleep({ serviceRef: worker.serviceRef, volumeRef: worker.volumeRef }).catch(() => false)) {
+      result.deferred.push(worker.projectId)
+      continue
+    }
     const [claimed] = await sql<Array<{ projectId: string }>>`
       UPDATE project_workers SET state = 'updating', last_error = NULL, updated_at = now()
        WHERE project_id = ${worker.projectId} AND state = 'ready' AND version IS DISTINCT FROM ${desired}
@@ -104,6 +111,43 @@ export async function rolloutOnce(deps: RolloutDeps = defaultDeps): Promise<Roll
     }
   }
   return result
+}
+
+/**
+ * A worker the platform put to sleep on an old version, woken for work: deploy
+ * the current version, which starts it (its job process then takes the work),
+ * instead of waking the old one and updating it after. True when it deployed.
+ */
+export async function updateSleepingWorker(projectId: string, deps: Pick<RolloutDeps, 'desired' | 'platform'> = defaultDeps): Promise<boolean> {
+  const desired = deps.desired()
+  const platform = deps.platform()
+  if (!platform?.isAsleep || desired === 'unknown') return false
+  const sql = getDb()
+  const [worker] = await sql<Array<ProjectWorkerRow & { code: string | null; slug: string }>>`
+    SELECT w.project_id AS "projectId", w.service_ref AS "serviceRef", w.volume_ref AS "volumeRef", w.version, p.code, p.slug
+      FROM project_workers w JOIN projects p ON p.project_id = w.project_id
+     WHERE w.project_id = ${projectId} AND w.state = 'ready' AND w.platform = ${platform.kind} AND w.service_ref IS NOT NULL
+       AND w.version IS DISTINCT FROM ${desired}
+  `
+  if (!worker) return false
+  const refs = { serviceRef: worker.serviceRef, volumeRef: worker.volumeRef }
+  if (!(await platform.isAsleep(refs).catch(() => false))) return false
+  const [claimed] = await sql<Array<{ projectId: string }>>`
+    UPDATE project_workers SET state = 'updating', last_error = NULL, updated_at = now()
+     WHERE project_id = ${projectId} AND state = 'ready' AND version IS DISTINCT FROM ${desired}
+    RETURNING project_id AS "projectId"
+  `
+  if (!claimed) return false
+  try {
+    await platform.update({ ...workerSpec(projectId, worker), version: desired }, refs)
+    rolloutLog.info('sleeping project worker updated for its work', { projectId, from: worker.version, to: desired })
+    return true
+  } catch (error) {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 500)
+    await sql`UPDATE project_workers SET state = 'ready', last_error = ${message}, updated_at = now() WHERE project_id = ${projectId}`
+    rolloutLog.warn('updating a sleeping project worker failed', { projectId, error: message })
+    return false
+  }
 }
 
 /** A project worker says which version it runs when it starts (it is ready again). */
