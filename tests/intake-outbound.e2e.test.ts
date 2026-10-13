@@ -96,6 +96,10 @@ describe('workflow surfaces live under Integrations', () => {
     expect(await surfaces.getByRole('heading', { name: 'Work inbox' }).count()).toBe(1)
     expect(await surfaces.getByRole('heading', { name: 'Outbound updates' }).count()).toBe(1)
     expect(await surfaces.getByText(/Connect a source under Project Management/).count()).toBe(1)
+    // They are sub-pages of Integrations, not top-level navigation entries.
+    const navText = await page.locator('.sidebar-nav').innerText()
+    expect(navText).not.toContain('Intake')
+    expect(navText).not.toContain('Outbound')
     await surfaces.getByRole('button', { name: 'Open work inbox' }).click()
     await page.locator('.intake-sources').waitFor({ timeout: 60_000 })
     expect(new URL(page.url()).pathname).toBe('/intake')
