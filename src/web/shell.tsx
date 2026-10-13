@@ -123,13 +123,13 @@ export function AppSidebar({ open, onNavigate, archivedCount, loadArchived, onOp
   const groups: NavItem[][] = [
     [
       { id: 'projects', label: 'Projects', icon: I.grid, path: '/', match: (l) => l.pathname === '/' || l.pathname.startsWith('/spaces/') },
-      { id: 'intake', label: 'Intake', icon: I.bell, path: '/intake', match: (l) => l.pathname.startsWith('/intake') },
-      { id: 'outbound', label: 'Outbound', icon: I.megaphone, path: '/outbound', match: (l) => l.pathname.startsWith('/outbound') },
     ],
     [
       { id: 'knowledge', label: 'Knowledge base', icon: I.book, path: orgPath('knowledge'), match: () => onOrg('knowledge') },
       { id: 'memory', label: 'Memory', icon: I.brain, path: orgPath('memory'), match: () => onOrg('memory') },
-      { id: 'integrations', label: 'Integrations', icon: I.plug, path: orgPath('integrations'), match: () => onOrg('integrations') },
+      // Work inbox and Outbound updates are sub-pages of Integrations, reached
+      // from its workflow-surface cards rather than the main navigation.
+      { id: 'integrations', label: 'Integrations', icon: I.plug, path: orgPath('integrations'), match: (l) => onOrg('integrations') || l.pathname.startsWith('/intake') || l.pathname.startsWith('/outbound') },
       { id: 'models', label: 'Models', icon: I.cpu, path: orgPath('models'), match: () => onOrg('models') },
       { id: 'guardrails', label: 'Data guardrails', icon: I.shield, path: orgPath('guardrails'), match: () => onOrg('guardrails') },
     ],

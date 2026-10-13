@@ -5,9 +5,12 @@
  * (clone-in-progress, runnable repo, in-flight work) so converting an Intake
  * item starts the *existing* `specify` stage through one path rather than a
  * second creation route. It creates the run and queues the job; it never
- * bypasses human gates or changes stage semantics.
+ * bypasses human gates or changes stage semantics. When a caller passes
+ * `onCreate`, the run insert, the caller's write and the job insert commit in
+ * one transaction, so a failure cannot leave an orphan run.
  */
 
+import type { TransactionSql } from 'postgres'
 import { buildContextBundle } from './context-builder'
 import { enqueueJob } from './dispatcher'
 import { log } from './logger'
@@ -42,6 +45,8 @@ export async function startSpecifyRun(input: {
   actorUserId?: string | null
   actorName?: string | null
   force?: boolean
+  /** Extra writes to commit with the run and its job (e.g. the Intake work link). */
+  onCreate?: (tx: TransactionSql, runId: string) => Promise<void>
 }): Promise<StartSpecifyResult> {
   const project = await getProjectBySlug(input.projectSlug)
   if (!project || project.projectId !== input.projectId) return { ok: false, error: 'Project not found.', status: 404 }
@@ -103,18 +108,24 @@ export async function startSpecifyRun(input: {
     ...(input.force ? { allowNewFeature: true } : {}),
   }
 
-  const row = await createRun({
-    projectNamespace: project.slug,
-    projectLabel: project.name,
-    projectPath: cwd,
-    pipelineName: template.name,
-    feature: input.feature,
-    options: options as never,
-    template,
-    projectId: project.projectId,
-    repoId: repo.repoId,
+  const row = await sql.begin(async (tx) => {
+    const created = await createRun({
+      projectNamespace: project.slug,
+      projectLabel: project.name,
+      projectPath: cwd,
+      pipelineName: template.name,
+      feature: input.feature,
+      options: options as never,
+      template,
+      projectId: project.projectId,
+      repoId: repo.repoId,
+    }, tx)
+    // Caller-owned writes (the Intake work link/transition) share this unit, so
+    // an orphan run can never be committed without its conversion record.
+    if (input.onCreate) await input.onCreate(tx, created.runId)
+    await enqueueJob({ projectId: project.projectId, kind: 'task_run', triggerSource: 'user', payload: { runId: created.runId }, runId: created.runId }, tx)
+    return created
   })
-  await enqueueJob({ projectId: project.projectId, kind: 'task_run', triggerSource: 'user', payload: { runId: row.runId }, runId: row.runId })
   runStartLog.info('specify run started', { runId: row.runId, projectId: project.projectId, by: input.actorUserId ?? input.actorName ?? 'system' })
   return { ok: true, runId: row.runId, model }
 }

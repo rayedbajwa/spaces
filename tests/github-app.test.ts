@@ -40,6 +40,11 @@ describe('GitHub App manifest', () => {
     expect(manifest.oauth_config.redirect_urls).toEqual(['http://localhost:3000/api/oauth/slack/callback'])
     expect(manifest.oauth_config.scopes.bot).toContain('chat:write')
     expect(manifest.oauth_config.scopes.bot).toContain('im:write')
+    // The clarification reply and the @mention filing path both need events + scopes.
+    expect(manifest.oauth_config.scopes.bot).toContain('im:history')
+    expect(manifest.oauth_config.scopes.bot).toContain('app_mentions:read')
+    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'app_mention'])
+    expect(manifest.features.shortcuts[0].callback_id).toBe('spaces_file_intake')
     expect(PROVIDER_TEMPLATES.slack.scopes).toContain('im:write')
   })
 })

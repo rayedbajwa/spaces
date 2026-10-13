@@ -122,6 +122,12 @@ export function slackManifestUrl(origin: string): string {
         usage_hint: '[request]',
         should_escape: false,
       }],
+      shortcuts: [{
+        name: 'File in Spaces',
+        type: 'message',
+        callback_id: 'spaces_file_intake',
+        description: 'File this message in the Spaces Intake queue',
+      }],
     },
     oauth_config: {
       redirect_urls: [`${origin}/api/oauth/slack/callback`],
@@ -131,7 +137,9 @@ export function slackManifestUrl(origin: string): string {
       org_deploy_enabled: false,
       socket_mode_enabled: false,
       token_rotation_enabled: false,
-      event_subscriptions: { request_url: `${origin}/api/slack/events` },
+      // Slack only delivers a message reply to a DM (a clarification answer) and
+      // an @mention (filing) when the event types are subscribed here.
+      event_subscriptions: { request_url: `${origin}/api/slack/events`, bot_events: ['message.im', 'app_mention'] },
       interactivity: { is_enabled: true, request_url: `${origin}/api/slack/interactions` },
     },
   }
