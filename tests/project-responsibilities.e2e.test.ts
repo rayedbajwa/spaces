@@ -1,7 +1,11 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, setDefaultTimeout, test } from 'bun:test'
 import { existsSync } from 'node:fs'
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { createResponsibilityApiFixture } from './helpers/responsibilities-api'
+
+// Page loads wait up to 60s for a cold database; bun's 5s default cut them
+// short and closed the browser mid-wait.
+setDefaultTimeout(90_000)
 
 // Prefer the machine's bundled Chromium when present; on CI the browser is
 // installed into Playwright's default cache by `bun run setup:browsers`.
