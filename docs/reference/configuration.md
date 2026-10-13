@@ -79,6 +79,22 @@ text is cut to 16,000 characters.
 | `PHOENIX_COLLECTOR_ENDPOINT` | unset (tracing off) | Phoenix base URL, e.g. `http://localhost:6006` or `http://phoenix.railway.internal:6006`; spans go to `<url>/v1/traces` |
 | `PHOENIX_API_KEY` | unset | Phoenix API key, when Phoenix runs with authentication |
 | `PHOENIX_PROJECT_NAME` | `spaces` | Phoenix project the traces land in |
+| `PHOENIX_AUTO_PROVISION` | unset | `1` on a Railway web service with `RAILWAY_PROVISIONER_TOKEN`: Spaces creates Phoenix itself (below) |
+
+**Phoenix on Railway, automatically.** With `PHOENIX_AUTO_PROVISION=1` the web
+service makes sure, on each start, that the Railway project has a `phoenix`
+service: the `arizephoenix/phoenix` image, a volume at `/mnt/data`,
+authentication on, generated `PHOENIX_SECRET`, `PHOENIX_ADMIN_SECRET` and
+`PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD` (kept only as that service's
+variables), a public domain for the UI, and the service in the web service's
+region. The web service gets `PHOENIX_COLLECTOR_ENDPOINT` (the private
+`http://phoenix.railway.internal:6006`) and `PHOENIX_API_KEY` as a reference to
+the admin secret, and every project worker gets references to those; nothing
+is redeployed (workers take them on their next deploy). Each step checks first,
+so restarts change nothing. `bun run phoenix:provision` does the same by hand.
+Log in to the UI as `admin@localhost` with the password from the `phoenix`
+service's variables. Phoenix's docs suggest replacing the admin secret with a
+system API key once the instance is set up.
 
 Locally: `docker compose --profile tracing up -d phoenix`, then set
 `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` and open

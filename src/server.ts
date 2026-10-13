@@ -304,6 +304,8 @@ if (!isProjectRole()) {
 if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
+// Arize Phoenix on Railway, when PHOENIX_AUTO_PROVISION=1 (lib/phoenix-provision.ts).
+if (!isProjectRole()) void import('./lib/phoenix-provision').then((m) => m.ensurePhoenix())
 // Moves run in this process: any left in progress were cut off by the restart.
 if (!isProjectRole()) void failInterruptedMigrations().catch((error) => serverLog.warn('clearing interrupted moves failed', { error: error instanceof Error ? error.message : String(error) }))
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
