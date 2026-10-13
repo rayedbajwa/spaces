@@ -130,7 +130,7 @@ Rules: only list repositories that exist in the catalog or are already registere
   const cwd = pickRunnableRepo(repos)?.localPath ?? process.cwd()
   const { session } = await createAgentSession({ settingsManager: createAgentSettings(cwd), cwd, modelRuntime, model: resolved.model, tools: [], sessionManager: SessionManager.inMemory(cwd) })
   // AI data guardrails: secrets and personal data in the project's text never reach the model.
-  await import('./guardrails-policy').then((m) => m.guardSession(session, orgId))
+  await import('./guardrails-policy').then((m) => m.guardSession(session, orgId, { kind: 'suggestions' }))
   let output = ''
   let providerError: string | undefined
   const unsubscribe = session.subscribe((event) => {

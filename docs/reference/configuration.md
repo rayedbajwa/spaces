@@ -63,6 +63,28 @@ The package-manager caches agents use (bun, npm, yarn, pnpm, pip, Go) live in
 `<workspace root>/../cache`, on the same volume as the workspaces, unless a
 project sets its own.
 
+### Agent tracing (Arize Phoenix)
+
+Every agent session can be traced to [Arize Phoenix](https://arize.com/phoenix/):
+pipeline stages, tasks, workstreams, sub-agents, development setup and the
+project assistant. Each prompt is an agent span with a child span per model
+response (model, tokens, cost, output) and per tool call (arguments, result,
+errors). Spans carry the organization, project and stage, and the run is the
+Phoenix session, so one run's agents read as one conversation. Text is masked
+by the organization's data guardrails, secrets are always redacted, and long
+text is cut to 16,000 characters.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PHOENIX_COLLECTOR_ENDPOINT` | unset (tracing off) | Phoenix base URL, e.g. `http://localhost:6006` or `http://phoenix.railway.internal:6006`; spans go to `<url>/v1/traces` |
+| `PHOENIX_API_KEY` | unset | Phoenix API key, when Phoenix runs with authentication |
+| `PHOENIX_PROJECT_NAME` | `spaces` | Phoenix project the traces land in |
+
+Locally: `docker compose --profile tracing up -d phoenix`, then set
+`PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` and open
+http://localhost:6006. Project workers created by the provisioner inherit
+these variables from the web service (on Railway as references to it).
+
 ### Running the test suite
 
 `bun test` runs a preload (`tests/setup/db-guard.ts`) that keeps the suite off

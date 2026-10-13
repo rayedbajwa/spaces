@@ -211,6 +211,7 @@ export class PipelineEngine {
         cwd: this.options.cwd,
         orgId: await this.orgId(),
         projectId: this.options.projectId,
+        runId: this.options.runId,
         model: this.options.model,
         thinking: this.options.thinking,
         sharedContextPrompt: this.options.sharedContextPrompt,

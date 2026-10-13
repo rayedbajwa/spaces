@@ -103,7 +103,25 @@ services:
       - spaces-data:/data
     command: ["bun", "run", "src/worker.ts"]
 
+  # Arize Phoenix: agent traces (every model call and tool call). Start it with
+  # `docker compose --profile tracing up -d phoenix`, set
+  # PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006 (http://phoenix:6006 from
+  # the containers) and open http://localhost:6006.
+  phoenix:
+    profiles: ["tracing"]
+    image: arizephoenix/phoenix:latest
+    container_name: spaces-phoenix
+    restart: unless-stopped
+    ports:
+      - "6006:6006"
+    volumes:
+      - phoenix-data:/mnt/data
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+
 volumes:
   pi-speckit-pgdata:
   # Cloned repositories, governing workspaces and Pi agent sessions.
   spaces-data:
+  # Phoenix's traces (SQLite).
+  phoenix-data:

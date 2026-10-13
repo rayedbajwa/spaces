@@ -137,7 +137,7 @@ jobs:
         env:
           DATABASE_URL: postgres://aidlc:aidlc@localhost:5432/aidlc
           ENCRYPTION_KEY: ci-test-encryption-key-not-a-real-secret-value
-        run: bun test tests/project-forward.test.ts tests/project-roles.test.ts tests/worker-provisioner.test.ts tests/worker-platforms.test.ts tests/worker-wake.test.ts tests/worker-rollout.test.ts tests/project-migration.test.ts tests/worker-scope.test.ts tests/project-roles-sse.test.ts
+        run: bun test tests/project-forward.test.ts tests/project-roles.test.ts tests/worker-provisioner.test.ts tests/worker-platforms.test.ts tests/worker-wake.test.ts tests/worker-rollout.test.ts tests/project-migration.test.ts tests/worker-scope.test.ts tests/project-roles-sse.test.ts tests/tracing.test.ts
 
       - name: Install browser for responsibility UI tests
         run: bun run setup:browsers

@@ -21,6 +21,7 @@ import { testTierInstruction } from './test-tiers'
 import { createActivityLog, createSecretRedactor } from './agent-activity'
 import { AgentGuard, maskOutput } from './guardrails'
 import { createVaultWriter, guardSession, loadGuardPolicy } from './guardrails-policy'
+import { traceAgentSession } from './tracing'
 import { buildKnowledgeTools } from './integration-sources'
 import { buildFigmaToolDefinitions } from './figma-tools'
 import { buildDeploymentTools, reconcileProjectDeployments, refreshDeploymentStatus } from './deployment'
@@ -196,6 +197,8 @@ export interface FlowOptions {
   resumeWaiting?: { kind: 'clarification' | 'review'; stage: StageName }
   /** Owning project; scopes the knowledge tools (which integrations/repos agents may query). */
   projectId?: string
+  /** The pipeline run this flow executes (labels its agent traces). */
+  runId?: string
   /**
    * Set when the target repo is GitHub-hosted: after implement/orchestrate/verify
    * the flow commits, pushes the feature branch and opens/updates a pull request
@@ -594,6 +597,7 @@ export class AIDLCFlow {
       this.guard = guard
     }
     this.guard.install(session)
+    traceAgentSession(session, { kind: 'stage', orgId: await this.orgId(), projectId: this.options.projectId, runId: this.options.runId, stage: () => this.activeStage, policy: this.guard.policy })
     // No shell command may hold the machine longer than the limit (lib/stage-limits.ts).
     installCommandTimeLimit(session)
     this.session = session
@@ -1040,6 +1044,8 @@ export class AIDLCFlow {
         const result = await runDevSetup({
           cwd: target.localPath,
           orgId: await this.orgId(),
+          projectId: this.options.projectId,
+          runId: this.options.runId,
           model: this.options.model,
           thinking: this.options.thinking,
           sharedContextPrompt: this.options.sharedContextPrompt,
@@ -2007,7 +2013,7 @@ export async function runAIDLCAssistantChat(options: {
     sessionManager: SessionManager.inMemory(options.cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'assistant', projectId: options.projectId })
   installCommandTimeLimit(session)
 
   let output = ''
@@ -2090,7 +2096,7 @@ export async function summarizeCodebaseForMemory(options: {
     sessionManager: SessionManager.inMemory(cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'codebase-summary', projectId: options.projectId })
   installCommandTimeLimit(session)
 
   let output = ''
@@ -2178,7 +2184,7 @@ export async function runAIDLCMergeOrchestrator(options: {
     sessionManager: SessionManager.inMemory(cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'merge', projectId: options.projectId })
   installCommandTimeLimit(session)
 
   let log = ''
@@ -2268,7 +2274,7 @@ export async function runAIDLCSpecificTask(options: {
     sessionManager: SessionManager.inMemory(cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'task', projectId: options.projectId })
   installCommandTimeLimit(session)
 
   let log = ''
@@ -2359,7 +2365,7 @@ export async function runAIDLCSpecificWorkstream(options: {
     sessionManager: SessionManager.inMemory(cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'workstream', projectId: options.projectId })
   installCommandTimeLimit(session)
 
   let log = ''
@@ -2413,6 +2419,8 @@ export async function runAIDLCParallelSubAgents(options: {
   repoTargets?: WorkstreamRepoTarget[]
   /** Owning project; scopes knowledge tools to the project's selected integrations/repos. */
   projectId?: string
+  /** The pipeline run this belongs to (labels its agent traces). */
+  runId?: string
   /**
    * Deliver each workstream on its own branch + pull request when its repo is
    * GitHub-hosted. Workstreams run in isolated git worktrees; a workstream that
@@ -2585,7 +2593,7 @@ export async function runAIDLCParallelSubAgents(options: {
           sessionManager: SessionManager.inMemory(workstreamCwd),
         })
         // AI data guardrails: secrets and personal data never reach the model.
-        const guard = await guardSession(session, orgId)
+        const guard = await guardSession(session, orgId, { kind: 'subagent', projectId: options.projectId, runId: options.runId, stage: () => workstream.title })
     installCommandTimeLimit(session)
 
         const outputFile = path.join(outputDir, `${String(index + 1).padStart(2, '0')}-${slugify(workstream.title)}.md`)
@@ -3009,6 +3017,8 @@ export async function runDevSetup(options: {
   /** Organization whose provider keys and integrations to use (derived from projectId when omitted). */
   orgId?: string
   projectId?: string
+  /** The pipeline run this belongs to (labels its agent traces). */
+  runId?: string
   model?: string
   thinking?: ThinkingLevel
   sharedContextPrompt?: string
@@ -3045,7 +3055,7 @@ export async function runDevSetup(options: {
     sessionManager: SessionManager.inMemory(cwd),
   })
   // AI data guardrails: secrets and personal data never reach the model.
-  const guard = await guardSession(session, orgId)
+  const guard = await guardSession(session, orgId, { kind: 'dev-setup', projectId: options.projectId, runId: options.runId })
   installCommandTimeLimit(session)
   let output = ''
   let providerError: string | undefined

@@ -45,10 +45,15 @@ export function railwayWorkerConfig(env: NodeJS.ProcessEnv = process.env): Railw
   }
 }
 
+const TRACING_VARIABLES = ['PHOENIX_COLLECTOR_ENDPOINT', 'PHOENIX_API_KEY', 'PHOENIX_PROJECT_NAME'] as const
+
 /** Secrets as references to the web service's variables, so they are kept in one place. */
-export function railwayWorkerVariables(config: RailwayWorkerConfig, spec: WorkerSpec): Record<string, string> {
+export function railwayWorkerVariables(config: RailwayWorkerConfig, spec: WorkerSpec, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const web = config.webServiceName
+  // Agent tracing (lib/tracing.ts) goes where the web service's does, when it is set.
+  const tracing = Object.fromEntries(TRACING_VARIABLES.filter((key) => env[key]?.trim()).map((key) => [key, `\${{${web}.${key}}}`]))
   return {
+    ...tracing,
     ...spec.env,
     // Railway's private network is IPv6: listen on :: as well.
     HOST: '::',

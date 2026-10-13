@@ -364,6 +364,7 @@ async function shutdown(signal: string): Promise<void> {
   serverLog.info('shutdown signal received', { signal })
   try {
     server.stop(true)
+    await import('./lib/tracing').then((m) => m.flushTracing())
     await closeDb()
     serverLog.info('shutdown complete')
     process.exit(0)
