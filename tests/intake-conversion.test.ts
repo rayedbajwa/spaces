@@ -137,6 +137,24 @@ describe('conversion to project work', () => {
     }
   })
 
+  test('a write that fails inside the conversion rolls back the run it started', async () => {
+    const item = await upsertIntakeItem(input())
+    // A non-existent actor violates the work-link foreign key inside the
+    // single transaction, so the run insert must roll back with it.
+    const [before] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pipeline_runs WHERE project_id = ${projectA.projectId}`
+    try {
+      const result = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: randomUUID() })
+      expect('error' in result).toBe(true)
+      if ('error' in result) expect(result.status).toBe(500)
+      const [after] = await getDb()<Array<{ n: number }>>`SELECT count(*)::int AS n FROM pipeline_runs WHERE project_id = ${projectA.projectId}`
+      expect(after?.n).toBe(before?.n)
+      // The claim is rolled back too, so a later clean conversion can succeed.
+      expect((await getIntakeItem(orgA, item.intakeId))?.state).toBe('new')
+    } finally {
+      await cleanup([item.intakeId])
+    }
+  })
+
   test('a newly synced intent attaches to the converted work link', async () => {
     const item = await upsertIntakeItem(input())
     const result = await convertIntakeItem({ orgId: orgA, intakeId: item.intakeId, projectId: projectA.projectId, workKind: 'feature', actorUserId: users.ownerA })

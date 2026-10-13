@@ -558,9 +558,10 @@ async function applyProgress(runId: string, progress: FlowProgress): Promise<voi
       await drainEvents(runId).catch(() => undefined)
       return
     }
+    // The engine does not expose its template while paused, so the gate opens at
+    // the first step; the stage name still identifies the gate.
     const engine = engines.get(runId)
-    const template = engine ? getTemplateFromEngine(engine) : undefined
-    const stepIndex = template ? indexOfStage(template, progress.stage) : 0
+    const stepIndex = 0
     const gateId = await openGate({
       runId,
       stepIndex,
@@ -693,17 +694,7 @@ async function handleEngineError(runId: string, error: unknown): Promise<void> {
   engines.delete(runId)
 }
 
-/** Fire-and-forget outbound emission from a run path (never blocks or changes the run). */
-function getTemplateFromEngine(engine: PipelineEngine): ReturnType<typeof engine.getCurrentStage> extends undefined ? never : never {
-  // helper is unused; kept for future template metadata plumbing
-  return undefined as never
-}
 
-function indexOfStage(template: { steps: Array<{ stage: string }> }, stage: string | undefined): number {
-  if (!stage) return 0
-  const idx = template.steps.findIndex((s) => s.stage === stage)
-  return idx >= 0 ? idx : 0
-}
 
 /**
  * Handle one project_jobs row. Dispatches by kind to the underlying work handler.

@@ -19,7 +19,9 @@ import { SLACK_BOT_SCOPES } from './slack-scopes'
  * missing permission is reported once per organization with what to do.
  *
  * Bot scopes: channels:manage (create, invite), channels:read, channels:join,
- * chat:write, users:read, users:read.email, and im:write (deliver approval DMs).
+ * chat:write, users:read, users:read.email, im:write and im:history (deliver
+ * approval DMs and read the clarification reply), app_mentions:read (filing),
+ * and commands (the `/spaces` slash command).
  */
 
 const slackLog = log.child({ mod: 'slack' })
@@ -105,11 +107,29 @@ async function slackToken(orgId: string): Promise<string | undefined> {
 
 /**
  * The org's bot token, exposed for signature-authenticated inbound handlers that
- * must call Slack itself (opening a feedback modal). Returns undefined when
- * Slack is not connected.
+ * must call Slack itself (opening a feedback modal, reading a profile). Returns
+ * undefined when Slack is not connected.
  */
 export async function slackBotToken(orgId: string): Promise<string | undefined> {
   return await slackToken(orgId)
+}
+
+/**
+ * The org's Slack bot token plus a profile lookup: the email Slack holds for a
+ * workspace member, used to link their Slack identity to a Spaces member. Never
+ * throws; undefined means Slack is disconnected, the scope is missing, or the
+ * person has no email on their Slack profile.
+ */
+export async function slackUserEmail(orgId: string, slackUserId: string): Promise<string | null> {
+  const token = await slackToken(orgId)
+  if (!token) return null
+  try {
+    const data = await slackApi<SlackResponse & { user?: { profile?: { email?: string } } }>(token, 'users.info', { user: slackUserId })
+    return data.user?.profile?.email?.trim() || null
+  } catch (error) {
+    reportSlackError(orgId, 'read a Slack profile', error)
+    return null
+  }
 }
 
 const warnedMissingScope = new Set<string>()
