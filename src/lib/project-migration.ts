@@ -261,3 +261,21 @@ export async function moveProjectBack(projectId: string, deps: MigrationDeps = d
     throw error
   }
 }
+
+/**
+ * A copy or move runs inside the shared service's process, so one still marked
+ * in progress when that process starts was cut off by a restart. Mark it failed
+ * so its project's jobs are no longer held and it can be started again.
+ */
+export async function failInterruptedMigrations(): Promise<number> {
+  const rows = await getDb()`
+    UPDATE project_workers
+       SET migration_state = 'failed',
+           migration_json = jsonb_build_object('error', 'Interrupted by a restart of the shared service. Start it again.'),
+           migration_at = now(), updated_at = now()
+     WHERE migration_state IN ('copying', 'syncing', 'moving_back')
+    RETURNING project_id
+  `
+  if (rows.length) migrateLog.warn('marked interrupted project moves as failed', { count: rows.length })
+  return rows.length
+}

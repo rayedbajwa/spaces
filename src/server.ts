@@ -137,7 +137,7 @@ import {
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forgetRemoteProject, forwardTarget, forwardToProject, isRemoteProject, resolveForwardProject } from './lib/project-forward'
-import { archiveStream, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
+import { archiveStream, failInterruptedMigrations, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
 import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
 import { runningVersion } from './lib/worker-platform'
@@ -290,6 +290,8 @@ void (async () => {
 if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
+// Moves run in this process: any left in progress were cut off by the restart.
+if (!isProjectRole()) void failInterruptedMigrations().catch((error) => serverLog.warn('clearing interrupted moves failed', { error: error instanceof Error ? error.message : String(error) }))
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
 // A new project's worker runs the wizard's bootstrap (governing workspace and
 // onboarding) once, the first time it starts.
