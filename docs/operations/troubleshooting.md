@@ -5,6 +5,7 @@
 | Command | Runs |
 |---|---|
 | `bun run web` | Web UI + API (applies the schema at boot, verifies the API key, syncs the GitHub catalog) |
+| `bun run src/standalone.ts` | What deployments start: the server plus, by `SPACES_ROLE`, the supervisor (`all`), nothing (`web`) or the project's job worker (`project`) |
 | `bun run supervisor` | One worker per active project, scaled on demand |
 | `bun run worker` | A single shared worker (alternative to the supervisor) |
 | `bun run db:migrate` | Apply `src/lib/db-schema.sql` by hand (idempotent) |
@@ -27,7 +28,25 @@ Top up the account, then **Rerun from &lt;stage&gt;**; the run kept its stage.
 
 **A run stays queued.**
 No worker is running, or the shared worker is busy. Check `GET /api/workers`
-or the worker indicator in the project overview; start `bun run supervisor`.
+or the worker indicator in the project overview; locally, start
+`bun run supervisor`. With a worker per project, open **Project workers**
+(account menu): the project may be waiting at `PROJECT_WORKERS_MAX_AWAKE`, its
+worker may still be provisioning or building, or provisioning failed (the
+error is shown; **Check the token** and **Probe create and delete** test the
+platform access).
+
+**A project worker never sleeps (Railway).**
+Something keeps deploying or calling it. Each deploy starts a worker, so look
+at its deployment history first: workers must have no branch or deployment
+trigger (Spaces removes them), and only the web service's rollout should
+deploy them. A job process that's still running, or a page with the project's
+live log open, can also keep it awake (the stream sends a keep-alive every 15
+seconds). An idle worker sleeps about 15 minutes after its last work.
+
+**A worker shows "update waiting" for a long time.**
+It's running something; it moves to the new version when its stage ends. An
+update that isn't reported back within 20 minutes is retried. A worker
+Railway has put to sleep is updated when work next wakes it.
 
 **Approve / answer does nothing.**
 The worker that paused the run has gone. The server now re-queues the stage
@@ -60,7 +79,9 @@ stopped heartbeating) shows **Force kill**, which cancels its run and kills the
 worker holding it. Start the run again afterwards if it should continue.
 
 **"worker cap reached; project waits" in the logs.**
-All `SUPERVISOR_MAX_WORKERS` slots are busy. A worker whose project has no work
+All `SUPERVISOR_MAX_WORKERS` slots are busy (single-service layout; with a
+worker per project the cap is `PROJECT_WORKERS_MAX_AWAKE`, and the super
+admin gets a Slack DM when it's hit). A worker whose project has no work
 left hands its slot over at once; raise the cap (or add a worker host) when
 projects genuinely run in parallel.
 
@@ -87,3 +108,7 @@ the variable by name instead (`$DATABASE_URL` in a command).
 | `<repo>/.aidlc/dev-setup.md` | Dev-environment notes (local-only) |
 | `<repo>/.aidlc-worktrees/` | Workstream worktrees |
 | `~/.pi/agent/sessions/` | Pi agent session files (resumed on rerun) |
+
+In a container the same paths sit under the `/data` volume (`HOME=/data/home`,
+`AIDLC_WORKSPACE_ROOT=/data/aidlc/workspaces`); with a worker per project each
+worker's volume holds only its own project.

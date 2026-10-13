@@ -1,6 +1,6 @@
 # Project workers
 
-Each project can run on its own **worker**: a separate service with its own disk for the project's repositories, governing workspace and agent sessions. The public **web** service has no workspace disk. It forwards a project's work to that project's worker over a private network, so a deploy of the web service does not stop agent work, and projects don't compete for one machine. The design is in `specs/014-project-workers`.
+Each project can run on its own **worker**: a separate service with its own disk for the project's repositories, governing workspace and agent sessions. The public **web** service has no workspace disk. It forwards a project's work to that project's worker over a private network, so a deploy of the web service does not stop agent work, and projects don't compete for one machine. The design is in `specs/014-project-workers`; [Architecture & scaling](../concepts/architecture.md) shows how the pieces fit, and [Deploying to the cloud](cloud-deployment.md#option-a-railway-a-worker-per-project-production) sets up Railway from scratch.
 
 Three platforms run the same layout:
 
@@ -198,6 +198,7 @@ Spaces sets each worker's build and start explicitly: `dockerfilePath: Dockerfil
 | `PROJECT_WORKER_DATABASE_URL` | Kubernetes, Docker | Database address as the workers see it, if it differs from the web service's |
 | `RAILWAY_PROVISIONER_TOKEN`, `RAILWAY_PROVISIONER_TOKEN_TYPE` | Railway | Provisioning token, and its type (`project` by default) |
 | `PROJECT_WORKER_REPO` | Railway | Repository workers are built from (no branch: only Spaces deploys them) |
+| `PROJECT_WORKER_POSTGRES_SERVICE` | Railway | Name of the Postgres service workers reference for `DATABASE_URL` (`Postgres`) |
 | `PROJECT_WORKER_NAMESPACE`, `PROJECT_WORKER_SECRET`, `PROJECT_WORKER_STORAGE_CLASS`, `PROJECT_WORKER_IMAGE_PULL_POLICY`, `PROJECT_WORKER_CPU_REQUEST`, `PROJECT_WORKER_MEMORY_REQUEST` | Kubernetes | Where workers go and how they are scheduled |
 | `KUBE_API_URL`, `KUBE_TOKEN`, `KUBE_CA_FILE`, `KUBE_INSECURE` | Kubernetes | API access from outside the cluster |
 | `PROJECT_WORKER_DOCKER_NETWORK`, `DOCKER_SOCKET` | Docker | Network the workers join, and the engine's socket |

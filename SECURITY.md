@@ -30,6 +30,13 @@ important caveats:
 - **Agents can execute code** on the host. Pipeline templates give agents the
   authority to run shell commands and modify files in the working directory.
   Do not point Spaces at directories you don't trust it with.
+- **With a worker per project, the web service holds platform credentials.**
+  `RAILWAY_PROVISIONER_TOKEN` (a workspace token) or the Kubernetes service
+  account can create and delete services in that workspace or namespace, so
+  scope them to Spaces alone. Workers trust requests carrying
+  `SPACES_INTERNAL_TOKEN`; keep it secret and reachable only on the private
+  network. Workers isolate projects' files and compute from each other, but
+  all of them share the database.
 - **Pipeline templates run whatever LLM you configure.** Spaces does not
   sandbox or moderate agent output.
 
