@@ -496,7 +496,7 @@ function SetupForm({ app, onSaved, onError }: { app: OAuthApp; onSaved: (message
         <div className="setup-flow">
           <div className="setup-flow-text">
             <strong>Create the app in the {app.label.split(' (')[0]} developer console</strong>
-            <span className="text-subtle">{app.provider === 'atlassian' ? 'Atlassian has no install-from-manifest flow: create an OAuth 2.0 (3LO) app, add the callback URL and enable the scopes below, then paste the client id and secret here.' : 'Linear has no install-from-manifest flow: create an OAuth application, add the callback URL, then paste the client id and secret here.'}</span>
+            <span className="text-subtle">{app.provider === 'atlassian' ? 'Atlassian has no install-from-manifest flow: create an OAuth 2.0 (3LO) app, add the callback URL and enable the scopes below, then paste the client id and secret here.' : 'Linear has no install-from-manifest flow: in your workspace\'s Settings → API → OAuth applications → New (linear.app/<workspace>/settings/api/applications/new, e.g. linear.app/rayed/settings/api/applications/new), create the application, add the callback URL, then paste the client id and secret here.'}</span>
           </div>
           <div className="setup-flow-actions">
             <a className="primary-button" href={app.consoleUrl} target="_blank" rel="noreferrer">Open {app.label.split(' (')[0]} console ↗</a>
