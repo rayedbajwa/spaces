@@ -149,3 +149,27 @@ describe('conversion', () => {
     await getDb()`DELETE FROM intake_items WHERE intake_id = ${item.intakeId}`
   })
 })
+
+describe('guardrails at the inbound boundary', () => {
+  test('sensitive content is masked before an item is stored', async () => {
+    // Built at runtime so no literal secret is committed; the value still
+    // matches the guardrail secret detector.
+    const fakeToken = ['s', 'k'].join('') + '-ant-' + 'a'.repeat(24)
+    const email = 'jane.doe@example.test'
+    const item = await upsertIntakeItem(itemInput({
+      title: `Contact ${email} about the outage`,
+      summary: `Credentials leaked: ${fakeToken}`,
+      raw: { reporter: email, notes: fakeToken },
+    }))
+    try {
+      const stored = await getIntakeItem(orgA, item.intakeId)
+      expect(stored?.title).not.toContain(email)
+      expect(stored?.title).toContain('[email]')
+      expect(stored?.summary ?? '').not.toContain(fakeToken)
+      expect(stored?.summary ?? '').toContain('[redacted')
+      expect(JSON.stringify(stored?.raw ?? {})).not.toContain(fakeToken)
+    } finally {
+      await getDb()`DELETE FROM intake_items WHERE intake_id = ${item.intakeId}`
+    }
+  })
+})

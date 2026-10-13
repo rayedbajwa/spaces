@@ -123,3 +123,26 @@ describe('slack delivery', () => {
     }
   })
 })
+
+describe('linear delivery', () => {
+  test('bounds the Linear GraphQL call with a timeout signal', async () => {
+    await upsertAppIntegration({ orgId: orgA, kind: 'linear', status: 'connected', credentials: { access_token: 'linear-token' } })
+    const subscription = await upsertSubscription({ orgId: orgA, eventKind: 'run_failed', targetKind: 'linear', action: 'comment', targetConfig: { issueId: 'uuid-1' } })
+    const eventKey = `run:${randomUUID()}:failed`
+    await emitOutboundEvent({ orgId: orgA, eventKind: 'run_failed', eventKey, payload: { summary: 'linear comment' } })
+    const deliveryId = (await ourDelivery(subscription.subscriptionId, eventKey))!
+    try {
+      let signal: AbortSignal | null | undefined
+      stubFetch((_url, init) => {
+        signal = init?.signal
+        return new Response(JSON.stringify({ data: { commentCreate: { success: true, comment: { id: 'c1' } } } }), { status: 200, headers: { 'content-type': 'application/json' } })
+      })
+      await drainOutbound(50)
+      expect(signal).toBeInstanceOf(AbortSignal)
+      expect(signal?.aborted).toBe(false)
+      expect((await deliveryState(deliveryId))?.state).toBe('delivered')
+    } finally {
+      await getDb()`DELETE FROM outbound_subscriptions WHERE subscription_id = ${subscription.subscriptionId}`
+    }
+  })
+})

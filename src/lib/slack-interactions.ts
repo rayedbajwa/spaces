@@ -17,7 +17,7 @@ import { log } from './logger'
 import { listSlackSigningSecretOrgs } from './oauth-apps'
 import { submitSlackClarification, submitSlackDecision, type ApprovalOutcome } from './approval-store'
 import { linkSlackIdentity, sendIdentityVerification, verifiedSlackUserId } from './slack-identity'
-import { slackBotToken } from './slack'
+import { slackBotToken, slackUserEmail } from './slack'
 import { findSlackGatePromptByMessage, listOpenSlackGatePromptsForUser } from './slack-gate-prompts'
 import { upsertIntakeItem } from './intake-store'
 
@@ -87,7 +87,10 @@ export async function fileSlackIntake(input: {
 
   let userId = await verifiedSlackUserId(input.orgId, input.slackTeamId, input.slackUserId)
   if (!userId) {
-    const linked = await linkSlackIdentity({ orgId: input.orgId, slackTeamId: input.slackTeamId, slackUserId: input.slackUserId, email: input.email })
+    // Slack's profile email is the link key; resolve it before creating the
+    // link so a unique active member verifies immediately (FR-015/US3 #6).
+    const email = input.email?.trim() || await slackUserEmail(input.orgId, input.slackUserId)
+    const linked = await linkSlackIdentity({ orgId: input.orgId, slackTeamId: input.slackTeamId, slackUserId: input.slackUserId, email })
     if (linked.token) void sendIdentityVerification({ orgId: input.orgId, slackUserId: input.slackUserId, token: linked.token }).catch(() => undefined)
     if (linked.link.state !== 'verified') {
       return { ok: false, code: 'identity_required', reply: 'Before you can file from Slack, verify your identity with Spaces. I have sent you a one-time link; open it signed in as your Spaces user.' }
@@ -124,8 +127,9 @@ export interface SlackPayload {
   trigger_id?: string
   event?: { type?: string; text?: string; user?: string; channel?: string; ts?: string; thread_ts?: string; team?: string; bot_id?: string }
   actions?: Array<{ action_id?: string; value?: string }>
-  message?: { ts?: string; thread_ts?: string }
+  message?: { ts?: string; thread_ts?: string; text?: string; user?: string }
   channel?: { id?: string }
+  callback_id?: string
   response_url?: string
   view?: {
     private_metadata?: string
@@ -144,13 +148,13 @@ export async function handleSlackEvent(orgId: string, payload: SlackPayload): Pr
   const event = payload.event
   const teamId = payload.team_id ?? payload.team?.id ?? event?.team ?? ''
   const slackUserId = event?.user ?? payload.user?.id ?? ''
-  const isMessage = event?.type === 'message' || event?.type === 'app_mention' || payload.type === 'message_action' || payload.type === 'shortcut'
+  const isMessage = event?.type === 'message' || event?.type === 'app_mention'
   if (isMessage && event?.bot_id) return { status: 200, body: { ok: true } }
   if (isMessage && slackUserId) {
     // A reply in a clarification thread is an answer, not a new intake item.
-    const answered = await maybeAnswerClarification(orgId, teamId, slackUserId, event?.text ?? payload.text ?? '', event?.thread_ts ?? payload.message?.thread_ts, event?.channel)
+    const answered = await maybeAnswerClarification(orgId, teamId, slackUserId, event?.text ?? '', event?.thread_ts, event?.channel)
     if (answered) return answered
-    const result = await fileSlackIntake({ orgId, slackTeamId: teamId, slackUserId, text: event?.text ?? payload.text ?? '', email: null, eventTs: event?.ts })
+    const result = await fileSlackIntake({ orgId, slackTeamId: teamId, slackUserId, text: event?.text ?? '', email: null, eventTs: event?.ts })
     inboundLog.info('slack event filed', { orgId, ok: result.ok, code: result.code })
     return { status: 200, body: { ok: result.ok, reply: result.reply, intakeId: result.intakeId } }
   }
@@ -268,12 +272,37 @@ async function openFeedbackModal(input: { orgId: string; triggerId: string; gate
   }
 }
 
-/** POST /api/slack/interactions (block actions and modal submissions → gate decisions). */
+/** POST /api/slack/interactions (message shortcut, block actions and modal submissions). */
 export async function handleSlackInteraction(orgId: string, payload: SlackPayload): Promise<SlackHandleResult> {
   const slackUserId = payload.user?.id ?? ''
   const teamId = payload.team_id ?? payload.team?.id ?? ''
-  const userId = await verifiedSlackUserId(orgId, teamId, slackUserId)
-  if (!userId) return { status: 200, body: { ok: false, reply: 'Your Slack identity is not verified with Spaces, so I did not record a decision.' } }
+
+  // A message shortcut files the message it was invoked on. Only this app's own
+  // shortcut is accepted; filing owns the identity flow (US3 #8).
+  if (payload.type === 'message_action') {
+    if (payload.callback_id !== 'spaces_file_intake') return { status: 200, body: { ok: true } }
+    const filed = await fileSlackIntake({
+      orgId,
+      slackTeamId: teamId,
+      slackUserId: payload.user?.id ?? payload.message?.user ?? '',
+      text: payload.message?.text ?? '',
+      email: null,
+      externalRef: payload.message?.ts ? `slack:${teamId}:${payload.message.ts}` : undefined,
+    })
+    inboundLog.info('slack shortcut filed', { orgId, ok: filed.ok, code: filed.code })
+    return { status: 200, body: { response_type: 'ephemeral', text: filed.reply } }
+  }
+
+  let userId = await verifiedSlackUserId(orgId, teamId, slackUserId)
+  if (!userId) {
+    // An unlinked person gets the same one-time verification path as the filing
+    // route instead of a dead end (US3 #6 / FR-015).
+    const email = await slackUserEmail(orgId, slackUserId).catch(() => null)
+    const linked = await linkSlackIdentity({ orgId, slackTeamId: teamId, slackUserId, email })
+    if (linked.token) void sendIdentityVerification({ orgId, slackUserId, token: linked.token }).catch(() => undefined)
+    userId = linked.link.state === 'verified' ? (linked.link.userId ?? undefined) : undefined
+    if (!userId) return { status: 200, body: { ok: false, reply: 'Before you can decide from Slack, verify your identity with Spaces. I have sent you a one-time link; open it signed in as your Spaces user.' } }
+  }
 
   // A modal submission carries the verbatim notes for a feedback decision.
   if (payload.type === 'view_submission') {

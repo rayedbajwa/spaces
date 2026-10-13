@@ -58,6 +58,68 @@ const PROVIDER_BLURB: Record<OAuthApp['provider'], string> = {
   railway: 'Railway deployment targets, release approval and live deployment state. OAuth connections are observation-only; releases require a workspace or project token. Connect once per organization; a project links one service and environment.',
 }
 
+/**
+ * The two two-way workflow surfaces. They are reachable from here rather than
+ * the main menu, so the connections they depend on stay in one place with the
+ * guidance a person needs to set them up.
+ */
+const WORK_SURFACES = [
+  {
+    id: 'intake',
+    label: 'Work inbox',
+    icon: '📥',
+    path: '/intake',
+    blurb: 'Every request from outside Spaces lands here first — Jira and Linear issues, Slack requests and Datadog alerts — in one prioritized queue.',
+    how: [
+      'Connect a source under Project Management, Communication or Monitoring below.',
+      'New items appear in the inbox automatically as the source syncs.',
+      'Open an item to set its priority and turn it into a feature or bugfix in a project.',
+    ],
+  },
+  {
+    id: 'outbound',
+    label: 'Outbound updates',
+    icon: '📤',
+    path: '/outbound',
+    blurb: 'Tell the tools you already use when something happens in Spaces — a run fails, a gate opens, a feature is delivered.',
+    how: [
+      'Connect the target tool below (Jira, Linear, GitHub or Slack).',
+      'Add a subscription that maps an event to a target and action.',
+      'Spaces sends it, retries on failure and records every attempt — never blocking a run.',
+    ],
+  },
+] as const
+
+export function WorkSurfaces() {
+  return (
+    <section className="integration-category work-surfaces" aria-label="Workflow surfaces">
+      <div className="integration-category-header">
+        <div className="integration-category-title-row">
+          <h3>Workflow surfaces</h3>
+        </div>
+        <p className="panel-subtitle">The two-way surfaces that use the connections below. Set up the connection first, then open the surface to configure it.</p>
+      </div>
+      <div className="work-surface-grid">
+        {WORK_SURFACES.map((surface) => (
+          <section key={surface.id} className="card work-surface">
+            <div className="work-surface-head">
+              <span className="work-surface-icon" aria-hidden="true">{surface.icon}</span>
+              <div>
+                <h4>{surface.label}</h4>
+                <p className="panel-subtitle">{surface.blurb}</p>
+              </div>
+            </div>
+            <ol className="work-surface-steps">
+              {surface.how.map((step) => <li key={step}>{step}</li>)}
+            </ol>
+            <button type="button" className="secondary-button" onClick={() => navigate(surface.path)}>Open {surface.label.toLowerCase()}</button>
+          </section>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export function IntegrationsPanel({ embedded = false, readOnly = false }: { embedded?: boolean; readOnly?: boolean }) {
   const { me } = useAuth()
   const isAdmin = !me?.authEnabled || (me?.teams ?? []).some((t) => t.role === 'owner' || t.role === 'admin')
@@ -121,6 +183,7 @@ export function IntegrationsPanel({ embedded = false, readOnly = false }: { embe
       )}
       {error && <p className="error-text">{error}</p>}
       {notice && <p className="team-flash team-flash-ok">{notice}</p>}
+      <WorkSurfaces />
       {apps === null && <SkeletonRows count={4} label="Loading integrations…" />}
       {apps !== null && (
         <div className="integration-categories">
