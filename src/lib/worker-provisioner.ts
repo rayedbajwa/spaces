@@ -200,6 +200,7 @@ export interface ProvisionerCheck {
   detail?: string
   /** Only when a probe was asked for. */
   canCreate?: boolean
+  canDelete?: boolean
   error?: string
 }
 

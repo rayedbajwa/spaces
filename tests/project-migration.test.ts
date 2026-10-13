@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { getDb } from '../src/lib/db'
 import { claimNextJob } from '../src/lib/dispatcher'
-import { archiveStream, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject, type MigrationDeps, type PullResult } from '../src/lib/project-migration'
+import { archiveStream, failInterruptedMigrations, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject, type MigrationDeps, type PullResult } from '../src/lib/project-migration'
 import { addRepo } from '../src/lib/project-registry'
 import { getProjectWorker } from '../src/lib/worker-provisioner'
 import { createApprovalFixture } from './helpers/approval-fixture'
@@ -113,6 +113,22 @@ describe('moving a project', () => {
     await sql`INSERT INTO project_jobs (job_id, project_id, kind, trigger_source, status) VALUES (${jobId}, ${projectTeamB.projectId}, 'webhook', 'api', 'running')`
     await expect(moveProjectToWorker(projectTeamB.projectId, { activate: true }, deps().d)).rejects.toThrow('A stage is running')
     await sql`UPDATE project_jobs SET status = 'completed' WHERE job_id = ${jobId}`
+  })
+})
+
+describe('one copy or move at a time', () => {
+  test('a second copy or move while one runs is refused', async () => {
+    await sql`INSERT INTO project_workers (project_id, active, migration_state) VALUES (${projectA.projectId}, false, 'syncing')`
+    await expect(moveProjectToWorker(projectA.projectId, { activate: false }, deps().d)).rejects.toThrow('already running')
+  })
+})
+
+describe('a restart during a move', () => {
+  test('marks it failed, which releases the held jobs and allows a retry', async () => {
+    await sql`INSERT INTO project_workers (project_id, active, migration_state) VALUES (${projectTeamB.projectId}, false, 'syncing')`
+    expect(await failInterruptedMigrations()).toBeGreaterThanOrEqual(1)
+    expect(await getProjectWorker(projectTeamB.projectId)).toMatchObject({ migrationState: 'failed', active: false })
+    expect((await getProjectWorker(projectTeamB.projectId))?.migrationJson?.error).toContain('Interrupted by a restart')
   })
 })
 

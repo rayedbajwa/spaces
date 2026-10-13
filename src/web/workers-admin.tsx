@@ -31,6 +31,7 @@ interface CheckResult {
   canRead?: boolean
   detail?: string
   canCreate?: boolean
+  canDelete?: boolean
   error?: string
 }
 
@@ -115,6 +116,7 @@ export function WorkersSection() {
           <li>Platform set up: <strong>{check.configured ? `yes (${check.platform})` : 'no'}</strong></li>
           {check.canRead !== undefined && <li>Reachable: <strong>{check.canRead ? `yes${check.detail ? ` — ${check.detail}` : ''}` : 'no'}</strong></li>}
           {check.canCreate !== undefined && <li>May create workers and volumes: <strong>{check.canCreate ? 'yes' : 'no'}</strong></li>}
+          {check.canDelete !== undefined && <li>May delete them again: <strong>{check.canDelete ? 'yes' : 'no'}</strong></li>}
           {check.error && <li className="error-text">{check.error}</li>}
         </ul>
       )}

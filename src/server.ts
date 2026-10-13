@@ -137,7 +137,7 @@ import {
 import { log } from './lib/logger'
 import { hasInternalToken, isProjectRole, isWebRole, roleConfigProblem, spacesRole, workerProjectId } from './lib/role'
 import { callProjectWorker, forgetRemoteProject, forwardTarget, forwardToProject, isRemoteProject, resolveForwardProject } from './lib/project-forward'
-import { archiveStream, manifestFor, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
+import { archiveStream, failInterruptedMigrations, manifestFor, migrationInProgress, moveProjectBack, moveProjectToWorker, projectPaths, pullProject } from './lib/project-migration'
 import { capWaiting, awakeProjects, maxAwakeWorkers, startWakeScheduler } from './lib/worker-wake'
 import { reportWorkerVersion, startRolloutLoop } from './lib/worker-rollout'
 import { runningVersion } from './lib/worker-platform'
@@ -290,6 +290,8 @@ void (async () => {
 if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
 if (isWebRole() || (!isProjectRole() && workerPlatform())) startRolloutLoop()
+// Moves run in this process: any left in progress were cut off by the restart.
+if (!isProjectRole()) void failInterruptedMigrations().catch((error) => serverLog.warn('clearing interrupted moves failed', { error: error instanceof Error ? error.message : String(error) }))
 if (isProjectRole()) void reportWorkerVersion(workerProjectId()!).catch((error) => serverLog.warn('reporting the worker version failed', { error: error instanceof Error ? error.message : String(error) }))
 // A new project's worker runs the wizard's bootstrap (governing workspace and
 // onboarding) once, the first time it starts.
@@ -609,6 +611,7 @@ async function route(req: Request): Promise<Response> {
       if (!workerPlatform()) return sendJson(409, { error: workerPlatformProblem() ?? 'Project workers are not set up.' })
       const projectId = movePath[1]!
       const action = movePath[2]!
+      if (await migrationInProgress(projectId)) return sendJson(409, { error: 'A copy or move is already running for this project. Wait for it to finish.' })
       // It takes minutes: answer now, and let the page follow migration_state.
       const work = action === 'move-back' ? moveProjectBack(projectId) : moveProjectToWorker(projectId, { activate: action === 'move' })
       void work.then(() => forgetRemoteProject(projectId)).catch((error) => serverLog.warn('moving the project failed', { projectId, action, error: error instanceof Error ? error.message : String(error) }))

@@ -30,6 +30,8 @@ export interface PlatformCheck {
   /** How much the platform reports it holds (services, pods, containers). */
   detail?: string
   canCreate?: boolean
+  /** Whether what the probe made could be deleted again (removing workers needs it). */
+  canDelete?: boolean
   error?: string
 }
 

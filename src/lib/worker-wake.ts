@@ -61,6 +61,8 @@ export interface WakeDeps {
   hasPlatform: () => boolean
   /** Create workers for projects without one (the web role); otherwise wake only moved projects' workers. */
   provisionMissing: () => boolean
+  /** The project's files are still on this service's disk (not moved yet). */
+  hasLocalFiles: (projectId: string) => Promise<boolean>
   capHit: (projectId: string, awake: number, cap: number) => Promise<void>
   cap: () => number
 }
@@ -74,6 +76,7 @@ const defaultDeps: WakeDeps = {
   wake: async (projectId) => Boolean(await callProjectWorker<{ ok: boolean }>(projectId, '/internal/wake', { method: 'POST', body: {}, timeoutMs: 10_000, wakeTimeoutMs: 60_000 })),
   hasPlatform: () => Boolean(workerPlatform()),
   provisionMissing: () => isWebRole(),
+  hasLocalFiles: (projectId) => import('./project-migration').then((m) => m.hasLocalProjectFiles(projectId)),
   capHit: recordCapHit,
   cap: () => maxAwakeWorkers(),
 }
@@ -103,6 +106,8 @@ async function doWake(projectId: string, deps: WakeDeps): Promise<WakeOutcome> {
   if (worker && !worker.active) return 'unavailable'
   if (!worker || worker.state === 'pending' || worker.state === 'failed') {
     if (!deps.hasPlatform()) return 'unavailable'
+    // Not moved yet: its files are here, and an empty worker would hide them.
+    if (!worker && await deps.hasLocalFiles(projectId)) return 'unavailable'
     // A worker that never finished provisioning is retried; its bootstrap starts the work.
     void Promise.resolve(deps.provision(projectId)).then(() => deps.wake(projectId)).catch((error) => wakeLog.warn('provisioning for queued work failed', { projectId, error: error instanceof Error ? error.message : String(error) }))
     return 'provisioning'

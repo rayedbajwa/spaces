@@ -103,6 +103,6 @@ The super admin sees each project's worker: state (provisioning, sleeping, awake
 
 ### Session 2026-10-13
 
-- Q: Which Railway token does provisioning use? → A: A token scoped just for provisioning: a project token for the `spaces` project's production environment (FR-014). Railway only creates tokens in the dashboard (Project → Settings → Tokens). Before Phase 2, check that a project token can create services and volumes; if it cannot, fall back to a workspace token and record that here.
+- Q: Which Railway token does provisioning use? → A: A token scoped just for provisioning: a project token for the `spaces` project's production environment (FR-014). Railway only creates tokens in the dashboard (Project → Settings → Tokens). Checked in production on 2026-10-13: a project token creates services and volumes but Railway refuses to delete them ("Not Authorized"), so provisioning uses a workspace token for the workspace holding the Spaces project.
 - Q: Worker and volume size? → A: 2 vCPU, 2 GB memory, 5 GB volume per project (FR-012).
 - Q: Cap on awake workers? → A: 5 to start; notify the super admin when the cap is hit (FR-013).
