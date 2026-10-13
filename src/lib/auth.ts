@@ -140,6 +140,19 @@ export function clearSessionCookie(): string {
 // Users
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether a user runs this deployment (its waitlist): one of SUPERADMIN_EMAILS
+ * when that is set, otherwise the account that set the deployment up (the
+ * first user). Not an organization role: a tenant's owners and admins are not
+ * super admins.
+ */
+export async function isSuperAdmin(user: { userId: string; email: string }): Promise<boolean> {
+  const listed = (process.env.SUPERADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
+  if (listed.length) return listed.includes(user.email.toLowerCase())
+  const [first] = await getDb()<Array<{ userId: string }>>`SELECT user_id AS "userId" FROM users ORDER BY created_at, user_id LIMIT 1`
+  return first?.userId === user.userId
+}
+
 export async function countUsers(): Promise<number> {
   const sql = getDb()
   const [row] = await sql<Array<{ n: number }>>`SELECT count(*)::int AS n FROM users`

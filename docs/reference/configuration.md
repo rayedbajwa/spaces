@@ -82,6 +82,7 @@ makes the database suites skip with a message instead of writing to it.
 | Variable | Default | Purpose |
 |---|---|---|
 | `AUTH_DISABLED` | unset | `1` turns sign-in off (single-user local use); every route is open |
+| `SUPERADMIN_EMAILS` | unset | Comma-separated emails of the deployment's super admins, who manage the waitlist; when unset, the first registered account is the super admin |
 | `OPEN_REGISTRATION` | unset | `1` lets anyone register; otherwise only the first user, invitees and people let in from the waitlist can, and the landing page offers the waitlist |
 | `DEFAULT_TEAM_NAME` | `Default team` | Name of the team created for the first user |
 | `DEFAULT_ORG_NAME` | `Organization` | Name of the organization created for the first user |
