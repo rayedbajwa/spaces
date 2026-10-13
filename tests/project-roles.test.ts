@@ -69,6 +69,13 @@ describe('web and project roles', () => {
     expect(res.status).toBe(403)
   })
 
+  test('the project worker serves only its project, never organization-level routes', async () => {
+    for (const path of ['/api/org/provider-keys', '/api/org/promotions', '/api/admin/workers', '/api/me']) {
+      const res = await fetch(`http://127.0.0.1:${WORKER_PORT}${path}`, { headers: { cookie, [INTERNAL_TOKEN_HEADER]: TOKEN } })
+      expect(res.status).toBe(404)
+    }
+  })
+
   test('the internal API answers the web service', async () => {
     const wake = await fetch(`http://127.0.0.1:${WORKER_PORT}/internal/wake`, { method: 'POST', headers: { [INTERNAL_TOKEN_HEADER]: TOKEN } })
     expect(await wake.json()).toEqual({ ok: true, projectId: projectA.projectId })

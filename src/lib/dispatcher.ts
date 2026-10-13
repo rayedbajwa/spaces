@@ -135,7 +135,7 @@ export async function retryRunAndEnqueue(input: {
  * are marked 'error' rather than re-enqueued — the dispatcher can only serve
  * jobs that belong to a project.
  */
-export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenqueued: number; failed: number; runIds: string[] }> {
+export async function reapOrphanedRuns(staleAfterMs = 30_000, projectId?: string): Promise<{ reenqueued: number; failed: number; runIds: string[] }> {
   const sql = getDb()
   const cutoff = new Date(Date.now() - staleAfterMs)
 
@@ -145,6 +145,8 @@ export async function reapOrphanedRuns(staleAfterMs = 30_000): Promise<{ reenque
       FROM pipeline_runs r
      WHERE r.status = 'queued'
        AND r.created_at < ${cutoff}
+       -- A per-project worker looks only at its own project's runs.
+       AND (${projectId ?? null}::uuid IS NULL OR r.project_id = ${projectId ?? null}::uuid)
        AND NOT EXISTS (
          SELECT 1 FROM project_jobs j
           WHERE j.run_id = r.run_id

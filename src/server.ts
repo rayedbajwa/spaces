@@ -16,7 +16,7 @@ import type { PipelineTemplate } from './lib/pipeline-template'
 import type { ProjectRow } from './lib/project-registry'
 import { closeDb, getDb, ignoreShutdownDbErrors } from './lib/db'
 import { enqueueJob, forceKillJob, getOrchestrator, listJobsForProject, upsertOrchestrator } from './lib/dispatcher'
-import { assertEnvOrExit } from './lib/env'
+import { assertEnvOrExit, intakeSyncIntervalMs, outboundDrainIntervalMs } from './lib/env'
 import { beginAuthorization, consumeState, exchangeCode, resolveGitHubLoginProvider, resolveProvider } from './lib/oauth'
 import { deleteOAuthApp, isOAuthProviderId, listOAuthApps, recordGitHubInstallation, saveGitHubAppFromManifest, saveOAuthApp } from './lib/oauth-apps'
 import { consumeManifestState, convertGitHubAppManifest, githubAppManifestPage } from './lib/github-app'
@@ -208,15 +208,18 @@ const versionMetadata = resolveVersionMetadata({ packageMetadata })
 // environment are imported once into the default organization and scrubbed so
 // no tenant inherits them from the process. Routing is warmed per organization.
 const bootOrgId = await getDefaultOrgId()
-await importProviderKeysFromEnv(bootOrgId).catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
+// A project's worker holds no other organization's data: no key import into the default org.
+if (!isProjectRole()) await importProviderKeysFromEnv(bootOrgId).catch((error) => serverLog.warn('provider key import failed', { error: error instanceof Error ? error.message : String(error) }))
 scrubProviderKeysFromEnv()
 // A project worker holds no open LISTEN connection: its traffic would keep the
 // platform from putting an idle worker to sleep. Cached keys expire on their own.
 if (!isProjectRole()) await listenProviderKeys((orgId) => { void warmModelRouting(orgId, serverLog).catch(() => undefined) }).catch(() => undefined)
-void checkProviderKeys(serverLog)
+// A project's worker checks only its own organization's keys.
+void (async () => checkProviderKeys(serverLog, isProjectRole() ? [await orgIdForProject(workerProjectId()!)] : undefined))()
 // What each tenant holds after the schema migrated, so an upgraded deployment
-// can be checked from its logs without reading the database by hand.
-void (async () => {
+// can be checked from its logs without reading the database by hand. Not on a
+// project's worker: it reports on its own project only.
+if (!isProjectRole()) void (async () => {
   const sql = getDb()
   const rows = await sql<Array<{ slug: string; name: string; teams: number; projects: number; keys: number; integrations: number; oauthApps: number; githubApp: string | null; knowledgeSources: number; users: number }>>`
     SELECT o.slug, o.name,
@@ -277,15 +280,26 @@ void (async () => {
   // The files live with the project's worker: the web role imports nothing, a
   // project worker imports only its own project.
   if (isWebRole()) return
-  const only = isProjectRole() ? workerProjectId() : undefined
-  for (const project of await listProjects()) {
-    if (only && project.projectId !== only) continue
+  const own = isProjectRole() ? await projGet(workerProjectId()!) : undefined
+  for (const project of isProjectRole() ? (own ? [own] : []) : await listProjects()) {
     const primary = pickRunnableRepo(await listRepos(project.projectId))
     await syncProjectIntentsQuietly(project.projectId, primary?.localPath, 'import')
   }
 })().catch((error) => serverLog.warn('intent import failed', { error: error instanceof Error ? error.message : String(error) }))
 // Knowledge imports run inside this process; ones cut off by the last restart
 // must not look like they are still running.
+// Intake sync and outbound delivery (012) are organization-wide, so they run in
+// this always-up service, never in a project's worker (specs/014-project-workers).
+if (!isProjectRole()) {
+  setInterval(() => {
+    void import('./lib/intake-connectors').then((m) => m.runIntakeSync())
+      .catch((error) => serverLog.warn('intake sync failed', { error: error instanceof Error ? error.message : String(error) }))
+  }, intakeSyncIntervalMs())
+  setInterval(() => {
+    void import('./lib/outbound-deliver').then((m) => m.drainOutbound())
+      .catch((error) => serverLog.warn('outbound drain failed', { error: error instanceof Error ? error.message : String(error) }))
+  }, outboundDrainIntervalMs())
+}
 // The web role wakes each project's worker as its work is queued (phase 3).
 if (isWebRole() || (!isProjectRole() && workerPlatform())) void startWakeScheduler().catch((error) => serverLog.warn('wake scheduler failed to start', { error: error instanceof Error ? error.message : String(error) }))
 // ...and moves idle workers to its own version (phase 4); a worker reports its version as it starts.
@@ -381,6 +395,12 @@ async function route(req: Request): Promise<Response> {
   if (isProjectRole()) {
     if (!hasInternalToken(req)) return sendJson(404, { error: 'Not found.' })
     if (url.pathname.startsWith('/internal/')) return internalRoute(req, method, url)
+    // Only its own project's work: the web service forwards project routes and
+    // runs here; organization-level routes (keys, knowledge, intake, admin) are
+    // never served by a project's worker.
+    if (!/^\/api\/(projects\/[^/]+(\/|$)|runs(\/|$))/.test(url.pathname) || /^\/api\/projects\/by-code\//.test(url.pathname)) {
+      return sendJson(404, { error: "Not found: this worker serves only its project." })
+    }
   }
   // Moving a project (phase 5): the shared service serves its copy of a project
   // to that project's worker, on the private network, with the internal token.
