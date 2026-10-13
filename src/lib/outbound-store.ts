@@ -10,6 +10,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { getDb } from './db'
+import { maskOutputDeep } from './guardrails'
+import { loadGuardPolicy } from './guardrails-policy'
 import { log } from './logger'
 
 const outboundLog = log.child({ mod: 'outbound-store' })
@@ -147,11 +149,15 @@ export async function emitOutboundEvent(input: {
        AND enabled
        AND (project_id IS NULL OR project_id = ${input.projectId ?? null})
   `
+  // Mask at rest as well as on send, so `payload_json` never stores restricted
+  // content even before the delivery runs (FR-019/FR-023, test-plan §5.9).
+  const policy = await loadGuardPolicy(input.orgId).catch(() => null)
+  const payload = policy ? maskOutputDeep(input.payload, policy) : input.payload
   let inserted = 0
   for (const sub of subscriptions) {
     const rows = await sql`
       INSERT INTO outbound_deliveries (delivery_id, subscription_id, org_id, project_id, event_kind, event_key, payload_json)
-      VALUES (${randomUUID()}, ${sub.subscriptionId}, ${input.orgId}, ${input.projectId ?? null}, ${input.eventKind}, ${input.eventKey}, ${sql.json(input.payload as never)})
+      VALUES (${randomUUID()}, ${sub.subscriptionId}, ${input.orgId}, ${input.projectId ?? null}, ${input.eventKind}, ${input.eventKey}, ${sql.json(payload as never)})
       ON CONFLICT (subscription_id, event_key) DO NOTHING
       RETURNING delivery_id
     `
