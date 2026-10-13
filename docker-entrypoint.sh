@@ -13,6 +13,12 @@ if [ "$(id -u)" = "0" ]; then
   # chown over many cloned repositories would slow every restart.
   chown bun:bun "$DATA_DIR" "$DATA_DIR/home" "$DATA_DIR/aidlc" "$DATA_DIR/aidlc/workspaces" 2>/dev/null || true
   find "$DATA_DIR" -maxdepth 2 ! -user bun -exec chown bun:bun {} + 2>/dev/null || true
+  # Governing workspaces are small git repositories that bun commits to: one
+  # left owned by root (copied in as root) makes every commit fail with git's
+  # "dubious ownership" check, so hand back whatever in them is not bun's.
+  if [ -d "$DATA_DIR/aidlc/workspaces/_governance" ]; then
+    find "$DATA_DIR/aidlc/workspaces/_governance" ! -user bun -exec chown bun:bun {} + 2>/dev/null || true
+  fi
   # Project workers on the local Docker engine (PROJECT_WORKER_PLATFORM=docker):
   # the web service drives the mounted Docker socket. bun joins the socket's
   # group when that group may write to it (Linux hosts); Docker Desktop's
