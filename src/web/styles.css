@@ -2950,7 +2950,15 @@ blockquote.approval-summary { white-space: pre-wrap; }
 
 /* Intake queue (012-inbound-outbound-slack) */
 .intake-sources { margin-bottom: 16px; }
+.intake-sources-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.intake-sources-head .section-title { margin: 0; }
+.intake-source-form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 12px 0; }
+.intake-source-form .intake-action.grow { flex: 1 1 240px; }
+.intake-source-form input { padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); min-width: 220px; font: inherit; }
 .intake-source-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.intake-source-row { display: inline-flex; align-items: center; gap: 6px; }
+.intake-source-row.disabled { opacity: .55; }
+.intake-source-actions { display: inline-flex; gap: 8px; font-size: 12px; }
 .intake-source { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elevated-2); color: var(--text); cursor: pointer; }
 .intake-source.active { border-color: var(--accent, #5e6ad2); }
 .intake-source-name { font-weight: 600; }
