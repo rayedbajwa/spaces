@@ -59,6 +59,21 @@ async function slackApi<T extends SlackResponse>(token: string, method: string, 
   return data
 }
 
+/**
+ * Post to a channel, joining it first when the bot is not a member: a Slack app
+ * reinstalled (or a channel made by an earlier connection) leaves the bot
+ * outside channels it used to post in, and Slack answers not_in_channel.
+ */
+async function postToChannel(token: string, channel: string, message: Record<string, unknown>): Promise<void> {
+  try {
+    await slackApi(token, 'chat.postMessage', { channel, ...message })
+  } catch (error) {
+    if (!(error instanceof SlackApiError && error.code === 'not_in_channel')) throw error
+    await slackApi(token, 'conversations.join', { channel })
+    await slackApi(token, 'chat.postMessage', { channel, ...message })
+  }
+}
+
 /** A channel name Slack accepts: lowercase letters, digits, hyphens and underscores, at most 80 characters. */
 export function channelNameFor(project: { code?: string | null; slug: string }): string {
   const base = (project.code || project.slug).toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
@@ -319,7 +334,7 @@ export async function notifyProject(projectId: string | null | undefined, notice
     const { loadGuardPolicy } = await import('./guardrails-policy')
     const { maskOutputDeep } = await import('./guardrails')
     const message = maskOutputDeep(renderNotice(project, notice), await loadGuardPolicy(orgId))
-    await slackApi(token, 'chat.postMessage', { channel: channel.channelId, text: message.text, blocks: message.blocks, unfurl_links: false })
+    await postToChannel(token, channel.channelId, { text: message.text, blocks: message.blocks, unfurl_links: false })
   } catch (error) {
     if (error instanceof SlackApiError && ['channel_not_found', 'is_archived'].includes(error.code)) {
       // The channel was deleted or archived in Slack: forget it so the next post makes a new one.
@@ -362,7 +377,7 @@ export async function notifyWaitlistSignup(entry: { name: string | null; company
     const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
     const blocks: unknown[] = [{ type: 'section', text: { type: 'mrkdwn', text: `📝 *New waitlist signup:* ${who}${size}` } }]
     if (base) blocks.push({ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Open the waitlist' }, url: `${base}/organization?section=waitlist` }] })
-    await slackApi(token, 'chat.postMessage', { channel: waitlistChannel.channelId, text: `New waitlist signup: ${who}${size}`, blocks, unfurl_links: false })
+    await postToChannel(token, waitlistChannel.channelId, { text: `New waitlist signup: ${who}${size}`, blocks, unfurl_links: false })
   } catch (error) {
     if (error instanceof SlackApiError && ['channel_not_found', 'is_archived'].includes(error.code)) waitlistChannel = undefined
     reportSlackError(orgId, 'post waitlist signup', error)
