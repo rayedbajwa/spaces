@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { AuthRoot, json, navigate, useAuth } from './auth'
 import { AppSidebar, PageHead, SearchBox, TopStrip, type ArchivedCardSummary } from './shell'
@@ -4422,6 +4422,26 @@ function AiAgentOutputBar({
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [currentRun?.log, isActive, followLog])
+  // Revealing the dock (or switching to another run) must show the newest
+  // output, whatever the run state: reset follow-to-bottom and mark that the
+  // first paint with content should pin the buffer. A ref, not state, so the
+  // pin itself never re-renders.
+  const pendingBottomPin = useRef(false)
+  useLayoutEffect(() => {
+    if (!expanded) return
+    setFollowLog(true)
+    pendingBottomPin.current = true
+  }, [expanded, currentRun?.runId])
+  // Pin before the browser paints, so the dock never flashes the top of the
+  // buffer. `instant`, because `.agent-dock.open .run-log` sets smooth scrolling
+  // and the ↑/↓ controls keep that behaviour for themselves.
+  useLayoutEffect(() => {
+    if (!expanded || !pendingBottomPin.current) return
+    const el = logRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
+    pendingBottomPin.current = false
+  }, [expanded, currentRun?.log])
   const onLogScroll = () => {
     const el = logRef.current
     if (!el) return
