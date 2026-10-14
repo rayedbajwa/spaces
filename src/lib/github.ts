@@ -194,3 +194,12 @@ export async function getGitHubLogin(orgId: string): Promise<string> {
   return data.login
 }
 
+
+/** The commit at the tip of a branch (the default branch when none is given). */
+export async function getBranchHeadSha(orgId: string, fullName: string, branch?: string | null): Promise<string> {
+  const [owner, name] = splitFullName(fullName)
+  const token = await getGitHubToken(orgId)
+  const ref = encodeURIComponent(branch || 'HEAD')
+  const { data } = await githubGet<{ sha: string }>(token, `https://api.github.com/repos/${owner}/${name}/commits/${ref}`)
+  return data.sha
+}

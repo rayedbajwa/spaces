@@ -83,6 +83,10 @@ export interface RailwayDeployment {
   railwayStatus: string | null
   status: NormalizedDeploymentStatus
   createdAt: string | null
+  /** The commit, branch and GitHub repo it was built from, for a service deployed from GitHub. */
+  commitHash: string | null
+  branch: string | null
+  repo: string | null
   /** Public service URL when Railway reports one. */
   serviceUrl: string | null
   /** Link to the deployment in the Railway dashboard, when derivable. */
@@ -365,24 +369,29 @@ export async function listRailwayTargetsWithToken(token: string, tokenType: Rail
 
 // ---- deployments ----
 
+/** The parts of Railway's deployment `meta` (JSON) that Spaces reads. */
+interface DeploymentMeta { commitHash?: string | null; branch?: string | null; repo?: string | null }
 interface DeploymentsResult {
-  deployments: { edges: Array<{ node: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null } }> }
+  deployments: { edges: Array<{ node: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null; meta?: DeploymentMeta | null } }> }
 }
 interface ServiceInstanceResult {
-  serviceInstance: { latestDeployment: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null } | null } | null
+  serviceInstance: { latestDeployment: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null; meta?: DeploymentMeta | null } | null } | null
 }
 
 function deploymentUrl(projectId: string, serviceId: string): string {
   return `https://railway.com/project/${projectId}/service/${serviceId}`
 }
 
-function toDeployment(node: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null } | null | undefined, projectId: string, serviceId: string): RailwayDeployment {
-  if (!node) return { id: null, railwayStatus: null, status: 'unknown', createdAt: null, serviceUrl: null, deploymentUrl: null }
+function toDeployment(node: { id: string; status: string; createdAt: string | null; url?: string | null; staticUrl?: string | null; meta?: DeploymentMeta | null } | null | undefined, projectId: string, serviceId: string): RailwayDeployment {
+  if (!node) return { id: null, railwayStatus: null, status: 'unknown', createdAt: null, commitHash: null, branch: null, repo: null, serviceUrl: null, deploymentUrl: null }
   return {
     id: node.id,
     railwayStatus: node.status ?? null,
     status: normalizeRailwayStatus(node.status),
     createdAt: node.createdAt ?? null,
+    commitHash: typeof node.meta?.commitHash === 'string' ? node.meta.commitHash : null,
+    branch: typeof node.meta?.branch === 'string' ? node.meta.branch : null,
+    repo: typeof node.meta?.repo === 'string' ? node.meta.repo : null,
     serviceUrl: node.staticUrl ?? node.url ?? null,
     deploymentUrl: deploymentUrl(projectId, serviceId),
   }
@@ -404,7 +413,7 @@ export async function getLatestDeploymentWithToken(token: string, tokenType: Rai
     const data = await railwayGraphQLRequest<DeploymentsResult>(
       token,
       tokenType,
-      `query deployments($input: DeploymentListInput!) { deployments(input: $input, first: 1) { edges { node { id status createdAt url staticUrl } } } }`,
+      `query deployments($input: DeploymentListInput!) { deployments(input: $input, first: 1) { edges { node { id status createdAt url staticUrl meta } } } }`,
       { input: { projectId: target.railwayProjectId, serviceId: target.serviceId, environmentId: target.environmentId } },
       fetchImpl,
     )
@@ -418,7 +427,7 @@ export async function getLatestDeploymentWithToken(token: string, tokenType: Rai
   const instance = await railwayGraphQLRequest<ServiceInstanceResult>(
     token,
     tokenType,
-    `query serviceInstance($serviceId: String!, $environmentId: String!) { serviceInstance(serviceId: $serviceId, environmentId: $environmentId) { latestDeployment { id status createdAt url } } }`,
+    `query serviceInstance($serviceId: String!, $environmentId: String!) { serviceInstance(serviceId: $serviceId, environmentId: $environmentId) { latestDeployment { id status createdAt url meta } } }`,
     { serviceId: target.serviceId, environmentId: target.environmentId },
     fetchImpl,
   )

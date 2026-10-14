@@ -20,6 +20,7 @@ import { approvalLinkTtlHours } from './env'
 import { log } from './logger'
 import { orgIdForProject } from './orgs'
 import { listResponsibilities, responsibilityKeyForStage, type ResolutionStatus } from './project-responsibilities'
+import { releaseAtDeliverGate } from './release-gate'
 import { answerPausedRun } from './run-store'
 import { markSlackGatePromptsDecided } from './slack-gate-prompts'
 
@@ -377,6 +378,9 @@ export async function submitSlackDecision(input: {
     approvalLog.warn('slack decision rejected; the gate is no longer waiting', { gateId: input.gateId, reason: result.reason })
     return { ok: false, reason: result.reason === 'archived' ? 'not_waiting' : 'gate_resolved', decision: winning }
   }
+  // The delivery gate's decision is also the release decision, as in the app.
+  await releaseAtDeliverGate({ runId: context.runId, projectId: context.projectId, stage: result.stage, pauseKind: result.pauseKind, approved: input.outcome !== 'request_changes', reason: feedback, actorUserId: input.actorUserId })
+    .catch((error) => approvalLog.warn('release at the delivery gate failed', { gateId: input.gateId, error: error instanceof Error ? error.message : String(error) }))
   const decision = await getDecisionForGate(input.gateId)
   if (!decision) return { ok: false, reason: 'gate_resolved' }
   await markSlackGatePromptsDecided(input.gateId, `Decision recorded: ${input.outcome.replace(/_/g, ' ')}.`)
@@ -607,6 +611,8 @@ export async function submitApprovalDecision(input: {
     approvalLog.warn('approval decision rejected; the gate is no longer waiting', { gateId: request.gateId, reason: result.reason })
     return { ok: false, reason: result.reason === 'archived' ? 'not_waiting' : 'gate_resolved', decision: winning }
   }
+  await releaseAtDeliverGate({ runId: request.runId, projectId: request.projectId, stage: result.stage, pauseKind: result.pauseKind, approved: input.outcome !== 'request_changes', reason: feedback, actorUserId: input.actorUserId ?? verified.link.boundUserId })
+    .catch((error) => approvalLog.warn('release at the delivery gate failed', { gateId: request.gateId, error: error instanceof Error ? error.message : String(error) }))
   const decision = await getDecisionForGate(request.gateId)
   if (!decision) return { ok: false, reason: 'gate_resolved' }
   await markSlackGatePromptsDecided(request.gateId, `Decision recorded: ${input.outcome.replace(/_/g, ' ')}.`)
