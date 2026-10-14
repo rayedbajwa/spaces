@@ -111,8 +111,8 @@ Repository-local tasks for initiative **013-fix-log-open-bottom** (Feature Speci
 ## Delivery and Deployed Acceptance
 - [x] T023 Open a Conventional Commits pull request for branch `013-fix-log-open-bottom` in `rayedbajwa/spaces` (spaces)
 - [x] T024 Get CI green on the pull request — typecheck, frontend build, the browser suites and the full test jobs — in `rayedbajwa/spaces` (spaces)
-- [ ] T025 Get review approval on the pull request, in `rayedbajwa/spaces` (spaces)
-- [ ] T026 Merge the approved pull request into the main branch (after any PR it is stacked on), in `rayedbajwa/spaces` (spaces)
+- [x] T025 Get review approval on the pull request, in `rayedbajwa/spaces` (spaces)
+- [x] T026 Merge the approved pull request into the main branch (after any PR it is stacked on), in `rayedbajwa/spaces` (spaces)
 - [ ] T027 Confirm the deployment pipeline ran (or deploy) and run the deployed-environment acceptance: the `quickstart.md` manual checks across all four run states plus the smoke commands `bun run typecheck` and `bun test tests/agent-bar.e2e.test.ts`; record the result against test-plan.md's acceptance table (spaces), in `specs/013-fix-log-open-bottom/test-plan.md`
 
 **Scoped files**
