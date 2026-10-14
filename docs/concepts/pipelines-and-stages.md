@@ -187,6 +187,22 @@ are read from the requirement traceability table, where any failing row or
 unsatisfied test case marked critical, blocker or P0 counts as critical.
 Accepting is still a person's decision and still asks why.
 
+Accepting is also the recommended step when another implement run would not
+change anything:
+
+- **Nothing is left for an agent.** Verify lists what code can fix under
+  `## Unsatisfied Test Cases`, and what only a person can do under
+  `## Owner-Run Checks`: a signed build on a device, checks that need
+  production or paid keys, a store or console setting, a sign-off. When the
+  first list is empty and nothing critical is open, accept is recommended. The
+  owner-run checks start the acceptance note as a checklist.
+- **Implement changed no code.** After each implement stage Spaces writes
+  `implement-result.md` beside the report: whether any checkout changed outside
+  `specs/`, and which verification report it worked from. While that report is
+  still the current one, a pass that changed nothing means the next one would
+  not either, so accept (or request changes with directions) is recommended,
+  even with critical items open.
+
 ## Development-environment setup
 
 Before `implement`, `orchestrate`, `review` and `verify` (and before parallel

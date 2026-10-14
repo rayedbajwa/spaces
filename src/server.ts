@@ -174,7 +174,8 @@ import { implementationTaskProgress, readTaskProgress } from './lib/run-resume'
 import { isProjectStateFresh, loadProjectStates, markProjectStateStale, saveProjectState } from './lib/project-state'
 import { laneForProject } from './lib/board-drop'
 import { ACCEPTANCE_FILE, readAcceptance, renderAcceptance, type Acceptance } from './lib/acceptance'
-import { acceptanceRecommended, describeSummary, summarizeVerification, type VerificationSummary } from './lib/verification-summary'
+import { acceptanceBasis, describeSummary, summarizeWithProgress, type VerificationSummary } from './lib/verification-summary'
+import { IMPLEMENT_RESULT_FILE } from './lib/implement-progress'
 import { reapAbandonedJobs, reapStrandedRuns } from './lib/job-reaper'
 import { describeGitHubActor, forgetGitHubAppState, githubAppAlive } from './lib/github-app-auth'
 import { resolveVersionMetadata } from './lib/version-metadata'
@@ -4495,8 +4496,16 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   if (!qaDone) {
     // Close enough that another verify run would land in the same place: suggest
     // the person accepts it. Accepting stays their decision and records why.
-    if (acceptanceRecommended(artifacts.verificationStatus, artifacts.verificationSummary)) {
-      return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(artifacts.verificationSummary!)}. Accept it as it stands, or run verify again.` }
+    const basis = acceptanceBasis(artifacts.verificationStatus, artifacts.verificationSummary)
+    if (basis) {
+      const summary = artifacts.verificationSummary!
+      const owner = summary.ownerChecks?.length ? ` ${summary.ownerChecks.length} check${summary.ownerChecks.length === 1 ? '' : 's'} only a person can run: they are your checklist when you accept.` : ''
+      const why = basis === 'stalled'
+        ? 'The last implement changed no code for this report, so running it again would land in the same place. Accept it as it stands, or request changes with directions.'
+        : basis === 'nothing_for_agent'
+          ? 'Nothing is left for an agent to fix: what remains needs a person.'
+          : 'Accept it as it stands, or run verify again.'
+      return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `Verification ${artifacts.verificationStatus}: ${describeSummary(summary)}. ${why}${owner}`, ...(summary.ownerChecks?.length ? { checklist: summary.ownerChecks } : {}) }
     }
     if (artifacts.verificationStatus === 'missing') return { step: 'verify', label: 'Run verify', tab: 'qa', reason: 'Code review approved. QA comes next.' }
     return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Verification ${artifacts.verificationStatus}${artifacts.verificationSummary ? ` (${describeSummary(artifacts.verificationSummary)})` : ''}. Implement fixes what it flagged, then reviews and verifies again.` }
@@ -4686,7 +4695,7 @@ async function collectProjectArtifacts(projectNamespace: string, projectRoot: st
     const reportPath = join(projectRoot, `${latestFeature.relativePath}/verification-report.md`)
     flags.verificationStatus = await getVerificationStatus(reportPath)
     flags.verifiedPass = flags.verificationStatus === 'pass'
-    flags.verificationSummary = summarizeVerification(await readTextIfExists(reportPath))
+    flags.verificationSummary = summarizeWithProgress(await readTextIfExists(reportPath), await readTextIfExists(join(projectRoot, `${latestFeature.relativePath}/${IMPLEMENT_RESULT_FILE}`)))
   }
   // Releasing: the code review and the delivery each leave a report with a status line.
   if (await pushArtifactIfExists(links, projectNamespace, projectRoot, `${latestFeature.relativePath}/code-review.md`, 'Review', `${featurePrefix} code review`)) {
@@ -5762,6 +5771,8 @@ interface RecommendedActionRecord {
   /** Deliver opens the Releasing tab; review and verify open QA. */
   tab: GateReadinessRecord['tab'] | 'releasing'
   reason: string
+  /** Checks only a person can run, offered as the acceptance note (accept only). */
+  checklist?: string[]
 }
 
 interface BoardCard {

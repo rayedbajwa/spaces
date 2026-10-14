@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { acceptanceRecommended, describeSummary, summarizeVerification } from '../src/lib/verification-summary'
+import { acceptanceBasis, acceptanceRecommended, describeSummary, summarizeVerification, summarizeWithProgress } from '../src/lib/verification-summary'
+import { renderImplementResult } from '../src/lib/implement-progress'
 import { isEligibleDrop } from '../src/lib/board-drop'
 
 /**
@@ -33,13 +34,13 @@ describe('summarizeVerification', () => {
   test('falls back to the traceability table for older reports', () => {
     const statuses = [...Array(24).fill('PASS'), 'PARTIAL']
     const report = `Verification Status: PARTIAL\n\n${table(statuses)}\n## Unsatisfied Test Cases\n\n- [T-25] browser flow — cannot run headless here\n`
-    expect(summarizeVerification(report)).toEqual({ met: 24, total: 25, criticalOpen: 0 })
+    expect(summarizeVerification(report)).toEqual({ met: 24, total: 25, criticalOpen: 0, agentOpen: 1 })
   })
 
   test('counts failing rows and critical unsatisfied cases as critical in the fallback', () => {
     const statuses = [...Array(30).fill('PASS'), 'FAIL']
     const report = `Verification Status: FAIL\n\n${table(statuses)}\n## Unsatisfied Test Cases\n\n- [T-40] login — critical: session lost on refresh\n- [T-41] tooltip copy — minor\n`
-    expect(summarizeVerification(report)).toEqual({ met: 30, total: 31, criticalOpen: 2 })
+    expect(summarizeVerification(report)).toEqual({ met: 30, total: 31, criticalOpen: 2, agentOpen: 2 })
   })
 
   test('returns undefined when the report gives no numbers at all', () => {
@@ -73,5 +74,59 @@ describe('acceptanceRecommended', () => {
 
   test('the Releasing lane takes a card whose next step is accept', () => {
     expect(isEligibleDrop({ recommendedAction: { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: '' } }, 'releasing')).toBe(true)
+  })
+})
+
+describe('when another implement run would not help', () => {
+  // DEFA-4: far below 95%, but everything left needs a person.
+  const report = [
+    'Verification Status: PARTIAL',
+    'Acceptance Criteria Met: 12/40',
+    'Critical Issues Open: 0',
+    '',
+    '## Unsatisfied Test Cases',
+    '',
+    '- (none)',
+    '',
+    '## Owner-Run Checks',
+    '',
+    '- Signed beta build installed on a device — needs the signing keys and a phone',
+    '- Stripe checkout with live keys — production credentials',
+    '',
+    '## Missing Tests',
+  ].join('\n')
+
+  test('reads the owner-run checks and that nothing is left for an agent', () => {
+    expect(summarizeVerification(report)).toEqual({
+      met: 12, total: 40, criticalOpen: 0, agentOpen: 0,
+      ownerChecks: ['Signed beta build installed on a device — needs the signing keys and a phone', 'Stripe checkout with live keys — production credentials'],
+    })
+  })
+
+  test('recommends accepting when nothing is left for an agent', () => {
+    expect(acceptanceBasis('partial', summarizeVerification(report))).toBe('nothing_for_agent')
+  })
+
+  test('items left for an agent keep implement as the next step', () => {
+    const open = report.replace('- (none)', '- [T-9] refund flow — returns 500')
+    expect(acceptanceRecommended('partial', summarizeVerification(open))).toBe(false)
+  })
+
+  test('a report without the section is read as before', () => {
+    expect(summarizeVerification('Verification Status: PARTIAL\nAcceptance Criteria Met: 12/40\nCritical Issues Open: 0\n')?.agentOpen).toBeUndefined()
+    expect(acceptanceRecommended('partial', summarizeVerification('Verification Status: PARTIAL\nAcceptance Criteria Met: 12/40\nCritical Issues Open: 0\n'))).toBe(false)
+  })
+
+  test('implement that changed no code for this report stalls it, even with items open', () => {
+    const open = report.replace('- (none)', '- [T-9] refund flow — critical: returns 500').replace('Critical Issues Open: 0', 'Critical Issues Open: 1')
+    const noop = renderImplementResult({ changed: false, verificationReport: open })
+    expect(summarizeWithProgress(open, noop)?.stalled).toBe(true)
+    expect(acceptanceBasis('partial', summarizeWithProgress(open, noop))).toBe('stalled')
+  })
+
+  test('a newer report, or an implement that changed code, is not stalled', () => {
+    const noop = renderImplementResult({ changed: false, verificationReport: report })
+    expect(summarizeWithProgress(report.replace('12/40', '13/40'), noop)?.stalled).toBeUndefined()
+    expect(summarizeWithProgress(report, renderImplementResult({ changed: true, verificationReport: report }))?.stalled).toBeUndefined()
   })
 })

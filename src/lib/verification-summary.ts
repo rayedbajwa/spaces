@@ -16,13 +16,28 @@
  * Reports written before those lines existed fall back to the requirement
  * traceability table (rows whose status is PASS, out of all rows) and to the
  * unsatisfied test cases and failing rows for anything critical.
+ *
+ * Some of what is left can only be done by a person: a signed build on a
+ * device, a check with production keys, a sign-off. Verify lists those under
+ * `## Owner-Run Checks`, apart from `## Unsatisfied Test Cases` (what an agent
+ * can fix). When nothing is left for an agent, or implement changed no code
+ * for the report it was given (lib/implement-progress.ts), running implement
+ * again only lands in the same place, so accepting is suggested instead.
  */
+
+import { implementStalled } from './implement-progress'
 
 export interface VerificationSummary {
   met: number
   total: number
   /** Failures or gaps the report marks critical (or blocker / P0 / high severity). */
   criticalOpen: number
+  /** Checks only a person can run, from `## Owner-Run Checks`; absent on older reports. */
+  ownerChecks?: string[]
+  /** Items under `## Unsatisfied Test Cases` for an agent to fix; absent when the section is missing. */
+  agentOpen?: number
+  /** Implement ran against this very report and changed no code (lib/implement-progress.ts). */
+  stalled?: boolean
 }
 
 /** More than this share of criteria must be met before accepting is suggested. */
@@ -82,20 +97,65 @@ export function summarizeVerification(markdown: string): VerificationSummary | u
     criticalOpen = failing + unsatisfied
   }
 
-  return { met: Math.min(met, total), total, criticalOpen }
+  const ownerChecks = bullets(section(markdown, /owner[- ]run checks/i))
+  const unsatisfied = section(markdown, /unsatisfied test cases/i)
+  const agentOpen = /^##\s.*unsatisfied test cases/im.test(markdown) ? bullets(unsatisfied).length : undefined
+  return {
+    met: Math.min(met, total),
+    total,
+    criticalOpen,
+    ...(ownerChecks.length ? { ownerChecks } : {}),
+    ...(agentOpen !== undefined ? { agentOpen } : {}),
+  }
+}
+
+/**
+ * The report's summary, marked stalled when implement-result.md says the last
+ * implement changed no code for this very report.
+ */
+export function summarizeWithProgress(report: string, implementResult: string | undefined): VerificationSummary | undefined {
+  const summary = summarizeVerification(report)
+  return summary && implementStalled(report, implementResult) ? { ...summary, stalled: true } : summary
+}
+
+/** The bullet items of a section, without `(none)`. */
+function bullets(body: string): string[] {
+  return body.split('\n')
+    .map((line) => /^\s*[-*]\s+(.*\S)\s*$/.exec(line)?.[1])
+    .filter((item): item is string => Boolean(item) && !/^\(?none\)?\.?$/i.test(item!))
 }
 
 /**
  * Accepting is the suggested next step when verification did not pass but
- * came close: more than 95% of criteria met and nothing critical left open.
+ * another implement run would not change that:
+ * - it came close: more than 95% of criteria met and nothing critical open;
+ * - nothing is left for an agent: the unsatisfied test cases are empty and
+ *   nothing critical is open (what remains is owner-run or environment-only);
+ * - implement ran against this report and changed no code (stalled). This
+ *   holds even with critical items open: the decision is then a person's,
+ *   to accept or to request changes with directions.
  */
 export function acceptanceRecommended(
   status: 'pass' | 'partial' | 'fail' | 'missing',
   summary: VerificationSummary | undefined,
 ): boolean {
-  if (status !== 'partial' && status !== 'fail') return false
-  if (!summary || summary.total === 0) return false
-  return summary.criticalOpen === 0 && summary.met / summary.total > ACCEPT_THRESHOLD
+  return acceptanceBasis(status, summary) !== undefined
+}
+
+export type AcceptanceBasis = 'near_pass' | 'nothing_for_agent' | 'stalled'
+
+/** Why accepting is suggested, or undefined when it is not (see acceptanceRecommended). */
+export function acceptanceBasis(
+  status: 'pass' | 'partial' | 'fail' | 'missing',
+  summary: VerificationSummary | undefined,
+): AcceptanceBasis | undefined {
+  if (status !== 'partial' && status !== 'fail') return undefined
+  if (!summary || summary.total === 0) return undefined
+  if (summary.stalled) return 'stalled'
+  if (summary.criticalOpen !== 0) return undefined
+  if (summary.met / summary.total > ACCEPT_THRESHOLD) return 'near_pass'
+  if (summary.agentOpen === 0) return 'nothing_for_agent'
+  return undefined
 }
 
 export function describeSummary(summary: VerificationSummary): string {

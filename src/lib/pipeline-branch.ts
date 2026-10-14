@@ -81,8 +81,11 @@ export async function readVerificationNearPass(cwd: string): Promise<'true' | 'f
   if (!report) return undefined
   const status = /Verification Status:\s*\**\s*(PASS|FAIL|PARTIAL)/i.exec(report)?.[1]?.toLowerCase() as 'pass' | 'fail' | 'partial' | undefined
   if (!status) return undefined
-  const { acceptanceRecommended, summarizeVerification } = await import('./verification-summary')
-  return acceptanceRecommended(status, summarizeVerification(report)) ? 'true' : 'false'
+  // Close enough, nothing left for an agent, or implement changed nothing for this report.
+  const { acceptanceRecommended, summarizeWithProgress } = await import('./verification-summary')
+  const { IMPLEMENT_RESULT_FILE } = await import('./implement-progress')
+  const progress = await readFile(join(specsDir, latest, IMPLEMENT_RESULT_FILE), 'utf8').catch(() => undefined)
+  return acceptanceRecommended(status, summarizeWithProgress(report, progress)) ? 'true' : 'false'
 }
 
 /**

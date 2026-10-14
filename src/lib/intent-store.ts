@@ -14,7 +14,8 @@ import { orgIdForProject } from './orgs'
 import { emitOutboundEventQuietly } from './outbound-store'
 import { attachIntentToPendingWorkLink } from './intake-store'
 import { implementationTaskProgress, parseTaskProgress } from './run-resume'
-import { summarizeVerification, type VerificationSummary } from './verification-summary'
+import { summarizeWithProgress, type VerificationSummary } from './verification-summary'
+import { IMPLEMENT_RESULT_FILE } from './implement-progress'
 
 /**
  * Intents in the database: the record of what a project has built and where
@@ -137,7 +138,7 @@ export function summarizeIntent(dirId: string, docs: Map<string, string>) {
     status,
     codeReviewStatus: review ? (/^approved$/i.test(review) ? 'approved' as const : 'changes_requested' as const) : null,
     verificationStatus: verification ?? null,
-    verificationSummary: text('verification-report.md') ? summarizeVerification(text('verification-report.md')!) ?? null : null,
+    verificationSummary: text('verification-report.md') ? summarizeWithProgress(text('verification-report.md')!, text(IMPLEMENT_RESULT_FILE)) ?? null : null,
     deliveryStatus: delivery ?? null,
     acceptedBy: acceptance?.acceptedBy ?? null,
     acceptedAt: acceptance?.acceptedAt ?? null,
