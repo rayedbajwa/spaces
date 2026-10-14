@@ -17,6 +17,7 @@ import { getDefaultOrgId, orgIdForProject } from './orgs'
 import { resolveResponsibility } from './project-responsibilities'
 import { listAppIntegrations } from './app-integrations'
 import { listRepos } from './project-registry'
+import { getBranchHeadSha } from './github'
 import {
   getLatestDeployment,
   listRailwayTargets,
@@ -25,6 +26,7 @@ import {
   targetRef,
   RailwayError,
   type NormalizedDeploymentStatus,
+  type RailwayDeployment,
   type RailwayTargetRef,
   type RailwayWorkspaceTargets,
 } from './railway'
@@ -419,6 +421,8 @@ export async function refreshDeploymentStatus(projectId: string, options: Refres
     return { status: { state: 'unknown', railwayStatus: null, serviceUrl: null, lastDeployedAt: null, deploymentUrl: null, linkState: 'valid' }, history: [], markdown, generatedAt }
   }
 
+  // A release in flight is settled first, so the status and history agree.
+  if (!options.skipRemote) await reconcileProjectDeployments(projectId).catch(() => undefined)
   const history = await listDeploymentRecords(projectId)
   if (!options.skipRemote && target.linkState !== 'invalid') {
     try {
@@ -608,6 +612,8 @@ export interface DecideReleaseInput {
   decision: 'approved' | 'rejected'
   reason?: string
   actorUserId?: string | null
+  /** The commit at a branch's tip; GitHub by default (tests pass their own). */
+  branchHead?: (repo: string, branch: string | null) => Promise<string | undefined>
 }
 
 export interface DecideReleaseResult {
@@ -618,6 +624,23 @@ export interface DecideReleaseResult {
   approval?: DeploymentApprovalRow
   error?: string
   code?: string
+  /** Approved while the target already ran the tip of its branch: recorded, nothing redeployed. */
+  alreadyLive?: { commitHash: string; branch: string | null }
+}
+
+/**
+ * The target's latest deployment when it is live on the tip of the branch it
+ * deploys from. A service that deploys on push already runs the merged work,
+ * so there is nothing to release. The commit must match exactly; anything
+ * unknown (no GitHub source, GitHub unreachable) answers undefined.
+ */
+async function liveOnBranchTip(target: DeploymentTargetRow, projectId: string, branchHead?: DecideReleaseInput['branchHead']): Promise<RailwayDeployment | undefined> {
+  const deployment = await getLatestDeployment(target.orgId, targetRef(target)).catch(() => undefined)
+  if (!deployment || deployment.status !== 'success' || !deployment.commitHash) return undefined
+  const repo = deployment.repo ?? (await listRepos(projectId).catch(() => [])).find((r) => r.isPrimary && r.githubRepo)?.githubRepo
+  if (!repo) return undefined
+  const head = await (branchHead ?? ((r, b) => getBranchHeadSha(target.orgId, r, b)))(repo, deployment.branch).catch(() => undefined)
+  return head && head === deployment.commitHash ? deployment : undefined
 }
 
 /**
@@ -639,6 +662,27 @@ export async function decideRelease(input: DecideReleaseInput): Promise<DecideRe
   const authority = await releaseAuthorityFor(input.projectId, input.actorUserId)
   if (!authority.allowed) {
     return { ok: false, decision: input.decision, status: 'blocked', code: 'not_authorized', error: authority.reason ?? 'You are not authorized to approve a release.' }
+  }
+
+  // Already live on the tip of its branch (a service that deploys on push, after
+  // the merge): the approval records that release. Observing needs no deploy
+  // rights, so this holds for an OAuth connection too.
+  const live = input.decision === 'approved' && !(await findLiveRecord(input.runId, target.targetId))
+    ? await liveOnBranchTip(target, input.projectId, input.branchHead)
+    : undefined
+  if (live) {
+    const approval = await insertApproval(sql, { ...input, targetId: target.targetId, approverRole: authority.role ?? 'unknown' })
+    const [record] = await sql<DeploymentRecordRow[]>`
+      INSERT INTO deployment_records (deployment_id, project_id, target_id, run_id, approval_id, status, requested_by, triggered_at, completed_at,
+        railway_deployment_id, railway_status, service_url, deployment_url)
+      VALUES (${randomUUID()}, ${input.projectId}, ${target.targetId}, ${input.runId}, ${approval.approvalId}, 'success', ${input.actorUserId ?? null}, now(), now(),
+        ${live.id}, ${live.railwayStatus}, ${live.serviceUrl}, ${live.deploymentUrl})
+      ON CONFLICT (run_id, target_id) WHERE status <> 'rejected' DO NOTHING
+      RETURNING ${sql.unsafe(RECORD_COLS)}
+    `
+    const stored = record ?? await findLiveRecord(input.runId, target.targetId)
+    deploymentLog.info('release recorded; target already live on its branch tip', { projectId: input.projectId, targetId: target.targetId, commit: live.commitHash })
+    return { ok: true, decision: 'approved', status: stored?.status ?? 'success', record: stored, approval, alreadyLive: { commitHash: live.commitHash!, branch: live.branch } }
   }
 
   // OAuth connections request only viewer scopes, so they can observe but never
@@ -772,6 +816,18 @@ export async function reconcileDeployment(deploymentId: string): Promise<Reconci
 export async function reconcileProjectDeployments(projectId: string): Promise<void> {
   const sql = getDb()
   const rows = await sql<Array<{ deploymentId: string }>>`SELECT deployment_id AS "deploymentId" FROM deployment_records WHERE project_id = ${projectId} AND status = 'in_progress'`
+  for (const row of rows) await reconcileDeployment(row.deploymentId).catch(() => undefined)
+}
+
+/**
+ * Reconcile every in-progress release. A release outlives the run that approved
+ * it, and nothing else asks Railway again until the next deliver or review
+ * stage, so the board would show it in progress for ever. The server runs this
+ * every minute.
+ */
+export async function reconcileInFlightDeployments(): Promise<void> {
+  const sql = getDb()
+  const rows = await sql<Array<{ deploymentId: string }>>`SELECT deployment_id AS "deploymentId" FROM deployment_records WHERE status = 'in_progress'`
   for (const row of rows) await reconcileDeployment(row.deploymentId).catch(() => undefined)
 }
 

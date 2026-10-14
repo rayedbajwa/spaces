@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto'
 import { closeDb, getDb } from '../src/lib/db'
 import { createProject } from '../src/lib/project-registry'
 import { upsertAppIntegration } from '../src/lib/app-integrations'
-import { decideRelease, linkDeploymentTarget, reconcileDeployment, releaseAuthorityFor } from '../src/lib/deployment'
+import { decideRelease, linkDeploymentTarget, reconcileDeployment, reconcileInFlightDeployments, releaseAuthorityFor } from '../src/lib/deployment'
+import { describeOutcome } from '../src/lib/release-gate'
 import { defaultMockRailway, startMockRailway, type MockRailwayServer } from './helpers/mock-railway'
 
 async function databaseReachable(): Promise<boolean> {
@@ -166,5 +167,47 @@ suite('Release approval and exactly-once deployment', () => {
     const [row] = await sql<Array<{ completedAt: string; railwayDeploymentId: string }>>`SELECT completed_at AS "completedAt", railway_deployment_id AS "railwayDeploymentId" FROM deployment_records WHERE deployment_id = ${result.record!.deploymentId}`
     expect(row!.completedAt).toBeTruthy()
     expect(row!.railwayDeploymentId).toBeTruthy()
+  })
+  test('TC-APPR-009: approving while the target already runs its branch tip records the release without redeploying', async () => {
+    const runId = await newRunId()
+    mock.state.deployments['svc-1:env-1'] = { id: 'dep-push', status: 'SUCCESS', createdAt: new Date().toISOString(), staticUrl: 'https://acme-web.up.railway.app', meta: { commitHash: 'abc1234def', branch: 'main', repo: 'acme/web' } }
+    const asked: string[] = []
+    const result = await decideRelease({ runId, projectId, decision: 'approved', actorUserId: ownerId, branchHead: async (repo, branch) => { asked.push(`${repo}@${branch}`); return 'abc1234def' } })
+    expect(result.ok).toBe(true)
+    expect(result.status).toBe('success')
+    expect(result.alreadyLive).toEqual({ commitHash: 'abc1234def', branch: 'main' })
+    expect(asked).toEqual(['acme/web@main'])
+    expect(mock.state.triggerCount).toBe(0)
+    const [record] = await sql<Array<{ status: string; railwayDeploymentId: string; completedAt: string }>>`SELECT status, railway_deployment_id AS "railwayDeploymentId", completed_at AS "completedAt" FROM deployment_records WHERE run_id = ${runId}`
+    expect(record!.status).toBe('success')
+    expect(record!.railwayDeploymentId).toBe('dep-push')
+    expect(record!.completedAt).toBeTruthy()
+    expect(describeOutcome(result)).toContain('abc1234')
+  })
+
+  test('TC-APPR-010: a target behind its branch tip is deployed as before', async () => {
+    const runId = await newRunId()
+    mock.state.deployments['svc-1:env-1'] = { id: 'dep-old', status: 'SUCCESS', createdAt: new Date().toISOString(), meta: { commitHash: 'old0000', branch: 'main', repo: 'acme/web' } }
+    const result = await decideRelease({ runId, projectId, decision: 'approved', actorUserId: ownerId, branchHead: async () => 'new1111' })
+    expect(result.ok).toBe(true)
+    expect(result.status).toBe('in_progress')
+    expect(result.alreadyLive).toBeUndefined()
+    expect(mock.state.triggerCount).toBe(1)
+  })
+
+  test('TC-APPR-011: the in-flight sweep settles a release after its run has ended', async () => {
+    const runId = await newRunId()
+    mock.state.deployments['svc-1:env-1'] = { id: 'dep-1', status: 'SUCCESS', createdAt: new Date().toISOString() }
+    const result = await decideRelease({ runId, projectId, decision: 'approved', actorUserId: ownerId })
+    expect(result.status).toBe('in_progress')
+    mock.state.deployments['svc-1:env-1'] = { id: 'dep-built', status: 'SUCCESS', createdAt: new Date().toISOString() }
+    await reconcileInFlightDeployments()
+    const [record] = await sql<Array<{ status: string }>>`SELECT status FROM deployment_records WHERE deployment_id = ${result.record!.deploymentId}`
+    expect(record!.status).toBe('success')
+  })
+
+  test('TC-APPR-012: a release that was not started says why', () => {
+    expect(describeOutcome({ ok: false, decision: 'approved', status: 'blocked', code: 'oauth_observation_only', error: 'Railway was connected with OAuth, which is observation-only.' }))
+      .toBe('The release was not started, so the intent stays in Releasing: Railway was connected with OAuth, which is observation-only.')
   })
 })

@@ -22,6 +22,8 @@ export interface MockRailwayDeployment {
   createdAt: string
   staticUrl?: string
   url?: string
+  /** What Railway reports for a service deployed from GitHub. */
+  meta?: { commitHash?: string; branch?: string; repo?: string }
 }
 
 export interface MockRailwayState {

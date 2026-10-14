@@ -25,7 +25,8 @@ import { configuredProvidersFor, deleteProviderKey, importProviderKeysFromEnv, i
 import { createOrganization, getDefaultOrgId, getOrganization, listOrganizations, orgIdForProject, orgIdForProjectSlug } from './lib/orgs'
 import { disconnectAppIntegration, getAppIntegration, getAppIntegrationCredentials, listAppIntegrations, upsertAppIntegration, type AppIntegrationKind } from './lib/app-integrations'
 import { verifyRailwayCredential, type RailwayTokenType } from './lib/railway'
-import { decideRelease, DeploymentTargetError, getDeploymentSuggestion, getDeploymentTarget, getProjectDeployment, getProjectDeployments, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, setMergeOnlyDelivery, unlinkDeploymentTarget, type DecideReleaseResult, type ProjectDeploymentView } from './lib/deployment'
+import { DeploymentTargetError, getDeploymentSuggestion, getDeploymentTarget, getProjectDeployment, getProjectDeployments, linkDeploymentTarget, listAccessibleTargets, refreshDeploymentStatus, releaseAuthorityFor, setMergeOnlyDelivery, unlinkDeploymentTarget, type ProjectDeploymentView } from './lib/deployment'
+import { releaseAtDeliverGate } from './lib/release-gate'
 import { listLiveWorkers } from './lib/worker-registry'
 import type { ToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { AssistantChatTurn } from './lib/aidlc'
@@ -265,9 +266,12 @@ if (!isProjectRole()) void (async () => {
 {
   const sweep = () => reapAbandonedJobs().then(() => reapStrandedRuns())
     .catch((error) => serverLog.warn('abandoned job sweep failed', { error: error instanceof Error ? error.message : String(error) }))
+  // A release outlives the run that approved it; Railway is asked until it settles.
+  const releases = () => import('./lib/deployment').then((m) => m.reconcileInFlightDeployments())
+    .catch((error) => serverLog.warn('release reconciliation failed', { error: error instanceof Error ? error.message : String(error) }))
   if (!isProjectRole()) {
     void sweep()
-    setInterval(() => { void sweep() }, 60_000)
+    setInterval(() => { void sweep(); void releases() }, 60_000)
   }
 }
 // Older projects get their readable code (TEAM-N) on first boot after the upgrade.
@@ -3372,21 +3376,10 @@ async function route(req: Request): Promise<Response> {
     if (!answered.ok) {
       return sendJson(409, { error: answered.reason === 'archived' ? 'This project is archived. Unarchive it before continuing the run.' : 'Run is not waiting for input.' })
     }
-    // The delivery step's existing human gate is the release approval. For a linked
-    // project, resolving it triggers exactly one Railway deployment (or records a
-    // rejection) through deterministic code — never the agent. A run with no gate
-    // decision (autonomous mode, unlinked project) never reaches Railway.
-    if (answered.stage === 'deliver' && answered.pauseKind === 'review') {
-      const approved = gateApproved
-      const outcome = await decideRelease({
-        runId,
-        projectId: row.projectId,
-        decision: approved ? 'approved' : 'rejected',
-        reason: approved ? undefined : answer,
-        actorUserId: auth?.user.userId ?? null,
-      }).catch((error): DecideReleaseResult => ({ ok: false, decision: approved ? 'approved' : 'rejected', status: 'blocked', error: error instanceof Error ? error.message : String(error) }))
-      await dbAppendEvent({ runId, kind: 'deployment_outcome', payload: { decision: outcome.decision, status: outcome.status, ...(outcome.record ? { deploymentId: outcome.record.deploymentId, targetId: outcome.record.targetId } : {}), ...(outcome.error ? { error: outcome.error } : {}) } }).catch(() => undefined)
-    }
+    // The delivery step's existing human gate is the release approval
+    // (lib/release-gate.ts). A run with no gate decision (autonomous mode,
+    // unlinked project) never reaches Railway.
+    await releaseAtDeliverGate({ runId, projectId: row.projectId, stage: answered.stage, pauseKind: answered.pauseKind, approved: gateApproved, reason: answer, actorUserId: auth?.user.userId ?? null })
     const refreshed = await dbGetRun(runId)
     return sendJson(202, await snapshotFromRow(refreshed ?? row))
   }
