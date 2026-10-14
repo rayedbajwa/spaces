@@ -953,6 +953,8 @@ export class AIDLCFlow {
     // of the prompt. Each checkout is still pointed at the assigned database before
     // a code stage runs, so a migration cannot land on the application's own.
     if (CODE_STAGES.includes(stage)) await this.prepareCheckouts()
+    // Whether implement changes any code, for the report it works from (lib/implement-progress.ts).
+    const implementStart = stage === 'implement' ? await this.implementProgressStart().catch(() => undefined) : undefined
     // A note left by a review that sent the run back here: the findings to work through.
     const note = this.pendingStageNote
     this.pendingStageNote = undefined
@@ -985,6 +987,7 @@ export class AIDLCFlow {
     // Whatever the stage wrote into the implementation checkouts is committed on
     // the feature branch, so it is attributable and survives an interruption.
     await this.commitStageWork(stage)
+    if (implementStart) await this.recordImplementProgress(implementStart).catch((error) => this.print(`[progress] could not record whether implement changed code (${error instanceof Error ? error.message : String(error)}).\n`))
 
     // Notify PipelineEngine so it can capture handoff for downstream stages.
     if (this.options.afterStageComplete) {
@@ -1286,6 +1289,32 @@ export class AIDLCFlow {
    * write over it. One commit per stage keeps it attributable and recoverable.
    * Nothing is pushed here — publishing stays with the delivery stage.
    */
+  /** The checkouts' branches and the verification report, before implement runs. */
+  private async implementProgressStart(): Promise<{ paths: string[]; snapshot: import('./implement-progress').CheckoutSnapshot; report?: string }> {
+    const { snapshotCheckouts } = await import('./implement-progress')
+    const targets = (this.options.repoTargets ?? []).map((t) => t.localPath).filter(Boolean)
+    const paths = [...new Set((targets.length ? targets : [this.options.cwd]).map((p) => path.resolve(p)))]
+    const featureDir = await findLatestFeatureDirAbsolute(this.options.cwd)
+    const report = featureDir ? await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => undefined) : undefined
+    return { paths, snapshot: snapshotCheckouts(paths), report }
+  }
+
+  /**
+   * Write implement-result.md: whether this implement changed code, against which
+   * verification report. A pass that changed nothing for the current report is
+   * what turns the board's next step from implement to accept.
+   */
+  private async recordImplementProgress(start: { paths: string[]; snapshot: import('./implement-progress').CheckoutSnapshot; report?: string }): Promise<void> {
+    const { IMPLEMENT_RESULT_FILE, codeChanged, renderImplementResult, snapshotCheckouts } = await import('./implement-progress')
+    const featureDir = await findLatestFeatureDirAbsolute(this.options.cwd)
+    if (!featureDir) return
+    const changed = codeChanged(start.snapshot, snapshotCheckouts(start.paths))
+    await fs.writeFile(path.join(featureDir, IMPLEMENT_RESULT_FILE), renderImplementResult({ changed, verificationReport: start.report }))
+    if (!changed && start.report) {
+      this.print('\n[progress] Implement changed no code for what verification flagged. Running it again would land in the same place, so the next step is a person\'s: accept the intent as it stands, or request changes with directions.\n')
+    }
+  }
+
   private async commitStageWork(stage: StageName): Promise<void> {
     if (!CODE_STAGES.includes(stage)) return
     await this.syncIntentDocumentsToImplementationRepos(stage)
@@ -3158,7 +3187,8 @@ Requirements:
 - The report must cover:
   1. Test execution: command run, pass/fail counts, duration
   2. Requirement-by-requirement verification status (traceability table: requirement id → test id → pass/fail)
-  3. **Unsatisfied test cases** — a section titled exactly \`## Unsatisfied Test Cases\` containing a bulleted list. Each bullet has the form \`- [TEST_ID] <name> — <one-line reason>\`. This section MUST exist even if empty (write \`- (none)\` when nothing is unsatisfied). Downstream loop-back implementations read this section to know what to fix.
+  3. **Unsatisfied test cases** — a section titled exactly \`## Unsatisfied Test Cases\` containing a bulleted list. Each bullet has the form \`- [TEST_ID] <name> — <one-line reason>\`. This section MUST exist even if empty (write \`- (none)\` when nothing is unsatisfied). Downstream loop-back implementations read this section to know what to fix, so list only what an agent can fix with code, tests or configuration in the repository.
+  3b. **Owner-run checks** — a section titled exactly \`## Owner-Run Checks\` listing what only a person can do: a signed build installed on a device, checks that need production or paid credentials (payment, push, analytics keys), a third-party console or store setting, a manual sign-off. One bullet each, \`- <check> — <why it needs a person>\`; write \`- (none)\` when there are none. Never list these under Unsatisfied Test Cases: implement cannot do them, and the board offers them to the person as their checklist when they accept.
   4. Missing tests — tests the spec calls for but that are not present in the codebase
   5. Remaining defects, risks, and unknowns
   6. Release readiness recommendation

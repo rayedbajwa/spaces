@@ -173,6 +173,8 @@ type BoardCard = {
     label: string
     tab: ProjectModalTab
     reason: string
+    /** Checks only a person can run; the acceptance note starts with them. */
+    checklist?: string[]
   }
   artifactLinks: BoardArtifactLink[]
   archivedAt?: string
@@ -1912,7 +1914,7 @@ function App() {
   async function acceptFeature(card: BoardCard, presetNote?: string) {
     const note = presetNote ?? window.prompt(
       `Accept ${card.projectLabel} with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the intent's acceptance record.`,
-      '',
+      acceptanceChecklistNote(card.recommendedAction?.checklist),
     )
     if (note === null) return
     try {
@@ -2649,6 +2651,7 @@ function App() {
                 {selectedCardFresh.recommendedAction.step === 'accept' ? (
                   <AcceptDecision
                     busy={busy}
+                    checklist={selectedCardFresh.recommendedAction.checklist}
                     onAccept={(note) => void acceptFeature(selectedCardFresh, note)}
                     onRequestChanges={(notes) => void requestChanges(selectedCardFresh, notes)}
                   />
@@ -3733,7 +3736,7 @@ function App() {
                 if (rec.step === 'specify' && selectedCardFresh.status === 'done') {
                   return { step: 'specify', label: 'Start a new intent.', reason: `${rec.reason} Describe the next intent; it gets its own spec, plan, tasks and pull requests.` }
                 }
-                return { step: rec.step, label: `${rec.label}.`, reason: rec.reason }
+                return { step: rec.step, label: `${rec.label}.`, reason: rec.reason, checklist: rec.checklist }
               })()}
               onRunNext={(step) => void executeStep(step, mapStageToTab(step))}
               onAccept={(note) => void acceptFeature(selectedCardFresh!, note)}
@@ -4305,13 +4308,19 @@ function useStreamSettled(log: string | undefined, waiting: boolean, quietMs = 9
   return settled
 }
 
+/** The acceptance note for checks only a person can run: one unticked box each. */
+function acceptanceChecklistNote(checklist?: string[]): string {
+  return checklist?.length ? `Accepted with these checks left for a person:\n${checklist.map((item) => `- [ ] ${item}`).join('\n')}` : ''
+}
+
 /**
  * "Accept and finish" as a decision: accept the intent as it stands (the note
  * is recorded with the acceptance), or request changes (the notes go to
  * implement, which then reviews and verifies again).
  */
-function AcceptDecision({ busy, onAccept, onRequestChanges }: { busy?: boolean; onAccept: (note: string) => void; onRequestChanges: (notes: string) => void }) {
-  const [notes, setNotes] = useState('')
+function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?: boolean; checklist?: string[]; onAccept: (note: string) => void; onRequestChanges: (notes: string) => void }) {
+  // What only a person can check starts the note, so accepting records it as their to-do list.
+  const [notes, setNotes] = useState(() => acceptanceChecklistNote(checklist))
   return (
     <div className="accept-decision">
       <textarea
@@ -4348,7 +4357,7 @@ function AiAgentOutputBar({
   busy,
 }: {
   currentRun: RunSnapshot | null
-  nextStep?: { step: string; label: string; reason?: string }
+  nextStep?: { step: string; label: string; reason?: string; checklist?: string[] }
   onRunNext?: (step: string) => void
   /** Next step is "Accept and finish": accept with a note, or send notes back to implement. */
   onAccept?: (note: string) => void
@@ -4682,7 +4691,7 @@ function AiAgentOutputBar({
         </div>
       )}
       {expanded && nextStep?.step === 'accept' && !isActive && !canAnswer && onAccept && onRequestChanges && (
-        <AcceptDecision busy={busy || runInFlight} onAccept={onAccept} onRequestChanges={onRequestChanges} />
+        <AcceptDecision busy={busy || runInFlight} checklist={nextStep.checklist} onAccept={onAccept} onRequestChanges={onRequestChanges} />
       )}
       </div>
     </section>
