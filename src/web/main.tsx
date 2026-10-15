@@ -2989,7 +2989,7 @@ function App() {
                         key={j.jobId}
                         type="button"
                         className="diff-chip"
-                        style={{ cursor: j.runId ? 'pointer' : 'default', background: 'transparent', border: '1px solid #e5e7eb', textAlign: 'left', width: '100%' }}
+                        style={{ cursor: j.runId ? 'pointer' : 'default', background: 'transparent', border: '1px solid var(--border)', textAlign: 'left', width: '100%' }}
                         disabled={!j.runId}
                         title={j.runId ? `Load log for run ${j.runId.slice(0, 8)}…` : 'This job has no run to inspect.'}
                         onClick={() => j.runId && void loadRunLog(j.runId)}
@@ -3003,7 +3003,7 @@ function App() {
                         <strong>{j.runPipeline ?? j.kind}</strong>
                         {j.runStage && <small style={{ marginLeft: 8 }}>stage {j.runStage}</small>}
                         <small style={{ marginLeft: 8 }}>{j.triggerSource}</small>
-                        {j.runId && <small style={{ marginLeft: 8, color: '#6b7280' }}>run {j.runId.slice(0, 8)}</small>}
+                        {j.runId && <small style={{ marginLeft: 8, color: 'var(--text-muted)' }}>run {j.runId.slice(0, 8)}</small>}
                         {jobLooksStuck(j) && (
                           <span
                             role="button"
@@ -4327,7 +4327,8 @@ function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?
         value={notes}
         onChange={(e) => setNotes(e.target.value)}
         placeholder="Notes: why it is good enough, or what still needs to change"
-        rows={3}
+        // Tall enough to show the checklist it starts with, up to a point.
+        rows={Math.min(10, Math.max(3, notes.split('\n').length + 1))}
         maxLength={4000}
         aria-label="Notes"
       />
@@ -4686,16 +4687,16 @@ function AiAgentOutputBar({
       )}
       {/* Paused run whose worker restarted: answering restarts the stage; say so. */}
       {expanded && currentRun && currentRun.status === 'paused' && currentRun.interrupted && (
-        <p style={{ marginTop: 8, fontSize: 12, color: '#9a3412' }}>
+        <p style={{ marginTop: 8, fontSize: 12, color: 'var(--amber)' }}>
           ⚠ The worker that paused this run has restarted. Approving continues to the next stage on a fresh worker; any other answer re-runs stage {currentRun.stage ?? '?'} with your answer recorded in the timeline.
         </p>
       )}
       {expanded && nextStep && !isActive && !canAnswer && (
-        <div style={{ marginTop: 10, padding: 10, background: '#f0f9ff', borderRadius: 6, borderLeft: '3px solid #0ea5e9', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="next-step-banner">
           <div style={{ flex: 1 }}>
-            <strong style={{ color: '#075985' }}>Next up:</strong>{' '}
-            <span>{nextStep.label}</span>
-            {nextStep.reason && <div style={{ fontSize: 12, color: '#0369a1', marginTop: 4 }}>{nextStep.reason}</div>}
+            <strong>Next up:</strong>{' '}
+            <span className="next-step-label">{nextStep.label}</span>
+            {nextStep.reason && <div className="next-step-reason">{nextStep.reason}</div>}
           </div>
           {nextStep.step !== 'accept' && onRunNext && (
             <button
@@ -4761,20 +4762,20 @@ function TaskDependencyGraph({ graph }: { graph: DepGraph }) {
   const height = maxColHeight + padding
 
   const colorFor = (status: string) => {
-    if (status === 'done') return '#16a34a'
-    if (status === 'in_progress') return '#eab308'
-    if (status === 'blocked') return '#dc2626'
-    return '#6b7280'
+    if (status === 'done') return 'var(--green)'
+    if (status === 'in_progress') return 'var(--amber)'
+    if (status === 'blocked') return 'var(--red)'
+    return 'var(--text-muted)'
   }
 
   return (
-    <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: 6, background: '#fafafa' }}>
+    <div style={{ overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 6, background: 'var(--bg-elevated)' }}>
       <svg width={width} height={height} style={{ display: 'block' }}>
         {/* Phase labels */}
         {phaseOrder.map((phase, i) => {
           const px = padding + i * (nodeW + colGap)
           return (
-            <text key={phase} x={px} y={14} fontSize={11} fontWeight={600} fill="#374151">
+            <text key={phase} x={px} y={14} fontSize={11} fontWeight={600} style={{ fill: 'var(--text-muted)' }}>
               {phase.length > 22 ? phase.slice(0, 20) + '…' : phase}
             </text>
           )
@@ -4782,7 +4783,7 @@ function TaskDependencyGraph({ graph }: { graph: DepGraph }) {
         {/* Edges */}
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-            <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8" />
+            <path d="M0,0 L10,5 L0,10 z" style={{ fill: 'var(--text-subtle)' }} />
           </marker>
         </defs>
         {graph.edges.map((e, i) => {
@@ -4798,7 +4799,7 @@ function TaskDependencyGraph({ graph }: { graph: DepGraph }) {
             <path
               key={i}
               d={`M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`}
-              stroke="#94a3b8"
+              style={{ stroke: 'var(--text-subtle)' }}
               strokeWidth={1}
               fill="none"
               markerEnd="url(#arrow)"
@@ -4813,13 +4814,12 @@ function TaskDependencyGraph({ graph }: { graph: DepGraph }) {
               <rect
                 x={p.x} y={p.y} width={p.w} height={p.h}
                 rx={4}
-                fill="white"
-                stroke={colorFor(n.status)}
+                style={{ fill: 'var(--bg-elevated-2)', stroke: colorFor(n.status) }}
                 strokeWidth={n.parallel ? 2 : 1}
                 strokeDasharray={n.parallel ? '4 2' : undefined}
               />
-              <text x={p.x + 8} y={p.y + 14} fontSize={11} fontWeight={600} fill="#111827">{n.label}</text>
-              <text x={p.x + 8} y={p.y + 27} fontSize={9} fill={colorFor(n.status)}>
+              <text x={p.x + 8} y={p.y + 14} fontSize={11} fontWeight={600} style={{ fill: 'var(--text-strong)' }}>{n.label}</text>
+              <text x={p.x + 8} y={p.y + 27} fontSize={9} style={{ fill: colorFor(n.status) }}>
                 {n.status}{n.story ? ` · ${n.story}` : ''}{n.parallel ? ' · P' : ''}
               </text>
             </g>
