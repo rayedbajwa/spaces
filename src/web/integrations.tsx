@@ -44,6 +44,8 @@ interface OAuthApp {
   /** Permissions the app is missing that agents need. */
   missingPermissions?: string[]
   permissionsUrl?: string
+  /** Slack only: whether the signing secret that verifies inbound requests is stored. */
+  signingSecretSet?: boolean
 }
 
 interface Connection { kind: string; status: string; displayName?: string; updatedAt: string; credentialsOk?: boolean }
@@ -514,6 +516,10 @@ function SetupForm({ app, onSaved, onError }: { app: OAuthApp; onSaved: (message
         <ManualCredentials app={app} callbackUrl={callbackUrl} copyChip={copyChip} onSaved={onSaved} onError={onError} busy={busy} setBusy={setBusy} />
       )}
 
+      {app.provider === 'slack' && app.configured && (
+        <SlackInbound app={app} copyChip={copyChip} onSaved={onSaved} onError={onError} busy={busy} setBusy={setBusy} />
+      )}
+
       <div className="button-row">
         {app.configured && <button type="button" className="ghost-button" disabled={busy} onClick={remove}>Remove app from Spaces</button>}
         <span className="text-subtle" style={{ marginLeft: 'auto' }}>Secrets are stored encrypted for this organization and never shown again.</span>
@@ -598,6 +604,53 @@ function ManualCredentials({ app, callbackUrl, copyChip, onSaved, onError, busy,
       </div>
       <div className="button-row">
         <button type="submit" className="primary-button" disabled={busy || !clientId.trim()}>{busy ? 'Saving…' : 'Save credentials'}</button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * What Slack needs to reach Spaces: the request URLs for buttons, events and
+ * the /spaces command, and the signing secret that verifies those requests.
+ * Without the secret every request from Slack is refused.
+ */
+function SlackInbound({ app, copyChip, onSaved, onError, busy, setBusy }: {
+  app: OAuthApp; copyChip: (label: string, value: string) => JSX.Element
+  onSaved: (message: string) => Promise<void>; onError: (message: string) => void; busy: boolean; setBusy: (b: boolean) => void
+}) {
+  const [secret, setSecret] = useState('')
+  const origin = window.location.origin
+  return (
+    <form className="manual-credentials" onSubmit={(e) => {
+      e.preventDefault()
+      setBusy(true)
+      json('/api/oauth-apps/slack/signing-secret', { method: 'PUT', body: JSON.stringify({ signingSecret: secret }) })
+        .then(() => { setSecret(''); return onSaved('Slack signing secret saved. Buttons, replies and /spaces now reach Spaces.') })
+        .catch((err) => onError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setBusy(false))
+    }}>
+      <strong>Let Slack reach Spaces {app.signingSecretSet ? '· signing secret stored' : '· not set up'}</strong>
+      <span className="text-subtle">Approval buttons, replies to questions and the /spaces command need these in the Slack app's settings. An app created from the manifest has the URLs already.</span>
+      <ol className="credentials-steps">
+        <li>
+          <span><em>Interactivity &amp; Shortcuts</em>: turn on, Request URL</span>
+          {copyChip('interactions', `${origin}/api/slack/interactions`)}
+        </li>
+        <li>
+          <span><em>Event Subscriptions</em>: turn on, Request URL (bot events message.im, app_mention)</span>
+          {copyChip('events', `${origin}/api/slack/events`)}
+        </li>
+        <li>
+          <span><em>Slash Commands</em>: /spaces, Request URL</span>
+          {copyChip('commands', `${origin}/api/slack/commands`)}
+        </li>
+        <li><span>Paste the <em>Signing Secret</em> from <em>Basic Information → App Credentials</em>.</span></li>
+      </ol>
+      <div className="credentials-fields">
+        <label>Signing secret<input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} placeholder={app.signingSecretSet ? 'Stored; paste a new one to replace it' : 'Paste the signing secret'} autoComplete="new-password" /></label>
+      </div>
+      <div className="button-row">
+        <button type="submit" className="primary-button" disabled={busy || !secret.trim()}>{busy ? 'Saving…' : 'Save signing secret'}</button>
       </div>
     </form>
   )
