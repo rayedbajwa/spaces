@@ -804,7 +804,14 @@ textarea {
 .accept-decision { display: grid; gap: 8px; flex: 0 1 420px; min-width: 0; }
 .accept-decision textarea { width: 100%; resize: vertical; min-height: 64px; font: inherit; }
 .accept-decision .button-row { justify-content: flex-end; }
-.agent-dock .accept-decision { margin-top: 8px; max-width: 560px; margin-left: auto; }
+/* The dock body is a column: a flex basis there is a height, so the decision keeps its own size and the full width. */
+.agent-dock .accept-decision { flex: 0 0 auto; margin-top: 8px; width: 100%; }
+
+/* What the intent needs next, under the run log. */
+.next-step-banner { margin-top: 10px; padding: 10px 12px; border-radius: 6px; border-left: 3px solid var(--blue); background: var(--blue-soft); display: flex; align-items: center; gap: 12px; color: var(--text); }
+.next-step-banner strong { color: var(--text-strong); }
+.next-step-label { color: var(--text-strong); }
+.next-step-reason { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 @media (max-width: 700px) {
   .recommended-banner { flex-direction: column; align-items: stretch; }
   .accept-decision { flex-basis: auto; }
