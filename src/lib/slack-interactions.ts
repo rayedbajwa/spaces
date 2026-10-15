@@ -59,6 +59,24 @@ export async function authenticateSlackRequest(input: { timestamp: string | null
   return { ok: false, reason: 'bad_signature' }
 }
 
+/**
+ * The payload of a verified Slack request. Events arrive as JSON; interactions
+ * (button clicks, shortcuts, modal submissions) as a form with the JSON in
+ * `payload`; slash commands as plain form fields. Undefined when malformed.
+ */
+export function parseSlackBody(body: string, contentType: string | null): SlackPayload | undefined {
+  try {
+    if (/application\/x-www-form-urlencoded/i.test(contentType ?? '')) {
+      const form = new URLSearchParams(body)
+      const payload = form.get('payload')
+      return payload !== null ? JSON.parse(payload) as SlackPayload : Object.fromEntries(form) as SlackPayload
+    }
+    return JSON.parse(body) as SlackPayload
+  } catch {
+    return undefined
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Filing
 // ---------------------------------------------------------------------------

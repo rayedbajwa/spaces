@@ -162,7 +162,7 @@ import { pushIntakeSourceUpdate } from './lib/intake-connectors'
 import { listRoutingRules, replaceRoutingRules } from './lib/intake-routing'
 import { deleteSubscription, listDeliveries, listSubscriptions, upsertSubscription, OUTBOUND_ACTIONS, OUTBOUND_EVENT_KINDS, OUTBOUND_TARGET_KINDS, type OutboundAction, type OutboundEventKind, type OutboundTargetKind } from './lib/outbound-store'
 import { verifyDatadog } from './lib/datadog'
-import { authenticateSlackRequest, handleSlackCommand, handleSlackEvent, handleSlackInteraction } from './lib/slack-interactions'
+import { authenticateSlackRequest, handleSlackCommand, handleSlackEvent, handleSlackInteraction, parseSlackBody } from './lib/slack-interactions'
 import { confirmSlackIdentity, verifySlackIdentityToken } from './lib/slack-identity'
 import { getSlackSigningSecret, saveSlackSigningSecret } from './lib/oauth-apps'
 import { INTAKE_PRIORITIES, INTAKE_SOURCES, INTAKE_STATES, type IntakePriority, type IntakeState, type IntakeSource, type WorkKind } from './lib/intake-types'
@@ -438,8 +438,8 @@ async function route(req: Request): Promise<Response> {
       serverLog.warn('slack inbound refused', { path: url.pathname, reason: authResult.reason })
       return sendJson(authResult.reason === 'not_configured' ? 503 : 401, { error: authResult.reason ?? 'bad_signature', code: authResult.reason ?? 'bad_signature' })
     }
-    let payload: Record<string, unknown> = {}
-    try { payload = JSON.parse(body) as Record<string, unknown> } catch { return sendJson(400, { error: 'Malformed Slack payload.' }) }
+    const payload = parseSlackBody(body, req.headers.get('content-type'))
+    if (!payload) return sendJson(400, { error: 'Malformed Slack payload.' })
     if (url.pathname === '/api/slack/events') {
       const result = await handleSlackEvent(authResult.orgId, payload)
       return sendJson(result.status, result.body)

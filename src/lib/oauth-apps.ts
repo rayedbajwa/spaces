@@ -73,6 +73,8 @@ export interface OAuthAppSummary {
   missingPermissions?: string[]
   /** Where to grant them. */
   permissionsUrl?: string
+  /** Whether the Slack signing secret is stored (Slack only); without it all Slack inbound is refused. */
+  signingSecretSet?: boolean
 }
 
 export const OAUTH_PROVIDER_IDS: OAuthProviderId[] = ['github', 'atlassian', 'slack', 'linear', 'figma', 'railway']
@@ -162,6 +164,7 @@ export async function listOAuthApps(orgId: string, origin: string): Promise<OAut
       permissionsUrl: provider === 'github' && stored?.config?.appSlug
         ? `https://github.com/settings/apps/${stored.config.appSlug}/permissions`
         : undefined,
+      signingSecretSet: provider === 'slack' ? Boolean(stored?.config?.signingSecretEnc) : undefined,
     })
   }
   return out
