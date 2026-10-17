@@ -596,6 +596,10 @@ async function route(req: Request): Promise<Response> {
 
   const isApprovalApi = /^\/api\/approvals\/[^/]+$/.test(url.pathname)
   if (isApi && !authDisabled() && !auth && !isPublicOAuth && !isApprovalApi) {
+    // An artifact link opened from a pull request, Slack or Jira: sign in, then come back to it.
+    if (method === 'GET' && /^\/api\/projects\/[^/]+\/artifact$/.test(url.pathname) && (req.headers.get('accept') ?? '').includes('text/html')) {
+      return new Response(null, { status: 302, headers: { location: `/login?return=${encodeURIComponent(url.pathname + url.search)}` } })
+    }
     return sendJson(401, { error: 'Sign in required.', code: 'unauthenticated' })
   }
 

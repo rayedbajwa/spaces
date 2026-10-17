@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { markdownArtifactLink } from './artifact-links'
 import { mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
@@ -421,6 +422,10 @@ export function pullRequestBody(options: {
   stackedOn?: string
   workstream?: string
   extra?: string
+  /** Full URL for an artifact path, so the PR links straight to it (see lib/artifact-links). */
+  artifactUrl?: (relativePath: string) => string | undefined
+  /** The project's page in Spaces. */
+  projectUrl?: string
 }): string {
   const lines = [
     options.summary.trim(),
@@ -428,7 +433,8 @@ export function pullRequestBody(options: {
     options.workstream ? `**Workstream:** ${options.workstream}` : '',
     options.stackedOn ? `**Stacked on:** \`${options.stackedOn}\` — merge that PR first; this one only contains its own changes.` : '',
     options.featureDir ? `**Spec Kit feature:** \`${options.featureDir}\`` : '',
-    options.artifacts?.length ? `**Artifacts:** ${options.artifacts.map((a) => `\`${a}\``).join(', ')}` : '',
+    options.artifacts?.length ? `**Artifacts:** ${options.artifacts.map((a) => markdownArtifactLink(a, options.artifactUrl?.(a))).join(' · ')}` : '',
+    options.projectUrl ? `**In Spaces:** [open the project](${options.projectUrl})` : '',
     options.extra ?? '',
     '',
     '---',
