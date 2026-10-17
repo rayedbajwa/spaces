@@ -19,6 +19,8 @@ import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import { renderMarkdown } from './markdown'
 import { IntentViewer } from './intent-viewer'
 import { LogText } from './log-text'
+import { composeChoiceAnswer, parseAgentQuestion } from './agent-choices'
+import { AgentChoicePicker, OTHER_CHOICE } from './agent-choice-picker'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -4415,6 +4417,25 @@ function AiAgentOutputBar({
   // to go quiet before asking for a decision.
   const streamSettled = useStreamSettled(currentRun?.log, needsInput)
 
+  // The agent's options, offered as choices. On a review, Approve and Request
+  // changes already are the yes and the no, so only real options show there.
+  const answering = needsInput && currentRun?.pauseKind !== 'user' && streamSettled
+  const agentQuestion = useMemo(() => (answering ? parseAgentQuestion(currentRun?.log) : undefined), [answering, currentRun?.log])
+  const showChoices = Boolean(agentQuestion && agentQuestion.choices.length > 0 && !(currentRun?.pauseKind === 'review' && agentQuestion.yesNo))
+  const questionKey = `${currentRun?.runId}:${agentQuestion?.title ?? ''}:${agentQuestion?.choices.map((c) => c.key).join('')}`
+  const [pickedChoice, setPickedChoice] = useState<string | null>(null)
+  useEffect(() => {
+    setPickedChoice(agentQuestion?.choices.find((c) => c.recommended)?.key ?? null)
+  }, [questionKey])
+  const pickedOption = agentQuestion?.choices.find((c) => c.key === pickedChoice)
+  // What goes to the agent: the picked option plus any details, or the box alone.
+  const composedAnswer = showChoices && pickedOption ? composeChoiceAnswer(pickedOption, answerDraft, agentQuestion?.yesNo) : answerDraft.trim()
+  const sendComposed = (prefix?: 'approve') => {
+    if (!onSendAnswer) return
+    onSendAnswer(prefix ? (composedAnswer ? `${prefix}: ${composedAnswer}` : prefix) : composedAnswer)
+    setAnswerDraft('')
+  }
+
   // Follow the stream only while the reader is at the bottom; scrolling up to
   // read pauses following until they return (or press the arrow).
   const [followLog, setFollowLog] = useState(true)
@@ -4624,12 +4645,20 @@ function AiAgentOutputBar({
             </p>
           )}
           {currentRun.stage === 'deliver' && <DeploymentSuggestionCard namespace={currentRun.projectNamespace} context="deliver" />}
+          {showChoices && agentQuestion && (
+            <AgentChoicePicker question={agentQuestion} picked={pickedChoice} onPick={setPickedChoice} name={`choice-${currentRun.runId}`} />
+          )}
+          {showChoices && <label className="agent-choices-details-label" htmlFor="dock-answer">{pickedChoice === OTHER_CHOICE ? 'Your answer' : 'Additional information (optional)'}</label>}
           <textarea
-            autoFocus
+            id="dock-answer"
+            className={showChoices ? 'agent-choices-details' : undefined}
+            autoFocus={!showChoices || pickedChoice === OTHER_CHOICE}
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && answerDraft.trim()) { e.preventDefault(); onSendAnswer(answerDraft); setAnswerDraft('') } }}
-            placeholder={currentRun.pauseKind === 'review' ? 'Optional notes — applied to this stage before the run moves on when you approve. Or describe changes to request another pass.' : 'Answer the agent, or press Continue if nothing was actually asked…'}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composedAnswer) { e.preventDefault(); sendComposed() } }}
+            placeholder={showChoices
+              ? (pickedChoice === OTHER_CHOICE ? 'Write your own answer…' : 'Anything the agent should know with this choice: constraints, context, exceptions…')
+              : currentRun.pauseKind === 'review' ? 'Optional notes — applied to this stage before the run moves on when you approve. Or describe changes to request another pass.' : 'Answer the agent, or press Continue if nothing was actually asked…'}
             style={{ minHeight: 60 }}
           />
           <div className="button-row" style={{ marginTop: 8 }}>
@@ -4637,25 +4666,37 @@ function AiAgentOutputBar({
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => { onSendAnswer(answerDraft.trim() ? `approve: ${answerDraft.trim()}` : 'approve'); setAnswerDraft('') }}
-                title={answerDraft.trim() ? 'Approve; your notes are applied to this stage first, then the run continues' : 'Approve and continue to the next stage'}
-              >{answerDraft.trim() ? 'Approve with notes' : 'Approve and continue'}</button>
+                onClick={() => sendComposed('approve')}
+                title={composedAnswer ? 'Approve; your choice and notes are applied to this stage first, then the run continues' : 'Approve and continue to the next stage'}
+              >{composedAnswer ? (showChoices && pickedOption ? `Approve with ${pickedOption.key}` : 'Approve with notes') : 'Approve and continue'}</button>
+            )}
+            {currentRun.pauseKind !== 'review' && showChoices && (
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!composedAnswer}
+                onClick={() => sendComposed()}
+                title="Send the picked option, with any additional information, to the agent"
+              >{pickedOption ? `Send ${agentQuestion?.yesNo ? pickedOption.label.split(',')[0] : pickedOption.key}` : 'Send answer'}{composedAnswer ? '' : pickedChoice === OTHER_CHOICE ? ' (type something first)' : ' (pick one first)'}</button>
             )}
             {currentRun.pauseKind !== 'review' && (
               <button
                 type="button"
-                className="primary-button"
+                className={showChoices ? 'secondary-button' : 'primary-button'}
                 onClick={() => { onSendAnswer(answerDraft.trim() ? `continue: ${answerDraft.trim()}` : 'continue'); setAnswerDraft('') }}
                 title="Send 'continue' — useful when the pause was a false-positive and no real question was asked."
               >Continue</button>
             )}
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={!answerDraft.trim()}
-              title={currentRun.pauseKind === 'review' ? 'Send it back for another pass with these changes' : 'Send this answer to the agent'}
-              onClick={() => { onSendAnswer(answerDraft); setAnswerDraft('') }}
-            >{currentRun.pauseKind === 'review' ? 'Request changes' : 'Send'}{answerDraft.trim() ? '' : ' (type something first)'}</button>
+            {(currentRun.pauseKind === 'review' || !showChoices) && (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!composedAnswer}
+                title={currentRun.pauseKind === 'review' ? 'Send it back for another pass with these changes' : 'Send this answer to the agent'}
+                onClick={() => sendComposed()}
+              >{currentRun.pauseKind === 'review' ? 'Request changes' : 'Send'}{composedAnswer ? '' : ' (type something first)'}</button>
+            )}
+            {currentRun.pauseKind !== 'review' && <span className="text-subtle" style={{ fontSize: 11 }}>⌘/Ctrl+Enter to send</span>}
           </div>
         </div>
       )}

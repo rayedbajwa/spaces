@@ -3024,3 +3024,28 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .work-surface .secondary-button { justify-self: start; }
 .intake-source-empty { display: grid; gap: 10px; justify-items: start; }
 .workers-subhead { margin: 16px 0 4px; font-size: 14px; }
+
+/* The agent's options as choices in the dock's answer panel. */
+.agent-choices { display: grid; gap: 6px; margin: 4px 0 10px; flex-shrink: 0; }
+.agent-choices-title { font-weight: 600; color: var(--text-strong); margin-bottom: 2px; }
+.agent-choice {
+  display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; margin: 0; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg-elevated);
+  transition: border-color 0.12s, background 0.12s;
+}
+.agent-choice:hover { background: var(--bg-hover); border-color: var(--border-focus); }
+.agent-choice.selected { border-color: var(--accent); background: var(--accent-soft); }
+.agent-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.agent-choice:has(input:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.agent-choice-key {
+  flex: 0 0 auto; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px;
+  border-radius: var(--r-sm); border: 1px solid var(--border-strong); font: 600 12px var(--font-mono); color: var(--text-muted);
+}
+.agent-choice.selected .agent-choice-key { background: var(--accent); border-color: var(--accent); color: #fff; }
+.agent-choice-text { display: grid; gap: 2px; min-width: 0; }
+.agent-choice-label { color: var(--text); font-weight: 500; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-choice-detail { color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.agent-choice-rec { background: var(--green-soft); color: var(--green); }
+.agent-choices-why { color: var(--text-muted); font-size: 12px; padding-left: 2px; }
+.agent-choices-details-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.agent-dock.open.needs-input .dock-body > .notice-warning textarea.agent-choices-details { flex: 0 0 auto; min-height: 64px; }
