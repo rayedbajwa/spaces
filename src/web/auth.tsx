@@ -71,6 +71,13 @@ export function AuthRoot({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('spaces:unauthenticated', onUnauth)
   }, [refresh])
 
+  // Sent here from a link (an artifact opened from a pull request or Slack): go back to it.
+  const afterSignIn = useCallback(async () => {
+    const back = returnPathFromUrl()
+    if (back) { window.location.assign(back); return }
+    await refresh()
+  }, [refresh])
+
   const signOut = useCallback(async () => {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
     setMe(null)
@@ -94,7 +101,7 @@ export function AuthRoot({ children }: { children: ReactNode }) {
     if (authView === 'landing' && !status.needsBootstrap && !inviteTokenFromPath() && !waitlistTokenFromPath()) {
       return <LandingPage openRegistration={Boolean(status.openRegistration)} onSignIn={() => setAuthView('login')} onGetStarted={() => setAuthView('register')} />
     }
-    return <SignInScreen key={authView} needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} openRegistration={Boolean(status.openRegistration)} initialMode={authView === 'register' ? 'register' : 'login'} onBack={window.location.pathname === '/' ? () => setAuthView('landing') : undefined} onSignedIn={refresh} />
+    return <SignInScreen key={authView} needsBootstrap={status.needsBootstrap} githubLogin={status.githubLogin} openRegistration={Boolean(status.openRegistration)} initialMode={authView === 'register' ? 'register' : 'login'} onBack={window.location.pathname === '/' ? () => setAuthView('landing') : undefined} onSignedIn={afterSignIn} />
   }
   return <AuthContext.Provider value={{ me, refresh, signOut, switchTeam }}>{children}</AuthContext.Provider>
 }
@@ -336,3 +343,9 @@ export function UserMenu() {
 // ---------------------------------------------------------------------------
 // Team dialog: members, roles, invites, memory, rename
 // ---------------------------------------------------------------------------
+
+/** `/login?return=/api/projects/x/artifact?path=…`: a same-site path to go back to after signing in. */
+function returnPathFromUrl(): string | undefined {
+  const value = new URLSearchParams(window.location.search).get('return')
+  return value && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') ? value : undefined
+}

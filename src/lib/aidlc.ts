@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { githubFileUrl, markdownArtifactLink, spacesArtifactUrl, spacesProjectUrl } from './artifact-links'
 import { humanizeProviderError } from './provider-error'
 import { initiativeIdFor, planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChangePlan } from './repo-change'
 import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
@@ -284,6 +285,7 @@ export class AIDLCFlow {
   private readonly speckitRoot: string
   private readonly modelRuntimePromise: Promise<ModelRuntime>
   private orgIdPromise?: Promise<string>
+  private projectSlugPromise?: Promise<string | undefined>
   private session?: AgentSession
   /**
    * The run's AI data guardrails (lib/guardrails.ts). One for the whole run,
@@ -534,6 +536,12 @@ export class AIDLCFlow {
   orgId(): Promise<string> {
     this.orgIdPromise ??= resolveRunnerOrg(this.options)
     return this.orgIdPromise
+  }
+
+  /** The project's slug, which Spaces' links to it and its artifacts are built on. */
+  private projectSlug(): Promise<string | undefined> {
+    this.projectSlugPromise ??= projectSlugFor(this.options.projectId)
+    return this.projectSlugPromise
   }
 
   private async ensureSession(overrideModel?: string, overrideThinking?: ThinkingLevel): Promise<void> {
@@ -1116,6 +1124,8 @@ export class AIDLCFlow {
           summary: `Feature \`${branch}\` implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
           featureDir: featureDirRel,
           artifacts,
+          artifactUrl: ((slug) => (a: string) => spacesArtifactUrl(slug, a) ?? githubFileUrl(pr.githubRepo, branch, a))(await this.projectSlug()),
+          projectUrl: spacesProjectUrl(await this.projectSlug()),
         }),
       })
       if (ref) {
@@ -1164,6 +1174,9 @@ export class AIDLCFlow {
             summary: `The \`${target.label}\` part of feature \`${branch}\`, implemented by the AIDLC pipeline. Latest completed stage: **${stage}**.${primary ? `\n\nSpecified and tracked in ${primary.githubRepo}#${primary.number} (${primary.url}).` : ''}\n\n<details><summary>Agent summary from the ${stage} stage</summary>\n\n${tail}\n\n</details>`,
             featureDir: changeDir,
             artifacts,
+            // These files live in this repository, on this branch.
+            artifactUrl: (a: string) => githubFileUrl(target.githubRepo, branch, a),
+            projectUrl: spacesProjectUrl(await this.projectSlug()),
           }),
         })
         if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${changeDir ?? 'its repo-local change'}\n`)
@@ -1187,13 +1200,18 @@ export class AIDLCFlow {
     const featureDirAbs = await findLatestFeatureDirAbsolute(this.options.cwd)
     const featureDirRel = featureDirAbs ? path.relative(this.options.cwd, featureDirAbs) : undefined
 
+    const slug = await this.projectSlug()
+    const docLink = (file: string) => {
+      const rel = `${featureDirRel ?? 'specs/<feature>'}/${file}`
+      return markdownArtifactLink(rel, featureDirRel ? spacesArtifactUrl(slug, rel) : undefined)
+    }
     const body = stage === 'review'
       ? await (async () => {
           const review = featureDirAbs ? await readFile(path.join(featureDirAbs, 'code-review.md'), 'utf8').catch(() => '') : ''
           if (!review.trim()) return undefined
-          return `## AIDLC code review — ${parseCodeReviewStatus(review) ?? 'UNKNOWN'}\n\n${review.trim().slice(0, 60_000)}`
+          return `## AIDLC code review — ${parseCodeReviewStatus(review) ?? 'UNKNOWN'}\n\nFull report: ${docLink('code-review.md')}\n\n${review.trim().slice(0, 60_000)}`
         })()
-      : `**Verification: ${((await readVerificationStatus(this.options.cwd)) ?? 'unknown').toUpperCase()}** — see \`${featureDirRel ?? 'specs/<feature>'}/verification-report.md\` for the requirement-by-requirement table and test results.`
+      : `**Verification: ${((await readVerificationStatus(this.options.cwd)) ?? 'unknown').toUpperCase()}** — see ${docLink('verification-report.md')} for the requirement-by-requirement table and test results.`
     if (!body) return
 
     const repos = new Set<string>()
@@ -2553,6 +2571,8 @@ export async function runAIDLCParallelSubAgents(options: {
   }
 
   try {
+    // Pull requests link their reports to the project's artifact pages in Spaces.
+    const projectSlug = await projectSlugFor(options.projectId)
     const runWorkstream = async (workstream: ParsedWorkstream, index: number): Promise<ParallelSubAgentResult> => {
         options.onProgress?.({ type: 'workstream_start', featureDir, workstream: workstream.title })
         const startedAt = Date.now()
@@ -2733,6 +2753,8 @@ export async function runAIDLCParallelSubAgents(options: {
                 summary: `Workstream **${workstream.title}** of feature \`${featureSlug}\`.\n\n${workstream.tasks ? `**Tasks**\n${workstream.tasks}\n\n` : ''}${workstream.qaFocus ? `**QA focus**\n${workstream.qaFocus}\n\n` : ''}<details><summary>Sub-agent summary</summary>\n\n${log.trim().split('\n').slice(-20).join('\n').slice(-1500)}\n\n</details>`,
                 featureDir: path.relative(cwd, featureDir),
                 artifacts: [path.relative(cwd, outputFile)],
+                artifactUrl: (a: string) => spacesArtifactUrl(projectSlug, a),
+                projectUrl: spacesProjectUrl(projectSlug),
                 stackedOn: prPlan.stackedOn,
                 workstream: workstream.title,
                 extra: change && changePlan ? `**Change:** \`specs/${change.changeId}/\` in this repository · **Initiative:** \`${changePlan.initiativeId}\` (governing workspace \`${path.relative(cwd, featureDir)}\`)${changePlan.changes.length > 1 ? `\n**Linked repositories:** ${changePlan.changes.filter((c) => c.project !== change.project).map((c) => `\`${c.project}\``).join(', ')}` : ''}` : undefined,
@@ -3326,4 +3348,11 @@ function estimateTokenCount(text: string): number {
 
 function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`
+}
+
+/** A project's slug, for links to it in Spaces; undefined without a project or a database. */
+async function projectSlugFor(projectId: string | undefined): Promise<string | undefined> {
+  if (!projectId) return undefined
+  const { getProject } = await import('./project-registry')
+  return (await getProject(projectId).catch(() => undefined))?.slug
 }

@@ -6,6 +6,7 @@
  * delivery can never block or change a run. Both helpers resolve the org from
  * the run's project and swallow every error.
  */
+import { spacesProjectUrl } from './artifact-links'
 import { orgIdForProject } from './orgs'
 import { getRun } from './run-store'
 import { emitOutboundEventQuietly, type OutboundEventKind } from './outbound-store'
@@ -18,10 +19,7 @@ export interface OutboundRunRef {
   runId?: string
 }
 
-function spacesLink(namespace: string | undefined): string | undefined {
-  const base = process.env.PUBLIC_URL?.trim().replace(/\/+$/, '')
-  return base && namespace ? `${base}/spaces/${encodeURIComponent(namespace)}` : undefined
-}
+const spacesLink = spacesProjectUrl
 
 /** Fire-and-forget outbound emission from a run path (never blocks or changes the run). */
 export async function emitRunOutbound(
