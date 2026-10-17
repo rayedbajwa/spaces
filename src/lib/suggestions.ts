@@ -1,4 +1,5 @@
 import { createAgentSettings } from './agent-resources'
+import { humanizeProviderError } from './provider-error'
 import { createAgentSession, SessionManager } from '@earendil-works/pi-coding-agent'
 import { defaultModel } from './model-policy'
 import { readFile } from 'node:fs/promises'
@@ -143,14 +144,14 @@ Rules: only list repositories that exist in the catalog or are already registere
   let parsed: Partial<ProjectSuggestions>
   try {
     await session.prompt(prompt, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
-    if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+    if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
     try {
       parsed = extractJson(output) as Partial<ProjectSuggestions>
     } catch (parseError) {
       // One repair round: ask the same session to re-emit strict JSON.
       output = ''
       await session.prompt(`Your previous reply was not valid JSON (${parseError instanceof Error ? parseError.message : String(parseError)}). Reply again with ONLY the JSON object in the required shape — no comments, no prose, no alternatives like "a|b", double-quoted keys and strings, no trailing commas.`, { expandPromptTemplates: false, streamingBehavior: 'followUp' })
-      if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+      if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
       parsed = extractJson(output) as Partial<ProjectSuggestions>
     }
   } finally {

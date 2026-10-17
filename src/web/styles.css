@@ -3052,3 +3052,16 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .agent-choices-title-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .agent-choices-title-row .link-button { font-size: 12px; font-weight: 500; }
 .agent-choice-check { font-family: var(--font-sans); }
+
+/* A provider failure (credits, key, rate limit) in a failed run's notice. */
+.provider-error { display: grid; gap: 6px; margin: 4px 0 10px; }
+.provider-error-title { color: var(--text-strong); font-size: 14px; }
+.provider-error-message { margin: 0; color: var(--text); line-height: 1.5; }
+.provider-error-retry { margin: 0; color: var(--text-muted); font-size: 12px; }
+.provider-error-links { margin-top: 4px; }
+.provider-error-links a { text-decoration: none; }
+.provider-error-raw summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+.provider-error-raw pre {
+  margin: 6px 0 0; max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font: 11px/1.45 var(--font-mono); color: var(--text-muted); background: var(--bg-input); padding: 8px; border-radius: var(--r-sm);
+}

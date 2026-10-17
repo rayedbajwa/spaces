@@ -19,6 +19,7 @@ import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import { renderMarkdown } from './markdown'
 import { IntentViewer } from './intent-viewer'
 import { LogText } from './log-text'
+import { RunErrorDetail, runErrorLine, runErrorMarkdown } from './provider-error-view'
 import { composeChoiceAnswer, composeRecommendationList, parseAgentQuestion, parseRecommendations } from './agent-choices'
 import { AgentChoicePicker, OTHER_CHOICE, RecommendationChecklist } from './agent-choice-picker'
 import './styles.css'
@@ -1676,7 +1677,7 @@ function App() {
         ])
         eventSource.close()
       } else if (next.status === 'error') {
-        setStatusMessage(`Error: ${next.error ?? 'Unknown error'}`)
+        setStatusMessage(`Error: ${runErrorLine(next.error)}`)
         void refreshBoard()
         eventSource.close()
       } else if (next.status === 'paused') {
@@ -1867,7 +1868,7 @@ function App() {
         await Promise.all([loadLatestRun(selectedProjectNamespace), loadProjectJobs(selectedProjectNamespace), refreshBoard()])
       }
     } catch (error) {
-      setChatEntries((current) => [...current, { role: 'assistant', content: `Error: ${toMessage(error)}` }])
+      setChatEntries((current) => [...current, { role: 'assistant', content: runErrorMarkdown(toMessage(error)) }])
     } finally {
       setBusy(false)
     }
@@ -3808,9 +3809,9 @@ function App() {
               </div>
             )}
             {inspectedRun.error && (
-              <div className="auto-memory-box compact-box prompt-box" style={{ marginTop: 8, borderLeft: '3px solid #dc2626' }}>
-                <strong style={{ color: '#dc2626' }}>Error</strong>
-                <pre style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{inspectedRun.error}</pre>
+              <div className="notice notice-error" style={{ marginTop: 8 }}>
+                <div className="notice-title"><strong>Error</strong></div>
+                <RunErrorDetail error={inspectedRun.error} />
               </div>
             )}
             <h3 style={{ marginTop: 12 }}>Log ({(inspectedRun.log ?? '').length.toLocaleString()} chars)</h3>
@@ -4744,11 +4745,9 @@ function AiAgentOutputBar({
               {currentRun.stage ? ` at stage ${currentRun.stage}` : ''}
             </strong>
           </div>
-          <p className="notice-body">
-            {currentRun.interrupted
-              ? 'The worker process restarted while this run was in progress. Nothing else went wrong; earlier stages’ artifacts are intact.'
-              : (currentRun.error ?? 'No error detail recorded.')}
-          </p>
+          {currentRun.interrupted
+            ? <p className="notice-body">The worker process restarted while this run was in progress. Nothing else went wrong; earlier stages’ artifacts are intact.</p>
+            : <RunErrorDetail error={currentRun.error} />}
           <div className="button-row">
             {currentRun.stage && (
               <button type="button" className="primary-button" disabled={busy || runInFlight} onClick={() => onRerun(currentRun.stage)}>
