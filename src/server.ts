@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { landingHtml, llmsTxt, robotsTxt, sitemapXml } from './lib/seo'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join, normalize, resolve as resolvePath, sep } from 'node:path'
@@ -397,7 +398,15 @@ async function route(req: Request): Promise<Response> {
 
   if (method === 'GET' && url.pathname === '/') {
     const html = await readFile(join(webDir, 'index.html'), 'utf8')
-    return sendHtml(200, html)
+    // Signed-out visits (and crawlers) get the landing page's text in the HTML;
+    // signed-in ones go straight to the app without it flashing first.
+    return sendHtml(200, readCookie(req, SESSION_COOKIE) ? html : landingHtml(html, origin))
+  }
+
+  if (method === 'GET' && (url.pathname === '/robots.txt' || url.pathname === '/sitemap.xml' || url.pathname === '/llms.txt')) {
+    const body = url.pathname === '/robots.txt' ? robotsTxt(origin) : url.pathname === '/sitemap.xml' ? sitemapXml(origin) : llmsTxt(origin)
+    const type = url.pathname === '/sitemap.xml' ? 'application/xml' : 'text/plain'
+    return new Response(body, { status: 200, headers: { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'public, max-age=3600' } })
   }
 
   if (method === 'GET' && url.pathname === '/health') {
