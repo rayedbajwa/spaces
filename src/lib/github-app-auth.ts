@@ -36,6 +36,11 @@ export function signAppJwt(appId: number, privateKeyPem: string, now = Math.floo
 }
 
 /** Installation token for the stored GitHub App, or undefined when the app is not set up that way. */
+/** Forget the cached token, so the next request issues a fresh one (GitHub rejected it). */
+export function invalidateInstallationToken(orgId: string): void {
+  cached.delete(orgId)
+}
+
 export async function getInstallationToken(orgId: string): Promise<InstallationToken | undefined> {
   const have = cached.get(orgId)
   if (have && have.expiresAt - Date.now() > 5 * 60_000) return have
@@ -165,13 +170,52 @@ export async function describeGitHubActor(orgId: string): Promise<{ kind: 'app' 
  */
 export async function gitHubActorEnv(orgId: string): Promise<Record<string, string>> {
   const token = await getGitHubActorToken(orgId)
-  const header = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+  return { GH_TOKEN: token, GITHUB_TOKEN: token, ...gitAuthEnv(token) }
+}
+
+/**
+ * git's auth header for github.com as environment (GIT_CONFIG_*), never as a
+ * `-c` argument: arguments end up in error messages and run logs.
+ */
+export function gitAuthEnv(token: string): Record<string, string> {
   return {
-    GH_TOKEN: token,
-    GITHUB_TOKEN: token,
     GIT_CONFIG_COUNT: '1',
     GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-    GIT_CONFIG_VALUE_0: header,
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`,
     GIT_TERMINAL_PROMPT: '0',
   }
+}
+
+/**
+ * The environment without git config injected through GIT_CONFIG_*. A run puts
+ * its token there for the agent's shell; a command that brings its own fresh
+ * token must not also send that one, which may have expired (git sends both
+ * headers and GitHub rejects the push).
+ */
+export function withoutInjectedGitConfig(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (key === 'GIT_CONFIG_COUNT' || /^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key) || key === 'GIT_CONFIG_PARAMETERS') continue
+    clean[key] = value
+  }
+  return clean
+}
+
+/** git's message as safe to log: no auth header or token, and git's own reason rather than the command line. */
+export function describeGitError(error: unknown, token?: string): string {
+  const e = error as { message?: string; stderr?: string | Buffer }
+  const stderr = e?.stderr ? String(e.stderr).trim() : ''
+  // execFile's message starts with "Command failed: git …" (the arguments); git's reason is in stderr.
+  let text = stderr || String(e?.message ?? error)
+  if (token) text = text.split(token).join('[redacted]')
+  return text
+    .replace(/(AUTHORIZATION:\s*(?:basic|bearer|token)\s+)\S+/gi, '$1[redacted]')
+    .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{10,}/g, '$1[redacted]')
+    .replace(/x-access-token:[^@\s]+/gi, 'x-access-token:[redacted]')
+    .split('\n').filter((l) => l.trim()).slice(-6).join('\n')
+}
+
+/** git told us the credentials were wrong (expired or revoked token). */
+export function isGitAuthFailure(message: string): boolean {
+  return /invalid username or (password|token)|authentication failed|could not read username|\b(401|403)\b|bad credentials|terminal prompts disabled/i.test(message)
 }

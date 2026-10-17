@@ -1168,7 +1168,7 @@ export class AIDLCFlow {
         })
         if (ref) this.print(`[pr] ${target.label}: ${ref.created ? 'opened' : 'updated'} pull request #${ref.number}: ${ref.url} (${branch} → ${base}), with ${changeDir ?? 'its repo-local change'}\n`)
       } catch (error) {
-        this.print(`[pr] ${target.label}: could not publish ${branch} after ${stage}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}\n`)
+        this.print(`[pr] ${target.label}: could not publish ${branch} after ${stage}: ${error instanceof Error ? error.message.replace(/\n+/g, ' — ') : String(error)}\n`)
       }
     }
   }

@@ -3,7 +3,7 @@ import { mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
 import { promisify } from 'node:util'
-import { getGitHubActorToken } from './github-app-auth'
+import { describeGitError, getGitHubActorToken, gitAuthEnv, invalidateInstallationToken, isGitAuthFailure, withoutInjectedGitConfig } from './github-app-auth'
 
 const execFileAsync = promisify(execFile)
 
@@ -30,19 +30,39 @@ export interface PullRequestRef {
   created: boolean
 }
 
-async function git(cwd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, {
-    cwd,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...opts.env },
-    timeout: opts.timeoutMs ?? 5 * 60_000,
-    maxBuffer: 16 * 1024 * 1024,
-  })
-  return stdout.trim()
+/**
+ * Run git. With `token`, it authenticates to github.com through the environment
+ * (never an argument, which would land in error messages and logs), and the
+ * run's own injected header — possibly expired — is left out. Errors carry
+ * git's reason, with any credential removed.
+ */
+async function git(cwd: string, args: string[], opts: { env?: NodeJS.ProcessEnv; timeoutMs?: number; token?: string } = {}): Promise<string> {
+  const base = opts.token ? { ...withoutInjectedGitConfig(process.env), ...gitAuthEnv(opts.token) } : process.env
+  try {
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      env: { ...base, GIT_TERMINAL_PROMPT: '0', ...opts.env },
+      timeout: opts.timeoutMs ?? 5 * 60_000,
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    return stdout.trim()
+  } catch (error) {
+    throw new Error(`git ${args[0]} failed: ${describeGitError(error, opts.token)}`)
+  }
 }
 
-async function authHeader(orgId: string): Promise<string> {
-  const token = await getGitHubActorToken(orgId)
-  return `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+/**
+ * A git command against GitHub as the org's actor. GitHub rejecting the token
+ * (expired or revoked) gets one retry with a freshly issued one.
+ */
+async function gitWithGitHub(orgId: string, cwd: string, args: string[], opts: { timeoutMs?: number } = {}): Promise<string> {
+  try {
+    return await git(cwd, args, { ...opts, token: await getGitHubActorToken(orgId) })
+  } catch (error) {
+    if (!isGitAuthFailure(error instanceof Error ? error.message : String(error))) throw error
+    invalidateInstallationToken(orgId)
+    return git(cwd, args, { ...opts, token: await getGitHubActorToken(orgId) })
+  }
 }
 
 async function githubApi<T>(orgId: string, method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown): Promise<T> {
@@ -220,9 +240,8 @@ export function explainPushFailure(message: string): string {
 }
 
 export async function pushBranch(orgId: string, cwd: string, branch: string): Promise<void> {
-  const header = await authHeader(orgId)
   try {
-    await git(cwd, ['-c', `http.extraheader=${header}`, 'push', '-u', 'origin', `${branch}:${branch}`], { timeoutMs: 10 * 60_000 })
+    await gitWithGitHub(orgId, cwd, ['push', '-u', 'origin', `${branch}:${branch}`], { timeoutMs: 10 * 60_000 })
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     const explained = explainPushFailure(message)
@@ -245,8 +264,7 @@ export interface BranchSync {
  * origin, is left alone and the reason returned.
  */
 export async function syncDefaultBranch(orgId: string, cwd: string, githubRepo: string): Promise<BranchSync> {
-  const header = await authHeader(orgId)
-  await git(cwd, ['-c', `http.extraheader=${header}`, 'fetch', '--prune', 'origin'], { timeoutMs: 10 * 60_000 })
+  await gitWithGitHub(orgId, cwd, ['fetch', '--prune', 'origin'], { timeoutMs: 10 * 60_000 })
   const branch = await defaultBranch(orgId, cwd, githubRepo)
   const before = await git(cwd, ['rev-parse', 'HEAD']).catch(() => undefined)
   if (await git(cwd, ['status', '--porcelain'])) {
@@ -276,8 +294,7 @@ export async function switchToFeatureBranch(cwd: string, branch: string, orgId?:
   // Untracked files count: they would travel to the other branch and be committed there.
   if (await git(cwd, ['status', '--porcelain']).catch(() => 'unknown')) return { switched: false, reason: 'uncommitted changes in the checkout' }
   // Any checkout with an origin may have the branch only there; GitHub ones fetch authenticated.
-  const header = orgId ? await authHeader(orgId).catch(() => undefined) : undefined
-  await git(cwd, [...(header ? ['-c', `http.extraheader=${header}`] : []), 'fetch', '-q', 'origin', branch]).catch(() => undefined)
+  await (orgId ? gitWithGitHub(orgId, cwd, ['fetch', '-q', 'origin', branch]) : git(cwd, ['fetch', '-q', 'origin', branch])).catch(() => undefined)
   if (await branchExistsLocally(cwd, branch)) {
     await git(cwd, ['checkout', '-q', branch])
     return { switched: true }
