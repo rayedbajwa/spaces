@@ -3722,6 +3722,7 @@ function App() {
                   : null
               }
               runInFlight={runInFlight}
+              parallelJob={qaOverview?.currentJob}
               nextStep={(() => {
                 // Derive the next actionable step from artifact state (highest-milestone rule).
                 if (!selectedCardFresh) return undefined
@@ -4345,6 +4346,7 @@ function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?
 
 function AiAgentOutputBar({
   currentRun,
+  parallelJob,
   nextStep,
   onRunNext,
   onAccept,
@@ -4363,6 +4365,8 @@ function AiAgentOutputBar({
   currentRun: RunSnapshot | null
   nextStep?: { step: string; label: string; reason?: string; checklist?: string[] }
   onRunNext?: (step: string) => void
+  /** Implementation sub-agents running side by side (the parallel workstreams job). */
+  parallelJob?: SubagentJobSnapshot | null
   /** Next step is "Accept and finish": accept with a note, or send notes back to implement. */
   onAccept?: (note: string) => void
   onRequestChanges?: (notes: string) => void
@@ -4395,7 +4399,31 @@ function AiAgentOutputBar({
   const needsInput = currentRun?.status === 'paused'
   // null = follow the run (open while active or waiting); true/false = the user's choice.
   const [openChoice, setOpenChoice] = useState<boolean | null>(null)
-  const expanded = openChoice ?? (isActive || needsInput)
+  // Parallel implementation agents: shown while they run and for a while after.
+  const parallel = parallelJob && parallelJob.workstreams.length > 0
+    && (parallelJob.status === 'running' || Date.now() - Date.parse(parallelJob.completedAt ?? parallelJob.updatedAt) < 60 * 60_000)
+    ? parallelJob : undefined
+  const parallelActive = parallel?.status === 'running'
+  const agentCounts = parallel ? {
+    total: parallel.workstreams.length,
+    running: parallel.workstreams.filter((w) => w.status === 'running').length,
+    done: parallel.workstreams.filter((w) => w.status === 'completed').length,
+    failed: parallel.workstreams.filter((w) => w.status === 'error').length,
+  } : undefined
+  const agentsLabel = agentCounts
+    ? `${agentCounts.total} agent${agentCounts.total === 1 ? '' : 's'}${parallelActive ? ' in parallel' : ''} · ${agentCounts.done} done${agentCounts.failed ? ` · ${agentCounts.failed} failed` : ''}`
+    : ''
+  // Which output the log shows: the run's, or one parallel agent's.
+  const [logView, setLogView] = useState<string>('run')
+  const viewedAgent = parallel?.workstreams.find((w) => w.workstream === logView)
+  useEffect(() => {
+    // No run to show: start on the first agent; a vanished agent falls back to the run.
+    if (!parallel) { if (logView !== 'run') setLogView('run'); return }
+    if (logView === 'run' && !currentRun) setLogView(parallel.workstreams[0]!.workstream)
+    else if (logView !== 'run' && !viewedAgent) setLogView(currentRun ? 'run' : parallel.workstreams[0]!.workstream)
+  }, [parallel, logView, viewedAgent, currentRun])
+  const shownLog = viewedAgent ? (viewedAgent.log || viewedAgent.summary || '') : (currentRun?.log ?? '')
+  const expanded = openChoice ?? (isActive || needsInput || parallelActive)
   const dockRef = useRef<HTMLElement>(null)
   // Clicking anywhere outside the dock collapses it so it never blocks the page.
   useEffect(() => {
@@ -4457,10 +4485,10 @@ function AiAgentOutputBar({
   // read pauses following until they return (or press the arrow).
   const [followLog, setFollowLog] = useState(true)
   useEffect(() => {
-    if (isActive && followLog && logRef.current) {
+    if ((isActive || parallelActive) && followLog && logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
-  }, [currentRun?.log, isActive, followLog])
+  }, [shownLog, isActive, parallelActive, followLog])
   // Revealing the dock (or switching to another run) must show the newest
   // output, whatever the run state: reset follow-to-bottom and mark that the
   // first paint with content should pin the buffer. A ref, not state, so the
@@ -4470,7 +4498,7 @@ function AiAgentOutputBar({
     if (!expanded) return
     setFollowLog(true)
     pendingBottomPin.current = true
-  }, [expanded, currentRun?.runId])
+  }, [expanded, currentRun?.runId, logView])
   // Pin before the browser paints, so the dock never flashes the top of the
   // buffer. `instant`, because `.agent-dock.open .run-log` sets smooth scrolling
   // and the ↑/↓ controls keep that behaviour for themselves.
@@ -4480,7 +4508,7 @@ function AiAgentOutputBar({
     if (!el) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'instant' })
     pendingBottomPin.current = false
-  }, [expanded, currentRun?.log])
+  }, [expanded, shownLog])
   const onLogScroll = () => {
     const el = logRef.current
     if (!el) return
@@ -4501,8 +4529,8 @@ function AiAgentOutputBar({
         const total = stages.length
         const done = currentRun?.status === 'completed' ? total : Math.max(0, stageIndex)
         const failed = currentRun?.status === 'error'
-        const statusKey = !currentRun ? 'idle' : currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : failed ? (currentRun!.interrupted ? 'paused' : 'error') : currentRun.status === 'cancelled' ? 'idle' : 'running'
-        const statusText = !currentRun ? 'no run'
+        const statusKey = !currentRun ? (parallelActive ? 'running' : 'idle') : currentRun.status === 'completed' ? 'completed' : currentRun.status === 'paused' ? 'paused' : failed ? (currentRun!.interrupted ? 'paused' : 'error') : currentRun.status === 'cancelled' ? 'idle' : 'running'
+        const statusText = !currentRun ? (parallelActive ? 'implementing' : 'no run')
           : currentRun.status === 'running' ? (currentRun.queued ? 'queued' : 'running')
           : failed ? (currentRun.interrupted ? 'interrupted' : 'failed')
           : currentRun.status
@@ -4523,6 +4551,7 @@ function AiAgentOutputBar({
               <span className="dock-mini-status">{statusText}{currentRun?.stage ? ` · ${currentRun.stage}` : ''}{currentRun?.usage?.calls ? ` · ${formatUsd(currentRun.usage.costUsd)}` : ''}</span>
               {needsInput && currentRun?.pauseKind !== 'user' && <span className="dock-pill-badge attention">{currentRun?.pauseKind === 'review' ? 'approval needed' : 'answer needed'}</span>}
               {failed && <span className="dock-pill-badge danger">{currentRun?.interrupted ? 'worker restarted' : 'agent failed'}</span>}
+              {agentCounts && <span className={`dock-pill-badge agents ${parallelActive ? 'running' : ''}`} title="Implementation agents working side by side">{agentsLabel}</span>}
               {total > 0 && (
                 <span className="dock-mini-progress" title={`${done} of ${total} stages complete`}>
                   <span className="dock-bar"><span style={{ width: `${Math.round((done / total) * 100)}%` }} /></span>
@@ -4584,6 +4613,39 @@ function AiAgentOutputBar({
         )
       })()}
       <div className="dock-body">
+      {expanded && parallel && agentCounts && (
+        <div className="dock-agents">
+          <div className="dock-agents-row" role="tablist" aria-label="Parallel agents">
+            <span className="dock-agents-title">{agentsLabel}</span>
+            {currentRun && (
+              <button type="button" role="tab" aria-selected={logView === 'run'} className={`dock-agent ${logView === 'run' ? 'selected' : ''}`} onClick={() => setLogView('run')}>
+                Run output
+              </button>
+            )}
+            {parallel.workstreams.map((w) => (
+              <button
+                key={w.workstream}
+                type="button"
+                role="tab"
+                aria-selected={logView === w.workstream}
+                className={`dock-agent ${logView === w.workstream ? 'selected' : ''}`}
+                onClick={() => setLogView(w.workstream)}
+                title={w.summary ?? w.workstream}
+              >
+                <span className={`dock-dot ${w.status}`} aria-hidden="true" />
+                <span className="dock-agent-name">{w.workstream}</span>
+                <span className="dock-agent-meta">{w.status === 'completed' ? 'done' : w.status === 'error' ? 'failed' : 'running'}{w.runtimeMs ? ` · ${formatDuration(w.runtimeMs)}` : ''}</span>
+              </button>
+            ))}
+          </div>
+          {viewedAgent && (viewedAgent.branch || viewedAgent.pullRequestUrl) && (
+            <div className="dock-agent-detail">
+              {viewedAgent.branch && <>branch <code>{viewedAgent.branch}</code>{viewedAgent.baseBranch ? <> → <code>{viewedAgent.baseBranch}</code></> : null}</>}
+              {viewedAgent.pullRequestUrl && <> · <a href={viewedAgent.pullRequestUrl} target="_blank" rel="noreferrer">Pull request ↗</a></>}
+            </div>
+          )}
+        </div>
+      )}
       {expanded && (
         <div className="dock-log-wrap">
           <pre
@@ -4591,13 +4653,13 @@ function AiAgentOutputBar({
             className="context-preview modal-preview run-log"
             onScroll={onLogScroll}
           >
-            {currentRun?.log ? <LogText text={currentRun.log} /> : (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
+            {viewedAgent ? (shownLog ? <LogText text={shownLog} /> : 'Waiting for this agent’s first output…') : currentRun?.log ? <LogText text={currentRun.log} /> : (isActive ? '⏳ Warming up… the agent should start streaming any moment. (If nothing appears within ~30s, check the worker log — the run may have hit a provider error.)' : '(no log yet)')}
           </pre>
           <div className="dock-scrollers" aria-label="Scroll the log">
             <button type="button" className="dock-icon" onClick={() => scrollLog('top')} title="Scroll to top" aria-label="Scroll to top">↑</button>
             <button type="button" className={`dock-icon ${followLog ? 'accent' : ''}`} onClick={() => scrollLog('bottom')} title={followLog ? 'Following the live output' : 'Scroll to bottom and follow'} aria-label="Scroll to bottom">↓</button>
           </div>
-          {isActive && !followLog && <button type="button" className="dock-new-output" onClick={() => scrollLog('bottom')}>New output below ↓</button>}
+          {(isActive || parallelActive) && !followLog && <button type="button" className="dock-new-output" onClick={() => scrollLog('bottom')}>New output below ↓</button>}
         </div>
       )}
       {/* Paused-run answer UI — moved here from the Assistant tab so users don't have
