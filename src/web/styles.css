@@ -3052,3 +3052,14 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .agent-choices-title-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .agent-choices-title-row .link-button { font-size: 12px; font-weight: 500; }
 .agent-choice-check { font-family: var(--font-sans); }
+
+/* The landing page's text as the server sends it, shown until React takes over. */
+.landing-static { max-width: 760px; margin: 0 auto; padding: 72px 16px; color: var(--text); line-height: 1.6; }
+.landing-static h1 { font-size: 40px; line-height: 1.15; color: var(--text-strong); margin: 8px 0 12px; }
+.landing-static h2 { font-size: 22px; color: var(--text-strong); margin: 40px 0 12px; }
+.landing-static h3 { font-size: 15px; color: var(--text-strong); margin: 0 0 2px; }
+.landing-static .landing-static-lede { font-size: 20px; color: var(--text-strong); }
+.landing-static ol, .landing-static ul { padding-left: 20px; display: grid; gap: 10px; }
+.landing-static p { margin: 0 0 12px; color: var(--text-muted); }
+.landing-static a { color: var(--accent-text); }
+.landing-static small { color: var(--amber); font-weight: 500; margin-left: 6px; }
