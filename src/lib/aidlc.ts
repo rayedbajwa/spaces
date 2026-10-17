@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { humanizeProviderError } from './provider-error'
 import { initiativeIdFor, planRepoChanges, repoChangeInstructions, writeRepoChange, type RepoChangePlan } from './repo-change'
 import { RESEARCH_BRIEF_FILE, buildResearchPrompt } from './research-stage'
 import { PROVIDER_ENV_KEYS } from './default-model'
@@ -1876,27 +1877,6 @@ export function isTransientProviderError(message: string): boolean {
   return /connection error|connection (reset|closed|refused)|econnreset|econnrefused|etimedout|socket hang up|fetch failed|network|timeout|timed out|temporarily unavailable|overloaded|rate limit|too many requests|\b429\b|\b50[0234]\b|internal server error|bad gateway|service unavailable|gateway timeout|stream (ended|closed) unexpectedly|incomplete json|unexpected end/.test(m)
 }
 
-function humanizeProviderError(raw: string): string {
-  const trimmed = raw.trim()
-  const jsonStart = trimmed.indexOf('{')
-  if (jsonStart < 0) return trimmed
-  const prefix = trimmed.slice(0, jsonStart).trim() // e.g. "429"
-  try {
-    const parsed = JSON.parse(trimmed.slice(jsonStart)) as {
-      error?: { message?: string; type?: string }
-      request_id?: string
-    }
-    const message = parsed.error?.message
-    const type = parsed.error?.type
-    if (message) {
-      const hint = /monthly spend limit/i.test(message)
-        ? ' — increase your cap in the Anthropic Console → Settings → Billing → Usage limits.'
-        : ''
-      return `${prefix ? `${prefix} ` : ''}${type ? `[${type}] ` : ''}${message}${hint}`
-    }
-  } catch { /* fall through to raw */ }
-  return trimmed
-}
 
 /**
  * "approve", "approve: tighten the error copy", "ok — but rename the flag" …
@@ -2253,7 +2233,7 @@ export async function runAIDLCMergeOrchestrator(options: {
       ),
       { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
-    if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+    if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
 
     transcript += guard.mask(activity.flush())
     return {
@@ -2343,7 +2323,7 @@ export async function runAIDLCSpecificTask(options: {
       ),
       { expandPromptTemplates: false, streamingBehavior: 'followUp' },
     )
-    if (providerError) throw new Error(`LLM provider error: ${providerError}`)
+    if (providerError) throw new Error(`LLM provider error: ${humanizeProviderError(providerError)}`)
 
     transcript += guard.mask(activity.flush())
     return {
