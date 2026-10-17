@@ -87,6 +87,8 @@ export const SECRET_DETECTORS: Detector[] = [
   { kind: 'SECRET', re: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@"'`]*:([^\s/@"'`]+)@/gi, groups: [1] },
   { kind: 'SECRET', re: /[?&](?:password|passwd|pass|pwd|token|access_token|secret|client_secret|api[_-]?key|apikey|key|sig|signature)=([^&\s"'`#]+)/gi, groups: [1] },
   { kind: 'SECRET', re: /\b(?:Bearer|token)\s+([A-Za-z0-9._~+/=-]{16,})/gi, groups: [1] },
+  // HTTP basic auth (git's http.extraheader carries x-access-token:<token> this way).
+  { kind: 'SECRET', re: /\bbasic\s+([A-Za-z0-9+/]{16,}={0,2})/gi, groups: [1] },
   // Environment-style NAME=value (upper case: .env files, shell exports): any value.
   { kind: 'SECRET', re: new RegExp(String.raw`\b(?=[A-Z0-9_]*[A-Z])${SECRET_NAME.replace(/\[A-Za-z0-9\]/g, '[A-Z0-9]').replace(/token\|secret\|password\|passwd/, 'TOKEN|SECRET|PASSWORD|PASSWD').replace(/pass\|pwd\|key\|apikey\|api_key\|credentials\?\|auth/, 'PASS|PWD|KEY|APIKEY|API_KEY|CREDENTIALS?|AUTH')}\s*=(?![=>])\s*(?:"([^"]+)"|'([^']+)'|([^\s"'${'`'},;&]+))`, 'g'), groups: [1, 2, 3] },
   // Any-case name=value: a literal right after '=' (password=supersecret, api_key=abc) or a quoted one (password = "hunter2") — not code (password = req.body.password).
