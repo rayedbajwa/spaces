@@ -3093,3 +3093,19 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .dock-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .dock-agent-meta { color: var(--text-muted); white-space: nowrap; }
 .dock-agent-detail { font-size: 12px; color: var(--text-muted); }
+
+/* Skip menu beside the recommended step: run another step instead. */
+.skip-step { position: relative; }
+.skip-step-menu {
+  position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 40; width: 300px; padding: 6px;
+  display: grid; gap: 2px; background: var(--bg-elevated-2); border: 1px solid var(--border-strong);
+  border-radius: var(--r-md); box-shadow: var(--shadow-lg);
+}
+.skip-step-hint { font-size: 11px; color: var(--text-muted); padding: 4px 8px; }
+.skip-step-menu button {
+  display: grid; gap: 2px; text-align: left; padding: 8px; border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--text); cursor: pointer; font: inherit;
+}
+.skip-step-menu button:hover { background: var(--bg-hover); }
+.skip-step-menu button span { font-size: 12px; color: var(--text-muted); }
+.skip-step-note { font-size: 12px; color: var(--amber); margin: 8px 0 0; }

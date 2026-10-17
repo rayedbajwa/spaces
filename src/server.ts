@@ -4497,6 +4497,15 @@ function nextStepFor(artifacts: ProjectArtifacts): BoardCard['recommendedAction'
   // a person accepted the feature, an unticked box no longer holds it back.
   if (implementationLeft && !qaDone) {
     const left = ` ${implementation!.total - implementation!.done} of ${implementation!.total} implementation tasks left.`
+    // Deadlock: the open tasks are ones an agent cannot close (owner sign-off,
+    // device checks), so implement would run again and change nothing. Suggest
+    // accepting instead; the open items become the person's checklist.
+    const stuck = artifacts.codeReviewStatus === 'approved' ? acceptanceBasis(artifacts.verificationStatus, artifacts.verificationSummary) : undefined
+    if (stuck === 'stalled' || stuck === 'nothing_for_agent') {
+      const summary = artifacts.verificationSummary!
+      const why = stuck === 'stalled' ? 'the last implement changed no code, so another run would land in the same place' : 'nothing in the verification report is left for an agent to fix'
+      return { step: 'accept', label: 'Accept and finish', tab: 'qa', reason: `${left.trim()} But ${why}: what remains needs a person. Verification ${artifacts.verificationStatus}: ${describeSummary(summary)}. Accept it as it stands, or request changes with directions.`, ...(summary.ownerChecks?.length ? { checklist: summary.ownerChecks } : {}) }
+    }
     return { step: 'implement', label: 'Run implement', tab: 'implementation', reason: `Ready to code.${left} Implement loops through code review and QA until both are nearly done.` }
   }
   if (!artifacts.codeReviewStatus) {
