@@ -847,13 +847,13 @@ textarea {
   color: #fff;
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 1px 2px rgba(0, 0, 0, 0.35);
 }
-.primary-button:hover { background: var(--accent-hover); }
+.primary-button:hover { background: var(--accent-hover); color: #fff; }
 .danger-button {
   background: #b91c1c;
   color: #fff;
   border: 1px solid #991b1b;
 }
-.danger-button:hover { background: #dc2626; }
+.danger-button:hover { background: #dc2626; color: #fff; }
 .danger-button:disabled { opacity: 0.5; cursor: not-allowed; }
 .danger-zone { border-color: rgba(220, 38, 38, 0.45); }
 .mini-badge.archived { background: rgba(148, 163, 184, 0.25); color: #94a3b8; }
@@ -874,6 +874,8 @@ textarea {
 .history-item:hover {
   background: var(--bg-elevated-2);
   border-color: var(--border-strong);
+  /* Keeps a link styled as a button readable: the global a:hover colour would win. */
+  color: var(--text);
 }
 
 .ghost-button {
