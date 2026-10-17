@@ -23,13 +23,20 @@ const CHOOSING = /\b(which|choose|pick|select|prefer|option|options|reply with (
 const YES_NO = /\b(approve|may i|should i|shall i|can i|do you want|ok to|okay to|proceed|go ahead|confirm|merge|deploy|release|publish)\b/i
 const OPEN_QUESTION = /\b(what|where|which|how|who|when|why)\b/i
 
+// Run logs stamp every line `[03:41:05Z implement] ` (lib/agent-activity.ts).
+const STAMP = /^\[\d\d:\d\d:\d\dZ(?: [^\]]+)?\] /gm
+
+function unstamp(log: string): string {
+  return log.replace(STAMP, '')
+}
+
 function clean(text: string): string {
   return text.replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim()
 }
 
 /** The tail of the log that holds the agent's latest question. */
 function lastQuestionBlock(log: string): string {
-  const tail = log.slice(-8000)
+  const tail = unstamp(log.slice(-12000)).slice(-8000)
   const heading = [...tail.matchAll(/^#{1,4}\s*Question\b.*$/gim)].pop()
   if (heading?.index !== undefined) return tail.slice(heading.index)
   const stage = [...tail.matchAll(/^(=== Stage .*===|--- Review gate .*---)$/gm)].pop()
@@ -113,4 +120,41 @@ export function composeChoiceAnswer(choice: AgentChoice | undefined, details: st
   if (!choice) return extra
   const picked = yesNo ? choice.key : `${choice.key} — ${choice.label}`
   return extra ? `${picked}\n\nAdditional details: ${extra}` : picked
+}
+
+export type Recommendations = { title: string; items: AgentChoice[] }
+
+const HEADING = /^(#{1,4}\s+.+|\*\*[^*\n]+\*\*:?)\s*$/
+
+/**
+ * The changes a reviewer recommends before the run moves on: the list under
+ * the latest "Recommended changes" (or "Recommendations") heading of the
+ * stage's output, so they can be ticked off instead of retyped.
+ */
+export function parseRecommendations(log: string | undefined): Recommendations | undefined {
+  if (!log) return undefined
+  const text = unstamp(log.slice(-16000))
+  const stage = [...text.matchAll(/^(=== Stage .*===|--- Review gate .*---)$/gm)].pop()
+  const lines = text.slice(stage?.index ?? 0).split('\n')
+  let start = -1
+  lines.forEach((line, i) => { if (HEADING.test(line.trim()) && /recommend/i.test(line) && !/recommended:\*{0,2}\s*option/i.test(line)) start = i })
+  if (start < 0) return undefined
+  const title = clean(lines[start].replace(/^#+\s*/, '').replace(/^\d+[.)]\s*/, '').replace(/:$/, ''))
+  const items: AgentChoice[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (HEADING.test(line.trim()) && items.length > 0) break
+    const m = line.match(/^\s*(?:[-*]|(\d{1,2})[.)])\s+(.+)$/)
+    if (!m) continue
+    const lead = m[2].match(/^\*\*(.+?)\*\*\s*[:.—-]?\s*(.*)$/)
+    const label = clean(lead ? lead[1] : m[2]).replace(/[:.]$/, '')
+    const detail = lead?.[2] ? clean(lead[2]) : ''
+    if (label) items.push({ key: m[1] ?? String(items.length + 1), label, ...(detail ? { detail } : {}) })
+  }
+  return items.length > 0 && items.length <= 12 ? { title, items } : undefined
+}
+
+/** The ticked recommendations, written out so the agent knows exactly which to apply. */
+export function composeRecommendationList(items: AgentChoice[]): string {
+  if (items.length === 0) return ''
+  return `Apply these recommended changes:\n${items.map((i) => `${i.key}. ${i.label}${i.detail ? ` — ${i.detail}` : ''}`).join('\n')}`
 }
