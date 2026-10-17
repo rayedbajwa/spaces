@@ -359,132 +359,141 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
   const guardPolicy = await loadGuardPolicy(runOrgId)
   const maskLog = (chunk: string) => maskOutput(redactSecrets(chunk), guardPolicy)
   Object.assign(process.env, await gitHubActorEnv(runOrgId).catch(() => ({})))
-
-  let engine: PipelineEngine
-  // Writes what the run log is still holding back (set once the sinks exist).
-  let flushRunLog = () => {}
+  // An installation token lasts an hour and runs can last longer: renew the
+  // agent's shell token while the run works (it is re-issued 5 min before expiry).
+  const tokenRefresh = setInterval(() => {
+    void gitHubActorEnv(runOrgId).then((env) => Object.assign(process.env, env)).catch(() => undefined)
+  }, 10 * 60_000)
+  tokenRefresh.unref?.()
   try {
-    // Every log line says when it was written and by which agent: the stage
-    // running (with its role), or "spaces" for the orchestrator around it.
-    let logAgent = 'spaces'
-    const stampStdout = createLineStamper({ label: () => logAgent })
-    const stampStderr = createLineStamper({ label: () => logAgent })
-    // Masked a whole line at a time: a secret split between chunks is still one secret.
-    const carryStdout = createLineCarry()
-    const carryStderr = createLineCarry()
-    const logWhole = (stream: 'stdout' | 'stderr', whole: string) => {
-      if (whole) void queueEvent(runId, 'log', { stream, chunk: (stream === 'stdout' ? stampStdout : stampStderr).stamp(maskLog(whole)) })
-    }
-    flushRunLog = () => { logWhole('stdout', carryStdout.flush()); logWhole('stderr', carryStderr.flush()) }
-    engine = new PipelineEngine(run.templateJson, options, {
-      onUsage: (message, stage) => {
-        const raw = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
-        if (!raw) return
-        const record = priceRecord(raw, priceCatalog)
-        void recordUsage(record)
-          .then(async (usageId) => {
-            // OpenRouter's routed models carry no static price: fetch the real cost and model, then let the UI refresh.
-            if (needsProviderCost(record)) {
-              const real = await enrichOpenRouterUsage(usageId, record.responseId!, (await loadProviderKeys(runOrgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>))).openrouter)
-              if (real) await queueEvent(runId, 'usage', { stage, provider: record.provider, model: real.model ?? record.model, costUsd: real.costUsd, priced: true })
-            }
-          })
-          .catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
-        void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
-      },
-      onStageStart: ({ stage, index, total }) => {
-        const role = run.templateJson?.steps?.find((s) => s.stage === stage)?.role
-        logAgent = role ? `${stage}/${role}` : stage
-        // The answer has been applied once a stage starts: a later failure retries without it.
-        pendingAnswers.delete(runId)
-        // A flow reports progress only when it pauses or finishes, so without this
-        // the stored stage lags behind the one running — and a restart would then
-        // resume at the wrong stage, or from the beginning when none was stored.
-        void updateRunStatus(runId, { status: 'running', currentStage: stage, pauseKind: null })
-          .catch((err) => workerLog.warn('recording the current stage failed', { runId, stage, error: err instanceof Error ? err.message : String(err) }))
-        void queueEvent(runId, 'stage_start', { stage, index, total })
-      },
-      stdout: (chunk) => {
-        logWhole('stdout', carryStdout.push(chunk))
-      },
-      stderr: (chunk) => {
-        logWhole('stderr', carryStderr.push(chunk))
-      },
-      onStageHandoff: async (h) => {
-        flushRunLog()
-        // The stage's documents are the intent's record: sync them in before the next stage starts.
-        await syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
-        // A stage finished: keep the database copy of the conversation current.
-        void saveSessionCopy(runId, engines.get(runId)?.getSessionFile())
-        const sql = getDb()
-        await sql`
-          INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
-          VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
-        `
-        void notifyProject(run.projectId, { kind: 'stage_finished', stage: h.stage, summary: stageSummary(h.summary, h.tail) })
-        emitRunOutbound(run, 'stage_completed', `run:${runId}:stage:${h.stage}`, { projectName: run.projectLabel, stage: h.stage, summary: stageSummary(h.summary, h.tail), runId })
-        // Plan named repositories? Register + clone the missing ones now so the
-        // following stages (tasks, implement) can work in them.
-        if (h.stage === 'plan' && run.projectId) {
-          void reconcilePlanRepositories(run.projectId, run.projectPath)
-            .then(async ({ added, unknown }) => {
-              if (added.length || unknown.length) void queueEvent(runId, 'plan_repositories', { added, unknown })
-              // Refresh repository/work-area suggestions from the plan itself.
-              const suggestions = await suggestRepositoriesAndWorkAreas(run.projectId!, { basis: 'plan', model: run.optionsJson.model }).catch(() => undefined)
-              if (suggestions) void queueEvent(runId, 'suggestions_updated', { basis: 'plan', repositories: suggestions.repositories.length, workAreas: suggestions.workAreas.length })
+    let engine: PipelineEngine
+    // Writes what the run log is still holding back (set once the sinks exist).
+    let flushRunLog = () => {}
+    try {
+      // Every log line says when it was written and by which agent: the stage
+      // running (with its role), or "spaces" for the orchestrator around it.
+      let logAgent = 'spaces'
+      const stampStdout = createLineStamper({ label: () => logAgent })
+      const stampStderr = createLineStamper({ label: () => logAgent })
+      // Masked a whole line at a time: a secret split between chunks is still one secret.
+      const carryStdout = createLineCarry()
+      const carryStderr = createLineCarry()
+      const logWhole = (stream: 'stdout' | 'stderr', whole: string) => {
+        if (whole) void queueEvent(runId, 'log', { stream, chunk: (stream === 'stdout' ? stampStdout : stampStderr).stamp(maskLog(whole)) })
+      }
+      flushRunLog = () => { logWhole('stdout', carryStdout.flush()); logWhole('stderr', carryStderr.flush()) }
+      engine = new PipelineEngine(run.templateJson, options, {
+        onUsage: (message, stage) => {
+          const raw = usageFromMessage(message, { runId, projectNamespace: run.projectNamespace, stage })
+          if (!raw) return
+          const record = priceRecord(raw, priceCatalog)
+          void recordUsage(record)
+            .then(async (usageId) => {
+              // OpenRouter's routed models carry no static price: fetch the real cost and model, then let the UI refresh.
+              if (needsProviderCost(record)) {
+                const real = await enrichOpenRouterUsage(usageId, record.responseId!, (await loadProviderKeys(runOrgId).catch(() => ({} as Awaited<ReturnType<typeof loadProviderKeys>>))).openrouter)
+                if (real) await queueEvent(runId, 'usage', { stage, provider: record.provider, model: real.model ?? record.model, costUsd: real.costUsd, priced: true })
+              }
             })
-            .catch((err) => workerLog.warn('plan repository reconciliation failed', { runId, error: err instanceof Error ? err.message : String(err) }))
-        }
-        void queueEvent(runId, 'handoff_captured', {
-          stepId: h.stepId,
-          stage: h.stage,
-          model: h.model,
-          tailBytes: h.tail.length,
-          summaryBytes: h.summary?.length ?? 0,
-          compacted: !!h.summary,
-        })
-      },
-    })
-  } catch (error) {
-    await releaseAgent?.(null)
-    await handleEngineError(runId, error)
-    return
-  }
-  if (await runWasCancelled(runId)) {
-    // Cancelled between claim and start: never run it.
-    await engine.dispose().catch(() => undefined)
-    await releaseAgent?.(null)
-    cancelledRuns.delete(runId)
-    return
-  }
-  engines.set(runId, engine)
-
-  try {
-    const result = rehydrate ? await engine.resumeWithAnswer(answer!.text) : await engine.start()
-    flushRunLog()
-    if (await runWasCancelled(runId)) {
-      await finishCancelledRun(runId)
+            .catch((err) => workerLog.warn('usage record failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+          void queueEvent(runId, 'usage', { stage, provider: record.provider, model: record.model, inputTokens: record.inputTokens, outputTokens: record.outputTokens, cacheReadTokens: record.cacheReadTokens, costUsd: record.costUsd })
+        },
+        onStageStart: ({ stage, index, total }) => {
+          const role = run.templateJson?.steps?.find((s) => s.stage === stage)?.role
+          logAgent = role ? `${stage}/${role}` : stage
+          // The answer has been applied once a stage starts: a later failure retries without it.
+          pendingAnswers.delete(runId)
+          // A flow reports progress only when it pauses or finishes, so without this
+          // the stored stage lags behind the one running — and a restart would then
+          // resume at the wrong stage, or from the beginning when none was stored.
+          void updateRunStatus(runId, { status: 'running', currentStage: stage, pauseKind: null })
+            .catch((err) => workerLog.warn('recording the current stage failed', { runId, stage, error: err instanceof Error ? err.message : String(err) }))
+          void queueEvent(runId, 'stage_start', { stage, index, total })
+        },
+        stdout: (chunk) => {
+          logWhole('stdout', carryStdout.push(chunk))
+        },
+        stderr: (chunk) => {
+          logWhole('stderr', carryStderr.push(chunk))
+        },
+        onStageHandoff: async (h) => {
+          flushRunLog()
+          // The stage's documents are the intent's record: sync them in before the next stage starts.
+          await syncProjectIntentsQuietly(run.projectId, run.projectPath, 'agent')
+          // A stage finished: keep the database copy of the conversation current.
+          void saveSessionCopy(runId, engines.get(runId)?.getSessionFile())
+          const sql = getDb()
+          await sql`
+            INSERT INTO run_thread_entries (run_id, step_index, step_id, stage, model, tail, summary, summary_hash)
+            VALUES (${runId}, ${h.stepIndex}, ${h.stepId}, ${h.stage}, ${h.model ?? null}, ${h.tail}, ${h.summary ?? null}, ${h.summaryHash ?? null})
+          `
+          void notifyProject(run.projectId, { kind: 'stage_finished', stage: h.stage, summary: stageSummary(h.summary, h.tail) })
+          emitRunOutbound(run, 'stage_completed', `run:${runId}:stage:${h.stage}`, { projectName: run.projectLabel, stage: h.stage, summary: stageSummary(h.summary, h.tail), runId })
+          // Plan named repositories? Register + clone the missing ones now so the
+          // following stages (tasks, implement) can work in them.
+          if (h.stage === 'plan' && run.projectId) {
+            void reconcilePlanRepositories(run.projectId, run.projectPath)
+              .then(async ({ added, unknown }) => {
+                if (added.length || unknown.length) void queueEvent(runId, 'plan_repositories', { added, unknown })
+                // Refresh repository/work-area suggestions from the plan itself.
+                const suggestions = await suggestRepositoriesAndWorkAreas(run.projectId!, { basis: 'plan', model: run.optionsJson.model }).catch(() => undefined)
+                if (suggestions) void queueEvent(runId, 'suggestions_updated', { basis: 'plan', repositories: suggestions.repositories.length, workAreas: suggestions.workAreas.length })
+              })
+              .catch((err) => workerLog.warn('plan repository reconciliation failed', { runId, error: err instanceof Error ? err.message : String(err) }))
+          }
+          void queueEvent(runId, 'handoff_captured', {
+            stepId: h.stepId,
+            stage: h.stage,
+            model: h.model,
+            tailBytes: h.tail.length,
+            summaryBytes: h.summary?.length ?? 0,
+            compacted: !!h.summary,
+          })
+        },
+      })
+    } catch (error) {
       await releaseAgent?.(null)
+      await handleEngineError(runId, error)
       return
     }
-    // Report warm-agent status once (after ensureSession has fired).
-    if (poolInfo && poolInfo.wasWarm) {
-      await queueEvent(runId, 'agent_reused', { agentId: poolInfo.agentId, role: 'primary' })
-    }
-    await applyProgress(runId, result)
-    // A run that stopped (at a gate, or paused) reopens this session later: it
-    // is not handed to the next run of the project in the meantime.
-    await releaseAgent?.(result.sessionFile ?? null, { detach: result.status === 'paused' })
-    pendingAnswers.delete(runId)
-  } catch (error) {
-    flushRunLog()
-    await releaseAgent?.(null)
     if (await runWasCancelled(runId)) {
-      // The engine was disposed under the running stage; that is the cancel, not a failure.
-      await finishCancelledRun(runId)
+      // Cancelled between claim and start: never run it.
+      await engine.dispose().catch(() => undefined)
+      await releaseAgent?.(null)
+      cancelledRuns.delete(runId)
       return
     }
-    await handleEngineError(runId, error)
+    engines.set(runId, engine)
+
+    try {
+      const result = rehydrate ? await engine.resumeWithAnswer(answer!.text) : await engine.start()
+      flushRunLog()
+      if (await runWasCancelled(runId)) {
+        await finishCancelledRun(runId)
+        await releaseAgent?.(null)
+        return
+      }
+      // Report warm-agent status once (after ensureSession has fired).
+      if (poolInfo && poolInfo.wasWarm) {
+        await queueEvent(runId, 'agent_reused', { agentId: poolInfo.agentId, role: 'primary' })
+      }
+      await applyProgress(runId, result)
+      // A run that stopped (at a gate, or paused) reopens this session later: it
+      // is not handed to the next run of the project in the meantime.
+      await releaseAgent?.(result.sessionFile ?? null, { detach: result.status === 'paused' })
+      pendingAnswers.delete(runId)
+    } catch (error) {
+      flushRunLog()
+      await releaseAgent?.(null)
+      if (await runWasCancelled(runId)) {
+        // The engine was disposed under the running stage; that is the cancel, not a failure.
+        await finishCancelledRun(runId)
+        return
+      }
+      await handleEngineError(runId, error)
+    }
+  } finally {
+    clearInterval(tokenRefresh)
   }
 }
 

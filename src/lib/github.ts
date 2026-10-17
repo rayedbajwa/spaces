@@ -137,17 +137,25 @@ export async function cloneGitHubRepo(orgId: string, fullName: string): Promise<
   const target = path.join(workspaceRoot(), owner, name)
   await mkdir(path.dirname(target), { recursive: true })
 
-  const authHeader = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  // The header goes in the environment: an argument would show up in error messages and logs.
+  const { describeGitError, gitAuthEnv, withoutInjectedGitConfig } = await import('./github-app-auth')
+  const env = { ...withoutInjectedGitConfig(process.env), ...gitAuthEnv(token) }
   const remote = `https://github.com/${owner}/${name}.git`
+  const run = async (args: string[], opts: { cwd?: string; timeout: number }) => {
+    try {
+      await execFileAsync('git', args, { ...opts, env, maxBuffer: 16 * 1024 * 1024 })
+    } catch (error) {
+      throw new Error(`git ${args[0]} ${fullName} failed: ${describeGitError(error, token)}`)
+    }
+  }
 
   if (await isGitRepo(target)) {
     // Already cloned: bring it up to date but never clobber local work.
-    await execFileAsync('git', ['-c', `http.extraheader=${authHeader}`, 'fetch', '--all', '--prune'], { cwd: target, env, timeout: 10 * 60_000 })
+    await run(['fetch', '--all', '--prune'], { cwd: target, timeout: 10 * 60_000 })
     return target
   }
 
-  await execFileAsync('git', ['-c', `http.extraheader=${authHeader}`, 'clone', remote, target], { env, timeout: 30 * 60_000, maxBuffer: 16 * 1024 * 1024 })
+  await run(['clone', remote, target], { timeout: 30 * 60_000 })
   return target
 }
 
