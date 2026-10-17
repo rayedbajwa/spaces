@@ -19,8 +19,8 @@ import { LoadingBlock, SkeletonRows, SkeletonTiles, Spinner } from './loading'
 import { renderMarkdown } from './markdown'
 import { IntentViewer } from './intent-viewer'
 import { LogText } from './log-text'
-import { composeChoiceAnswer, parseAgentQuestion } from './agent-choices'
-import { AgentChoicePicker, OTHER_CHOICE } from './agent-choice-picker'
+import { composeChoiceAnswer, composeRecommendationList, parseAgentQuestion, parseRecommendations } from './agent-choices'
+import { AgentChoicePicker, OTHER_CHOICE, RecommendationChecklist } from './agent-choice-picker'
 import './styles.css'
 
 /** Human-readable tab names (the tab ids double as URL/state keys). */
@@ -4421,7 +4421,19 @@ function AiAgentOutputBar({
   // changes already are the yes and the no, so only real options show there.
   const answering = needsInput && currentRun?.pauseKind !== 'user' && streamSettled
   const agentQuestion = useMemo(() => (answering ? parseAgentQuestion(currentRun?.log) : undefined), [answering, currentRun?.log])
-  const showChoices = Boolean(agentQuestion && agentQuestion.choices.length > 0 && !(currentRun?.pauseKind === 'review' && agentQuestion.yesNo))
+  // A review's recommended changes, as a checklist of what to apply.
+  const recommendations = useMemo(() => (answering && currentRun?.pauseKind === 'review' ? parseRecommendations(currentRun?.log) : undefined), [answering, currentRun?.pauseKind, currentRun?.log])
+  const showChoices = Boolean(agentQuestion && agentQuestion.choices.length > 0 && !recommendations && !(currentRun?.pauseKind === 'review' && agentQuestion.yesNo))
+  const recKey = `${currentRun?.runId}:${recommendations?.title ?? ''}:${recommendations?.items.map((i) => i.key).join('')}`
+  const [tickedRecs, setTickedRecs] = useState<Set<string>>(new Set())
+  useEffect(() => { setTickedRecs(new Set(recommendations?.items.map((i) => i.key))) }, [recKey])
+  const toggleRec = (key: string) => setTickedRecs((current) => {
+    const next = new Set(current)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    return next
+  })
+  const recList = recommendations ? composeRecommendationList(recommendations.items.filter((i) => tickedRecs.has(i.key))) : ''
   const questionKey = `${currentRun?.runId}:${agentQuestion?.title ?? ''}:${agentQuestion?.choices.map((c) => c.key).join('')}`
   const [pickedChoice, setPickedChoice] = useState<string | null>(null)
   useEffect(() => {
@@ -4429,7 +4441,11 @@ function AiAgentOutputBar({
   }, [questionKey])
   const pickedOption = agentQuestion?.choices.find((c) => c.key === pickedChoice)
   // What goes to the agent: the picked option plus any details, or the box alone.
-  const composedAnswer = showChoices && pickedOption ? composeChoiceAnswer(pickedOption, answerDraft, agentQuestion?.yesNo) : answerDraft.trim()
+  const composedAnswer = recList
+    ? [recList, answerDraft.trim() && `Additional details: ${answerDraft.trim()}`].filter(Boolean).join('\n\n')
+    : showChoices && pickedOption ? composeChoiceAnswer(pickedOption, answerDraft, agentQuestion?.yesNo) : answerDraft.trim()
+  const changeCount = recList ? tickedRecs.size : 0
+  const changesLabel = `${changeCount} change${changeCount === 1 ? '' : 's'}`
   const sendComposed = (prefix?: 'approve') => {
     if (!onSendAnswer) return
     onSendAnswer(prefix ? (composedAnswer ? `${prefix}: ${composedAnswer}` : prefix) : composedAnswer)
@@ -4648,15 +4664,26 @@ function AiAgentOutputBar({
           {showChoices && agentQuestion && (
             <AgentChoicePicker question={agentQuestion} picked={pickedChoice} onPick={setPickedChoice} name={`choice-${currentRun.runId}`} />
           )}
+          {recommendations && (
+            <RecommendationChecklist
+              recommendations={recommendations}
+              ticked={tickedRecs}
+              onToggle={toggleRec}
+              onAll={(all) => setTickedRecs(new Set(all ? recommendations.items.map((i) => i.key) : []))}
+            />
+          )}
+          {recommendations && <label className="agent-choices-details-label" htmlFor="dock-answer">Additional information (optional)</label>}
           {showChoices && <label className="agent-choices-details-label" htmlFor="dock-answer">{pickedChoice === OTHER_CHOICE ? 'Your answer' : 'Additional information (optional)'}</label>}
           <textarea
             id="dock-answer"
-            className={showChoices ? 'agent-choices-details' : undefined}
+            className={showChoices || recommendations ? 'agent-choices-details' : undefined}
             autoFocus={!showChoices || pickedChoice === OTHER_CHOICE}
             value={answerDraft}
             onChange={(e) => setAnswerDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && composedAnswer) { e.preventDefault(); sendComposed() } }}
-            placeholder={showChoices
+            placeholder={recommendations
+              ? 'Anything else to change or keep in mind, applied along with the ticked changes…'
+              : showChoices
               ? (pickedChoice === OTHER_CHOICE ? 'Write your own answer…' : 'Anything the agent should know with this choice: constraints, context, exceptions…')
               : currentRun.pauseKind === 'review' ? 'Optional notes — applied to this stage before the run moves on when you approve. Or describe changes to request another pass.' : 'Answer the agent, or press Continue if nothing was actually asked…'}
             style={{ minHeight: 60 }}
@@ -4668,7 +4695,15 @@ function AiAgentOutputBar({
                 className="primary-button"
                 onClick={() => sendComposed('approve')}
                 title={composedAnswer ? 'Approve; your choice and notes are applied to this stage first, then the run continues' : 'Approve and continue to the next stage'}
-              >{composedAnswer ? (showChoices && pickedOption ? `Approve with ${pickedOption.key}` : 'Approve with notes') : 'Approve and continue'}</button>
+              >{composedAnswer ? (changeCount ? `Approve with ${changesLabel}` : showChoices && pickedOption ? `Approve with ${pickedOption.key}` : 'Approve with notes') : 'Approve and continue'}</button>
+            )}
+            {currentRun.pauseKind === 'review' && changeCount > 0 && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => { onSendAnswer(answerDraft.trim() ? `approve: ${answerDraft.trim()}` : 'approve'); setAnswerDraft('') }}
+                title="Approve without the ticked changes and continue to the next stage"
+              >Approve as-is</button>
             )}
             {currentRun.pauseKind !== 'review' && showChoices && (
               <button
@@ -4694,7 +4729,7 @@ function AiAgentOutputBar({
                 disabled={!composedAnswer}
                 title={currentRun.pauseKind === 'review' ? 'Send it back for another pass with these changes' : 'Send this answer to the agent'}
                 onClick={() => sendComposed()}
-              >{currentRun.pauseKind === 'review' ? 'Request changes' : 'Send'}{composedAnswer ? '' : ' (type something first)'}</button>
+              >{currentRun.pauseKind === 'review' ? (changeCount ? `Send back with ${changesLabel}` : 'Request changes') : 'Send'}{composedAnswer ? '' : ' (type something first)'}</button>
             )}
             {currentRun.pauseKind !== 'review' && <span className="text-subtle" style={{ fontSize: 11 }}>⌘/Ctrl+Enter to send</span>}
           </div>

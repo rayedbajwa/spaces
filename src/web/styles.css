@@ -3049,3 +3049,6 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .agent-choices-why { color: var(--text-muted); font-size: 12px; padding-left: 2px; }
 .agent-choices-details-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 .agent-dock.open.needs-input .dock-body > .notice-warning textarea.agent-choices-details { flex: 0 0 auto; min-height: 64px; }
+.agent-choices-title-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.agent-choices-title-row .link-button { font-size: 12px; font-weight: 500; }
+.agent-choice-check { font-family: var(--font-sans); }
