@@ -3077,3 +3077,19 @@ blockquote.approval-summary { white-space: pre-wrap; }
 .landing-static p { margin: 0 0 12px; color: var(--text-muted); }
 .landing-static a { color: var(--accent-text); }
 .landing-static small { color: var(--amber); font-weight: 500; margin-left: 6px; }
+
+/* Parallel implementation agents in the agent dock: one chip per agent; a chip switches the log to its output. */
+.dock-pill-badge.agents { background: var(--accent-soft); color: var(--accent-text); border: 1px solid rgba(94, 106, 210, 0.45); }
+.dock-agents { flex: 0 0 auto; display: grid; gap: 6px; margin-bottom: 8px; }
+.dock-agents-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dock-agents-title { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-right: 4px; }
+.dock-agent {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 280px; padding: 5px 10px;
+  border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-elevated);
+  color: var(--text); font-size: 12px; cursor: pointer;
+}
+.dock-agent:hover { background: var(--bg-hover); border-color: var(--border-focus); color: var(--text); }
+.dock-agent.selected { border-color: var(--accent); background: var(--accent-soft); }
+.dock-agent-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.dock-agent-meta { color: var(--text-muted); white-space: nowrap; }
+.dock-agent-detail { font-size: 12px; color: var(--text-muted); }
