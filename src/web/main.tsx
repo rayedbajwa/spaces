@@ -1914,12 +1914,15 @@ function App() {
   // be unit-tested without a DOM. Both are pure functions imported at the top.
 
   /** Accept a feature whose verification did not pass, then offer its next step (review if not yet approved, else deliver). */
+  const [accepting, setAccepting] = useState(false)
   async function acceptFeature(card: BoardCard, presetNote?: string) {
     const note = presetNote ?? window.prompt(
       `Accept ${card.projectLabel} with verification "${card.verificationStatus}"?\n\nSay why — it is recorded with your name in the intent's acceptance record.`,
       acceptanceChecklistNote(card.recommendedAction?.checklist),
     )
-    if (note === null) return
+    if (note === null || accepting) return
+    setAccepting(true)
+    setStatusMessage(`Accepting ${card.projectLabel}…`)
     try {
       const { nextStep } = await postJson<{ nextStep?: { step: string; label: string; tab: ProjectModalTab; reason: string } }>(`/api/projects/${card.projectNamespace}/accept`, { note })
       setStatusMessage(`${card.projectLabel} accepted at ${card.verificationStatus} verification.`)
@@ -1929,7 +1932,12 @@ function App() {
         await executeStep(nextStep.step, nextStep.tab, card)
       }
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : String(error))
+      // A worker restarting (a deploy) or the network dropping: say so, so the click is not lost silently.
+      const message = error instanceof Error ? error.message : String(error)
+      setStatusMessage(`Could not accept ${card.projectLabel}: ${/fetch|network|json|unexpected/i.test(message) ? 'the project\'s worker did not answer (it may be restarting)' : message}. Try again in a moment.`)
+      window.alert(`Accepting ${card.projectLabel} did not go through.\n\n${message}\n\nNothing was recorded; try again in a moment.`)
+    } finally {
+      setAccepting(false)
     }
   }
 
@@ -2653,7 +2661,8 @@ function App() {
                 </div>
                 {selectedCardFresh.recommendedAction.step === 'accept' ? (
                   <AcceptDecision
-                    busy={busy}
+                    busy={busy || accepting}
+                    accepting={accepting}
                     checklist={selectedCardFresh.recommendedAction.checklist}
                     onAccept={(note) => void acceptFeature(selectedCardFresh, note)}
                     onRequestChanges={(notes) => void requestChanges(selectedCardFresh, notes)}
@@ -3753,7 +3762,7 @@ function App() {
               onCancel={() => void controlRun('cancel')}
               onSendFeedback={sendFeedback}
               projectPaused={Boolean(projectDetail?.pausedAt)}
-              busy={busy}
+              busy={busy || accepting}
             />
           </div>
         </section>
@@ -4322,7 +4331,7 @@ function acceptanceChecklistNote(checklist?: string[]): string {
  * is recorded with the acceptance), or request changes (the notes go to
  * implement, which then reviews and verifies again).
  */
-function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?: boolean; checklist?: string[]; onAccept: (note: string) => void; onRequestChanges: (notes: string) => void }) {
+function AcceptDecision({ busy, accepting, checklist, onAccept, onRequestChanges }: { busy?: boolean; accepting?: boolean; checklist?: string[]; onAccept: (note: string) => void; onRequestChanges: (notes: string) => void }) {
   // What only a person can check starts the note, so accepting records it as their to-do list.
   const [notes, setNotes] = useState(() => acceptanceChecklistNote(checklist))
   return (
@@ -4337,7 +4346,7 @@ function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?
         aria-label="Notes"
       />
       <div className="button-row">
-        <button type="button" className="primary-button" disabled={busy} onClick={() => onAccept(notes.trim())} title="Accept the intent as it stands; your notes are recorded with the acceptance">Accept</button>
+        <button type="button" className="primary-button" disabled={busy} onClick={() => onAccept(notes.trim())} title="Accept the intent as it stands; your notes are recorded with the acceptance">{accepting ? <><Spinner /> Accepting…</> : 'Accept'}</button>
         <button type="button" className="secondary-button" disabled={busy || !notes.trim()} onClick={() => onRequestChanges(notes)} title={notes.trim() ? 'Run implement with these notes as the changes to make, then review and verify again' : 'Write the changes you want first'}>Request changes</button>
       </div>
     </div>
