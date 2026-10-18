@@ -37,6 +37,9 @@ const compactorLog = log.child({ mod: 'context-compactor' })
  */
 const COMPACT_THRESHOLD_TOKENS = 200
 
+/** How much of a stage's last lines an extractive summary keeps. */
+const EXTRACTIVE_TAIL_CHARS = 600
+
 /** Target size for the compact summary. Haiku respects this loosely. */
 const TARGET_SUMMARY_CHARS = 400
 
@@ -91,6 +94,12 @@ const OPENROUTER_CHAT_API = 'https://openrouter.ai/api/v1/chat/completions'
 const OPENAI_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENAI || 'gpt-5-mini'
 const OPENROUTER_COMPACT_MODEL = process.env.COMPACT_MODEL_OPENROUTER || 'openrouter/auto'
 /**
+ * Tried when the first model fails or answers empty: openrouter/auto sometimes
+ * picks a reasoning model that spends the budget before writing anything.
+ * A small model that does not reason.
+ */
+const OPENROUTER_FALLBACK_MODEL = process.env.COMPACT_MODEL_OPENROUTER_FALLBACK || 'openai/gpt-4o-mini'
+/**
  * Completion budget for the OpenAI-compatible endpoints. Reasoning models
  * (gpt-5-mini, or whatever openrouter/auto picks) spend this budget on
  * reasoning before any text, so 800 often ended with empty content.
@@ -134,16 +143,72 @@ async function summarizeOnce(rawPrompt: string, orgId?: string): Promise<string>
       : undefined
   if (!openAiCompatible) throw new NoCompactionKeyError()
 
-  const res = await fetch(openAiCompatible.url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${openAiCompatible.key}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: openAiCompatible.model, max_completion_tokens: COMPACT_COMPLETION_TOKENS, messages: [{ role: 'user', content: prompt }], ...openAiCompatible.extra }),
-  })
-  if (!res.ok) throw new Error(`${openAiCompatible.label} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
-  const data = (await res.json()) as { model?: string; choices?: Array<{ finish_reason?: string; message?: { content?: string } }> }
-  const text = (data.choices?.[0]?.message?.content ?? '').trim()
-  if (!text) throw new Error(`${openAiCompatible.label} returned empty text content (model ${data.model ?? openAiCompatible.model}, finish_reason ${data.choices?.[0]?.finish_reason ?? 'none'})`)
-  return text
+  const call = async (model: string, extra: Record<string, unknown>): Promise<string> => {
+    const res = await fetch(openAiCompatible.url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${openAiCompatible.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model, max_completion_tokens: COMPACT_COMPLETION_TOKENS, messages: [{ role: 'user', content: prompt }], ...extra }),
+    })
+    if (!res.ok) throw new Error(`${openAiCompatible.label} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 300)}`)
+    const data = (await res.json()) as { model?: string; choices?: Array<{ finish_reason?: string; message?: { content?: string } }> }
+    const text = (data.choices?.[0]?.message?.content ?? '').trim()
+    if (!text) throw new Error(`${openAiCompatible.label} returned empty text content (model ${data.model ?? model}, finish_reason ${data.choices?.[0]?.finish_reason ?? 'none'})`)
+    return text
+  }
+  try {
+    return await call(openAiCompatible.model, openAiCompatible.extra)
+  } catch (error) {
+    if (openAiCompatible.label !== 'OpenRouter' || openAiCompatible.model === OPENROUTER_FALLBACK_MODEL) throw error
+    compactorLog.debug('compaction model failed; trying the fallback', { model: openAiCompatible.model, fallback: OPENROUTER_FALLBACK_MODEL, err: error instanceof Error ? error.message : String(error) })
+    return call(OPENROUTER_FALLBACK_MODEL, {})
+  }
+}
+
+/**
+ * What a next stage must not lose, read from the stage's output itself rather
+ * than trusted to a summary: the status lines it reached, the commits, pull
+ * requests and spec files it named, and whether it stopped on a question.
+ */
+export async function handoffFacts(tail: string): Promise<{ statuses: string[]; refs: string[]; question?: string }> {
+  const { references } = await import('./handoff-evals')
+  const { QUESTION_PATTERN } = await import('./aidlc')
+  const statuses = [...new Set([...tail.matchAll(/\b(?:Verification|Code Review|Delivery|Dev Setup) Status:\s*\**\s*[A-Z_]+\b/g)].map((m) => m[0].replace(/\*/g, '')))]
+  const refs = references(tail)
+  let question: string | undefined
+  if (QUESTION_PATTERN.test(tail)) {
+    // The question itself: the last line that asks something, else the first question heading.
+    const lines = tail.split('\n').map((l) => l.trim()).filter(Boolean)
+    question = [...lines].reverse().find((l) => l.endsWith('?')) ?? lines.find((l) => /question/i.test(l)) ?? 'a question or approval is pending'
+  }
+  return { statuses, refs, question }
+}
+
+/** The summary with what it dropped of those facts appended, so the next stage always has them. */
+export async function withHandoffFacts(summary: string, tail: string): Promise<string> {
+  const facts = await handoffFacts(tail)
+  const lower = summary.toLowerCase()
+  const extra: string[] = []
+  const lostStatus = facts.statuses.filter((st) => !lower.includes(st.split(':')[1]!.trim().toLowerCase()))
+  if (lostStatus.length) extra.push(`Status: ${lostStatus.join('; ')}`)
+  const lostRefs = facts.refs.filter((r) => !lower.includes(r.toLowerCase()))
+  if (lostRefs.length) extra.push(`Refs: ${lostRefs.join(', ')}`)
+  if (facts.question && !/question|approv|await|waiting|confirm|\?/i.test(summary)) extra.push(`Pending question: ${facts.question.slice(0, 300)}`)
+  return extra.length ? `${summary.trim()}\n\n${extra.join('\n')}` : summary
+}
+
+/**
+ * A summary without a model, for when none could write one: the facts and the
+ * stage's last lines, short enough for a preamble. Better than the raw tail,
+ * which can be thousands of characters.
+ */
+export async function extractiveSummary(tail: string): Promise<string> {
+  const lines = tail.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim())
+  let last = ''
+  for (const line of [...lines].reverse()) {
+    if (last.length + line.length > EXTRACTIVE_TAIL_CHARS) break
+    last = last ? `${line}\n${last}` : line
+  }
+  return withHandoffFacts(last, tail)
 }
 
 /**
@@ -188,7 +253,7 @@ async function compactHandoffUnmasked(input: {
   const cached = await lookupCachedSummary(hash)
   if (cached) {
     compactorLog.debug('cache hit', { hash, stage: input.stage })
-    return { text: cached, hash, compacted: true, cached: true }
+    return { text: await withHandoffFacts(cached, input.tail), hash, compacted: true, cached: true }
   }
 
   // LLM call — safe-fail to raw tail on any error.
@@ -204,6 +269,7 @@ Instructions:
   * Named artifacts created or modified
   * Any open questions / blockers left for the next stage
   * Any hard constraints (contracts, invariants) that downstream stages must respect
+  * Exact identifiers: status lines (e.g. "Verification Status: PARTIAL"), commit hashes, PR numbers, spec file names
 - Drop chatter, hedging, and any commentary that isn't load-bearing.
 - Output the summary as plain markdown. Do not preamble with "Here is a summary".
 
@@ -211,7 +277,7 @@ Instructions:
 
 ${input.tail}
 `
-    const summary = await summarizeOnce(prompt, input.orgId)
+    const summary = await withHandoffFacts(await summarizeOnce(prompt, input.orgId), input.tail)
     compactorLog.debug('compacted stage tail', {
       hash,
       stage: input.stage,
@@ -224,8 +290,12 @@ ${input.tail}
     // Having no key for a summary is a configuration fact, not a failure: the
     // raw tail is passed on and the run is unaffected, so it is not a warning.
     const detail = { hash, stage: input.stage, err: err instanceof Error ? err.message : String(err) }
-    if (err instanceof NoCompactionKeyError) compactorLog.debug('no key for compaction; passing the raw tail on', detail)
-    else compactorLog.warn('compaction failed, falling back to raw tail', detail)
-    return { text: input.tail, hash, compacted: false, cached: false }
+    if (err instanceof NoCompactionKeyError) {
+      compactorLog.debug('no key for compaction; passing the raw tail on', detail)
+      return { text: input.tail, hash, compacted: false, cached: false }
+    }
+    // Every model failed: hand on the facts and the last lines, not the whole tail.
+    compactorLog.warn('compaction failed, passing an extractive summary on', detail)
+    return { text: await extractiveSummary(input.tail), hash, compacted: true, cached: false }
   }
 }

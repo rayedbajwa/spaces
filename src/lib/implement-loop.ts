@@ -34,6 +34,8 @@ export function implementLoopTemplate(role?: string): PipelineTemplate {
           branch: [
             { when: "verification_status == 'pass'", goto: 'end' },
             { when: "verification_near_pass == 'true'", goto: 'end' },
+            // Another pass after one that moved nothing would land in the same place.
+            { when: "verification_progress == 'same'", goto: 'end' },
             { when: 'true', goto: 'code-generation' },
           ],
         },

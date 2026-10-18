@@ -169,7 +169,8 @@ export const AGENT_CHECKS: AgentCheck[] = [
       const dupes = ids.filter((id, i) => id && ids.indexOf(id) !== i)
       // Delivery tasks name a repository (open the PR, merge, deploy), not a file.
       const deliveryAt = lines.findIndex((l) => /^##\s.*\bdelivery\b/i.test(l))
-      const codeTasks = (deliveryAt < 0 ? lines : lines.slice(0, deliveryAt)).filter((l) => /^\s*-\s+\[[ xX]\]\s+/.test(l))
+      // So do [OWNER] tasks (a person's check on a device, an approval).
+      const codeTasks = (deliveryAt < 0 ? lines : lines.slice(0, deliveryAt)).filter((l) => /^\s*-\s+\[[ xX]\]\s+/.test(l) && !/\[OWNER\]/i.test(l))
       const noPath = codeTasks.filter((l) => !/\b[\w.-]+\/[\w./-]+|\b[\w-]+\.[a-z]{1,5}\b/.test(l)).length
       const groups = headings(text)
       return result([

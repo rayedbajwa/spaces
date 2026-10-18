@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
+import { summarizeVerification } from './verification-summary'
 import { promisify } from 'node:util'
 import {
   AIDLCFlow,
+  findLatestFeatureDirAbsolute,
   runAIDLCParallelSubAgents,
   type FlowOptions,
   type FlowProgress,
@@ -85,6 +88,8 @@ export class PipelineEngine {
   private readonly stepsByStage: Map<StageName, PipelineStep>
   private readonly stepsById: Map<string, PipelineStep>
   private readonly visitCount: Map<string, number> = new Map()
+  /** Criteria met at this run's last verify, for verification_progress. */
+  private lastVerifyMet?: number
   // The step a loop branch just sent the run back to, and the code repositories'
   // state when that re-run began: a re-run that leaves them untouched ends the loop.
   private loopedBackTo?: string
@@ -530,6 +535,17 @@ export class PipelineEngine {
     return states.every((state) => state !== undefined) ? states.join('\n\n') : undefined
   }
 
+  /** Criteria met by the verify that just ran, against the previous verify in this run. */
+  private async verificationProgress(): Promise<'first' | 'progressed' | 'same' | 'regressed' | undefined> {
+    const featureDir = await findLatestFeatureDirAbsolute(this.options.cwd).catch(() => null)
+    const report = featureDir ? await readFile(path.join(featureDir, 'verification-report.md'), 'utf8').catch(() => '') : ''
+    const met = report ? summarizeVerification(report)?.met : undefined
+    if (met === undefined) return undefined
+    const previous = this.lastVerifyMet
+    this.lastVerifyMet = met
+    return previous === undefined ? 'first' : met > previous ? 'progressed' : met < previous ? 'regressed' : 'same'
+  }
+
   private async buildBranchVariables(currentStepId: string): Promise<Record<string, string | undefined>> {
     const [verification, delivery, codeReview, nearPass] = await Promise.all([
       readVerificationStatus(this.options.cwd).catch(() => undefined),
@@ -537,9 +553,11 @@ export class PipelineEngine {
       readCodeReviewStatus(this.options.cwd).catch(() => undefined),
       readVerificationNearPass(this.options.cwd).catch(() => undefined),
     ])
+    const isVerify = this.stepsById.get(currentStepId)?.stage === 'verify'
     return {
       verification_status: verification,
       verification_near_pass: nearPass,
+      ...(isVerify ? { verification_progress: await this.verificationProgress() } : {}),
       delivery_status: delivery,
       code_review_status: codeReview,
       iteration: String(this.visitCount.get(currentStepId) ?? 0),

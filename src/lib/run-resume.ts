@@ -82,6 +82,13 @@ export function parseTaskProgress(tasksMarkdown: string): TaskProgress {
  * responsible for. The delivery tasks (open the PR, merge, deploy, UAT) are
  * the deliver step's, so they stay unticked until after review and QA.
  */
+/**
+ * A task only a person can do: marked `[OWNER]` by the tasks stage, or plainly
+ * one (an on-device check, a human approval or sign-off). An agent re-running
+ * implement cannot close it, so it is not implementation work left.
+ */
+export const OWNER_TASK = /\[(?:OWNER|HUMAN|MANUAL)\]|\bon[- ]device\b|\bdevice checklist\b|\bhuman approval\b|\bsign[- ]off\b/i
+
 export function implementationTaskProgress(tasksMarkdown: string): TaskProgress {
   const kept: string[] = []
   let deliveryLevel: number | undefined
@@ -93,7 +100,7 @@ export function implementationTaskProgress(tasksMarkdown: string): TaskProgress 
       if (deliveryLevel === undefined && /\bdelivery\b/i.test(heading[2]!)) deliveryLevel = level
       continue
     }
-    if (deliveryLevel === undefined) kept.push(line)
+    if (deliveryLevel === undefined && !(/^\s*-\s+\[[ xX]\]/.test(line) && OWNER_TASK.test(line))) kept.push(line)
   }
   return parseTaskProgress(kept.join('\n'))
 }
