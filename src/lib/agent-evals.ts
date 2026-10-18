@@ -57,7 +57,9 @@ const result = (problems: Array<string | false | null | undefined>): CheckResult
 
 const headings = (text: string, level = 2) => text.split('\n').filter((l) => new RegExp(`^#{${level}}\\s`).test(l)).map((l) => l.replace(/^#+\s+/, '').trim())
 const hasHeading = (text: string, title: string, level = 2) => headings(text, level).some((h) => h.toLowerCase() === title.toLowerCase())
-const firstLine = (text: string) => text.split('\n').find((l) => l.trim())?.trim() ?? ''
+// The first line that says something, after an optional `# Title` heading:
+// Spaces reads the status line wherever it is, so a title above it is fine.
+const firstLine = (text: string) => text.split('\n').map((l) => l.trim()).filter(Boolean).find((l, i) => !(i === 0 && /^#\s/.test(l))) ?? ''
 
 /** Body of the `## <title>` section, up to the next `## `. */
 function section(text: string, title: string): string | undefined {
@@ -99,7 +101,10 @@ export const AGENT_CHECKS: AgentCheck[] = [
       const status = parseCodeReviewStatus(text)
       const findings = section(text, 'Findings') ?? ''
       const bullets = findings.split('\n').filter((l) => /^\s*[-*]\s/.test(l) && !/\(none\)/i.test(l))
-      const malformed = bullets.filter((l) => !/^\s*[-*]\s+\[(BLOCKER|MAJOR|MINOR|NIT)\]\s+\S+:\d+\s+[—–-]\s+.+\s+[—–-]\s+.+/.test(l))
+      // A location is path:line or path:start-end, optionally in backticks; several may be joined with `+` or `,`.
+      const location = String.raw`\x60?[^\s\x60]+:\d+(?:-\d+)?\x60?`
+      const finding = new RegExp(String.raw`^\s*[-*]\s+\[(BLOCKER|MAJOR|MINOR|NIT)\]\s+${location}(?:\s*[+,]\s*${location})*\s+[—–-]\s+.+\s+[—–-]\s+.+`)
+      const malformed = bullets.filter((l) => !finding.test(l))
       const serious = bullets.some((l) => /\[(BLOCKER|MAJOR)\]/.test(l))
       return result([
         !status && 'no `Code Review Status: APPROVED|CHANGES_REQUESTED` line',
