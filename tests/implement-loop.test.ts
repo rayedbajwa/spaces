@@ -93,6 +93,19 @@ describe('implement loop', () => {
     expect(await h.finish()).toBe('end')                // 98%, nothing critical → stop, a person accepts
   })
 
+  test('a verify that moved nothing since the last pass ends the loop', async () => {
+    const h = await harness()
+    await h.finish()
+    await h.review('APPROVED')
+    await h.finish()
+    await h.verification('PARTIAL', 30, 50, 2)
+    expect(await h.finish()).toBe('implement')          // first verify: fix what it flagged
+    expect(await h.finish()).toBe('review')
+    expect(await h.finish()).toBe('verify')
+    await h.verification('PARTIAL', 30, 50, 2)
+    expect(await h.finish()).toBe('end')                // same 30/50: another pass would land here too
+  })
+
   test(`implement runs at most ${IMPLEMENT_LOOP_MAX_PASSES} times`, async () => {
     const h = await harness()
     await h.review('CHANGES_REQUESTED')
@@ -108,11 +121,12 @@ describe('implement loop', () => {
     await h.finish(() => commit(repo, 'a.ts'))           // first pass writes code
     await h.review('APPROVED')
     await h.finish()
-    await h.verification('PARTIAL', 29, 31, 0)            // 93.5%: short of accepting
+    await h.verification('PARTIAL', 27, 31, 0)            // 87%: short of accepting
     expect(await h.finish()).toBe('implement')
     expect(await h.finish(() => commit(repo, 'b.ts'))).toBe('review')  // a fix: the loop carries on
     expect(await h.finish()).toBe('verify')
-    expect(await h.finish()).toBe('implement')            // still 29/31
+    await h.verification('PARTIAL', 29, 31, 0)            // progress (93.5%), still short of accepting
+    expect(await h.finish()).toBe('implement')
     expect(await h.finish()).toBe('end')                  // nothing changed this time: stop, not another round
     expect(h.trail).toEqual(['implement', 'review', 'verify', 'implement', 'review', 'verify', 'implement'])
   })

@@ -20,6 +20,11 @@ export interface BranchVariables {
    * finish" rule). Another pass would most likely land in the same place.
    */
   verification_near_pass?: 'true' | 'false'
+  /**
+   * Criteria met by this verify compared with the previous verify in the same
+   * run: 'same' means the implement pass between them moved nothing.
+   */
+  verification_progress?: 'first' | 'progressed' | 'same' | 'regressed'
   iteration?: string  // stringified count for the current step id
 }
 

@@ -2929,7 +2929,7 @@ async function loadStagePrompt(options: {
   }
 
   if (options.stage === 'tasks') {
-    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- End with a "## Delivery" task group, per repository in dependency order (see plan.md "## Repositories"): open the pull request, get CI green and review approval, merge (after any PR it is stacked on), deploy or confirm the deployment pipeline ran, and run UAT/final acceptance checks from test-plan.md against the deployed environment. Mark tasks that must wait on another repository's merge with the repository name so orchestration respects the order.\n- ${GOVERNING_WORKSPACE_DELIVERY_RULE}`
+    return `${basePrompt}\n\nAdditional AIDLC requirements:\n- End with a "## Delivery" task group, per repository in dependency order (see plan.md "## Repositories"): open the pull request, get CI green and review approval, merge (after any PR it is stacked on), deploy or confirm the deployment pipeline ran, and run UAT/final acceptance checks from test-plan.md against the deployed environment. Mark tasks that must wait on another repository's merge with the repository name so orchestration respects the order.\n- Mark every task only a person can do with [OWNER] right after its ID (on-device or manual checks, store submissions, sign-offs, approvals): e.g. \`- [ ] T012 [OWNER] [US1] Run the iOS device checklist from quickstart.md\`. Implement does not work on them; they become the person's checklist when the intent is accepted.\n- ${GOVERNING_WORKSPACE_DELIVERY_RULE}`
   }
 
   if (options.stage === 'plan') {
