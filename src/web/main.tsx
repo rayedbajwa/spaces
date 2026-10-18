@@ -4344,6 +4344,14 @@ function AcceptDecision({ busy, checklist, onAccept, onRequestChanges }: { busy?
   )
 }
 
+/** Steps a person can run instead of the recommended one (the Skip menu). */
+const SKIP_CHOICES: Array<{ step: string; label: string; detail: string }> = [
+  { step: 'review', label: 'Run review', detail: 'Review the code as it is now; open tasks stay open.' },
+  { step: 'verify', label: 'Run verify', detail: 'Test the feature as it is now and write a fresh verification report.' },
+  { step: 'accept', label: 'Accept and finish', detail: 'Accept it as it stands and move on to delivery; what is left becomes your checklist.' },
+  { step: 'implement', label: 'Run implement', detail: 'Go back to implement for another pass.' },
+]
+
 function AiAgentOutputBar({
   currentRun,
   parallelJob,
@@ -4514,6 +4522,14 @@ function AiAgentOutputBar({
     if (!el) return
     setFollowLog(el.scrollHeight - el.scrollTop - el.clientHeight < 40)
   }
+  // Overriding the recommendation: when the suggested step keeps going nowhere
+  // (implement re-running on tasks only a person can close), run another.
+  const [skipOpen, setSkipOpen] = useState(false)
+  const [skipTo, setSkipTo] = useState<'accept' | null>(null)
+  useEffect(() => { setSkipOpen(false); setSkipTo(null) }, [nextStep?.step, currentRun?.runId])
+  const skipChoices = nextStep && ['implement', 'review', 'verify'].includes(nextStep.step)
+    ? SKIP_CHOICES.filter((c) => c.step !== nextStep.step && (c.step !== 'accept' || Boolean(onAccept)))
+    : []
   const scrollLog = (where: 'top' | 'bottom') => {
     const el = logRef.current
     if (!el) return
@@ -4835,7 +4851,7 @@ function AiAgentOutputBar({
             <span className="next-step-label">{nextStep.label}</span>
             {nextStep.reason && <div className="next-step-reason">{nextStep.reason}</div>}
           </div>
-          {nextStep.step !== 'accept' && onRunNext && (
+          {nextStep.step !== 'accept' && skipTo !== 'accept' && onRunNext && (
             <button
               type="button"
               className="primary-button"
@@ -4846,10 +4862,45 @@ function AiAgentOutputBar({
               Run {nextStep.step}
             </button>
           )}
+          {skipChoices.length > 0 && onRunNext && (
+            <div className="skip-step">
+              <button type="button" className="secondary-button" disabled={runInFlight} aria-expanded={skipOpen} onClick={() => setSkipOpen((v) => !v)} title="The recommended step is going nowhere? Run another one instead.">
+                Skip ▾
+              </button>
+              {skipOpen && (
+                <div className="skip-step-menu" role="menu">
+                  <div className="skip-step-hint">Instead of {nextStep.step}:</div>
+                  {skipChoices.map((choice) => (
+                    <button
+                      key={choice.step}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setSkipOpen(false)
+                        if (choice.step === 'accept') { setSkipTo('accept'); return }
+                        if (window.confirm(`Skip ${nextStep.step} and run ${choice.step} instead?\n\n${choice.detail}`)) onRunNext(choice.step)
+                      }}
+                    >
+                      <strong>{choice.label}</strong>
+                      <span>{choice.detail}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
-      {expanded && nextStep?.step === 'accept' && !isActive && !canAnswer && onAccept && onRequestChanges && (
-        <AcceptDecision busy={busy || runInFlight} checklist={nextStep.checklist} onAccept={onAccept} onRequestChanges={onRequestChanges} />
+      {expanded && (nextStep?.step === 'accept' || skipTo === 'accept') && !isActive && !canAnswer && onAccept && onRequestChanges && (
+        <>
+          {skipTo === 'accept' && nextStep?.step !== 'accept' && (
+            <p className="skip-step-note">
+              Accepting skips {nextStep?.step}: the feature moves on to delivery as it stands, and the open items stay on your checklist.{' '}
+              <button type="button" className="link-button" onClick={() => setSkipTo(null)}>Cancel</button>
+            </p>
+          )}
+          <AcceptDecision busy={busy || runInFlight} checklist={nextStep?.checklist} onAccept={onAccept} onRequestChanges={onRequestChanges} />
+        </>
       )}
       </div>
     </section>
