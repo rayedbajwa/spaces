@@ -53,6 +53,7 @@ import { suggestRepositoriesAndWorkAreas } from './lib/suggestions'
 import { enrichOpenRouterUsage, needsProviderCost, priceRecord, recordUsage, usageFromMessage } from './lib/run-usage'
 import { loadModelCatalog, type CatalogModel } from './lib/model-catalog'
 import { gitHubActorEnv } from './lib/github-app-auth'
+import { scoreStageHandoff, type CriteriaMet } from './lib/phoenix-quality'
 import { notifyProject } from './lib/slack'
 import { stageSummary, summaryForGate } from './lib/approval-store'
 import { deliverApprovalRequestsForGate } from './lib/approval-notify'
@@ -441,6 +442,12 @@ async function handleRunJob(runId: string, fromStage?: StageName, answer?: GateA
               })
               .catch((err) => workerLog.warn('plan repository reconciliation failed', { runId, error: err instanceof Error ? err.message : String(err) }))
           }
+          // Quality scores on the run's Phoenix session (its Metrics page charts them).
+          void scoreStageHandoff(runId, h, {
+            projectPath: run.projectPath,
+            previousVerify: () => lastVerificationScore(run.projectNamespace),
+            rememberVerify: (met) => queueEvent(runId, 'verification_scored', met),
+          })
           void queueEvent(runId, 'handoff_captured', {
             stepId: h.stepId,
             stage: h.stage,
@@ -1039,3 +1046,13 @@ process.on('SIGINT', () => void shutdown('SIGINT'))
 process.on('SIGTERM', () => void shutdown('SIGTERM'))
 
 await main()
+
+/** Criteria met at the project's last scored verify, for loop-progress. */
+async function lastVerificationScore(projectNamespace: string): Promise<CriteriaMet | undefined> {
+  const [row] = await getDb()<Array<{ payload: CriteriaMet }>>`
+    SELECT e.payload FROM pipeline_events e JOIN pipeline_runs r USING (run_id)
+    WHERE r.project_namespace = ${projectNamespace} AND e.kind = 'verification_scored'
+    ORDER BY e.created_at DESC LIMIT 1
+  `.catch(() => [])
+  return row?.payload && typeof row.payload.met === 'number' ? row.payload : undefined
+}
