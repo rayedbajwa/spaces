@@ -175,6 +175,10 @@ export const ANNOTATION_CONFIGS = [
   { name: 'run-cost', type: 'CONTINUOUS', description: 'What the run cost in USD (Spaces usage events).', optimization_direction: 'MINIMIZE', lower_bound: 0, upper_bound: null },
   { name: 'human-decision', type: 'CATEGORICAL', description: 'A person\'s answer at a gate in Spaces.', optimization_direction: 'MAXIMIZE', values: [{ label: 'approve', score: 1 }, { label: 'approve_with_notes', score: 1 }, { label: 'request_changes', score: 0 }, { label: 'answered', score: 0.5 }, { label: 'responded', score: 0.5 }] },
   { name: 'turn-quality', type: 'CATEGORICAL', description: 'Rate an agent turn by hand.', optimization_direction: 'MAXIMIZE', values: [{ label: 'good', score: 1 }, { label: 'needs work', score: 0.5 }, { label: 'bad', score: 0 }] },
+  // Scored by the worker as each stage hands off (lib/phoenix-quality.ts).
+  { name: 'handoff-quality', type: 'CONTINUOUS', description: 'Share of the handoff checks a stage handoff passes (lib/handoff-evals).', optimization_direction: 'MAXIMIZE', lower_bound: 0, upper_bound: 1 },
+  { name: 'report-format', type: 'CATEGORICAL', description: 'Whether a verification report or code review is in the form Spaces reads.', optimization_direction: 'MAXIMIZE', values: [{ label: 'pass', score: 1 }, { label: 'fail', score: 0 }] },
+  { name: 'loop-progress', type: 'CATEGORICAL', description: 'Whether a verify moved the acceptance criteria met since the previous verify of the project; a run of same is a loop going nowhere.', optimization_direction: 'MAXIMIZE', values: [{ label: 'progressed', score: 1 }, { label: 'first', score: 1 }, { label: 'same', score: 0 }, { label: 'regressed', score: 0 }] },
 ] as const
 
 /** Create the configs that are missing and show them on the project. Never throws. */
