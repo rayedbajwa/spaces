@@ -21,7 +21,9 @@
 
 <br /><br />
 
-<img src="docs/screenshots/board.png" alt="The Spaces board: every card is a feature moving down the line, from Specified to Done" width="1200" />
+<a href="https://spacesos.dev/blog/what-broke-when-ai-agents-ran-my-software-process"><img src="docs/media/spaces-teaser.gif" alt="Spaces in action: a ticket moves down the line of agents, with your approval at each gate" width="900" /></a>
+
+<sub>▶ <a href="https://spacesos.dev/blog/what-broke-when-ai-agents-ran-my-software-process">Watch the one-minute demo</a> · <a href="https://spacesos.dev/blog">Blog</a></sub>
 
 <br />
 

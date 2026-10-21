@@ -403,8 +403,17 @@ async function route(req: Request): Promise<Response> {
     return sendHtml(200, readCookie(req, SESSION_COOKIE) ? html : landingHtml(html, origin))
   }
 
+  // The blog: static pages built from docs/blog (lib/blog.ts).
+  if (method === 'GET' && /^\/blog(\/[a-z0-9-]*)?\/?$/.test(url.pathname)) {
+    const slug = url.pathname.replace(/^\/blog\/?/, '').replace(/\/$/, '')
+    const file = Bun.file(join(publicDir, 'blog', `${slug || 'index'}.html`))
+    if (await file.exists()) return new Response(file, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=600' } })
+    return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
+  }
+
   if (method === 'GET' && (url.pathname === '/robots.txt' || url.pathname === '/sitemap.xml' || url.pathname === '/llms.txt')) {
-    const body = url.pathname === '/robots.txt' ? robotsTxt(origin) : url.pathname === '/sitemap.xml' ? sitemapXml(origin) : llmsTxt(origin)
+    const posts = url.pathname === '/sitemap.xml' ? await Bun.file(join(publicDir, 'blog', 'posts.json')).json().catch(() => []) : []
+    const body = url.pathname === '/robots.txt' ? robotsTxt(origin) : url.pathname === '/sitemap.xml' ? sitemapXml(origin, posts) : llmsTxt(origin)
     const type = url.pathname === '/sitemap.xml' ? 'application/xml' : 'text/plain'
     return new Response(body, { status: 200, headers: { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'public, max-age=3600' } })
   }
@@ -3630,7 +3639,7 @@ async function route(req: Request): Promise<Response> {
   }
 
   if (method === 'GET') {
-    const served = await tryServeStaticAsset(url.pathname)
+    const served = await tryServeStaticAsset(url.pathname, req.headers.get('range'))
     if (served) {
       return served
     }
@@ -4141,7 +4150,7 @@ async function isRunResumable(runId: string): Promise<boolean> {
   return row?.status === 'paused'
 }
 
-async function tryServeStaticAsset(pathname: string): Promise<Response | null> {
+async function tryServeStaticAsset(pathname: string, range?: string | null): Promise<Response | null> {
   const relativePath = pathname.replace(/^\/+/, '')
   if (!relativePath) return null
 
@@ -4151,7 +4160,17 @@ async function tryServeStaticAsset(pathname: string): Promise<Response | null> {
   const filePath = join(publicDir, normalizedPath)
   const file = Bun.file(filePath)
   if (!(await file.exists())) return null
-  return new Response(file, { headers: { 'content-type': getContentType(filePath) } })
+  const type = getContentType(filePath)
+  // Video players (Safari above all) fetch byte ranges to play and seek.
+  const wanted = range ? /^bytes=(\d*)-(\d*)$/.exec(range.trim()) : null
+  if (wanted && (wanted[1] || wanted[2])) {
+    const size = file.size
+    const start = wanted[1] ? Number(wanted[1]) : Math.max(0, size - Number(wanted[2]))
+    const end = wanted[1] && wanted[2] ? Math.min(Number(wanted[2]), size - 1) : size - 1
+    if (start >= size || start > end) return new Response(null, { status: 416, headers: { 'content-range': `bytes */${size}` } })
+    return new Response(file.slice(start, end + 1), { status: 206, headers: { 'content-type': type, 'content-range': `bytes ${start}-${end}/${size}`, 'accept-ranges': 'bytes', 'content-length': String(end - start + 1) } })
+  }
+  return new Response(file, { headers: { 'content-type': type, 'accept-ranges': 'bytes' } })
 }
 
 function toHistoryRun(row: RunRow): HistoryRunSummary {
@@ -5454,6 +5473,12 @@ function getContentType(filePath: string): string {
       return 'application/json; charset=utf-8'
     case '.png':
       return 'image/png'
+    case '.gif':
+      return 'image/gif'
+    case '.mp4':
+      return 'video/mp4'
+    case '.xml':
+      return 'application/xml; charset=utf-8'
     case '.md':
     case '.txt':
     case '.log':

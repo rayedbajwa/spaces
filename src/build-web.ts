@@ -1,6 +1,7 @@
-import { copyFile, mkdir } from 'node:fs/promises'
+import { copyFile, mkdir, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildBlog } from './lib/blog'
 import { log } from './lib/logger'
 
 const buildLog = log.child({ mod: 'build-web' })
@@ -37,6 +38,14 @@ export async function ensureFrontendBuilt(): Promise<void> {
   for (const name of LANDING_SCREENSHOTS) {
     await copyFile(join(screenshotsDir, name), join(publicDir, 'screenshots', name))
   }
+
+  // The demo video and GIF, served from /media/; the blog, from /blog.
+  const mediaDir = join(srcDir, '..', 'docs', 'media')
+  await mkdir(join(publicDir, 'media'), { recursive: true })
+  for (const name of await readdir(mediaDir).catch(() => [] as string[])) {
+    await copyFile(join(mediaDir, name), join(publicDir, 'media', name))
+  }
+  await buildBlog(join(srcDir, '..', 'docs', 'blog'), publicDir)
 }
 
 if (import.meta.main) {
