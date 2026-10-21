@@ -19,10 +19,15 @@ export function robotsTxt(origin: string): string {
   return ['User-agent: *', 'Allow: /', ...PRIVATE_PATHS.map((p) => `Disallow: ${p}`), '', `Sitemap: ${origin}/sitemap.xml`, ''].join('\n')
 }
 
-export function sitemapXml(origin: string): string {
+/** The landing page and the blog (posts as built into public/blog/posts.json). */
+export function sitemapXml(origin: string, posts: Array<{ slug: string; date: string }> = []): string {
+  const o = escapeHtml(origin)
+  const blog = posts.length
+    ? `\n  <url><loc>${o}/blog</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>${posts.map((p) => `\n  <url><loc>${o}/blog/${escapeHtml(p.slug)}</loc>${p.date ? `<lastmod>${escapeHtml(p.date)}</lastmod>` : ''}<priority>0.7</priority></url>`).join('')}`
+    : ''
   return `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>${escapeHtml(origin)}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>${o}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>${blog}
 </urlset>
 `
 }

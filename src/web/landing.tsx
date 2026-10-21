@@ -30,6 +30,7 @@ export function LandingPage({ openRegistration, onSignIn, onGetStarted }: { open
         <nav className="landing-links">
           <a href="#how">How it works</a>
           <a href="#features">Features</a>
+          <a href="/blog">Blog</a>
           <a href={DOCS_URL} target="_blank" rel="noreferrer">Docs</a>
           <a href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
         </nav>
