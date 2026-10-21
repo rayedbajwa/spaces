@@ -23,7 +23,7 @@
 
 <a href="https://spacesos.dev/blog/what-broke-when-ai-agents-ran-my-software-process"><img src="docs/media/spaces-teaser.gif" alt="Spaces in action: a ticket moves down the line of agents, with your approval at each gate" width="900" /></a>
 
-<sub>▶ <a href="https://spacesos.dev/blog/what-broke-when-ai-agents-ran-my-software-process">Watch the one-minute demo</a> · <a href="https://spacesos.dev/blog">Blog</a></sub>
+<sub>▶ <a href="https://spacesos.dev/blog/what-broke-when-ai-agents-ran-my-software-process">Watch the 90-second demo (with sound)</a> · <a href="https://spacesos.dev/blog">Blog</a></sub>
 
 <br />
 
