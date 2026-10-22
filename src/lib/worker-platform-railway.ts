@@ -56,6 +56,9 @@ export function railwayWorkerVariables(config: RailwayWorkerConfig, spec: Worker
     DATABASE_URL: `\${{${config.postgresServiceName}.DATABASE_URL}}`,
     ENCRYPTION_KEY: `\${{${web}.ENCRYPTION_KEY}}`,
     SPACES_INTERNAL_TOKEN: `\${{${web}.SPACES_INTERNAL_TOKEN}}`,
+    // During a secret rotation (lib/crypto-vault.ts, lib/role.ts); empty otherwise.
+    ENCRYPTION_KEY_PREVIOUS: `\${{${web}.ENCRYPTION_KEY_PREVIOUS}}`,
+    SPACES_INTERNAL_TOKEN_PREVIOUS: `\${{${web}.SPACES_INTERNAL_TOKEN_PREVIOUS}}`,
     PUBLIC_URL: `\${{${web}.PUBLIC_URL}}`,
     GIT_COMMIT: '${{RAILWAY_GIT_COMMIT_SHA}}',
   }
