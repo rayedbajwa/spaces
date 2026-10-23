@@ -403,16 +403,22 @@ async function route(req: Request): Promise<Response> {
     return sendHtml(200, readCookie(req, SESSION_COOKIE) ? html : landingHtml(html, origin))
   }
 
-  // The blog: static pages built from docs/blog (lib/blog.ts).
-  if (method === 'GET' && /^\/blog(\/[a-z0-9-]*)?\/?$/.test(url.pathname)) {
+  // The blog: post pages built from docs/blog (lib/blog.ts); the index and RSS
+  // list only posts whose date has come, so scheduled posts appear on their day.
+  if (method === 'GET' && (url.pathname === '/blog/rss.xml' || /^\/blog(\/[a-z0-9-]*)?\/?$/.test(url.pathname))) {
+    const blog = await import('./lib/blog')
+    const posts = blog.publishedPosts(await Bun.file(join(publicDir, 'blog', 'posts.json')).json().catch(() => []) as import('./lib/blog').PostSummary[])
+    const cache = { 'cache-control': 'public, max-age=300' }
+    if (url.pathname === '/blog/rss.xml') return new Response(blog.renderRss(posts), { headers: { 'content-type': 'application/rss+xml; charset=utf-8', ...cache } })
     const slug = url.pathname.replace(/^\/blog\/?/, '').replace(/\/$/, '')
-    const file = Bun.file(join(publicDir, 'blog', `${slug || 'index'}.html`))
-    if (await file.exists()) return new Response(file, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=600' } })
+    if (!slug) return new Response(blog.renderIndex(posts), { headers: { 'content-type': 'text/html; charset=utf-8', ...cache } })
+    const file = Bun.file(join(publicDir, 'blog', `${slug}.html`))
+    if (posts.some((p) => p.slug === slug) && await file.exists()) return new Response(file, { headers: { 'content-type': 'text/html; charset=utf-8', ...cache } })
     return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } })
   }
 
   if (method === 'GET' && (url.pathname === '/robots.txt' || url.pathname === '/sitemap.xml' || url.pathname === '/llms.txt')) {
-    const posts = url.pathname === '/sitemap.xml' ? await Bun.file(join(publicDir, 'blog', 'posts.json')).json().catch(() => []) : []
+    const posts = url.pathname === '/sitemap.xml' ? (await import('./lib/blog')).publishedPosts(await Bun.file(join(publicDir, 'blog', 'posts.json')).json().catch(() => []) as Array<{ slug: string; date: string }>) : []
     const body = url.pathname === '/robots.txt' ? robotsTxt(origin) : url.pathname === '/sitemap.xml' ? sitemapXml(origin, posts) : llmsTxt(origin)
     const type = url.pathname === '/sitemap.xml' ? 'application/xml' : 'text/plain'
     return new Response(body, { status: 200, headers: { 'content-type': `${type}; charset=utf-8`, 'cache-control': 'public, max-age=3600' } })
@@ -4156,6 +4162,8 @@ async function tryServeStaticAsset(pathname: string, range?: string | null): Pro
 
   const normalizedPath = normalize(relativePath)
   if (!normalizedPath || normalizedPath.startsWith('..') || normalizedPath.includes('..')) return null
+  // Blog files go through the blog route, which keeps scheduled posts hidden until their day.
+  if (normalizedPath === 'blog' || normalizedPath.startsWith('blog/')) return null
 
   const filePath = join(publicDir, normalizedPath)
   const file = Bun.file(filePath)

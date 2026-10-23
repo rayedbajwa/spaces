@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { parsePost, renderIndex, renderPost, renderRss } from '../src/lib/blog'
+import { parsePost, publishedPosts, renderIndex, renderPost, renderRss } from '../src/lib/blog'
 import { sitemapXml } from '../src/lib/seo'
 
 const SOURCE = `---
@@ -40,5 +40,12 @@ describe('blog', () => {
     const map = sitemapXml('https://spacesos.dev', [{ slug: 'what-broke', date: '2026-10-21' }])
     expect(map).toContain('<loc>https://spacesos.dev/blog</loc>')
     expect(map).toContain('<loc>https://spacesos.dev/blog/what-broke</loc><lastmod>2026-10-21</lastmod>')
+  })
+
+  test('a post dated in the future stays hidden until its day (US Eastern)', () => {
+    const posts = [{ date: '2026-10-22' }, { date: '2026-10-27' }, { date: '' }]
+    // 03:00 UTC on Oct 27 is still Oct 26 in New York.
+    expect(publishedPosts(posts, new Date('2026-10-27T03:00:00Z')).map((p) => p.date)).toEqual(['2026-10-22'])
+    expect(publishedPosts(posts, new Date('2026-10-27T05:00:00Z')).map((p) => p.date)).toEqual(['2026-10-22', '2026-10-27'])
   })
 })

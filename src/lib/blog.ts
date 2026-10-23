@@ -117,12 +117,25 @@ export function renderPost(post: BlogPost): string {
   })
 }
 
-export function renderIndex(posts: BlogPost[]): string {
+/** What the index, RSS and sitemap need about a post (public/blog/posts.json). */
+export type PostSummary = Pick<BlogPost, 'slug' | 'title' | 'description' | 'date'>
+
+/**
+ * Posts whose date has come (in US Eastern time, where the blog is written).
+ * A post dated in the future is scheduled: it stays off the index, RSS and
+ * sitemap, and its page is not served, until that day.
+ */
+export function publishedPosts<T extends Pick<BlogPost, 'date'>>(posts: T[], now = new Date()): T[] {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)
+  return posts.filter((p) => Boolean(p.date) && p.date <= today)
+}
+
+export function renderIndex(posts: PostSummary[]): string {
   const items = posts.map((p) => `<li><a href="/blog/${p.slug}">${escapeHtml(p.title)}</a><p>${escapeHtml(formatDate(p.date))} · ${escapeHtml(p.description)}</p></li>`).join('')
   return page({ title: 'Blog · Spaces', description: 'Building Spaces, an assembly line of AI agents with human gates: what works, what breaks, and the numbers.', path: '/blog', type: 'website', body: `<h1>Blog</h1><ul class="posts">${items}</ul>` })
 }
 
-export function renderRss(posts: BlogPost[]): string {
+export function renderRss(posts: PostSummary[]): string {
   const items = posts.map((p) => `<item><title>${escapeHtml(p.title)}</title><link>${SITE}/blog/${p.slug}</link><guid>${SITE}/blog/${p.slug}</guid><pubDate>${new Date(`${p.date}T12:00:00Z`).toUTCString()}</pubDate><description>${escapeHtml(p.description)}</description></item>`).join('')
   return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Spaces blog</title><link>${SITE}/blog</link><description>Building an assembly line of AI agents with human gates.</description>${items}</channel></rss>`
 }
@@ -135,8 +148,7 @@ export async function buildBlog(sourceDir: string, outDir: string): Promise<Blog
   const dir = join(outDir, 'blog')
   await mkdir(dir, { recursive: true })
   for (const post of posts) await writeFile(join(dir, `${post.slug}.html`), renderPost(post))
-  await writeFile(join(dir, 'index.html'), renderIndex(posts))
-  await writeFile(join(dir, 'rss.xml'), renderRss(posts))
-  await writeFile(join(dir, 'posts.json'), JSON.stringify(posts.map(({ slug, date }) => ({ slug, date }))))
+  // The index, RSS and sitemap are rendered per request from posts.json, so scheduled posts appear on their day.
+  await writeFile(join(dir, 'posts.json'), JSON.stringify(posts.map(({ slug, title, description, date }) => ({ slug, title, description, date }))))
   return posts
 }
