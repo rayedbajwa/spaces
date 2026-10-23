@@ -86,7 +86,7 @@ export function sharedSecrets(env: NodeJS.ProcessEnv = process.env): Record<stri
   const database = env.PROJECT_WORKER_DATABASE_URL?.trim() || env.DATABASE_URL?.trim()
   if (database) out.DATABASE_URL = database
   // Agent tracing settings travel too, so workers trace where the web service does.
-  for (const key of ['ENCRYPTION_KEY', 'SPACES_INTERNAL_TOKEN', 'PUBLIC_URL', 'PHOENIX_COLLECTOR_ENDPOINT', 'PHOENIX_API_KEY', 'PHOENIX_PROJECT_NAME'] as const) {
+  for (const key of ['ENCRYPTION_KEY', 'ENCRYPTION_KEY_PREVIOUS', 'SPACES_INTERNAL_TOKEN', 'SPACES_INTERNAL_TOKEN_PREVIOUS', 'PUBLIC_URL', 'PHOENIX_COLLECTOR_ENDPOINT', 'PHOENIX_API_KEY', 'PHOENIX_PROJECT_NAME'] as const) {
     const value = env[key]?.trim()
     if (value) out[key] = value
   }
