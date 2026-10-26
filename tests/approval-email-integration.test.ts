@@ -19,6 +19,7 @@ const mock = Bun.serve({
     return Response.json({ message: 'not found' }, { status: 404 })
   },
 })
+const previousResendApiUrl = process.env.RESEND_API_URL
 process.env.RESEND_API_URL = `http://127.0.0.1:${MOCK_PORT}`
 
 const fixture = await createApprovalFixture({ port: 3124 })
@@ -42,6 +43,9 @@ async function api<T = any>(method: string, path: string, cookie: string, body?:
 afterAll(async () => {
   await fixture.stop()
   mock.stop(true)
+  // Do not leak the mock Resend endpoint to later test files in the same process.
+  if (previousResendApiUrl === undefined) delete process.env.RESEND_API_URL
+  else process.env.RESEND_API_URL = previousResendApiUrl
 })
 
 describe('email integration', () => {
